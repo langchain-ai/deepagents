@@ -25,6 +25,7 @@ from deepagents_code.client.commands.extras import (
 )
 from deepagents_code.tui.widgets.messages import AppMessage
 from deepagents_code.update_check import (
+    UPDATE_LOCK_CONTENDED_MESSAGE,
     CompositeExtraConflictError,
     ExtraNotInstalledError,
     ExtraRemovalOutcome,
@@ -320,6 +321,7 @@ class TestPerformUninstallExtra:
         self, method: str, message: str
     ) -> None:
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method",
                 return_value=method,
@@ -337,6 +339,7 @@ class TestPerformUninstallExtra:
     async def test_absent_extra_is_noop_without_uv(self) -> None:
         """An already-completed removal does not require an executable."""
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
@@ -360,6 +363,7 @@ class TestPerformUninstallExtra:
         """A removal that needs a rebuild still fails cleanly without uv."""
         run = AsyncMock()
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
@@ -408,6 +412,7 @@ class TestPerformUninstallExtra:
             return "uv tool install safe-command"
 
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
@@ -439,6 +444,7 @@ class TestPerformUninstallExtra:
     async def test_cancellation_returns_the_locked_recovery_command(self) -> None:
         run = AsyncMock(side_effect=asyncio.CancelledError)
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
@@ -464,6 +470,7 @@ class TestPerformUninstallExtra:
 
     async def test_unknown_installed_version_refuses_rebuild(self) -> None:
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
@@ -491,6 +498,7 @@ class TestPerformUninstallExtra:
         command = MagicMock()
         run = AsyncMock()
         with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
@@ -698,6 +706,12 @@ class TestUninstallCli:
         console = MagicMock()
         with (
             patch("deepagents_code.config._is_editable_install", return_value=True),
+            # A uv install so only the editable check can refuse: an editable
+            # checkout under a uv tool prefix is detected as "uv".
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
             patch("deepagents_code.config.console", console, create=True),
             patch(
                 "deepagents_code.update_check.perform_uninstall_extra",
@@ -706,7 +720,9 @@ class TestUninstallCli:
         ):
             assert run_uninstall_request(name="ollama") == 1
         perform.assert_not_awaited()
-        assert "editable installs" in self._console_text(console)
+        text = self._console_text(console)
+        assert "Editable install detected" in text
+        assert "uv tool inst" in text
 
     def test_protected_extra_exits_nonzero(self) -> None:
         """A refused base-provider removal must not report shell success.
@@ -843,7 +859,7 @@ class TestUninstallCli:
                 new_callable=AsyncMock,
                 return_value=ExtraRemovalOutcome(
                     False,
-                    "Another dcode update or install is already running.",
+                    UPDATE_LOCK_CONTENDED_MESSAGE,
                     manual_recovery_safe=False,
                 ),
             ),
@@ -1134,9 +1150,9 @@ async def test_uninstall_slash_editable_install_refuses() -> None:
     command = MagicMock()
     with (
         patch("deepagents_code.config._is_editable_install", return_value=True),
-        # Report a uv install so only the editable check can refuse; otherwise
-        # `uninstall_extra_method_error` produces a near-identical message and
-        # this test would pass with the editable guard deleted.
+        # Report a uv install so only the editable check can refuse: an editable
+        # checkout under a uv tool prefix is detected as "uv", and the method
+        # alone would let the removal through.
         patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
         patch("deepagents_code.update_check.uninstall_extra_command", command),
         patch(
@@ -1151,7 +1167,7 @@ async def test_uninstall_slash_editable_install_refuses() -> None:
     text = " ".join(
         str(call.args[0]._content) for call in app._mount_message.await_args_list
     )
-    assert "Editable install detected — cannot remove extras." in text
+    assert "Editable install detected — cannot remove extras automatically." in text
     assert "uv tool install --editable" in text
 
 
@@ -1279,7 +1295,7 @@ async def test_uninstall_slash_contention_withholds_manual_command() -> None:
             new_callable=AsyncMock,
             return_value=ExtraRemovalOutcome(
                 False,
-                "Another dcode update or install is already running.",
+                UPDATE_LOCK_CONTENDED_MESSAGE,
                 manual_recovery_safe=False,
             ),
         ),

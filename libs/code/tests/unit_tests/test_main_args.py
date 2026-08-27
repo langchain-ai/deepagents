@@ -14,6 +14,10 @@ import pytest
 
 from deepagents_code.config import parse_shell_allow_list
 from deepagents_code.main import apply_stdin_pipe, parse_args
+from deepagents_code.update_check import ExtraInstallOutcome
+
+_INSTALL_SUCCEEDED = ExtraInstallOutcome(True, "")
+"""Default `perform_install_extra` stub result for the install-subcommand tests."""
 
 MockArgvType = Callable[..., AbstractContextManager[object]]
 
@@ -2737,7 +2741,7 @@ class TestInstallExtraSubcommand:
         editable: bool = False,
         yes: bool = False,
         interactive: bool = False,
-        perform_return: tuple[bool, str] = (True, ""),
+        perform_return: ExtraInstallOutcome = _INSTALL_SUCCEEDED,
         command_side_effect: BaseException | None = None,
     ) -> tuple[int, MagicMock]:
         """Invoke `cli_main()` with `--install`; return exit code + mock."""
@@ -2844,7 +2848,7 @@ class TestInstallExtraSubcommand:
         editable: bool = False,
         yes: bool = False,
         interactive: bool = False,
-        perform_return: tuple[bool, str] = (True, ""),
+        perform_return: ExtraInstallOutcome = _INSTALL_SUCCEEDED,
         perform_side_effect: BaseException | None = None,
         command_side_effect: BaseException | None = None,
         command_return: str | None = None,
@@ -2949,7 +2953,7 @@ class TestInstallExtraSubcommand:
         """A failed install surfaces both the log path and manual script command."""
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
-            perform_return=(False, "resolver: conflict"),
+            perform_return=ExtraInstallOutcome(False, "resolver: conflict"),
         )
         assert code == 1
         text = self._printed_text(console_mock)
@@ -2965,7 +2969,7 @@ class TestInstallExtraSubcommand:
         command = "uv tool install -U 'deepagents-code[quickjs]'"
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
-            perform_return=(False, "resolver: conflict"),
+            perform_return=ExtraInstallOutcome(False, "resolver: conflict"),
             command_return=command,
         )
         assert code == 1
@@ -2980,7 +2984,7 @@ class TestInstallExtraSubcommand:
         resolved = "uv tool install -U 'deepagents-code[quickjs]'"
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
-            perform_return=(False, "resolver: conflict"),
+            perform_return=ExtraInstallOutcome(False, "resolver: conflict"),
             command_return=resolved,
             recovery_side_effect=ValueError("bad receipt"),
         )

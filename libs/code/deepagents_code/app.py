@@ -7452,7 +7452,6 @@ class DeepAgentsApp(App):
             return False
         try:
             outcome = await perform_install_extra(extra, log_path=log_path)
-            success, output = outcome
         except (OSError, asyncio.CancelledError) as exc:
             logger.warning("/install command failed", exc_info=True)
             # Best-effort upgrade of `manual_cmd` to the install-method-specific
@@ -7472,12 +7471,12 @@ class DeepAgentsApp(App):
             )
             return False
 
-        if not success:
+        if not outcome.success:
             # Tail the last 200 chars — uv resolver prints the resolved
             # error at the end, not the beginning.
-            detail = f": {output[-200:]}" if output else ""
+            detail = f": {outcome.output[-200:]}" if outcome.output else ""
             recovery = ""
-            if getattr(outcome, "manual_recovery_safe", True):
+            if outcome.manual_recovery_safe:
                 # See the OSError branch above: best-effort recovery command,
                 # falling back to the already-bound install-script command.
                 manual_cmd = await asyncio.to_thread(
@@ -7603,12 +7602,9 @@ class DeepAgentsApp(App):
             A one-line listing, or a short explanatory message.
         """
         try:
-            from deepagents_code.update_check import (
-                _BASE_DEPENDENCY_EXTRAS,
-                _uv_tool_selected_extras,
-            )
+            from deepagents_code.update_check import removable_extras
 
-            selected = sorted(_uv_tool_selected_extras() - _BASE_DEPENDENCY_EXTRAS)
+            selected = removable_extras()
         except Exception:
             logger.debug("could not list selected extras", exc_info=True)
             return "Could not read the selected extras for this install."
@@ -7629,10 +7625,8 @@ class DeepAgentsApp(App):
                 removal, so cancellation is never swallowed.
         """
         try:
-            from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
                 create_update_log_file,
-                editable_extra_removal_hint,
                 is_valid_extra_name,
                 perform_uninstall_extra,
                 uninstall_extra_method_error,
@@ -7650,14 +7644,6 @@ class DeepAgentsApp(App):
 
         if not is_valid_extra_name(extra):
             await self._mount_message(AppMessage("Invalid extra name."))
-            return
-        if await asyncio.to_thread(_is_editable_install):
-            await self._mount_message(
-                AppMessage(
-                    "Editable install detected — cannot remove extras.\n"
-                    + editable_extra_removal_hint(extra)
-                )
-            )
             return
         method_error = await asyncio.to_thread(uninstall_extra_method_error, extra)
         if method_error is not None:

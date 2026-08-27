@@ -758,14 +758,18 @@ def show_uninstall_help() -> None:
     console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
     console.print("  dcode uninstall ollama")
     console.print()
+    from deepagents_code.extras_info import (
+        BASE_DEPENDENCY_EXTRAS,
+        COMPOSITE_EXTRA_MEMBERS,
+    )
+
+    base = ", ".join(sorted(BASE_DEPENDENCY_EXTRAS))
+    composites = " or ".join(sorted(COMPOSITE_EXTRA_MEMBERS))
     console.print("[bold]Restrictions:[/bold]", style=theme.PRIMARY)
-    console.print("  The openai, anthropic, google-genai, and quickjs extras are")
-    console.print("  base dependencies.")
+    console.print(f"  These extras are base dependencies: {base}.")
     console.print("  They cannot be removed.")
     console.print("  Editable and Homebrew installs cannot remove extras in place.")
-    console.print(
-        "  An extra installed through all-providers or all-sandboxes cannot be"
-    )
+    console.print(f"  An extra installed through {composites} cannot be")
     console.print("  removed on its own. Remove the composite extra instead.")
     console.print()
     console.print(

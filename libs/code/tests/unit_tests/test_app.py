@@ -145,6 +145,7 @@ from deepagents_code.tui.widgets.messages import (
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
 from deepagents_code.tui.widgets.status import _PICKER_ACTIONS
+from deepagents_code.update_check import ExtraInstallOutcome
 
 
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
@@ -23888,7 +23889,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -23935,7 +23936,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -23982,7 +23983,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24027,7 +24028,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24063,7 +24064,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24169,7 +24170,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(False, "resolver: conflict")),
+            AsyncMock(return_value=ExtraInstallOutcome(False, "resolver: conflict")),
         )
 
         app = DeepAgentsApp()

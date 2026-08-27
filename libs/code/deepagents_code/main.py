@@ -2859,9 +2859,7 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
-    if args.package and (
-        args.uninstall is not None or getattr(args, "command", None) == "uninstall"
-    ):
+    if args.package and (args.uninstall is not None or args.command == "uninstall"):
         parser.error("--package cannot be used with uninstall")
     # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
     # distinct from an absent flag (just trimmed): an explicit blank is the

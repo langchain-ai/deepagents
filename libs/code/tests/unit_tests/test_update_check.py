@@ -32,8 +32,8 @@ from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extr
 from deepagents_code.update_check import (
     CACHE_TTL,
     INSTALLED_STALE_NOTICE_DAYS,
-    ContendedExtraInstallOutcome,
     DependencyChange,
+    ExtraInstallOutcome,
     InstallMethod,
     ShadowedDcode,
     ToolRequirementIntrospectionError,
@@ -2730,6 +2730,10 @@ class TestUpdateLogs:
                 return_value="uv",
             ),
             patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset({"litellm", "openai"}),
             ),
@@ -2927,6 +2931,10 @@ class TestUpdateLogs:
             patch(
                 "deepagents_code.update_check.detect_install_method",
                 return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
             ),
             patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
@@ -3504,6 +3512,10 @@ class TestUpdateLogs:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
             patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset({"not a valid extra"}),
             ),
@@ -3564,6 +3576,10 @@ class TestUpdateLogs:
             ),
             patch("shutil.which", return_value="/usr/bin/uv"),
             patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset(),
             ),
@@ -3596,6 +3612,10 @@ class TestUpdateLogs:
                 return_value="uv",
             ),
             patch("shutil.which", return_value="/usr/bin/uv"),
+            patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
             patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset(),
@@ -4193,6 +4213,10 @@ class TestUpgradeInstallCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
             patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
@@ -4215,6 +4239,10 @@ class TestUpgradeInstallCommand:
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
+            patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
             patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset({"not a valid extra"}),
@@ -4860,7 +4888,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value="unknown",
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "Editable install" in output
         assert "uv tool install --editable" in output
@@ -4872,7 +4900,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value="brew",
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "Homebrew" in output
 
@@ -4882,7 +4910,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value="other",
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "Unsupported install method" in output
 
@@ -4914,7 +4942,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value=method,
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert needle in output
         assert "ToolRequirementIntrospectionError" not in output
@@ -4926,7 +4954,9 @@ class TestPerformInstallExtra:
         with patch(
             "deepagents_code.update_check.detect_install_method",
         ) as detect:
-            success, output = await perform_install_extra("quickjs']; echo nope; '")
+            success, output, _safe = await perform_install_extra(
+                "quickjs']; echo nope; '"
+            )
         assert success is False
         assert "Invalid extra name" in output
         detect.assert_not_called()
@@ -4950,7 +4980,9 @@ class TestPerformInstallExtra:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is True
         assert output == "ok"
 
@@ -4991,7 +5023,7 @@ class TestPerformInstallExtra:
             ),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
 
         assert (success, output) == (True, "installed")
         assert events == ["acquire", "command", "run", "release"]
@@ -5021,7 +5053,7 @@ class TestPerformInstallExtra:
         ):
             outcome = await perform_install_extra("quickjs")
 
-        assert isinstance(outcome, ContendedExtraInstallOutcome)
+        assert isinstance(outcome, ExtraInstallOutcome)
         assert outcome.success is False
         assert "already running" in outcome.output
         assert outcome.manual_recovery_safe is False
@@ -5046,7 +5078,7 @@ class TestPerformInstallExtra:
                 return_value=frozenset(),
             ),
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
@@ -5063,7 +5095,7 @@ class TestPerformInstallExtra:
                 return_value=None,
             ),
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "uv" in output
         assert "not found" in output
@@ -5291,6 +5323,10 @@ class TestPerformInstallPackage:
                 return_value="/usr/bin/uv",
             ),
             patch(
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
                 "deepagents_code.update_check._uv_tool_selected_extras",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
@@ -5383,7 +5419,9 @@ class TestRunInstallSubprocessFailureModes:
                 return_value="sleep 5",
             ),
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is False
         assert "timed out" in output
 
@@ -5410,7 +5448,9 @@ class TestRunInstallSubprocessFailureModes:
             ),
             patch("deepagents_code.update_check.os.killpg", wraps=os.killpg) as killpg,
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is False
         assert "timed out" in output
         killpg.assert_called_once()
@@ -5537,7 +5577,9 @@ class TestRunInstallSubprocessFailureModes:
             ),
             patch("asyncio.create_subprocess_shell", side_effect=_raise),
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is False
         assert "FileNotFoundError" in output
         assert "No such file" in output
@@ -5559,7 +5601,9 @@ class TestRunInstallSubprocessFailureModes:
                 return_value="sh -c 'printf boom 1>&2; exit 1'",
             ),
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is False
         assert "boom" in output
 

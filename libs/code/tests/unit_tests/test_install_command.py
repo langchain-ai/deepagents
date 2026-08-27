@@ -14,6 +14,10 @@ import pytest
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+from deepagents_code.update_check import (
+    UPDATE_LOCK_CONTENDED_MESSAGE,
+    ExtraInstallOutcome,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -61,7 +65,7 @@ async def test_install_slash_known_extra_runs() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ) as perform_mock,
         ):
             await app._handle_command("/install quickjs")
@@ -86,7 +90,7 @@ async def test_install_slash_provider_extra_no_owned_server_recommends_relaunch(
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
         ):
             await app._handle_command("/install fireworks")
@@ -187,7 +191,7 @@ async def test_install_slash_provider_extra_skips_redundant_hint_when_prompted()
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             # The user dismisses the prompt without restarting now.
             patch.object(app, "_push_screen_wait", new=AsyncMock(return_value="later")),
@@ -214,7 +218,7 @@ async def test_install_slash_standalone_extra_recommends_relaunch() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -258,7 +262,7 @@ async def test_install_slash_unknown_extra_with_force_runs() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ) as perform_mock,
         ):
             await app._handle_command("/install not-a-real-extra --force")
@@ -312,7 +316,7 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
+                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -329,8 +333,6 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
 
 async def test_install_slash_contention_omits_manual_cmd() -> None:
     """Lock contention never recommends bypassing the held install lock."""
-    from deepagents_code.update_check import ContendedExtraInstallOutcome
-
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
         await pilot.pause()
@@ -347,8 +349,10 @@ async def test_install_slash_contention_omits_manual_cmd() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ContendedExtraInstallOutcome(
-                    False, "Another dcode update or install is already running."
+                return_value=ExtraInstallOutcome(
+                    False,
+                    UPDATE_LOCK_CONTENDED_MESSAGE,
+                    manual_recovery_safe=False,
                 ),
             ),
         ):
@@ -424,7 +428,7 @@ async def test_install_slash_failure_renders_recovery_bracket_literally() -> Non
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
+                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -460,7 +464,7 @@ async def test_install_slash_failure_recovery_error_keeps_prior_command() -> Non
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
+                return_value=ExtraInstallOutcome(False, "resolver: conflict"),
             ),
         ):
             await app._handle_command("/install quickjs")
@@ -916,7 +920,7 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_ensure_restart_prompt_loaded") as preload,
             patch.object(
@@ -959,7 +963,7 @@ async def test_install_restart_capable_extra_defer_skips_restart() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="later")
@@ -986,7 +990,7 @@ async def test_install_standalone_extra_does_not_offer_restart() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
         ):
@@ -1007,7 +1011,7 @@ async def test_install_restart_prompt_skipped_in_remote_server_mode() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
         ):
@@ -1029,7 +1033,7 @@ async def test_install_restart_prompt_skipped_while_agent_running() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
         ):
@@ -1128,7 +1132,7 @@ async def test_install_restart_prompt_skipped_while_connecting() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_push_screen_wait", new=AsyncMock()) as prompt,
         ):
@@ -1149,7 +1153,7 @@ async def test_install_restart_prompt_mount_failure_leaves_manual_hint() -> None
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(
                 app,
@@ -1185,7 +1189,7 @@ async def test_install_restart_failure_omits_complete_message() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
@@ -1310,7 +1314,7 @@ async def test_install_restart_prompt_responsive_through_message_pump() -> None:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ),
             patch.object(app, "_restart_after_install", new=restart),
         ):

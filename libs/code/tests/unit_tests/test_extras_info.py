@@ -8,9 +8,11 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
+    BASE_DEPENDENCY_EXTRAS,
     COMPOSITE_EXTRA_MEMBERS,
     KNOWN_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
@@ -396,13 +398,55 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     )
 
 
+class TestBaseDependencyExtras:
+    """`BASE_DEPENDENCY_EXTRAS` must mirror `pyproject.toml`."""
+
+    def test_matches_extras_fully_covered_by_base_dependencies(self) -> None:
+        """The set equals the extras whose packages are all base dependencies.
+
+        Removal refuses these because deselecting them frees nothing. An extra
+        that gains or loses that property in `pyproject.toml` without a matching
+        update here would either be refused for no reason or accepted and then
+        rebuild the environment to no effect.
+        """
+        data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+        base_packages = {
+            canonicalize_name(Requirement(requirement).name)
+            for requirement in data["project"]["dependencies"]
+        }
+        covered = {
+            extra
+            for extra, requirements in _optional_dependencies().items()
+            # An empty extra (e.g. `quickjs`, kept for backwards-compatible
+            # install commands) adds nothing to remove either, so it belongs
+            # here too.
+            if all(
+                canonicalize_name(Requirement(requirement).name) in base_packages
+                for requirement in requirements
+            )
+        }
+        assert covered == set(BASE_DEPENDENCY_EXTRAS)
+
+
 class TestCompositeExtraMembers:
     """`COMPOSITE_EXTRA_MEMBERS` must mirror `pyproject.toml`."""
 
     def test_mapping_covers_every_composite(self) -> None:
-        """Each composite declared in pyproject.toml has a member set."""
-        assert set(COMPOSITE_EXTRA_MEMBERS) == set(_COMPOSITE_EXTRAS)
-        assert set(_optional_dependencies()) >= set(COMPOSITE_EXTRA_MEMBERS)
+        """Every self-referencing extra in pyproject.toml has a member set.
+
+        A composite is exactly an extra that expands through a single
+        `deepagents-code[...]` requirement, so a new one added to
+        `pyproject.toml` must appear here rather than being silently treated
+        as an ordinary extra.
+        """
+        composites = {
+            extra
+            for extra, requirements in _optional_dependencies().items()
+            if len(requirements) == 1
+            and canonicalize_name(Requirement(requirements[0]).name)
+            == canonicalize_name("deepagents-code")
+        }
+        assert composites == set(COMPOSITE_EXTRA_MEMBERS)
 
     def test_members_match_pyproject_expansion(self) -> None:
         """The mapped members equal the extras the composite requirement selects.

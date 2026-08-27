@@ -62,10 +62,9 @@ def run_uninstall_request(*, name: str) -> int:
     from rich.markup import escape
 
     from deepagents_code._invocation import invoked_name
-    from deepagents_code.config import _is_editable_install, console
+    from deepagents_code.config import console
     from deepagents_code.update_check import (
         create_update_log_file,
-        editable_extra_removal_hint,
         format_log_follow_command,
         is_valid_extra_name,
         perform_uninstall_extra,
@@ -78,14 +77,6 @@ def run_uninstall_request(*, name: str) -> int:
             highlight=False,
         )
         return 2
-    if _is_editable_install():
-        console.print(
-            "[bold yellow]Warning:[/bold yellow] "
-            "Removing extras is not supported on editable installs.\n"
-            + escape(editable_extra_removal_hint(name)),
-            highlight=False,
-        )
-        return 1
     method_error = uninstall_extra_method_error(name)
     if method_error is not None:
         console.print(
@@ -382,19 +373,18 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
             markup=False,
         )
         outcome = asyncio.run(perform_install_extra(extra, log_path=log_path))
-        success, output = outcome
-        if success:
+        if outcome.success:
             console.print(f"[green]Installed extra '{extra}'.[/green]")
             return 0
         # Tail the last 200 chars — uv resolver prints the resolved error at
         # the end, not the beginning.
-        detail = f": {output[-200:]}" if output else ""
+        detail = f": {outcome.output[-200:]}" if outcome.output else ""
         # Best-effort upgrade of `manual_cmd` (set above via
         # `install_extra_command`) to the install-method-specific recovery
         # command. On failure, keep that already-bound install-script command
         # so the hint is never empty.
         recovery = ""
-        if getattr(outcome, "manual_recovery_safe", True):
+        if outcome.manual_recovery_safe:
             manual_cmd = safe_install_extra_recovery_command(extra, fallback=manual_cmd)
             recovery = f"\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]"
         console.print(

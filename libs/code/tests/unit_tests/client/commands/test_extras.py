@@ -13,7 +13,10 @@ from deepagents_code.client.commands.extras import (
     run_install_command,
     run_install_request,
 )
-from deepagents_code.update_check import ContendedExtraInstallOutcome
+from deepagents_code.update_check import (
+    UPDATE_LOCK_CONTENDED_MESSAGE,
+    ExtraInstallOutcome,
+)
 
 
 class TestInstallCommandDispatch:
@@ -76,7 +79,7 @@ class TestInstallCommandDispatch:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ) as perform,
         ):
             code = run_install_request(name="quickjs", package=False, yes=True)
@@ -122,8 +125,10 @@ class TestInstallCommandDispatch:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=ContendedExtraInstallOutcome(
-                    False, "Another dcode update or install is already running."
+                return_value=ExtraInstallOutcome(
+                    False,
+                    UPDATE_LOCK_CONTENDED_MESSAGE,
+                    manual_recovery_safe=False,
                 ),
             ) as perform,
         ):
@@ -192,7 +197,7 @@ class TestInstallCliMain:
             patch(
                 "deepagents_code.update_check.perform_install_extra",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=ExtraInstallOutcome(True, ""),
             ) as perform,
             pytest.raises(SystemExit) as exc_info,
         ):

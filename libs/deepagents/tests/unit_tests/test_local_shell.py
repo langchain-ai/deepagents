@@ -82,7 +82,9 @@ class TestTimeoutErrorMessage:
     def test_default_timeout_error_includes_retry_guidance(self) -> None:
         """Default timeout error should guide the LLM to use the timeout parameter."""
         backend = LocalShellBackend(timeout=1, inherit_env=True)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 1)):
+        with patch("subprocess.Popen") as popen, patch("os.killpg"):
+            popen.return_value.pid = 1234
+            popen.return_value.communicate.side_effect = subprocess.TimeoutExpired("cmd", 1)
             result = backend.execute("sleep 10")
             assert "timed out" in result.output.lower()
             assert "timeout parameter" in result.output.lower()
@@ -91,7 +93,9 @@ class TestTimeoutErrorMessage:
     def test_custom_timeout_error_shows_effective_value(self) -> None:
         """Custom timeout error should show the value used and not suggest re-using timeout."""
         backend = LocalShellBackend(timeout=60, inherit_env=True)
-        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("cmd", 5)):
+        with patch("subprocess.Popen") as popen, patch("os.killpg"):
+            popen.return_value.pid = 1234
+            popen.return_value.communicate.side_effect = subprocess.TimeoutExpired("cmd", 5)
             result = backend.execute("sleep 10", timeout=5)
             assert "5" in result.output
             assert "custom timeout" in result.output.lower()

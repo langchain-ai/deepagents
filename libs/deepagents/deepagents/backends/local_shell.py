@@ -8,9 +8,11 @@ run directly on the host machine with full system access.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
 import sys
 import uuid
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
@@ -22,6 +24,35 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+
+def _kill_and_reap(process: subprocess.Popen[str]) -> None:
+    """Kill a command's process group and reap its shell."""
+    try:
+        if sys.platform == "win32":
+            process.kill()
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
+    except OSError:
+        with suppress(ProcessLookupError):
+            process.kill()
+    finally:
+        process.wait()
+        if process.stdout is not None:
+            process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def _communicate(process: subprocess.Popen[str], timeout: int) -> tuple[str, str]:
+    """Collect output while ensuring interrupted commands cannot outlive us."""
+    try:
+        return process.communicate(timeout=timeout)
+    except BaseException:
+        _kill_and_reap(process)
+        raise
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -301,27 +332,27 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             raise ValueError(msg)
 
         try:
-            result = subprocess.run(  # noqa: S602
+            process = subprocess.Popen(  # noqa: S602
                 command,
-                check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
                 text=True,
-                timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=(sys.platform != "win32"),
             )
+            stdout, stderr = _communicate(process, effective_timeout)
 
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.
             # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
             output_parts = []
-            if result.stdout:
-                output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
+            if stdout:
+                output_parts.append(stdout)
+            if stderr:
+                stderr_lines = stderr.strip().split("\n")
                 output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
 
             output = "\n".join(output_parts) if output_parts else "<no output>"
@@ -334,12 +365,12 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 truncated = True
 
             # Add exit code info if non-zero
-            if result.returncode != 0:
-                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+            if process.returncode != 0:
+                output = f"{output.rstrip()}\n\nExit code: {process.returncode}"
 
             return ExecuteResponse(
                 output=output,
-                exit_code=result.returncode,
+                exit_code=process.returncode,
                 truncated=truncated,
             )
 

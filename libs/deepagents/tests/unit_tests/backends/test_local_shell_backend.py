@@ -1,11 +1,12 @@
 """Unit tests for LocalShellBackend."""
 
+import signal
 import subprocess
 import sys
 import tempfile
 import warnings
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -40,13 +41,46 @@ def test_local_shell_backend_execute_simple_command() -> None:
 
 def test_local_shell_backend_execute_starts_new_session() -> None:
     """Test that commands cannot access the parent's controlling terminal."""
-    completed = subprocess.CompletedProcess(args="echo hello", returncode=0, stdout="hello\n", stderr="")
+    process = MagicMock(returncode=0)
+    process.communicate.return_value = ("hello\n", "")
     with tempfile.TemporaryDirectory() as tmpdir:
         backend = LocalShellBackend(root_dir=tmpdir)
-        with patch("subprocess.run", return_value=completed) as run:
+        with patch("subprocess.Popen", return_value=process) as popen:
             backend.execute("echo hello")
 
-    assert run.call_args.kwargs["start_new_session"] is True
+    assert popen.call_args.kwargs["start_new_session"] is True
+
+
+def test_local_shell_backend_interrupt_kills_process_group() -> None:
+    """Test that an interrupt cannot leave detached descendants running."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = KeyboardInterrupt
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", return_value=process),
+        patch("os.killpg") as killpg,
+        pytest.raises(KeyboardInterrupt),
+    ):
+        LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
+
+    killpg.assert_called_once_with(1234, signal.SIGKILL)
+    process.wait.assert_called_once_with()
+
+
+def test_local_shell_backend_timeout_kills_process_group() -> None:
+    """Test that a timeout cannot leave detached descendants running."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = subprocess.TimeoutExpired("sleep 10", 1)
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", return_value=process),
+        patch("os.killpg") as killpg,
+    ):
+        result = LocalShellBackend(root_dir=tmpdir, timeout=1).execute("sleep 10")
+
+    assert result.exit_code == 124
+    killpg.assert_called_once_with(1234, signal.SIGKILL)
+    process.wait.assert_called_once_with()
 
 
 def test_local_shell_backend_execute_with_error() -> None:

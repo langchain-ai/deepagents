@@ -7240,6 +7240,31 @@ async def test_reasoning_message_renders_provider_text_as_plain_content() -> Non
         assert message.query_one("#reasoning-body", Static).display is False
 
 
+async def test_reasoning_message_coalesces_streamed_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ReasoningMessage, "_STREAM_FLUSH_INTERVAL", 60)
+    app = _ReasoningApp()
+
+    async with app.run_test():
+        message = app.query_one("#reasoning", ReasoningMessage)
+        render = MagicMock(wraps=message._render_reasoning)
+        monkeypatch.setattr(message, "_render_reasoning", render)
+
+        await message.append_content("one")
+        await message.append_content(" ")
+        await message.append_content("two")
+
+        assert message._content == "one two"
+        assert render.call_count == 1
+
+        await message.stop_stream()
+
+        assert render.call_count == 2
+        assert message._flush_timer is None
+        assert str(message.query_one("#reasoning-body", Static).content) == "one two"
+
+
 class _RubricResultApp(App[None]):
     """Minimal app mounting a rubric result."""
 

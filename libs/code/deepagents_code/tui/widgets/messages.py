@@ -1590,6 +1590,8 @@ class _ReasoningToggle(Static):
 class ReasoningMessage(Vertical):
     """Collapsible plain-text provider-visible reasoning."""
 
+    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
+
     DEFAULT_CSS = """
     ReasoningMessage {
         height: auto;
@@ -1616,10 +1618,23 @@ class ReasoningMessage(Vertical):
     def __init__(self, content: str = "", **kwargs: Any) -> None:
         """Initialize a reasoning message."""
         super().__init__(**kwargs)
-        self._content = content
+        self._content_parts: list[str] = [content] if content else []
+        self._render_pending = False
+        self._flush_timer: Timer | None = None
         self._streaming = not content
         self._deferred_expanded: bool | None = None
         self._published_expanded: bool | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full reasoning text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:
         """Compose the reasoning message.
@@ -1646,19 +1661,46 @@ class ReasoningMessage(Vertical):
             )
 
     async def append_content(self, text: str) -> None:
-        """Append a plain-text reasoning fragment."""
-        if text:
-            self._content += text
+        """Append reasoning text and coalesce later renders on a timer."""
+        if not text:
+            return
+        self._content_parts.append(text)
+        self._render_pending = True
+        if self._flush_timer is None:
+            self._flush_pending_render()
+            self._flush_timer = self.set_interval(
+                self._STREAM_FLUSH_INTERVAL, self._flush_pending_render
+            )
+
+    def _flush_pending_render(self) -> None:
+        """Render buffered reasoning fragments in one complete update."""
+        if not self._render_pending:
+            return
+        self._render_pending = False
+        try:
             self._render_reasoning()
+        except Exception:  # a render hiccup must not crash the app
+            self._render_pending = True
+            logger.exception("Failed to flush streamed reasoning fragments")
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
 
     async def stop_stream(self) -> None:
         """Finalize and collapse the active reasoning phase."""
+        self._stop_flush_timer()
         self._streaming = False
         self._expanded = False
-        self._render_reasoning()
+        self._render_pending = True
+        self._flush_pending_render()
 
     async def set_content(self, content: str) -> None:
         """Replace the complete plain-text reasoning content."""
+        self._stop_flush_timer()
+        self._render_pending = False
         self._streaming = False
         self._content = content
         self._render_reasoning()

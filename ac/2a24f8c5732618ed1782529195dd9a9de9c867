@@ -1,0 +1,21 @@
+libs/code/deepagents_code/mcp_tools.py
+  s_44def6363bc4db::t_73c47a15d722ba 1712-1720,1732-1733,1735-1742,1745,1747-1749
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_44def6363bc4db::t_d098ab6573cbaa 1035-1036,1243-1245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "ac2a24f8c5732618ed1782529195dd9a9de9c867",
+  "prompts": {},
+  "sessions": {
+    "s_44def6363bc4db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45f95b08-43d8-417a-8cfc-ccc07c44d8d4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

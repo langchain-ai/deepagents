@@ -164,8 +164,7 @@ def _deduplicate(sources: Iterable[SourceInfo]) -> tuple[SourceInfo, ...]:
 def discover_extensions(
     *,
     plugins: Sequence[PluginInstance] = (),
-    config_files: Sequence[Path] = (),
-    config_dirs: Sequence[Path] = (),
+    config_paths: Sequence[Path] = (),
     cli_paths: Sequence[Path] = (),
     project_dir: Path | None = None,
 ) -> DiscoveryResult:
@@ -177,7 +176,7 @@ def discover_extensions(
     if not is_env_truthy(EXPERIMENTAL):
         return DiscoveryResult()
     user_sources, user_errors = _scan(user_extensions_dir(), SourceScope.USER)
-    config = _resolve_paths((*config_files, *config_dirs), SourceScope.USER)
+    config = _resolve_paths(config_paths, SourceScope.USER)
     cli = _resolve_paths(cli_paths, SourceScope.TEMPORARY)
     entries = _entry_point_sources()
     project = (

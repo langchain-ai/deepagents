@@ -256,6 +256,12 @@ values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
 """
 
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading installed-plugin and trusted-project Python extensions."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 

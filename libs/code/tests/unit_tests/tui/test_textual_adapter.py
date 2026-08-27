@@ -5103,7 +5103,11 @@ async def test_reasoning_streams_separately_and_collapses_before_answer() -> Non
             (
                 SimpleNamespace(
                     content_blocks=[
-                        {"type": "reasoning", "reasoning": "[bold]plain[/bold]"},
+                        {"type": "reasoning", "reasoning": "[bold]plain"},
+                        {"type": "reasoning", "reasoning": " "},
+                        {"type": "reasoning", "reasoning": "text[/bold]"},
+                        {"type": "reasoning", "reasoning": "\n"},
+                        {"type": "reasoning", "reasoning": "next line"},
                         {"type": "text", "text": "answer"},
                     ]
                 ),
@@ -5130,7 +5134,7 @@ async def test_reasoning_streams_separately_and_collapses_before_answer() -> Non
         widget for widget in mounted if isinstance(widget, ReasoningMessage)
     )
     answer = next(widget for widget in mounted if isinstance(widget, AssistantMessage))
-    assert reasoning._content == "[bold]plain[/bold]"
+    assert reasoning._content == "[bold]plain text[/bold]\nnext line"
     assert reasoning._expanded is False
     assert reasoning._streaming is False
     assert answer._content == "answer"

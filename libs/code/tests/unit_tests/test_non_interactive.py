@@ -111,7 +111,9 @@ def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
     message = AIMessage(
         content=[
             {"type": "reasoning", "reasoning": "first"},
-            {"type": "reasoning", "reasoning": " second"},
+            {"type": "reasoning", "reasoning": " "},
+            {"type": "reasoning", "reasoning": "second"},
+            {"type": "reasoning", "reasoning": "\n"},
             {"type": "text", "text": "answer"},
             {"type": "reasoning", "reasoning": "third"},
             {"type": "non_standard", "value": {"type": "redacted_thinking"}},
@@ -122,7 +124,7 @@ def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
     _process_ai_message(message, state, console)
 
     assert stdout.getvalue() == "answer\n"
-    assert stderr.getvalue() == "Reasoning:\nfirst second\nReasoning:\nthird\n"
+    assert stderr.getvalue() == "Reasoning:\nfirst second\n\nReasoning:\nthird\n"
     assert state.reasoning_active is False
     assert state.full_response == ["answer"]
 

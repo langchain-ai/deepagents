@@ -663,11 +663,7 @@ def _process_ai_message(
                 state.full_response.append(text)
         elif block_type == "reasoning":
             reasoning = block.get("reasoning")
-            if (
-                state.show_reasoning
-                and isinstance(reasoning, str)
-                and reasoning.strip()
-            ):
+            if state.show_reasoning and isinstance(reasoning, str) and reasoning:
                 if state.spinner:
                     state.spinner.stop()
                 _write_reasoning(reasoning, state)

@@ -2644,7 +2644,7 @@ async def execute_task_textual(
 
                         elif block_type == "reasoning" and show_reasoning:
                             reasoning = block.get("reasoning")
-                            if isinstance(reasoning, str) and reasoning.strip():
+                            if isinstance(reasoning, str) and reasoning:
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 if pending_text:
                                     await _flush_assistant_text_ns(

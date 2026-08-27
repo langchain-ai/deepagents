@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (42)
+## Public (43)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -25,6 +25,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/docs` |  | Open the docs |
 | `/editor` |  | Open prompt in an external editor ($EDITOR) |
 | `/effort` |  | Set reasoning effort for the current model |
+| `/extensions` |  | List loaded Python extensions and their provenance |
 | `/feedback` |  | Send feedback or report an issue |
 | `/force-clear` |  | Recover a stuck session with a fresh thread |
 | `/goal` |  | Set and manage a persistent objective with acceptance criteria |

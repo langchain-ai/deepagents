@@ -707,7 +707,7 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.10"
+version = "0.0.11"
 source = { editable = "../acp" }
 dependencies = [
     { name = "agent-client-protocol" },

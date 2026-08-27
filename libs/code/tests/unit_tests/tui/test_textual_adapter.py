@@ -3412,7 +3412,7 @@ class TestModelRetryLifecycleReconciliation:
         """A stream error mid-attempt stages nothing into the transcript."""
         from langchain_core.messages import AIMessageChunk
 
-        mount_message, _mounted = _collect_mounts()
+        mount_message, mounted = _collect_mounts()
         adapter = TextualUIAdapter(
             mount_message=mount_message,
             update_status=_noop_status,
@@ -3435,6 +3435,15 @@ class TestModelRetryLifecycleReconciliation:
                 adapter=adapter,
             )
 
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        assert "lost" in str(assistant_widgets[0]._content)
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "The model request failed; the partial response above is incomplete."
+        )
+        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
         main = runtime.transcripts.materialize("thread-error").path.read_text()
         assert "lost" not in main
 

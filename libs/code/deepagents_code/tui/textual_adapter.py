@@ -469,6 +469,9 @@ class _ModelAttemptScope(NamedTuple):
 _RETRY_MARKER_FALLBACK = (
     "Connection dropped; the partial response above is incomplete. Retrying."
 )
+_TERMINAL_ATTEMPT_MARKER = (
+    "The model request failed; the partial response above is incomplete."
+)
 
 
 def _retry_marker_text(data: Mapping[Any, object]) -> str:
@@ -3646,7 +3649,7 @@ async def execute_task_textual(
                             elif decision_type == "switch_manual":
                                 if adapter._on_switch_to_manual is None:
                                     msg = "Manual mode callback is unavailable"
-                                    raise RuntimeError(msg)
+                                    raise RuntimeError(msg)  # noqa: TRY301  # shared turn error rendering owns this failure
                                 callback_result = adapter._on_switch_to_manual()
                                 switched = (
                                     await callback_result
@@ -3655,7 +3658,7 @@ async def execute_task_textual(
                                 )
                                 if not switched:
                                     msg = "Manual mode could not be persisted"
-                                    raise RuntimeError(msg)
+                                    raise RuntimeError(msg)  # noqa: TRY301  # shared turn error rendering owns this failure
                                 decisions = [
                                     cast("HITLDecision", {"type": "switch_manual"})
                                     for _ in action_requests
@@ -3959,6 +3962,30 @@ async def execute_task_textual(
             recover_interrupted_turn=recover_interrupted_turn,
         )
         return turn_stats
+    except Exception:
+        # No retry event follows an exhausted final attempt. Reconcile its root
+        # presentation now, before the generic teardown finalizes the live reply
+        # and makes a partial generation look complete.
+        root_ns: tuple = ()
+        if active_attempt_by_namespace.pop(root_ns, None) is not None:
+            preserve_partial = root_ns in assistant_message_by_namespace
+            try:
+                await _settle_attempt_for_retry(
+                    adapter,
+                    preserve_partial=preserve_partial,
+                    pending_text_by_namespace=pending_text_by_namespace,
+                    assistant_message_by_namespace=assistant_message_by_namespace,
+                    completed_tool_result_ids=completed_tool_result_ids,
+                    displayed_tool_ids=displayed_tool_ids,
+                    tool_call_buffers=tool_call_buffers,
+                )
+                if preserve_partial:
+                    await adapter._mount_message(AppMessage(_TERMINAL_ATTEMPT_MARKER))
+            except Exception:
+                logger.warning(
+                    "Failed to reconcile the terminal model attempt", exc_info=True
+                )
+        raise
     finally:
         # A clean stream can leave its successful final attempt open when the
         # best-effort completion event was lost. Commit those scopes; only an

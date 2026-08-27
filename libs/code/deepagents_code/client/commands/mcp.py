@@ -91,9 +91,20 @@ def setup_mcp_parsers(
 async def run_mcp_login_list(*, config_path: str | None) -> int:
     """List configured OAuth servers without stored tokens.
 
+    Servers are drawn from the same trust-gated resolution as `run_mcp_login`,
+    so untrusted project-level entries are excluded from the scan.
+
+    A server counts as needing login when it opted into OAuth and has no
+    stored token at all. Expiry is deliberately not consulted, matching the
+    runtime's upfront gate in `resolve_and_load_mcp_tools`.
+
     Returns:
-        Process exit code: 0 on success, 1 on config failure or unreadable
-            token state, or 2 when no config file was found.
+        Process exit code: 0 when every configured server's login state was
+            determined — including when some of them need login, which is
+            informational rather than a failure; 1 when the config could not
+            be resolved or any server's state is unknown (unreadable token
+            state, unresolvable config, or a config file that failed to
+            load); or 2 when no config file was found.
     """
     from deepagents_code._invocation import invoked_name
     from deepagents_code.mcp_login_service import (
@@ -121,6 +132,10 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
     from deepagents_code.mcp_config import resolve_mcp_server_env
     from deepagents_code.mcp_tools import _drop_invalid_mcp_config_servers
 
+    # Defense in depth: `resolve_mcp_config` already validates every source, so
+    # `errors` is expected to stay empty. Keep the call anyway — it is what
+    # guarantees the `resolved_config["url"]` index and `FileTokenStorage`'s
+    # server-name regex below cannot raise, and those run outside the `try`.
     valid_config, errors = _drop_invalid_mcp_config_servers(resolution.config)
     for server_name, error in errors.items():
         print(  # noqa: T201
@@ -128,7 +143,10 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
         )
 
     needs_login: list[str] = []
-    unreadable = 0
+    # Servers whose login state could not be determined. A config file that
+    # failed to load counts too: it may have held an OAuth server that never
+    # reached the scan, so the picture is incomplete before the loop starts.
+    unreadable = len(errors) + len(resolution.load_errors)
     for server_name, server_config in valid_config["mcpServers"].items():
         if server_config.get("auth") != "oauth":
             continue
@@ -145,9 +163,19 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
         try:
             tokens = await storage.get_tokens()
         except (OSError, RuntimeError, ValueError) as exc:
+            # `FileTokenStorage` raises `OSError`/`RuntimeError` from its own
+            # file read, and those messages carry the token path and the
+            # "delete it and re-login" remedy — render them verbatim.
+            # `format_login_failure` is for exceptions that may embed an
+            # `OAuthToken`, which here is only the pydantic `ValidationError`
+            # from parsing the stored payload.
+            detail = (
+                str(exc)
+                if isinstance(exc, OSError | RuntimeError)
+                else format_login_failure(exc)
+            )
             print(  # noqa: T201
-                f"Could not read login state for {server_name!r}: "
-                f"{format_login_failure(exc)}",
+                f"Could not read login state for {server_name!r}: {detail}",
                 file=sys.stderr,
             )
             unreadable += 1
@@ -155,22 +183,28 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
         if tokens is None:
             needs_login.append(server_name)
 
-    if not needs_login:
-        # Unreadable token state is not an all-clear: the server's login state
-        # is unknown, so reporting "no servers need login" would be false.
-        if unreadable:
-            return 1
+    if needs_login:
+        console.print("MCP servers needing login:")
+        for server_name in needs_login:
+            console.print(f"  {server_name}", markup=False)
+        console.print()
+        console.print(
+            f"Run `{invoked_name()} mcp login <server>` to authenticate.",
+            markup=False,
+        )
+    elif not unreadable:
         console.print("No MCP servers need login.")
-        return 0
-    console.print("MCP servers needing login:")
-    for server_name in needs_login:
-        console.print(f"  {server_name}", markup=False)
-    console.print()
-    console.print(
-        f"Run `{invoked_name()} mcp login <server>` to authenticate.",
-        markup=False,
-    )
-    return 1 if unreadable else 0
+
+    # An undetermined server is not an all-clear: its login state is unknown,
+    # so both "no servers need login" and a bare list would overstate what was
+    # actually checked. Say so on stdout — the per-server reasons went to
+    # stderr, which is easily lost when only stdout is read or piped.
+    if unreadable:
+        if needs_login:
+            console.print()
+        console.print(f"{unreadable} server(s) could not be checked; see errors above.")
+        return 1
+    return 0
 
 
 # Maintainer note: `deepagents-talon` dynamically imports `run_mcp_login` from
@@ -340,6 +374,9 @@ def _print_resolution_notices(resolution: ConfigResolution) -> None:
         format_untrusted_project_notice,
     )
 
+    # A policy read failure and an "untrusted project" skip are mutually
+    # exclusive reasons for the same dropped servers; surface the policy error
+    # (the real, actionable cause) instead of nudging the user to re-approve.
     policy_notice = format_policy_error_notice(resolution.policy_error)
     if policy_notice:
         print(policy_notice, file=sys.stderr)  # noqa: T201
@@ -347,6 +384,10 @@ def _print_resolution_notices(resolution: ConfigResolution) -> None:
         notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
         if notice:
             print(notice, file=sys.stderr)  # noqa: T201
+    # `format_load_errors_notice` reports configs that failed to parse/validate
+    # but were dropped while another config still loaded — otherwise a broken
+    # .mcp.json is invisible on this surface (the runtime loader reports the
+    # same failures as error rows).
     notices = (
         format_legacy_ignored_notice(resolution.legacy_ignored),
         format_legacy_env_ignored_notice(resolution.legacy_env_ignored),
@@ -365,7 +406,7 @@ def _print_resolution_error(error: ConfigResolutionError) -> None:
     explains the drop), then the legacy-key, legacy-env, and malformed-approval
     notices. Per-path load errors are not printed here because `error.message`
     already embeds them for `NO_USABLE_CONFIG`. These notices are also surfaced
-    independently for successful resolutions in `run_mcp_login`.
+    independently for successful resolutions by `_print_resolution_notices`.
     """
     from deepagents_code.mcp_login_service import (
         format_legacy_env_ignored_notice,

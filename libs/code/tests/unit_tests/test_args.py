@@ -569,7 +569,9 @@ class TestMcpCommandDispatch:
 
         assert exc_info.value.code == 0
         mock_list.assert_awaited_once_with(config_path=None)
-        mock_login.assert_not_awaited()
+        # `assert_not_called`, not `assert_not_awaited`: building both
+        # coroutines and awaiting one would still pass the latter.
+        mock_login.assert_not_called()
 
     def test_mcp_login_uses_top_level_mcp_config_as_fallback(self) -> None:
         """`dcode --mcp-config PATH mcp login NAME` propagates PATH to login."""

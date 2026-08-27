@@ -836,7 +836,11 @@ class AgentServerACP(ACPAgent):
         """Replay one persisted assistant message and its tool calls."""
         for block in message.content_blocks:
             if reasoning := _visible_reasoning(block):
-                update = update_agent_thought_text(reasoning)
+                update = AgentThoughtChunk(
+                    session_update="agent_thought_chunk",
+                    content=text_block(reasoning),
+                    message_id=message_id,
+                )
             else:
                 replay_block = _replay_content_block(block)
                 if replay_block is None:

@@ -364,7 +364,7 @@ async def test_acp_agent_load_session_replays_visible_reasoning_in_order() -> No
         "After",
     ]
     assert isinstance(updates[1], AgentThoughtChunk)
-    assert updates[1].message_id is None
+    assert [update.message_id for update in updates] == ["agent-message"] * 3
 
 
 async def test_acp_agent_load_session_replays_tool_calls() -> None:

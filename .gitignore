@@ -256,6 +256,7 @@ libs/cli/TEXTUAL_PROGRESS.md
 .DS_Store
 */tmp/.DS_Store
 
+CLAUDE.md
 .worktrees/
 
 # Frontend build artifacts (source tree; package data under libs/cli/deepagents_cli/deploy/frontend_dist/ is tracked)

@@ -1660,7 +1660,6 @@ class TestReloadInputResponsiveness:
     ) -> None:
         """A skipped reload respawn preserves `/restart` and queued prompts."""
         from deepagents_code.app import AppMessage, DeepAgentsApp
-        from deepagents_code.config import credentials as settings
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -1677,7 +1676,9 @@ class TestReloadInputResponsiveness:
             restart = AsyncMock(return_value=restarted)
             monkeypatch.setattr(app, "_run_reload", _blocked_reload)
             monkeypatch.setattr(app, "_restart_server_manual", restart)
-            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                Credentials, "reload_from_environment", MagicMock(return_value=[])
+            )
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
             )
@@ -1717,7 +1718,6 @@ class TestReloadInputResponsiveness:
     ) -> None:
         """A `/restart` requested during reload's respawn does not run twice."""
         from deepagents_code.app import DeepAgentsApp, UserMessage, _ServerRespawnResult
-        from deepagents_code.config import credentials as settings
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -1754,7 +1754,9 @@ class TestReloadInputResponsiveness:
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
             monkeypatch.setattr(app, "_restart_server_manual_result", restart)
-            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                Credentials, "reload_from_environment", MagicMock(return_value=[])
+            )
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
             )

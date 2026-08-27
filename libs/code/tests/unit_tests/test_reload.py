@@ -125,6 +125,67 @@ class TestReloadFromEnvironment:
         assert settings.openai_api_key == "sk-new-key"
         assert "openai_api_key: unset -> set" in changes
 
+    def test_reload_publishes_one_complete_replacement(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Readers retain the old generation until one complete swap."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-old")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-old")
+        owner = Settings.from_environment(start_path=tmp_path)
+        previous = owner.active
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-new")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-new")
+        observed: list[object] = []
+
+        def observe_before_publication(
+            _values: object, *, path_base: Path | None
+        ) -> None:
+            assert path_base == tmp_path
+            observed.append(owner.active)
+
+        monkeypatch.setattr(
+            config_mod, "_sync_reload_overrides", observe_before_publication
+        )
+
+        owner.reload_from_environment(start_path=tmp_path)
+
+        current = owner.active
+        assert observed == [previous]
+        assert current is not previous
+        assert previous.openai_api_key == "sk-openai-old"
+        assert previous.anthropic_api_key == "sk-anthropic-old"
+        assert current.openai_api_key == "sk-openai-new"
+        assert current.anthropic_api_key == "sk-anthropic-new"
+
+    def test_reload_failure_keeps_previous_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failure after candidate construction cannot publish it."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-old")
+        owner = Settings.from_environment(start_path=tmp_path)
+        previous = owner.active
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-new")
+
+        def fail_before_publication(_values: object, *, path_base: Path | None) -> None:
+            del path_base
+            msg = "resolver publication failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            config_mod, "_sync_reload_overrides", fail_before_publication
+        )
+
+        with pytest.raises(RuntimeError, match="resolver publication failed"):
+            owner.reload_from_environment(start_path=tmp_path)
+
+        assert owner.active is previous
+        assert owner.openai_api_key == "sk-old"
+
     def test_preview_reload_reports_changes_without_mutating(
         self, tmp_path: Path
     ) -> None:
@@ -1436,6 +1497,7 @@ class TestReloadErrorPaths:
         model_config.clear_caches()
         try:
             settings = Settings.from_environment(start_path=current)
+            previous_credentials = settings.active
             previous = _extra_skills_dirs()
             assert previous == [current / "managed-skills"]
             original_resolve = config_mod._resolve_extra_skills_path
@@ -1455,6 +1517,7 @@ class TestReloadErrorPaths:
             changes = settings.reload_from_environment(start_path=target)
 
             assert config_mod.managed_reload_block(changes) is not None
+            assert settings.active is previous_credentials
             assert _extra_skills_dirs() == previous
             assert _extra_skills_dirs() != [user_skills]
         finally:

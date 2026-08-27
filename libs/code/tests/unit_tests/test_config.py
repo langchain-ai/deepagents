@@ -7,6 +7,7 @@ import textwrap
 import time
 import warnings
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import Mock, patch
@@ -6031,10 +6032,13 @@ max_tokens = 1024
     ) -> None:
         """Explicit model params outrank Google Cloud environment defaults."""
         mock_init_chat_model.return_value = _make_init_chat_model_mock()
-        with (
-            patch.object(settings, "google_cloud_project", "env-project"),
-            patch.object(settings, "google_cloud_location", "us-east5"),
-        ):
+        owner = config_module._get_credentials()
+        replacement = replace(
+            owner.active,
+            google_cloud_project="env-project",
+            google_cloud_location="us-east5",
+        )
+        with patch.object(owner, "_active", replacement):
             create_model(
                 "google_anthropic_vertex:claude-sonnet-4-6",
                 extra_kwargs={"project": "param-project", "location": "europe-west1"},
@@ -6045,9 +6049,14 @@ max_tokens = 1024
 
     def test_google_anthropic_vertex_requires_location(self) -> None:
         """Missing Claude-on-Vertex location produces an actionable error."""
+        owner = config_module._get_credentials()
+        replacement = replace(
+            owner.active,
+            google_cloud_project="test-project",
+            google_cloud_location=None,
+        )
         with (
-            patch.object(settings, "google_cloud_project", "test-project"),
-            patch.object(settings, "google_cloud_location", None),
+            patch.object(owner, "_active", replacement),
             pytest.raises(
                 ModelConfigError,
                 match=r"GOOGLE_CLOUD_LOCATION.*DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION",
@@ -6586,6 +6595,8 @@ class TestLazyModuleAttributes:
         result = _get_credentials()
         assert isinstance(result, Credentials)
         assert result is _get_settings()
+        assert result is _get_credentials()
+        assert result.active is result.active
 
     def test_getattr_returns_settings(self) -> None:
         """Module __getattr__ resolves 'settings' to a Settings instance."""

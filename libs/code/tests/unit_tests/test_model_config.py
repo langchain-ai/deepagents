@@ -7,6 +7,7 @@ import threading
 import tomllib
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, suppress
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
@@ -6718,16 +6719,21 @@ recent = "openai:gpt-5.2"
 
     def test_env_used_when_neither_set(self, tmp_path):
         """Falls back to env var auto-detection when neither default nor recent set."""
-        from deepagents_code.config import _get_default_model_spec, settings
+        from deepagents_code.config import _get_credentials, _get_default_model_spec
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("")
 
+        owner = _get_credentials()
+        replacement = replace(
+            owner.active,
+            openai_api_key=None,
+            anthropic_api_key="test-key",
+        )
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch("deepagents_code.auth_store.get_stored_key", return_value=None),
-            patch.object(settings, "openai_api_key", None),
-            patch.object(settings, "anthropic_api_key", "test-key"),
+            patch.object(owner, "_active", replacement),
             patch.dict(
                 "os.environ",
                 {"ANTHROPIC_API_KEY": "test-key"},
@@ -6759,42 +6765,52 @@ recent = "openai:gpt-5.2"
 
     def test_vertex_project_does_not_drive_env_default(self, tmp_path):
         """Vertex project alone should not select an automatic default model."""
-        from deepagents_code.config import _get_default_model_spec, settings
+        from deepagents_code.config import _get_credentials, _get_default_model_spec
         from deepagents_code.model_config import ModelConfigError
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("")
 
+        owner = _get_credentials()
+        replacement = replace(
+            owner.active,
+            openai_api_key=None,
+            anthropic_api_key=None,
+            google_api_key=None,
+            google_cloud_project="test-project",
+            nvidia_api_key=None,
+        )
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch("deepagents_code.auth_store.get_stored_key", return_value=None),
             patch.dict("os.environ", {}, clear=True),
-            patch.object(settings, "openai_api_key", None),
-            patch.object(settings, "anthropic_api_key", None),
-            patch.object(settings, "google_api_key", None),
-            patch.object(settings, "google_cloud_project", "test-project"),
-            patch.object(settings, "nvidia_api_key", None),
+            patch.object(owner, "_active", replacement),
             pytest.raises(ModelConfigError),
         ):
             _get_default_model_spec()
 
     def test_nvidia_key_does_not_drive_env_default(self, tmp_path):
         """NVIDIA key alone should not select an automatic default model."""
-        from deepagents_code.config import _get_default_model_spec, settings
+        from deepagents_code.config import _get_credentials, _get_default_model_spec
         from deepagents_code.model_config import ModelConfigError
 
         config_path = tmp_path / "config.toml"
         config_path.write_text("")
 
+        owner = _get_credentials()
+        replacement = replace(
+            owner.active,
+            openai_api_key=None,
+            anthropic_api_key=None,
+            google_api_key=None,
+            google_cloud_project=None,
+            nvidia_api_key="test-key",
+        )
         with (
             patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
             patch("deepagents_code.auth_store.get_stored_key", return_value=None),
             patch.dict("os.environ", {}, clear=True),
-            patch.object(settings, "openai_api_key", None),
-            patch.object(settings, "anthropic_api_key", None),
-            patch.object(settings, "google_api_key", None),
-            patch.object(settings, "google_cloud_project", None),
-            patch.object(settings, "nvidia_api_key", "test-key"),
+            patch.object(owner, "_active", replacement),
             pytest.raises(ModelConfigError),
         ):
             _get_default_model_spec()

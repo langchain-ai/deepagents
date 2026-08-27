@@ -7629,15 +7629,10 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
-                CompositeExtraConflictError,
-                ExtraNotInstalledError,
-                ProtectedExtraError,
-                ToolRequirementIntrospectionError,
                 create_update_log_path,
                 editable_extra_removal_hint,
                 is_valid_extra_name,
                 perform_uninstall_extra,
-                uninstall_extra_command,
                 uninstall_extra_method_error,
             )
         except ImportError as exc:
@@ -7666,42 +7661,15 @@ class DeepAgentsApp(App):
         if method_error is not None:
             await self._mount_message(ErrorMessage(method_error))
             return
-        try:
-            manual_cmd = await asyncio.to_thread(uninstall_extra_command, extra)
-        except CompositeExtraConflictError as exc:
-            await self._mount_message(ErrorMessage(str(exc)))
-            return
-        except ProtectedExtraError as exc:
-            await self._mount_message(ErrorMessage(str(exc)))
-            return
-        except ExtraNotInstalledError as exc:
-            await self._mount_message(AppMessage(str(exc)))
-            return
-        except (ToolRequirementIntrospectionError, ValueError) as exc:
-            logger.warning("/uninstall command generation failed", exc_info=True)
-            await self._mount_message(
-                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}")
-            )
-            return
-
         log_path = create_update_log_path()
         await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
-        # The rebuild tears the env down before restoring it, so an interrupted
-        # removal can leave dcode unable to start. Both handlers name that risk
-        # and hand over the command that repairs it;
-        # `_run_install_subprocess` kills the child and re-raises on
-        # cancellation, which must stay uncaught after being reported.
-        interrupted = (
-            "The tool environment may be partially rebuilt.\n"
-            f"Log: {log_path}\nRun manually to repair: {manual_cmd}"
-        )
         try:
             outcome = await perform_uninstall_extra(extra, log_path=log_path)
         except asyncio.CancelledError as exc:
             logger.warning("/uninstall command cancelled", exc_info=True)
             await self._mount_message(
                 ErrorMessage(
-                    f"Uninstall interrupted: {type(exc).__name__}\n{interrupted}"
+                    f"Uninstall interrupted: {type(exc).__name__}\nLog: {log_path}"
                 )
             )
             raise
@@ -7709,14 +7677,33 @@ class DeepAgentsApp(App):
             logger.warning("/uninstall command failed", exc_info=True)
             await self._mount_message(
                 ErrorMessage(
-                    f"Uninstall failed: {type(exc).__name__}: {exc}\n{interrupted}"
+                    f"Uninstall failed: {type(exc).__name__}: {exc}\nLog: {log_path}"
                 )
             )
+            return
+        if outcome.interrupted:
+            recovery = (
+                f"\nRun manually to repair: {outcome.manual_recovery_command}"
+                if outcome.manual_recovery_command is not None
+                else ""
+            )
+            await self._mount_message(
+                ErrorMessage(
+                    "Uninstall interrupted. The tool environment may be partially "
+                    f"rebuilt.\nLog: {log_path}{recovery}"
+                )
+            )
+            raise asyncio.CancelledError
+        if outcome.extra_was_absent:
+            await self._mount_message(AppMessage(outcome.output))
             return
         if not outcome.success:
             detail = f": {outcome.output[-200:]}" if outcome.output else ""
             recovery = (
-                f"\nRun manually: {manual_cmd}" if outcome.manual_recovery_safe else ""
+                f"\nRun manually: {outcome.manual_recovery_command}"
+                if outcome.manual_recovery_safe
+                and outcome.manual_recovery_command is not None
+                else ""
             )
             await self._mount_message(
                 ErrorMessage(f"Uninstall failed{detail}\nLog: {log_path}{recovery}")

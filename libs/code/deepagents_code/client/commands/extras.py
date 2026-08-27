@@ -64,16 +64,11 @@ def run_uninstall_request(*, name: str) -> int:
     from deepagents_code._invocation import invoked_name
     from deepagents_code.config import _is_editable_install, console
     from deepagents_code.update_check import (
-        CompositeExtraConflictError,
-        ExtraNotInstalledError,
-        ProtectedExtraError,
-        ToolRequirementIntrospectionError,
         create_update_log_path,
         editable_extra_removal_hint,
         format_log_follow_command,
         is_valid_extra_name,
         perform_uninstall_extra,
-        uninstall_extra_command,
         uninstall_extra_method_error,
     )
 
@@ -98,29 +93,6 @@ def run_uninstall_request(*, name: str) -> int:
         )
         return 1
 
-    try:
-        manual_cmd = uninstall_extra_command(name)
-    except CompositeExtraConflictError as exc:
-        console.print(
-            f"[bold red]Error:[/bold red] {escape(str(exc))}", highlight=False
-        )
-        return 1
-    except ProtectedExtraError as exc:
-        console.print(
-            f"[bold red]Error:[/bold red] {escape(str(exc))}", highlight=False
-        )
-        return 1
-    except ExtraNotInstalledError as exc:
-        console.print(escape(str(exc)), highlight=False)
-        return 0
-    except (ToolRequirementIntrospectionError, ValueError) as exc:
-        logger.warning("uninstall command generation failed", exc_info=True)
-        console.print(
-            f"[bold red]Error:[/bold red] {type(exc).__name__}: {escape(str(exc))}",
-            highlight=False,
-        )
-        return 1
-
     log_path = create_update_log_path()
     console.print(f"Uninstalling extra '{name}'...")
     console.print(
@@ -129,26 +101,35 @@ def run_uninstall_request(*, name: str) -> int:
         highlight=False,
         markup=False,
     )
-    # The rebuild replaces the environment before restoring it, so an interrupted
-    # removal can leave dcode unable to start. Both interrupt paths name that and
-    # point at the command that repairs it.
-    repair = (
-        f"The tool environment may be partially rebuilt.\n"
-        f"Log: {log_path}\nRun manually to repair: [cyan]{escape(manual_cmd)}[/cyan]"
-    )
     try:
         outcome = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
     except KeyboardInterrupt:
-        console.print(f"\nAborted.\n{repair}", highlight=False)
+        console.print(f"\nAborted.\nLog: {log_path}", highlight=False)
         return 130
     except OSError as exc:
         logger.warning("uninstall failed", exc_info=True)
         console.print(
             f"[bold red]Error:[/bold red] {type(exc).__name__}: "
-            f"{escape(str(exc))}\n{repair}",
+            f"{escape(str(exc))}\nLog: {log_path}",
             highlight=False,
         )
         return 1
+    if outcome.interrupted:
+        recovery = (
+            "\nRun manually to repair: "
+            f"[cyan]{escape(outcome.manual_recovery_command)}[/cyan]"
+            if outcome.manual_recovery_command is not None
+            else ""
+        )
+        console.print(
+            "\nAborted. The tool environment may be partially rebuilt.\n"
+            f"Log: {log_path}{recovery}",
+            highlight=False,
+        )
+        return 130
+    if outcome.extra_was_absent:
+        console.print(escape(outcome.output), highlight=False)
+        return 0
     if outcome.success:
         console.print(
             f"[green]Uninstalled extra '{name}'.[/green] Its packages are already "
@@ -158,8 +139,8 @@ def run_uninstall_request(*, name: str) -> int:
         return 0
     detail = f": {outcome.output[-200:]}" if outcome.output else ""
     recovery = (
-        f"\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]"
-        if outcome.manual_recovery_safe
+        f"\nRun manually: [cyan]{escape(outcome.manual_recovery_command)}[/cyan]"
+        if outcome.manual_recovery_safe and outcome.manual_recovery_command is not None
         else ""
     )
     console.print(

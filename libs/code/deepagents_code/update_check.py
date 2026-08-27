@@ -3918,6 +3918,15 @@ class ExtraRemovalOutcome(NamedTuple):
     environment gets corrupted, so callers must suppress the hint.
     """
 
+    manual_recovery_command: str | None = None
+    """Receipt-preserving command generated while holding the install lock."""
+
+    extra_was_absent: bool = False
+    """Whether the target was already absent, making the request a no-op."""
+
+    interrupted: bool = False
+    """Whether cancellation interrupted a rebuild after command generation."""
+
 
 async def perform_uninstall_extra(
     extra: str,
@@ -3944,9 +3953,11 @@ async def perform_uninstall_extra(
         log_path: Optional path to persist command output.
 
     Returns:
-        The removal outcome. `manual_recovery_safe` is `False` when the failure
-            was lock contention, in which case callers must not print the manual
-            uv command.
+        The removal outcome. `manual_recovery_command` is generated from the
+            installed version and receipt while the install lock is held.
+            `manual_recovery_safe` is `False` when the failure was lock
+            contention, and `interrupted` is `True` when cancellation stopped a
+            rebuild after command generation.
     """
     if not is_valid_extra_name(extra):
         return ExtraRemovalOutcome(
@@ -3978,14 +3989,34 @@ async def perform_uninstall_extra(
             )
         try:
             cmd = uninstall_extra_command(extra, version=installed_version)
-        except ExtraNotInstalledError as exc:
+        except (CompositeExtraConflictError, ProtectedExtraError) as exc:
             return ExtraRemovalOutcome(False, str(exc))
+        except ExtraNotInstalledError as exc:
+            return ExtraRemovalOutcome(False, str(exc), extra_was_absent=True)
         except (ToolRequirementIntrospectionError, ValueError) as exc:
             return ExtraRemovalOutcome(False, f"{type(exc).__name__}: {exc}")
-        success, output = await _run_install_subprocess(
-            cmd, progress=progress, log_path=log_path
+        try:
+            success, output = await _run_install_subprocess(
+                cmd, progress=progress, log_path=log_path
+            )
+        except asyncio.CancelledError:
+            return ExtraRemovalOutcome(
+                False,
+                "Uninstall interrupted.",
+                manual_recovery_command=cmd,
+                interrupted=True,
+            )
+        except OSError as exc:
+            return ExtraRemovalOutcome(
+                False,
+                f"{type(exc).__name__}: {exc}",
+                manual_recovery_command=cmd,
+            )
+        return ExtraRemovalOutcome(
+            success,
+            output,
+            manual_recovery_command=cmd,
         )
-        return ExtraRemovalOutcome(success, output)
 
 
 async def perform_install_package(

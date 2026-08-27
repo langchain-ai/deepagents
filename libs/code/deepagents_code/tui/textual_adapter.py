@@ -2824,10 +2824,7 @@ async def execute_task_textual(
                     )
             pending_text_by_namespace.clear()
             assistant_message_by_namespace.clear()
-            for ns_key in list(reasoning_message_by_namespace):
-                await _flush_reasoning_ns(
-                    adapter, ns_key, reasoning_message_by_namespace
-                )
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
 
             # Handle HITL after stream completes
             if interrupt_occurred:
@@ -3630,6 +3627,15 @@ async def execute_task_textual(
         except Exception:  # drain must not mask the original error
             logger.exception("Failed to drain assistant streams on exit")
 
+        # Reasoning needs the same drain for the same reason, plus one of its
+        # own: the store recorded this widget at mount time with empty content,
+        # so without the `_sync_message_content` inside the flush a re-hydrated
+        # row would come back blank and lose text the user had already read.
+        try:
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
+        except Exception:  # drain must not mask the original error
+            logger.exception("Failed to drain reasoning streams on exit")
+
         # Self-contained backstop for the "every `tool.use` is terminated" hook
         # guarantee. The clean-end branch, HITL-reject branches, and interrupt
         # cleanup each already drained `_current_tool_messages` and cleared it, so
@@ -3777,9 +3783,7 @@ async def _handle_interrupt_cleanup(
         await adapter._set_spinner(None)
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
-    if reasoning_message_by_namespace:
-        for ns_key in list(reasoning_message_by_namespace):
-            await _flush_reasoning_ns(adapter, ns_key, reasoning_message_by_namespace)
+    await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
 
     if recover_interrupted_turn:
         glyphs = get_glyphs()
@@ -3955,7 +3959,12 @@ async def _flush_reasoning_ns(
     ns_key: tuple,
     reasoning_message_by_namespace: dict[tuple, ReasoningMessage],
 ) -> None:
-    """Finalize and collapse reasoning for one namespace."""
+    """Finalize and collapse reasoning for one namespace.
+
+    Syncs the accumulated text back to the store for the same re-hydration
+    reason as `_flush_assistant_text_ns`, then clears the adapter's active
+    message -- which is a single global slot, not per-namespace.
+    """
     message = reasoning_message_by_namespace.pop(ns_key, None)
     if message is None:
         return
@@ -3964,6 +3973,26 @@ async def _flush_reasoning_ns(
         adapter._sync_message_content(message.id, message._content)
     if adapter._set_active_message:
         adapter._set_active_message(None)
+
+
+async def _stop_reasoning_streams(
+    adapter: TextualUIAdapter,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None,
+) -> None:
+    """Finalize every active reasoning stream, isolating each widget.
+
+    One failing widget must not abort the rest of the drain, so each flush is
+    guarded the way `_stop_assistant_streams` guards its own. `_flush_reasoning_ns`
+    pops before it awaits, so a raising widget is already out of the dict.
+    """
+    if not reasoning_message_by_namespace:
+        return
+
+    for ns_key in list(reasoning_message_by_namespace):
+        try:
+            await _flush_reasoning_ns(adapter, ns_key, reasoning_message_by_namespace)
+        except Exception:
+            logger.warning("Failed to stop reasoning stream", exc_info=True)
 
 
 async def _flush_assistant_text_ns(

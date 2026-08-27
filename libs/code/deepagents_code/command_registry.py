@@ -202,7 +202,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Set the model used for context-compaction summaries",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="compact summary summarize",
-        argument_hint="[provider:model|--clear]",
+        argument_hint="[<spec>|clear]",
     ),
     SlashCommand(
         name="/notifications",

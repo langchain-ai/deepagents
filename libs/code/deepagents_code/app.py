@@ -28719,14 +28719,24 @@ class DeepAgentsApp(App):
         return (message, now)
 
     async def _handle_summarization_model_command(self, command: str) -> None:
-        """Set, clear, or display the session's summary-model override."""
+        """Set, clear, or display the session's summary-model override.
+
+        The override is session-scoped: unlike `/model --default` there is no
+        persistent tier, so `[models].summarization_default` is the only way to
+        carry a choice across launches. A single bare spec is the whole grammar
+        -- no params and no trailing words, unlike `/model`.
+
+        Args:
+            command: The raw slash command line as typed.
+        """
         await self._mount_message(UserMessage(command))
         argument = command.strip()[len("/summarization-model") :].strip()
         if not argument:
             current = self._summarization_model_override or "the main agent model"
             await self._mount_message(AppMessage(f"Summarization model: {current}"))
             return
-        if argument == "--clear":
+        # Same spellings `/effort` accepts, so the habit transfers.
+        if argument.lower() in {"clear", "--clear", "reset"}:
             self._summarization_model_override = None
             await self._mount_message(
                 AppMessage("Summarization model cleared; using the main agent model.")
@@ -28734,7 +28744,7 @@ class DeepAgentsApp(App):
             return
         if " " in argument:
             await self._mount_message(
-                ErrorMessage("Usage: /summarization-model [provider:model|--clear]")
+                ErrorMessage("Usage: /summarization-model [<spec>|clear]")
             )
             return
 

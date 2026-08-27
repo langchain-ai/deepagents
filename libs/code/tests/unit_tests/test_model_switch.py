@@ -1532,6 +1532,30 @@ class TestModelCommandIntegration:
 
 
 class TestSummarizationModelCommand:
+    @staticmethod
+    def _capture_errors() -> tuple[list[str], Any]:
+        """Return a captured-error list and the `ErrorMessage.__init__` patch."""
+        captured: list[str] = []
+        original_init = ErrorMessage.__init__
+
+        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
+            captured.append(message)
+            original_init(self, message, **kwargs)
+
+        return captured, capture_init
+
+    @staticmethod
+    def _capture_app_messages() -> tuple[list[str], Any]:
+        """Return a captured-message list and the `AppMessage.__init__` patch."""
+        captured: list[str] = []
+        original_init = AppMessage.__init__
+
+        def capture_init(self: AppMessage, message: str, **kwargs: Any) -> None:
+            captured.append(message)
+            original_init(self, message, **kwargs)
+
+        return captured, capture_init
+
     async def test_set_and_clear_do_not_change_main_model(self) -> None:
         app = DeepAgentsApp()
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
@@ -1551,17 +1575,104 @@ class TestSummarizationModelCommand:
         assert app._summarization_model_override is None
         assert app._model_override == "anthropic:claude-sonnet-4-5"
 
-    async def test_invalid_model_leaves_override_unchanged(self) -> None:
+    async def test_resolved_spec_is_normalized_not_echoed(self) -> None:
+        """A bare alias must be stored as the resolved `provider:model`.
+
+        Asserting against an input that already equals the stub's
+        `provider:model_name` would pass whether the handler normalizes or
+        simply echoes what was typed.
+        """
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        resolved = Mock(provider="anthropic", model_name="claude-haiku-4-5")
+
+        with patch(
+            "deepagents_code.app._create_model_with_deepagents_import_lock",
+            return_value=resolved,
+        ):
+            await app._handle_command("/summarization-model haiku")
+
+        assert app._summarization_model_override == "anthropic:claude-haiku-4-5"
+
+    @pytest.mark.parametrize("word", ["clear", "--clear", "reset", "CLEAR"])
+    async def test_every_clearing_spelling_effort_accepts_works_here(
+        self, word: str
+    ) -> None:
+        """`/effort` takes all of these, so the habit has to transfer.
+
+        A rejected spelling falls through to model resolution and surfaces a
+        confusing "unknown model" error for what is really a valid request.
+        """
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
 
         with patch(
-            "deepagents_code.app._create_model_with_deepagents_import_lock",
-            side_effect=ValueError("bad model"),
+            "deepagents_code.app._create_model_with_deepagents_import_lock"
+        ) as create_model:
+            await app._handle_command(f"/summarization-model {word}")
+
+        create_model.assert_not_called()
+        assert app._summarization_model_override is None
+
+    async def test_no_argument_reports_the_current_value(self) -> None:
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        captured, capture_init = self._capture_app_messages()
+
+        with patch.object(AppMessage, "__init__", capture_init):
+            await app._handle_command("/summarization-model")
+
+        assert any("openai:gpt-5.4-mini" in text for text in captured)
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+
+    async def test_no_argument_names_the_fallback_when_unset(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        captured, capture_init = self._capture_app_messages()
+
+        with patch.object(AppMessage, "__init__", capture_init):
+            await app._handle_command("/summarization-model")
+
+        assert any("main agent model" in text for text in captured)
+
+    async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
+        """The grammar is a single bare spec -- no params, unlike `/model`."""
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        captured, capture_init = self._capture_errors()
+
+        with (
+            patch(
+                "deepagents_code.app._create_model_with_deepagents_import_lock"
+            ) as create_model,
+            patch.object(ErrorMessage, "__init__", capture_init),
+        ):
+            await app._handle_command("/summarization-model openai:gpt-5.4-mini extra")
+
+        create_model.assert_not_called()
+        assert len(captured) == 1
+        assert "Usage:" in captured[0]
+        assert app._summarization_model_override is None
+
+    async def test_invalid_model_leaves_override_unchanged_and_reports(self) -> None:
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        captured, capture_init = self._capture_errors()
+
+        with (
+            patch(
+                "deepagents_code.app._create_model_with_deepagents_import_lock",
+                side_effect=ValueError("bad model"),
+            ),
+            patch.object(ErrorMessage, "__init__", capture_init),
         ):
             await app._handle_command("/summarization-model invalid:model")
 
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
+        # Without this the handler could swallow the failure silently:
+        # `_mount_message` is an `AsyncMock`, so the override assertion alone
+        # passes either way.
+        assert captured
 
 
 class _StatusBarHarness(App[None]):

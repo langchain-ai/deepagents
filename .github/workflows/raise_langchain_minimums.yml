@@ -62,7 +62,7 @@ on:
         description: "Release package whose dependency minimums to raise"
         required: true
         type: choice
-        default: "deepagents-code"
+        default: "all"
         options:
           - "deepagents-code"
           - "all"

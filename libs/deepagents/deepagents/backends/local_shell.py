@@ -16,10 +16,11 @@ import threading
 import time
 import uuid
 from contextlib import suppress
+from contextvars import ContextVar
 from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol, execute_accepts_timeout
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -29,6 +30,10 @@ DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
 
 _CANCELLATION_POLL_INTERVAL = 0.1
+_ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = ContextVar(
+    "_ASYNC_EXECUTION_CONTEXT",
+    default=None,
+)
 
 
 def _kill_and_reap(process: subprocess.Popen[str]) -> None:
@@ -283,7 +288,13 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         execution_started.set()
         if cancellation_event.is_set():
             raise asyncio.CancelledError
-        return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
+        token = _ASYNC_EXECUTION_CONTEXT.set((self, cancellation_event))
+        try:
+            if timeout is not None and execute_accepts_timeout(type(self)):
+                return self.execute(command, timeout=timeout)
+            return self.execute(command)
+        finally:
+            _ASYNC_EXECUTION_CONTEXT.reset(token)
 
     async def aexecute(
         self,
@@ -402,7 +413,9 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             result = backend.execute("cat /etc/passwd")  # Can read system files!
             ```
         """
-        return self._execute(command, timeout=timeout)
+        execution_context = _ASYNC_EXECUTION_CONTEXT.get()
+        cancellation_event = execution_context[1] if execution_context is not None and execution_context[0] is self else None
+        return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
 
     def _execute(
         self,

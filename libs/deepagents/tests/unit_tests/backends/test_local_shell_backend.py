@@ -337,6 +337,25 @@ async def test_local_shell_backend_async_execute() -> None:
         assert "async test" in result.output
 
 
+async def test_local_shell_backend_async_execute_honors_execute_override() -> None:
+    """Test async execution preserves subclass command restrictions."""
+    calls: list[tuple[str, int | None]] = []
+
+    class RestrictedLocalShellBackend(LocalShellBackend):
+        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            calls.append((command, timeout))
+            msg = f"Command is not allowed: {command}"
+            raise PermissionError(msg)
+
+    with tempfile.TemporaryDirectory() as tmpdir, patch("subprocess.Popen") as popen:
+        backend = RestrictedLocalShellBackend(root_dir=tmpdir)
+        with pytest.raises(PermissionError, match="Command is not allowed"):
+            await backend.aexecute("blocked", timeout=5)
+
+    assert calls == [("blocked", 5)]
+    popen.assert_not_called()
+
+
 async def test_local_shell_backend_async_cancellation_kills_process_group() -> None:
     """Test that async cancellation reaps the detached command."""
     communication_started = threading.Event()

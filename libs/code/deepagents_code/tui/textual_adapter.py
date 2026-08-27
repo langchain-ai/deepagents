@@ -541,6 +541,15 @@ async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
                 settled, _RETRY_INTERRUPTED_TOOL_OUTPUT
             )
         )
+        for tool_msg in settled.values():
+            try:
+                tool_msg.set_error(_RETRY_INTERRUPTED_TOOL_OUTPUT)
+            except Exception:
+                logger.exception(
+                    "Failed to mark interrupted %s row as an error",
+                    tool_msg.tool_name,
+                )
+            adapter._sync_tool_widget(tool_msg)
         adapter._current_tool_messages.clear()
     # Buffers hold unparsed fragments of the interrupted attempt's tool calls;
     # they never mounted and never fired `tool.use`, so they are dropped

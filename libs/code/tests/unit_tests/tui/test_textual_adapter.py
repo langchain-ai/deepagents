@@ -3127,10 +3127,14 @@ class TestModelRetryLifecycleReconciliation:
         from langchain_core.messages import AIMessageChunk
 
         mount_message, mounted = _collect_mounts()
+        synced_tool_states: list[tuple[str, str]] = []
         adapter = TextualUIAdapter(
             mount_message=mount_message,
             update_status=_noop_status,
             request_approval=_mock_approval,
+            sync_tool_message=lambda widget: synced_tool_states.append(
+                (widget._status, widget._output)
+            ),
         )
         session_state, _runtime = _retry_lifecycle_session_state(
             tmp_path, "thread-tools"
@@ -3192,6 +3196,14 @@ class TestModelRetryLifecycleReconciliation:
         assert not adapter._current_tool_messages
         tool_widgets = [w for w in mounted if isinstance(w, ToolCallMessage)]
         assert len(tool_widgets) == 1
+        assert tool_widgets[0]._status == "error"
+        assert tool_widgets[0]._output == (
+            "Model response interrupted before tool execution"
+        )
+        assert synced_tool_states[-1] == (
+            "error",
+            "Model response interrupted before tool execution",
+        )
         markers = [w for w in mounted if isinstance(w, AppMessage)]
         assert len(markers) == 1
 

@@ -15,7 +15,11 @@ import sys
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import (
+    dataclass,
+    field as dataclass_field,
+    replace as dataclass_replace,
+)
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -40,26 +44,24 @@ from deepagents_code._paths import (
     PATHS,
 )
 from deepagents_code._version import __version__
-from deepagents_code.config_manifest import (
-    INTERPRETER_ENABLE_DEFAULT,
-    INTERPRETER_MAX_PTC_CALLS_DEFAULT,
-    INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
-    INTERPRETER_MEMORY_LIMIT_MB_DEFAULT,
-    INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
-    INTERPRETER_PTC_DEFAULT,
-    INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
-)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
+
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import (
+        ConfigResolver,
+        RankedProviderValue,
+    )
+    from deepagents_code.configuration.types import ProviderStatus
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
-# detection are deferred until first access of `settings` (via module
+# detection are deferred until first access of `credentials` (via module
 # `__getattr__`).  This avoids disk I/O and path traversal during import for
-# callers that never touch `settings` (e.g. `deepagents --help`).
+# callers that never touch credentials (e.g. `deepagents --help`).
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +104,7 @@ _bootstrap_lock = threading.Lock()
 and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
-"""Guards lazy singleton construction in `_get_console` / `_get_settings`."""
+"""Guards lazy construction of process-wide config, runtime, and console state."""
 
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
@@ -1310,7 +1312,7 @@ def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
     Idempotent and thread-safe — subsequent calls are no-ops. Called
-    automatically by `_get_settings()` when `settings` is first accessed.
+    automatically by `_get_credentials()` when `credentials` is first accessed.
 
     The flag is set in `finally` so that partial failures (e.g. a
     malformed `.env`) still mark bootstrap as done — preventing infinite retry
@@ -1429,12 +1431,6 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code._git import RepositoryMetadata
-
-    # Static type stubs for lazy module attributes resolved by __getattr__.
-    # At runtime these are created on first access by _get_settings() /
-    # _get_console() and cached in globals().
-    settings: Settings
-    console: Console
 
 MODE_PREFIXES: dict[str, str] = {
     "shell_incognito": "!!",
@@ -2869,14 +2865,12 @@ _RELOADABLE_FIELDS = (
     "google_cloud_location",
     "deepagents_langchain_project",
     "project_root",
-    "shell_allow_list",
-    "extra_skills_dirs",
 )
 """Fields refreshed on `/reload` and cwd switches.
 
-Runtime model state (`model_name`, `model_provider`, `model_context_limit`) and
-the original user LangSmith project are intentionally excluded -- they are set
-once and should not change across reloads.
+Runtime model metadata lives in `RuntimeState` and cannot be touched by a config
+reload. The original user LangSmith project is intentionally excluded because it
+is captured once at bootstrap.
 """
 
 _API_KEY_FIELDS = frozenset(
@@ -2888,17 +2882,179 @@ Derived from `_RELOADABLE_FIELDS` so new `*_api_key` fields are picked up
 automatically.
 """
 
+_RESOLVER_RELOAD_FIELDS = (
+    "shell_allow_list",
+    "extra_skills_dirs",
+)
+"""Resolver-backed values included in reload previews and change reports."""
+
+_RELOAD_CHANGE_FIELDS = (*_RELOADABLE_FIELDS, *_RESOLVER_RELOAD_FIELDS)
+"""Stable display order for every reload-owned change report entry."""
+
+_resolver_reload_snapshot: dict[str, object] = {
+    "shell_allow_list": None,
+    "extra_skills_dirs": None,
+}
+_resolver_reload_snapshot_lock = threading.Lock()
+
+
+@dataclass(slots=True)
+class _ReloadOverrideProvider:
+    """Retain resolver values when one reload candidate cannot be applied."""
+
+    name: str = "retained reload value"
+    rank: int = 350
+    _values: dict[str, object] = dataclass_field(default_factory=dict)
+    _lock: threading.Lock = dataclass_field(default_factory=threading.Lock)
+
+    @property
+    def durable(self) -> bool:
+        """The retained generation exists only for this process lifetime."""
+        return False
+
+    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+        """Return a retained typed value or leave the option unset."""
+        from deepagents_code.configuration.resolver import RankedProviderValue
+        from deepagents_code.configuration.types import (
+            Found,
+            ProviderHealth,
+            ProviderStatus,
+            Unset,
+        )
+
+        with self._lock:
+            result = (
+                Found(self._values[option.key])
+                if option.key in self._values
+                else Unset()
+            )
+        return RankedProviderValue(
+            self.rank,
+            self.durable,
+            ProviderStatus(self.name, None, ProviderHealth.OK),
+            result,
+        )
+
+    def status(self) -> ProviderStatus:
+        """Return the health of the in-memory retained generation."""
+        from deepagents_code.configuration.types import ProviderHealth, ProviderStatus
+
+        return ProviderStatus(self.name, None, ProviderHealth.OK)
+
+    def reload(self) -> None:
+        """Keep the accepted in-memory generation unchanged."""
+
+    def replace(self, values: Mapping[str, object]) -> None:
+        """Atomically replace the options whose previous values stay in force."""
+        with self._lock:
+            self._values = dict(values)
+
+
+_reload_override_provider = _ReloadOverrideProvider()
+
+
+def _resolver_with_reload_overrides() -> ConfigResolver:
+    """Return the shared resolver with the reload-retention tier installed."""
+    from deepagents_code.configuration.resolver import (
+        RELOAD_RANK,
+        get_config_resolver,
+    )
+
+    resolver = get_config_resolver()
+    if RELOAD_RANK not in resolver.provider_statuses():
+        resolver.install_provider(_reload_override_provider)
+    return resolver
+
+
+def _sync_reload_overrides(
+    values: Mapping[str, object], *, path_base: Path | None
+) -> None:
+    """Retain values that the refreshed resolver generation cannot reproduce."""
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import RELOAD_RANK
+
+    resolver = _resolver_with_reload_overrides()
+    retained: dict[str, object] = {}
+    option_keys = {
+        "shell_allow_list": "shell.allow_list",
+        "extra_skills_dirs": "skills.extra_allowed_dirs",
+    }
+    with _use_extra_skills_path_base(path_base):
+        for field, key in option_keys.items():
+            option = get_option(key)
+            if option is None:
+                continue
+            try:
+                candidate = resolver.get_without_ranks(option, {RELOAD_RANK}).value
+            except (OSError, RuntimeError, ValueError):
+                candidate = object()
+            if candidate != values[field]:
+                retained[key] = values[field]
+    _reload_override_provider.replace(retained)
+
+
+def _remember_resolver_reload_values(values: Mapping[str, object]) -> None:
+    """Remember the accepted resolver generation for future change reports."""
+    with _resolver_reload_snapshot_lock:
+        for field in _RESOLVER_RELOAD_FIELDS:
+            _resolver_reload_snapshot[field] = values[field]
+
+
+def _remembered_resolver_reload_values() -> dict[str, object]:
+    """Return the resolver generation currently accepted by runtime reload."""
+    with _resolver_reload_snapshot_lock:
+        return dict(_resolver_reload_snapshot)
+
+
+def _current_resolver_reload_values(*, path_base: Path | None) -> dict[str, object]:
+    """Snapshot resolver-backed values before a preview or accepted reload.
+
+    Returns:
+        Resolver values keyed by their stable reload-report field names.
+
+    Raises:
+        RuntimeError: If either reload-owned option is absent from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+
+    options = tuple(
+        option
+        for key in ("shell.allow_list", "skills.extra_allowed_dirs")
+        if (option := get_option(key)) is not None
+    )
+    if len(options) != len(_RESOLVER_RELOAD_FIELDS):
+        msg = "reload options are missing from the configuration manifest"
+        raise RuntimeError(msg)
+    with _use_extra_skills_path_base(path_base):
+        resolved = _resolver_with_reload_overrides().resolve_options(options)
+    for option in options:
+        _emit_ranked_diagnostics(option, resolved[option.key])
+    return {
+        "shell_allow_list": resolved["shell.allow_list"].value,
+        "extra_skills_dirs": resolved["skills.extra_allowed_dirs"].value,
+    }
+
 
 @dataclass
-class Settings:
-    """Global settings and environment detection for deepagents-code.
+class RuntimeState:
+    """Mutable metadata for the model active in this process."""
 
-    This class is initialized once at startup and provides access to:
-    - Available models and API keys
-    - Current project information
-    - Tool availability (e.g., Tavily)
-    - File system paths
-    """
+    model_name: str | None = None
+    """Currently active model name, set after model creation."""
+
+    model_provider: str | None = None
+    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
+
+    model_context_limit: int | None = None
+    """Maximum input token count from the model profile."""
+
+    model_unsupported_modalities: frozenset[str] = frozenset()
+    """Input modalities not indicated as supported by the model profile."""
+
+
+@dataclass(frozen=True, slots=True)
+class CredentialsSnapshot:
+    """One complete generation of credentials and project context."""
 
     openai_api_key: str | None
     """OpenAI API key if available."""
@@ -2927,104 +3083,92 @@ class Settings:
     user_langchain_project: str | None
     """Original `LANGSMITH_PROJECT` from environment (for user code)."""
 
-    model_name: str | None = None
-    """Currently active model name, set after model creation."""
-
-    model_provider: str | None = None
-    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
-
-    model_context_limit: int | None = None
-    """Maximum input token count from the model profile."""
-
-    model_unsupported_modalities: frozenset[str] = frozenset()
-    """Input modalities not indicated as supported by the model profile."""
-
     project_root: Path | None = None
     """Current project root directory, or `None` if not in a git project."""
 
-    shell_allow_list: list[str] | None = None
-    """Shell commands that don't require user approval."""
+    @property
+    def has_anthropic(self) -> bool:
+        """Check if Anthropic API key is configured."""
+        return self.anthropic_api_key is not None
 
-    extra_skills_dirs: list[Path] | None = None
-    """Extra directories added to the skill path containment allowlist.
+    @property
+    def has_google(self) -> bool:
+        """Check if Google API key is configured."""
+        return self.google_api_key is not None
 
-    These do NOT add new skill discovery locations — skills are still only
-    discovered from the standard directories. They exist so that symlinks inside
-    standard skill directories can point to targets in these additional
-    locations without being rejected by the containment check
-    in `load_skill_content`.
+    @property
+    def has_vertex_ai(self) -> bool:
+        """Check if VertexAI is available (Google Cloud project set, no API key)."""
+        return self.google_cloud_project is not None and self.google_api_key is None
 
-    Set via `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` env var (colon-separated) or
-    `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
+    @property
+    def has_tavily(self) -> bool:
+        """Check if Tavily API key is configured."""
+        return self.tavily_api_key is not None
+
+
+_CREDENTIAL_FIELDS = frozenset(CredentialsSnapshot.__dataclass_fields__)
+
+
+class Credentials:
+    """Stable owner of the active credential and project-context snapshot.
+
+    Reloads construct a complete immutable `CredentialsSnapshot` and publish it
+    with one reference assignment. Callers that need a consistent multi-field
+    view can retain `active` while ordinary field reads remain source compatible.
     """
 
-    enable_interpreter: bool = INTERPRETER_ENABLE_DEFAULT
-    """Wire `CodeInterpreterMiddleware` from `langchain-quickjs` into the main
-    agent. Local-mode only; raises `ValueError` at agent-build time when a
-    remote sandbox is active. Subagents never receive the interpreter in v1.
+    openai_api_key: str | None
+    anthropic_api_key: str | None
+    google_api_key: str | None
+    nvidia_api_key: str | None
+    tavily_api_key: str | None
+    google_cloud_project: str | None
+    google_cloud_location: str | None
+    deepagents_langchain_project: str | None
+    user_langchain_project: str | None
+    project_root: Path | None
 
-    `langchain-quickjs` is installed as a core dependency.
+    def __init__(self, active: CredentialsSnapshot) -> None:
+        """Create a stable owner for one complete credential generation."""
+        self._active = active
 
-    Defaults are owned by `config_manifest` (the canonical config surface) so
-    they are defined in exactly one place.
-    """
+    @property
+    def active(self) -> CredentialsSnapshot:
+        """Complete credential generation currently in force."""
+        return self._active
 
-    interpreter_timeout_seconds: float = INTERPRETER_TIMEOUT_SECONDS_DEFAULT
-    """Per-`js_eval`-call wall-clock timeout (seconds) for the QuickJS REPL."""
+    def __getattr__(self, name: str) -> object:
+        """Forward credential field reads to the active immutable snapshot.
 
-    interpreter_memory_limit_mb: int = INTERPRETER_MEMORY_LIMIT_MB_DEFAULT
-    """QuickJS heap memory cap (MB), shared across all calls within a session."""
+        Returns:
+            The requested credential field value.
 
-    interpreter_max_ptc_calls: int = INTERPRETER_MAX_PTC_CALLS_DEFAULT
-    """Maximum `tools.*` host-bridge invocations allowed per `js_eval` call.
+        Raises:
+            AttributeError: If `name` is not a credential field.
+        """
+        if name in _CREDENTIAL_FIELDS:
+            return getattr(self._active, name)
+        msg = f"{type(self).__name__!s} has no attribute {name!r}"
+        raise AttributeError(msg)
 
-    PTC calls bypass `interrupt_on`/HITL approval — this budget is the only
-    runtime limiter on bursty tool fan-out from inside the REPL.
-    """
-
-    interpreter_max_result_chars: int = INTERPRETER_MAX_RESULT_CHARS_DEFAULT
-    """Independent cap (chars) on `js_eval` result and stdout blocks before
-    truncation."""
-
-    interpreter_ptc: str | bool | list[str] = INTERPRETER_PTC_DEFAULT
-    """Programmatic tool calling allowlist for `js_eval`.
-
-    Accepted values:
-
-    - `False` or `[]`: pure REPL, no `tools.*` bridge.
-    - `"safe"`: expand to `INTERPRETER_PTC_SAFE_PRESET` (the default).
-    - `"all"`: every tool passed to `create_cli_agent` is exposed. Requires
-        `interpreter_ptc_acknowledge_unsafe=True` when `auto_approve` is `False`.
-    - `list[str]`: explicit tool names. The list may also include the `"safe"`
-        preset (expanded to `INTERPRETER_PTC_SAFE_PRESET`); `"all"` is rejected
-        inside a list. Names are matched against the live tool registry at
-        runtime, so names not present are simply not exposed.
-    """
-
-    interpreter_ptc_acknowledge_unsafe: bool = (
-        INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT
-    )
-    """Explicit acknowledgement required when `interpreter_ptc="all"` is set
-    without `auto_approve`.
-
-    `"all"` exposes every host tool to `tools.*` calls from inside the REPL,
-    bypassing HITL approval — this flag is a deliberate sanity gate, not a
-    feature toggle.
-    """
+    def __setattr__(self, name: str, value: object) -> None:
+        """Publish a replacement snapshot for compatibility field mutations."""
+        if name in _CREDENTIAL_FIELDS:
+            self._active = dataclass_replace(self._active, **{name: value})
+            return
+        object.__setattr__(self, name, value)
 
     @classmethod
-    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
-        """Create settings by detecting the current environment.
+    def from_environment(cls, *, start_path: Path | None = None) -> Credentials:
+        """Create credentials by detecting the current environment.
 
         Args:
             start_path: Directory to start project detection from (defaults to cwd)
 
         Returns:
-            Settings instance with detected configuration
+            Credentials instance with detected configuration.
 
-        Raises:
-            RuntimeError: If the manifest is missing an enforced managed key, so
-                resolving it from the environment alone would bypass policy.
         """
         # Detect API keys (normalize empty strings to None).
         from deepagents_code.model_config import resolve_env_var
@@ -3040,8 +3184,8 @@ class Settings:
         # Detect LangSmith configuration
         # DEEPAGENTS_CODE_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
-        # When accessed via the module-level `settings` singleton,
-        # _ensure_bootstrap() has already run and may have overridden
+        # When accessed via the module-level `credentials` proxy,
+        # `_ensure_bootstrap()` has already run and may have overridden
         # LANGSMITH_PROJECT. We use the saved original value, not the
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
@@ -3058,85 +3202,24 @@ class Settings:
         from deepagents_code.project_utils import find_project_root
 
         project_root = find_project_root(start_path)
-
-        from deepagents_code.config_manifest import (
-            _emit_ranked_diagnostics,
-            get_config_options,
-            get_option,
+        _reload_override_provider.replace({})
+        _remember_resolver_reload_values(
+            _current_resolver_reload_values(path_base=start_path)
         )
-        from deepagents_code.configuration.resolver import get_config_resolver
-
-        # Resolve only the options this constructor reads. `resolve_all()`
-        # would also resolve `display.theme`, whose `THEME_DELEGATE` coercion
-        # reaches the theme registry and imports Textual (~470ms) — see
-        # `libs/code/AGENTS.md` on the startup hot path. Four CLI entry points
-        # in `skills/commands.py` build `Settings` without ever drawing a UI.
-        wanted = tuple(
-            option
-            for option in get_config_options()
-            if option.key in {"shell.allow_list", "skills.extra_allowed_dirs"}
-            or (option.group == "Interpreter" and option.settings_field is not None)
-        )
-        with _use_extra_skills_path_base(start_path):
-            resolved_config = get_config_resolver().resolve_options(wanted)
-
-        # No `is None` fallback for either enforced key below. The manifest is a
-        # module-level constant, so a missing option is a programming error, not
-        # a runtime condition — and resolving from the environment alone would
-        # bypass managed policy for a key that grants shell auto-approval or
-        # widens the skill-content allowlist. Failing loudly beats escalating
-        # quietly. `test_every_enforced_managed_key_resolves_to_a_manifest_option`
-        # keeps this unreachable.
-        shell_option = get_option("shell.allow_list")
-        if shell_option is None:
-            msg = "manifest is missing shell.allow_list; refusing to resolve it alone"
-            raise RuntimeError(msg)
-        shell_resolved = resolved_config[shell_option.key]
-        _emit_ranked_diagnostics(shell_option, shell_resolved)
-        # `parse_shell_allow_list_items` is the only producer for this
-        # option on every tier, and it yields `list[str] | None`.
-        shell_allow_list = cast("list[str] | None", shell_resolved.value)
-
-        # Parse extra skill containment roots from managed policy, the env
-        # var, or config.toml. These extend the path allowlist for
-        # load_skill_content but do not add new skill discovery locations.
-        skills_option = get_option("skills.extra_allowed_dirs")
-        if skills_option is None:
-            msg = (
-                "manifest is missing skills.extra_allowed_dirs; refusing to "
-                "resolve it alone"
-            )
-            raise RuntimeError(msg)
-        skills_resolved = resolved_config[skills_option.key]
-        _emit_ranked_diagnostics(skills_option, skills_resolved)
-        extra_skills_dirs = cast("list[Path] | None", skills_resolved.value)
-
-        # Only the Interpreter group is manifest-resolved here. Credentials,
-        # the shell allow-list, and the LangSmith project keep their dedicated
-        # loaders above: their empty-string-to-`None` and reload semantics do
-        # not fit the generic resolver.
-        interpreter_kwargs: dict[str, Any] = {}
-        for option in get_config_options():
-            if option.group != "Interpreter" or option.settings_field is None:
-                continue
-            resolved = resolved_config[option.key]
-            _emit_ranked_diagnostics(option, resolved)
-            interpreter_kwargs[option.settings_field] = resolved.value
 
         return cls(
-            openai_api_key=openai_key,
-            anthropic_api_key=anthropic_key,
-            google_api_key=google_key,
-            nvidia_api_key=nvidia_key,
-            tavily_api_key=tavily_key,
-            google_cloud_project=google_cloud_project,
-            google_cloud_location=google_cloud_location,
-            deepagents_langchain_project=deepagents_langchain_project,
-            user_langchain_project=user_langchain_project,
-            project_root=project_root,
-            shell_allow_list=shell_allow_list,
-            extra_skills_dirs=extra_skills_dirs,
-            **interpreter_kwargs,
+            CredentialsSnapshot(
+                openai_api_key=openai_key,
+                anthropic_api_key=anthropic_key,
+                google_api_key=google_key,
+                nvidia_api_key=nvidia_key,
+                tavily_api_key=tavily_key,
+                google_cloud_project=google_cloud_project,
+                google_cloud_location=google_cloud_location,
+                deepagents_langchain_project=deepagents_langchain_project,
+                user_langchain_project=user_langchain_project,
+                project_root=project_root,
+            )
         )
 
     @staticmethod
@@ -3209,6 +3292,7 @@ class Settings:
         )
         from deepagents_code.configuration.resolver import (
             CLI_RANK,
+            RELOAD_RANK,
             USER_RANK,
             get_config_resolver,
             resolver_from_snapshots,
@@ -3233,7 +3317,8 @@ class Settings:
         # `config.toml` the user just edited deserves the same treatment, and
         # more so -- they are staring at the edit that did not take.
         user_notice: str | None = None
-        user_status = resolver.provider_statuses().get(USER_RANK)
+        provider_statuses = resolver.provider_statuses()
+        user_status = provider_statuses.get(USER_RANK)
         if user_status is not None and not user_status.usable:
             detail = user_status.detail or user_status.health.value
             user_notice = f"Kept previous config.toml: {detail}"
@@ -3250,11 +3335,6 @@ class Settings:
 
         candidate_resolver = resolver
         if not refresh_managed:
-            # The shared resolver's cached user snapshot may predate the edit
-            # being previewed. Read the user file fresh when possible, but fall
-            # back to the retained snapshot when that read is unusable, matching
-            # the real reload. Keep the current managed snapshot because a
-            # preview must not refresh policy the process is enforcing.
             from deepagents_code.configuration.providers import TomlFileProvider
             from deepagents_code.model_config import DEFAULT_CONFIG_PATH
 
@@ -3266,9 +3346,6 @@ class Settings:
                 )
                 user_notice = None
             else:
-                # The preview's own read failed, so report that rather than
-                # the shared resolver's status: the file on disk right now is
-                # what the user would be accepting.
                 detail = (
                     user_candidate.status.detail or user_candidate.status.health.value
                 )
@@ -3276,17 +3353,10 @@ class Settings:
 
         shell_option = get_option("shell.allow_list")
         if shell_option is not None:
-            # Accepting an *env*-tier hit would defeat the `env` argument this
-            # method exists to honor: the resolver's env provider reads
-            # `os.environ` directly, so a preview of a `.env` edit reported the
-            # value live in the process instead of the one being previewed.
-            # Managed policy, the session CLI, and the user's file are safe to
-            # take from their resolvers; the env tier stays with the
-            # `env`-derived value computed above. Check the shared resolver
-            # first because the preview's candidate resolver -- built from the
-            # managed snapshot and a *freshly parsed* user file -- deliberately
-            # carries no process-local CLI provider.
-            shell_resolved = resolver.get(shell_option)
+            shell_resolved = resolver.get_without_ranks(
+                shell_option,
+                {RELOAD_RANK},
+            )
             _emit_ranked_diagnostics(shell_option, shell_resolved)
             shell_source = _ranked_source(shell_resolved)
             if (
@@ -3320,7 +3390,14 @@ class Settings:
                 resolved_skills: list[Path] | None = None
                 skills_managed = False
                 if skills_option is not None:
-                    skills_resolved = candidate_resolver.get(skills_option)
+                    skills_resolved = (
+                        candidate_resolver.get_without_ranks(
+                            skills_option,
+                            {RELOAD_RANK},
+                        )
+                        if candidate_resolver is resolver
+                        else candidate_resolver.get(skills_option)
+                    )
                     _emit_ranked_diagnostics(skills_option, skills_resolved)
                     if managed_decided(_ranked_source(skills_resolved)):
                         skills_managed = True
@@ -3339,11 +3416,7 @@ class Settings:
                     if skills_managed or not env_skills
                     else _parse_extra_skills_dirs(env_skills)
                 )
-        except (OSError, ValueError):
-            # Path resolution can fail (e.g. broken symlink loop). Keep the
-            # previous value rather than letting the failure escape reload --
-            # callers such as the cwd switch run this after `os.chdir`, where an
-            # uncaught error would strand the process in a half-applied cwd.
+        except (OSError, RuntimeError, ValueError):
             logger.warning(
                 "Could not resolve %s during reload; keeping previous value",
                 EXTRA_SKILLS_DIRS,
@@ -3386,7 +3459,7 @@ class Settings:
             return str(value)
 
         changes: list[str] = []
-        for field in _RELOADABLE_FIELDS:
+        for field in _RELOAD_CHANGE_FIELDS:
             old_value = previous[field]
             new_value = refreshed[field]
             if old_value != new_value:
@@ -3408,7 +3481,9 @@ class Settings:
             A list of human-readable change descriptions that would be produced by
             `reload_from_environment`.
         """
-        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        active = self.active
+        previous = {field: getattr(active, field) for field in _RELOADABLE_FIELDS}
+        previous.update(_remembered_resolver_reload_values())
         env = _preview_dotenv_environ(start_path=start_path)
         refreshed, blocked = self._reload_values(
             start_path=start_path,
@@ -3423,13 +3498,14 @@ class Settings:
         """Reload selected settings from environment variables and project files.
 
         This refreshes only fields that are expected to change at runtime
-        (API keys, Google Cloud project, project root, shell allow-list, and
-        LangSmith tracing project).
+        (API keys, Google Cloud project, project root, and LangSmith tracing
+        project). Resolver-backed configuration is refreshed separately by the
+        shared `ConfigResolver` generation.
 
-        Runtime model state (`model_name`, `model_provider`,
-        `model_context_limit`) and the original user LangSmith project
-        (`user_langchain_project`) are intentionally preserved -- they are
-        not in `_RELOADABLE_FIELDS` and are never touched by this method.
+        Runtime model metadata lives in `RuntimeState` and is never touched by
+        this method. The original user LangSmith project
+        (`user_langchain_project`) is also intentionally preserved because it is
+        not in `_RELOADABLE_FIELDS`.
 
         !!! note
 
@@ -3446,17 +3522,23 @@ class Settings:
             A list of human-readable change descriptions. Empty when nothing
             changed; a single notice when managed policy blocked the reload.
         """
+        active = self.active
+        previous = {field: getattr(active, field) for field in _RELOADABLE_FIELDS}
+        previous.update(_remembered_resolver_reload_values())
+        _resolver_with_reload_overrides()
         _load_dotenv(start_path=start_path, refresh_loaded=True)
-
-        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
         refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=dict(os.environ),
             previous=previous,
         )
 
-        for field, value in refreshed.items():
-            setattr(self, field, value)
+        replacement = dataclass_replace(
+            active,
+            **{field: refreshed[field] for field in _RELOADABLE_FIELDS},
+        )
+        _remember_resolver_reload_values(refreshed)
+        _sync_reload_overrides(refreshed, path_base=start_path)
 
         # Sync the LANGSMITH_PROJECT env var so LangSmith tracing picks up
         # the change
@@ -3485,17 +3567,19 @@ class Settings:
 
         reset_env_resolution_log()
         changes = self._format_reload_changes(previous, refreshed)
+        if managed_reload_block([blocked] if blocked else []) is None:
+            self._active = replacement
         return [blocked, *changes] if blocked else changes
 
     @property
     def has_anthropic(self) -> bool:
         """Check if Anthropic API key is configured."""
-        return self.anthropic_api_key is not None
+        return self.active.has_anthropic
 
     @property
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
-        return self.google_api_key is not None
+        return self.active.has_google
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -3505,284 +3589,12 @@ class Settings:
         so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume
         VertexAI.
         """
-        return self.google_cloud_project is not None and self.google_api_key is None
+        return self.active.has_vertex_ai
 
     @property
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
-        return self.tavily_api_key is not None
-
-    @property
-    def user_deepagents_dir(self) -> Path:
-        """The immutable launch-time user profile root.
-
-        Returns:
-            The normalized `DEEPAGENTS_HOME`, defaulting to `~/.deepagents`.
-        """
-        return PATHS.profile.root
-
-    def get_user_agent_md_path(self, agent_name: str) -> Path:
-        """Get user-level AGENTS.md path for a specific agent.
-
-        Returns path regardless of whether the file exists.
-
-        Delegates to `get_agent_dir` so the name is held to one rule set.
-        Building the path directly would skip both the character check and the
-        reserved-name check: `onboarding.write_onboarding_name_memory` calls
-        this and then creates the parent, so an unchecked name here is exactly
-        how a marker lands in app-owned state.
-
-        Args:
-            agent_name: Name of the agent
-
-        Returns:
-            Path to `{DEEPAGENTS_HOME}/{agent_name}/AGENTS.md`.
-
-        Note:
-            `ValueError` propagates from `get_agent_dir` when the agent name
-            contains invalid characters or names a directory the app owns.
-        """
-        return self.get_agent_dir(agent_name) / "AGENTS.md"
-
-    def get_project_agent_md_path(self) -> list[Path]:
-        """Get project-level AGENTS.md paths.
-
-        Checks both `{project_root}/.deepagents/AGENTS.md` and
-        `{project_root}/AGENTS.md`, returning all that exist. If both are
-        present, both are loaded and their instructions are combined, with
-        `.deepagents/AGENTS.md` first.
-
-        Returns:
-            Existing AGENTS.md paths.
-
-                Empty if neither file exists or not in a project, one entry if
-                only one is present, or two entries if both locations have the
-                file.
-        """
-        if not self.project_root:
-            return []
-        from deepagents_code.project_utils import find_project_agent_md
-
-        return find_project_agent_md(self.project_root)
-
-    @staticmethod
-    def _is_valid_agent_name(agent_name: str) -> bool:
-        """Validate to prevent invalid filesystem paths and security issues.
-
-        Returns:
-            True if the agent name is valid, False otherwise.
-        """
-        if not agent_name or not agent_name.strip():
-            return False
-        # Allow only alphanumeric, hyphens, underscores, and whitespace
-        return bool(re.match(r"^[a-zA-Z0-9_\-\s]+$", agent_name))
-
-    def get_agent_dir(self, agent_name: str) -> Path:
-        """Get the global agent directory path.
-
-        Args:
-            agent_name: Name of the agent
-
-        Returns:
-            Path to `{DEEPAGENTS_HOME}/{agent_name}`.
-
-        Raises:
-            ValueError: If the agent name contains invalid characters or names
-                a directory the app owns.
-        """
-        if not self._is_valid_agent_name(agent_name):
-            msg = (
-                f"Invalid agent name: {agent_name!r}. Agent names can only "
-                "contain letters, numbers, hyphens, underscores, and spaces."
-            )
-            raise ValueError(msg)
-        # Agent profiles live directly under the profile root, so an agent
-        # named after an app-owned directory would resolve onto app state. The
-        # picker already hides these names; reject them on the write path too
-        # rather than letting `dcode -a plugins` stamp a marker into it. The
-        # comparison is filesystem-aware so a case or trailing-dot alias that
-        # resolves onto the reserved directory is rejected as well.
-        # Imported from `_reserved_names`, not `agent`: this runs on the CLI
-        # startup path and `agent` pulls in LangChain at module level.
-        from deepagents_code._reserved_names import is_reserved_agent_dir_name
-
-        if is_reserved_agent_dir_name(agent_name):
-            msg = (
-                f"Invalid agent name: {agent_name!r} is reserved for dcode's own state."
-            )
-            raise ValueError(msg)
-        return PATHS.profile.agent_dir(agent_name)
-
-    def ensure_agent_dir(self, agent_name: str) -> Path:
-        """Ensure the global agent directory exists and return its path.
-
-        Args:
-            agent_name: Name of the agent
-
-        Returns:
-            Path to `{DEEPAGENTS_HOME}/{agent_name}`.
-
-        Note:
-            `ValueError` propagates from `get_agent_dir` when the name contains
-            invalid characters or names a directory the app owns. Validation is
-            not repeated here, so there is one place it can change.
-        """
-        agent_dir = self.get_agent_dir(agent_name)
-        agent_dir.mkdir(parents=True, exist_ok=True)
-        return agent_dir
-
-    def get_user_skills_dir(self, agent_name: str) -> Path:
-        """Get user-level skills directory path for a specific agent.
-
-        Args:
-            agent_name: Name of the agent
-
-        Returns:
-            Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
-        """
-        return self.get_agent_dir(agent_name) / "skills"
-
-    def ensure_user_skills_dir(self, agent_name: str) -> Path:
-        """Ensure user-level skills directory exists and return its path.
-
-        Args:
-            agent_name: Name of the agent
-
-        Returns:
-            Path to `{DEEPAGENTS_HOME}/{agent_name}/skills/`.
-        """
-        skills_dir = self.get_user_skills_dir(agent_name)
-        skills_dir.mkdir(parents=True, exist_ok=True)
-        return skills_dir
-
-    def get_project_skills_dir(self) -> Path | None:
-        """Get project-level skills directory path.
-
-        Returns:
-            Path to {project_root}/.deepagents/skills/, or None if not in a project
-        """
-        if not self.project_root:
-            return None
-        return self.project_root / ".deepagents" / "skills"
-
-    def ensure_project_skills_dir(self) -> Path | None:
-        """Ensure project-level skills directory exists and return its path.
-
-        Returns:
-            Path to {project_root}/.deepagents/skills/, or None if not in a project
-        """
-        if not self.project_root:
-            return None
-        skills_dir = self.get_project_skills_dir()
-        if skills_dir is None:
-            return None
-        skills_dir.mkdir(parents=True, exist_ok=True)
-        return skills_dir
-
-    def get_user_agents_dir(self, agent_name: str) -> Path:
-        """Get user-level agents directory path for custom subagent definitions.
-
-        Args:
-            agent_name: Name of the agent (e.g., "deepagents")
-
-        Returns:
-            Path to `{DEEPAGENTS_HOME}/{agent_name}/agents/`.
-        """
-        return self.get_agent_dir(agent_name) / "agents"
-
-    def get_project_agents_dir(self) -> Path | None:
-        """Get project-level agents directory path for custom subagent definitions.
-
-        Returns:
-            Path to {project_root}/.deepagents/agents/, or None if not in a project
-        """
-        if not self.project_root:
-            return None
-        return self.project_root / ".deepagents" / "agents"
-
-    @property
-    def user_agents_dir(self) -> Path | None:
-        """Base user-level `.agents` directory (`~/.agents`).
-
-        Returns:
-            Path to `~/.agents`, or `None` when the process has no resolvable
-                home directory.
-        """
-        if PATHS.launch_home is None:
-            return None
-        return PATHS.launch_home / ".agents"
-
-    def get_user_agent_skills_dir(self) -> Path | None:
-        """Get user-level `~/.agents/skills/` directory.
-
-        This is a generic alias path for skills that is tool-agnostic.
-
-        Returns:
-            Path to `~/.agents/skills/`, or `None` when the process has no
-                resolvable home directory.
-        """
-        base = self.user_agents_dir
-        return None if base is None else base / "skills"
-
-    def get_project_agent_skills_dir(self) -> Path | None:
-        """Get project-level `.agents/skills/` directory.
-
-        This is a generic alias path for skills that is tool-agnostic.
-
-        Returns:
-            Path to `{project_root}/.agents/skills/`, or `None` if not in a project
-        """
-        if not self.project_root:
-            return None
-        return self.project_root / ".agents" / "skills"
-
-    @staticmethod
-    def get_user_claude_skills_dir() -> Path | None:
-        """Get user-level `~/.claude/skills/` directory (experimental).
-
-        Convenience bridge for cross-tool skill sharing with Claude Code.
-        This is experimental and may be removed.
-
-        Returns:
-            Path to `~/.claude/skills/`, or `None` when the process has no
-                resolvable home directory.
-        """
-        if PATHS.launch_home is None:
-            return None
-        return PATHS.launch_home / ".claude" / "skills"
-
-    def get_project_claude_skills_dir(self) -> Path | None:
-        """Get project-level `.claude/skills/` directory (experimental).
-
-        Convenience bridge for cross-tool skill sharing with Claude Code.
-        This is experimental and may be removed.
-
-        Returns:
-            Path to `{project_root}/.claude/skills/`, or `None` if not in a project.
-        """
-        if not self.project_root:
-            return None
-        return self.project_root / ".claude" / "skills"
-
-    @staticmethod
-    def get_built_in_skills_dir() -> Path:
-        """Get the directory containing built-in skills that ship with the app.
-
-        Returns:
-            Path to the `built_in_skills/` directory within the package.
-        """
-        return Path(__file__).parent / "built_in_skills"
-
-    def get_extra_skills_dirs(self) -> list[Path]:
-        """Get user-configured extra skill directories.
-
-        Set via `DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS` (colon-separated paths) or
-        `[skills].extra_allowed_dirs` in `~/.deepagents/config.toml`.
-
-        Returns:
-            List of extra skill directory paths, or empty list if not configured.
-        """
-        return self.extra_skills_dirs or []
+        return self.active.has_tavily
 
 
 DANGEROUS_SHELL_PATTERNS = (
@@ -3952,7 +3764,7 @@ def get_langsmith_project_name() -> str | None:
 
     Checks for the required API key and tracing environment variables.
     When both are present, resolves the project name with priority:
-    `settings.deepagents_langchain_project` (from
+    `credentials.deepagents_langchain_project` (from
     `DEEPAGENTS_CODE_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
     to match `DEEPAGENTS_CODE_LANGSMITH_PROJECT`), then `'deepagents-code'`.
@@ -3970,7 +3782,7 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     return (
-        _get_settings().deepagents_langchain_project
+        _get_credentials().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
         or LANGSMITH_PROJECT_DEFAULT
     )
@@ -5111,14 +4923,14 @@ def detect_provider(model_name: str) -> str | None:
         return "perplexity"
 
     if model_lower.startswith("claude"):
-        s = _get_settings()
-        if not s.has_anthropic and s.has_vertex_ai:
+        credentials = _get_credentials()
+        if not credentials.has_anthropic and credentials.has_vertex_ai:
             return "google_anthropic_vertex"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
-        s = _get_settings()
-        if s.has_vertex_ai and not s.has_google:
+        credentials = _get_credentials()
+        if credentials.has_vertex_ai and not credentials.has_google:
             return "google_vertexai"
         return "google_genai"
 
@@ -5427,11 +5239,11 @@ def _apply_google_anthropic_vertex_kwargs(
     """
     if provider != "google_anthropic_vertex":
         return
-    settings = _get_settings()
-    if settings.google_cloud_project:
-        kwargs.setdefault("project", settings.google_cloud_project)
-    if settings.google_cloud_location:
-        kwargs.setdefault("location", settings.google_cloud_location)
+    credentials = _get_credentials()
+    if credentials.google_cloud_project:
+        kwargs.setdefault("project", credentials.google_cloud_project)
+    if credentials.google_cloud_location:
+        kwargs.setdefault("location", credentials.google_cloud_location)
     if not kwargs.get("location"):
         from deepagents_code.model_config import ModelConfigError
 
@@ -5651,8 +5463,8 @@ def _create_model_via_init(
 class ModelResult:
     """Result of creating a chat model, bundling the model with its metadata.
 
-    This separates model creation from settings mutation so callers can decide
-    when to commit the metadata to global settings.
+    This separates model creation from runtime-state mutation so callers can
+    decide when to commit the metadata to process-wide state.
 
     Attributes:
         model: The instantiated chat model.
@@ -5714,13 +5526,13 @@ class ModelResult:
             msg = f"cli_max_retries must be >= 0, got {self.cli_max_retries}"
             raise ValueError(msg)
 
-    def apply_to_settings(self) -> None:
-        """Commit this result's metadata to global `settings`."""
-        s = _get_settings()
-        s.model_name = self.model_name
-        s.model_provider = self.provider
-        s.model_context_limit = self.context_limit
-        s.model_unsupported_modalities = self.unsupported_modalities
+    def apply_to_runtime_state(self) -> None:
+        """Commit this result's metadata to global `runtime_state`."""
+        state = _get_runtime_state()
+        state.model_name = self.model_name
+        state.model_provider = self.provider
+        state.model_context_limit = self.context_limit
+        state.model_unsupported_modalities = self.unsupported_modalities
 
 
 def _apply_profile_overrides(
@@ -6180,6 +5992,11 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
         )
 
 
+_console_instance: Console | None = None
+_credentials_instance: Credentials | None = None
+_runtime_state_instance: RuntimeState | None = None
+
+
 def _get_console() -> Console:
     """Return the lazily-initialized global `Console` instance.
 
@@ -6189,65 +6006,91 @@ def _get_console() -> Console:
     Returns:
         The global Rich `Console` singleton.
     """
-    cached = globals().get("console")
+    global _console_instance  # noqa: PLW0603  # lazy process singleton
+    cached = _console_instance
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("console")
+        cached = _console_instance
         if cached is not None:
             return cached
         from rich.console import Console
 
         inst = Console(highlight=False)
-        globals()["console"] = inst
+        _console_instance = inst
         return inst
 
 
-def _get_settings() -> Settings:
-    """Return the lazily-initialized global `Settings` instance.
+def _get_credentials() -> Credentials:
+    """Return the lazily initialized process-wide `Credentials` instance.
 
-    Ensures bootstrap has run before constructing settings. The result is cached
-    in `globals()["settings"]` so subsequent access — including
-    `from config import settings` in other modules — resolves instantly.
+    Bootstrap runs before credentials are read.
 
     Returns:
-        The global `Settings` singleton.
+        The global credentials singleton.
     """
-    cached = globals().get("settings")
+    global _credentials_instance  # noqa: PLW0603  # lazy process singleton
+    cached = _credentials_instance
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("settings")
+        cached = _credentials_instance
         if cached is not None:
             return cached
         _ensure_bootstrap()
         try:
-            inst = Settings.from_environment(start_path=_bootstrap_state.start_path)
+            inst = Credentials.from_environment(start_path=_bootstrap_state.start_path)
         except Exception:
             logger.exception(
-                "Failed to initialize settings from environment (start_path=%s)",
+                "Failed to initialize credentials from environment (start_path=%s)",
                 _bootstrap_state.start_path,
             )
             raise
-        globals()["settings"] = inst
+        _credentials_instance = inst
         return inst
 
 
-def __getattr__(name: str) -> Settings | Console:
-    """Lazy module attributes for `settings` and `console`.
+def _get_runtime_state() -> RuntimeState:
+    """Return the lazily initialized process-wide `RuntimeState` instance."""
+    global _runtime_state_instance  # noqa: PLW0603  # lazy process singleton
+    cached = _runtime_state_instance
+    if cached is not None:
+        return cached
+    with _singleton_lock:
+        cached = _runtime_state_instance
+        if cached is not None:
+            return cached
+        state = RuntimeState()
+        _runtime_state_instance = state
+        return state
 
-    Defers heavy initialization until first access. Subsequent accesses hit
-    the module-level attribute directly (no `__getattr__` overhead).
 
-    Returns:
-        The requested lazy singleton.
+class _LazyProxy:
+    """Defer singleton construction until an attribute is first used."""
 
-    Raises:
-        AttributeError: If *name* is not a lazily-provided attribute.
-    """
-    if name == "settings":
-        return _get_settings()
-    if name == "console":
-        return _get_console()
-    msg = f"module {__name__!r} has no attribute {name!r}"
-    raise AttributeError(msg)
+    __slots__ = ("_factory",)
+    _factory: Callable[[], object]
+
+    def __init__(self, factory: Callable[[], object]) -> None:
+        object.__setattr__(self, "_factory", factory)
+
+    def __getattr__(self, name: str) -> object:
+        """Forward reads to the initialized singleton.
+
+        Returns:
+            The requested attribute.
+        """
+        return getattr(self._factory(), name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Forward mutations to the initialized singleton."""
+        setattr(self._factory(), name, value)
+
+    def __delattr__(self, name: str) -> None:
+        """Forward patch cleanup to the initialized singleton."""
+        delattr(self._factory(), name)
+
+
+credentials = cast("Credentials", _LazyProxy(_get_credentials))
+runtime_state = cast("RuntimeState", _LazyProxy(_get_runtime_state))
+console = cast("Console", _LazyProxy(_get_console))

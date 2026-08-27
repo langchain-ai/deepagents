@@ -3,8 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from deepagents_code._paths import get_built_in_skills_dir
 from deepagents_code._version import __version__ as _cli_version
-from deepagents_code.config import Settings
 from deepagents_code.skills.load import list_skills
 
 
@@ -636,7 +636,7 @@ class TestListSkillsBuiltIn:
         Unlike other tests in this file, this uses the real package directory
         (not `tmp_path`) to ensure the built-in skill ships correctly.
         """
-        built_in_dir = Settings.get_built_in_skills_dir()
+        built_in_dir = get_built_in_skills_dir()
         skill_md = built_in_dir / "skill-creator" / "SKILL.md"
         assert skill_md.exists(), f"Expected {skill_md} to exist"
         instructions = skill_md.read_text()
@@ -661,7 +661,7 @@ class TestListSkillsBuiltIn:
 
     def test_real_remember_skill_ships(self) -> None:
         """Verify the actual built-in remember SKILL.md exists and loads."""
-        built_in_dir = Settings.get_built_in_skills_dir()
+        built_in_dir = get_built_in_skills_dir()
         skill_md = built_in_dir / "remember" / "SKILL.md"
         assert skill_md.exists(), f"Expected {skill_md} to exist"
         instructions = skill_md.read_text()
@@ -686,7 +686,7 @@ class TestListSkillsBuiltIn:
 
     def test_real_thread_inspector_skill_ships(self) -> None:
         """Verify the built-in thread inspector and its script load from the package."""
-        built_in_dir = Settings.get_built_in_skills_dir()
+        built_in_dir = get_built_in_skills_dir()
         skill_dir = built_in_dir / "deepagents-thread-inspector"
         skill_md = skill_dir / "SKILL.md"
         script = skill_dir / "scripts" / "inspect_sessions.py"

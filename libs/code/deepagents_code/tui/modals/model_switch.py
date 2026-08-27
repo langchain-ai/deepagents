@@ -91,7 +91,7 @@ class ModelSwitchWarningScreen(ModalScreen[bool]):
             f"{format_token_count(self._threshold)} warning threshold.\n\n"
             f"Switching from {self._current_model} to {self._target_model} keeps "
             "the conversation, but may discard prompt-cache savings and the new "
-            "model may have a different context limit. Run /compact first if you "
+            "model may have a different context limit. Run /offload first if you "
             "want to reduce the context."
         )
         glyphs = get_glyphs()

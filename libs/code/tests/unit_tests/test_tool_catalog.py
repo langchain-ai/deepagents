@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 
-from deepagents_code.config import Settings
+from deepagents_code.config import Credentials
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
     BUILT_IN_GROUP,
@@ -235,14 +235,14 @@ class TestCollectBuiltInTools:
 
     def test_web_search_present_with_tavily(self) -> None:
         with patch.object(
-            Settings, "has_tavily", new_callable=PropertyMock, return_value=True
+            Credentials, "has_tavily", new_callable=PropertyMock, return_value=True
         ):
             names = {tool.name for tool in collect_built_in_tools()}
         assert "web_search" in names
 
     def test_web_search_absent_without_tavily(self) -> None:
         with patch.object(
-            Settings, "has_tavily", new_callable=PropertyMock, return_value=False
+            Credentials, "has_tavily", new_callable=PropertyMock, return_value=False
         ):
             names = {tool.name for tool in collect_built_in_tools()}
         assert "web_search" not in names

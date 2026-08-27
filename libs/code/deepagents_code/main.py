@@ -1162,11 +1162,10 @@ def _resolve_interpreter_enabled(
     through would turn the redundant-but-harmless `enable_interpreter = true`
     into a launch failure for every remote-sandbox run.
 
-    Only the managed and CLI tiers are answered from `resolved`. When neither
-    decides, the value comes from `settings.enable_interpreter`, which resolves
-    the same manifest option through the same chain; the resolver read above
-    still runs for its diagnostics. `test_local_mode_uses_config_default` pins
-    the `settings` source, so the two are not interchangeable in tests.
+    Managed and CLI decisions are inspected separately so conflicts with a
+    remote sandbox can name the deciding tier. When neither decides, the same
+    resolved value already contains the environment, user-file, and default
+    tiers.
 
     Args:
         args: Parsed CLI arguments.
@@ -1214,9 +1213,7 @@ def _resolve_interpreter_enabled(
         return enabled
     if remote_sandbox:
         return False
-    from deepagents_code.config import settings
-
-    return settings.enable_interpreter
+    return bool(resolved.value)
 
 
 def _exit_interpreter_conflicts_with_sandbox(
@@ -1465,14 +1462,23 @@ def _warn_if_interpreter_disabled_by_sandbox(args: argparse.Namespace) -> None:
     Keyed on the raw `args.interpreter` tri-state so an explicit
     `--no-interpreter` opt-out stays silent (the predicate only fires for the
     unset default).
+
+    Raises:
+        RuntimeError: If the interpreter option is absent from the manifest.
     """
     from deepagents_code._server_config import _interpreter_suppressed_by_sandbox
-    from deepagents_code.config import settings
+    from deepagents_code.config_manifest import get_option
+
+    option = get_option("interpreter.enable_interpreter")
+    if option is None:
+        msg = "interpreter.enable_interpreter is missing from the config manifest"
+        raise RuntimeError(msg)
+    local_default = bool(_resolver_for_args(args).get(option).value)
 
     if not _interpreter_suppressed_by_sandbox(
         enable_interpreter=args.interpreter,
         sandbox_type=args.sandbox,
-        local_default=settings.enable_interpreter,
+        local_default=local_default,
     ):
         return
     from rich.console import Console as _Console
@@ -1819,9 +1825,9 @@ def check_optional_tools(*, config_path: Path | None = None) -> list[str]:
     ):
         missing.append("ripgrep")
 
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
 
-    if not settings.has_tavily and not is_warning_suppressed("tavily", config_path):
+    if not credentials.has_tavily and not is_warning_suppressed("tavily", config_path):
         missing.append("tavily")
 
     return missing
@@ -3109,8 +3115,7 @@ async def run_textual_cli_async(
             forwarded so the app can tell an explicit opt-out from a
             sandbox-suppressed default when surfacing the disabled-by-sandbox
             advisory.
-        interpreter_ptc: Override for `settings.interpreter_ptc` (PTC allowlist
-            for `js_eval`).
+        interpreter_ptc: Invocation-scoped PTC allowlist override for `js_eval`.
         interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
             `interpreter_ptc="all"` outside of `auto_approve`.
         allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
@@ -3138,7 +3143,7 @@ async def run_textual_cli_async(
         _get_default_model_spec,
         detect_provider,
         resolve_auto_classifier_model_with_problem,
-        settings,
+        runtime_state,
     )
     from deepagents_code.model_config import (
         ModelConfigError,
@@ -3174,14 +3179,14 @@ async def run_textual_cli_async(
     if resolved_spec:
         parsed = ModelSpec.try_parse(resolved_spec)
         if parsed:
-            settings.model_provider = parsed.provider
-            settings.model_name = parsed.model
+            runtime_state.model_provider = parsed.provider
+            runtime_state.model_name = parsed.model
         else:
-            settings.model_name = resolved_spec
-            settings.model_provider = detect_provider(resolved_spec) or ""
+            runtime_state.model_name = resolved_spec
+            runtime_state.model_provider = detect_provider(resolved_spec) or ""
     else:
-        settings.model_provider = ""
-        settings.model_name = ""
+        runtime_state.model_provider = ""
+        runtime_state.model_name = ""
 
     # Distinguish "flag absent" from "flag explicitly blank": `--auto-classifier-
     # model ""` is the "inherit the main agent model" instruction and overrides
@@ -3356,8 +3361,8 @@ async def _run_acp_cli_async(
     from deepagents_code.agent import create_cli_agent, load_async_subagents
     from deepagents_code.config import (
         create_model,
+        credentials,
         is_memory_auto_save_enabled,
-        settings,
     )
     from deepagents_code.model_config import (
         ModelConfigError,
@@ -3381,7 +3386,7 @@ async def _run_acp_cli_async(
         sys.stderr.write(f"Error: {exc}\n")
         sys.stderr.flush()
         return 1
-    model_result.apply_to_settings()
+    model_result.apply_to_runtime_state()
 
     try:
         project_context = ProjectContext.from_user_cwd(Path.cwd())
@@ -3417,7 +3422,7 @@ async def _run_acp_cli_async(
     ]
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
+    if credentials.has_tavily:
         tools.append(web_search)
 
     mcp_session_manager = None
@@ -3477,7 +3482,7 @@ async def _run_acp_cli_async(
                         cli_max_retries=cli_max_retries,
                     )
                 )
-                session_model.apply_to_settings()
+                session_model.apply_to_runtime_state()
                 agent_graph, _backend = create_cli_agent(
                     model=session_model.model,
                     assistant_id=assistant_id,
@@ -5065,14 +5070,15 @@ def cli_main() -> None:
                 exc_info=True,
             )
 
-        # Import console/settings AFTER arg parsing and after the bare-help
+        # Initialize credentials AFTER arg parsing and after the bare-help
         # fast path so neither argparse's `--help`/`-h` exit nor
-        # `deepagents <group>` pays the settings bootstrap cost. `settings`
-        # must be named here even though this scope does not read it: the
-        # import is what triggers `_ensure_bootstrap()` (dotenv loading), and
+        # `deepagents <group>` pays the credentials bootstrap cost. The explicit
+        # accessor triggers `_ensure_bootstrap()` (dotenv loading), and
         # commands dispatched below — notably `auth status` — resolve
         # credentials from the environment expecting `.env` to be loaded.
-        from deepagents_code.config import console, settings  # noqa: F401
+        from deepagents_code.config import _get_credentials, console
+
+        _get_credentials()
 
         if command is None:
             # The health gate already ran above, for every command, so the

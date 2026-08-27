@@ -3,11 +3,11 @@
 This module is the single source of truth for the configuration *surface*: the
 set of options, their types, typed defaults, env-var names, and `config.toml`
 locations. The typed defaults for config-file-only options (notably the
-`[interpreter]` section) live here as module constants, and `Settings` derives
-its dataclass defaults from them — so a default is defined in exactly one place.
+`[interpreter]` section) live here as module constants, so a default is defined
+in exactly one place.
 
 Resolution runs through the shared `ConfigResolver` (see
-`configuration.resolver`): the runtime (`Settings.from_environment`) reads the
+`configuration.resolver`): the runtime (`Credentials.from_environment`) reads the
 shared process resolver and the `config` CLI command builds one from the
 generation it snapshots, so introspection can never drift from what the app
 actually reads. Resolution precedence mirrors the loaders: managed TOML beats
@@ -451,12 +451,6 @@ class ConfigOption[T]:
     logging heuristic when written to stdout.
     """
 
-    settings_field: str | None = None
-    """Name of the `Settings` attribute this option backs, or `None`.
-
-    `None` means the option is read elsewhere inline or is descriptive.
-    """
-
     dependency_module: str | None = None
     """Import module required to use the option, or `None`.
 
@@ -613,7 +607,7 @@ class ConfigOption[T]:
         The manifest is a hand-edited literal table with `default: Any`, so a
         mistyped default (an `INT` option defaulting to a `str`) or a mutable
         one would otherwise slip through to runtime — a wrong-typed default
-        feeds `Settings` unchecked, and a mutable default is shared by reference
+        feeds consumers unchecked, and a mutable default is shared by reference
         through the `get_config_options` `lru_cache` and returned verbatim by
         the resolver's default provider. Catching it here fails the import (and
         the test suite).
@@ -1958,17 +1952,6 @@ def is_provider_package_installed(provider: str) -> bool:
         return False
 
 
-# Credentials that back a `Settings` field, keyed by canonical env var.
-_CREDENTIAL_SETTINGS_FIELD: dict[str, str] = {
-    "OPENAI_API_KEY": "openai_api_key",
-    "ANTHROPIC_API_KEY": "anthropic_api_key",
-    "GOOGLE_API_KEY": "google_api_key",
-    "NVIDIA_API_KEY": "nvidia_api_key",
-    "TAVILY_API_KEY": "tavily_api_key",
-    "GOOGLE_CLOUD_PROJECT": "google_cloud_project",
-}
-
-
 def _is_secret_env(name: str) -> bool:
     """Return whether a credential env var name carries secret material."""
     upper = name.upper()
@@ -2007,7 +1990,6 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
                 env_var=env_var,
                 redacted=redacted,
                 provider=name,
-                settings_field=_CREDENTIAL_SETTINGS_FIELD.get(env_var),
                 dependency_module=dependency[0] if dependency else None,
                 install_extra=dependency[1] if dependency else None,
             )
@@ -2026,7 +2008,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         summary="Google Cloud region for Anthropic models on Vertex AI.",
         kind=OptionKind.NON_EMPTY_STR,
         env_var="GOOGLE_CLOUD_LOCATION",
-        settings_field="google_cloud_location",
     ),
     # --- Display / UI ---------------------------------------------------
     ConfigOption(
@@ -2397,7 +2378,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         default=LANGSMITH_PROJECT_DEFAULT,
         env_var=_env_vars.LANGSMITH_PROJECT,
         fallback_env_vars=("LANGSMITH_PROJECT",),
-        settings_field="deepagents_langchain_project",
     ),
     ConfigOption(
         key="tracing.langsmith_redact",
@@ -2439,7 +2419,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("shell", "allow_list"),
         cli_flag="--shell-allow-list",
         cli=CliSpec("--shell-allow-list"),
-        settings_field="shell_allow_list",
     ),
     ConfigOption(
         key="skills.extra_allowed_dirs",
@@ -2451,7 +2430,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.SKILLS_DIRS_DELEGATE,
         env_var=_env_vars.EXTRA_SKILLS_DIRS,
         toml_keys=("skills", "extra_allowed_dirs"),
-        settings_field="extra_skills_dirs",
     ),
     ConfigOption(
         key="models.ollama_discovery",
@@ -2543,7 +2521,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("interpreter", "enable_interpreter"),
         cli_flag="--interpreter",
         cli=CliSpec("--interpreter"),
-        settings_field="enable_interpreter",
     ),
     ConfigOption(
         key="interpreter.timeout_seconds",
@@ -2552,7 +2529,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.FLOAT,
         default=INTERPRETER_TIMEOUT_SECONDS_DEFAULT,
         toml_keys=("interpreter", "timeout_seconds"),
-        settings_field="interpreter_timeout_seconds",
     ),
     ConfigOption(
         key="interpreter.memory_limit_mb",
@@ -2561,7 +2537,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=INTERPRETER_MEMORY_LIMIT_MB_DEFAULT,
         toml_keys=("interpreter", "memory_limit_mb"),
-        settings_field="interpreter_memory_limit_mb",
     ),
     ConfigOption(
         key="interpreter.max_ptc_calls",
@@ -2570,7 +2545,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=INTERPRETER_MAX_PTC_CALLS_DEFAULT,
         toml_keys=("interpreter", "max_ptc_calls"),
-        settings_field="interpreter_max_ptc_calls",
     ),
     ConfigOption(
         key="interpreter.max_result_chars",
@@ -2579,7 +2553,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=INTERPRETER_MAX_RESULT_CHARS_DEFAULT,
         toml_keys=("interpreter", "max_result_chars"),
-        settings_field="interpreter_max_result_chars",
     ),
     ConfigOption(
         key="interpreter.ptc",
@@ -2590,7 +2563,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("interpreter", "ptc"),
         cli_flag="--interpreter-tools",
         cli=CliSpec("--interpreter-tools"),
-        settings_field="interpreter_ptc",
     ),
     ConfigOption(
         key="interpreter.ptc_acknowledge_unsafe",
@@ -2599,7 +2571,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.BOOL,
         default=INTERPRETER_PTC_ACKNOWLEDGE_UNSAFE_DEFAULT,
         toml_keys=("interpreter", "ptc_acknowledge_unsafe"),
-        settings_field="interpreter_ptc_acknowledge_unsafe",
     ),
     # --- Threads (config.toml-only; structured column table excepted) ---
     ConfigOption(

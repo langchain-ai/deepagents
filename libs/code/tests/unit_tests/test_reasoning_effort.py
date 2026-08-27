@@ -17,7 +17,7 @@ from textual.widgets import OptionList
 from deepagents_code import model_config, reasoning_effort
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.command_registry import COMMANDS
-from deepagents_code.config import settings
+from deepagents_code.config import runtime_state
 from deepagents_code.model_config import ModelProfileEntry
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
@@ -33,17 +33,17 @@ from deepagents_code.tui.widgets.messages import ErrorMessage
 
 
 @pytest.fixture(autouse=True)
-def _restore_settings(
+def _restore_runtime_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
-    original_name = settings.model_name
-    original_provider = settings.model_provider
+    original_name = runtime_state.model_name
+    original_provider = runtime_state.model_provider
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
     model_config.clear_caches()
     yield
-    settings.model_name = original_name
-    settings.model_provider = original_provider
+    runtime_state.model_name = original_name
+    runtime_state.model_provider = original_provider
     model_config.clear_caches()
 
 
@@ -646,8 +646,8 @@ def test_effort_argument_hint_is_profile_agnostic() -> None:
 async def test_effort_command_sets_current_model_params() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort high")
 
@@ -662,8 +662,8 @@ async def test_effort_command_replaces_native_effort_and_preserves_summary() -> 
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app._model_params_override = {"reasoning": {"effort": "low", "summary": "auto"}}
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort high")
 
@@ -676,8 +676,8 @@ async def test_effort_command_replaces_native_effort_and_preserves_summary() -> 
 async def test_effort_command_matches_levels_case_insensitively() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort HIGH")
 
@@ -694,8 +694,8 @@ async def test_profile_override_controls_selector_and_validation() -> None:
     app = DeepAgentsApp(profile_override=override)
     app._mount_message = AsyncMock()  # ty: ignore
     app.push_screen = Mock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort")
 
@@ -713,8 +713,8 @@ def test_sync_status_model_refreshes_profile_argument_hint() -> None:
     """Switching models re-derives the `/effort` hint from the live profile."""
     app = DeepAgentsApp()
     app._chat_input = Mock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     # Real profile data drives the hint: gpt-5.5 exposes effort levels, while
     # plain-chat-model does not, so switching to it must clear the hint.
@@ -728,7 +728,7 @@ def test_sync_status_model_refreshes_profile_argument_hint() -> None:
         }
     ):
         app._sync_status_model()
-        settings.model_name = "plain-chat-model"
+        runtime_state.model_name = "plain-chat-model"
         app._sync_status_model()
 
     assert app._chat_input.set_argument_hint_override.call_args_list == [  # ty: ignore[unresolved-attribute]
@@ -743,8 +743,8 @@ def test_sync_status_model_hint_failure_does_not_break_status_bar() -> None:
     app._chat_input = Mock()  # ty: ignore
     app._chat_input.set_argument_hint_override.side_effect = RuntimeError("boom")  # ty: ignore[unresolved-attribute]
     app._status_bar = Mock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     # Must not raise even though the hint refresh blows up.
     app._sync_status_model()
@@ -776,8 +776,8 @@ def test_profile_override_controls_status_default() -> None:
         }
     )
     app._status_bar = Mock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     app._sync_status_model()
 
@@ -796,8 +796,8 @@ async def test_empty_profile_override_levels_disable_effort() -> None:
         }
     )
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort high")
 
@@ -908,8 +908,8 @@ async def test_effort_command_without_args_opens_selector() -> None:
     app._mount_message = AsyncMock()  # ty: ignore
     app.push_screen = Mock()  # ty: ignore
     app._model_params_override = {"reasoning_effort": "medium"}
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort")
 
@@ -927,8 +927,8 @@ async def test_gemini_36_selector_offers_minimal_with_medium_default() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app.push_screen = Mock()  # ty: ignore
-    settings.model_provider = "google_genai"
-    settings.model_name = "gemini-3.6-flash"
+    runtime_state.model_provider = "google_genai"
+    runtime_state.model_name = "gemini-3.6-flash"
 
     await app._handle_effort_command("/effort")
 
@@ -945,8 +945,8 @@ async def test_effort_command_clear_removes_only_effort_params() -> None:
         "reasoning_effort": "high",
         "reasoning": {"effort": "low", "summary": "auto"},
     }
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
     model_config.save_effort_for_model("openai:gpt-5.5", "high")
 
     await app._handle_effort_command("/effort clear")
@@ -963,8 +963,8 @@ async def test_effort_command_save_failure_reports_error(
 ) -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
     monkeypatch.setattr(
         model_config, "save_effort_for_model", lambda *_args, **_kwargs: False
     )
@@ -988,8 +988,8 @@ async def test_effort_command_clear_failure_reports_error(
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app._model_params_override = {"reasoning_effort": "high"}
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
     monkeypatch.setattr(
         model_config, "clear_effort_for_model", lambda *_args, **_kwargs: False
     )
@@ -1010,8 +1010,8 @@ async def test_effort_command_updates_status_bar_effort() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app._status_bar = Mock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort xhigh")
 
@@ -1028,8 +1028,8 @@ async def test_effort_command_clear_refreshes_status_bar_to_default() -> None:
     app._mount_message = AsyncMock()  # ty: ignore
     app._status_bar = Mock()  # ty: ignore
     app._model_params_override = {"reasoning_effort": "high"}
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort clear")
 
@@ -1046,8 +1046,8 @@ async def test_effort_command_clear_refreshes_status_bar_to_default() -> None:
 async def test_effort_command_rejects_unsupported_effort() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "anthropic"
-    settings.model_name = "claude-opus-4-5"
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-opus-4-5"
 
     # Opus 4.5 supports up to `high`; `xhigh` postdates it (Opus 4.7+ only).
     await app._handle_effort_command("/effort xhigh")
@@ -1064,8 +1064,8 @@ async def test_effort_command_clear_aliases(token: str) -> None:
         "temperature": 0.2,
         "reasoning_effort": "high",
     }
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command(f"/effort {token}")
 
@@ -1076,8 +1076,8 @@ async def test_effort_selector_reports_no_model_configured() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app.push_screen = Mock()  # ty: ignore
-    settings.model_provider = None
-    settings.model_name = None
+    runtime_state.model_provider = None
+    runtime_state.model_name = None
 
     await app._handle_effort_command("/effort")
 
@@ -1088,8 +1088,8 @@ async def test_effort_selector_reports_no_model_configured() -> None:
 async def test_effort_command_reports_not_configurable_model() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "anthropic"
-    settings.model_name = "claude-sonnet-4-5"
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-4-5"
 
     await app._handle_effort_command("/effort high")
 
@@ -1101,8 +1101,8 @@ async def test_effort_clear_works_when_profile_is_not_configurable() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app._model_params_override = {"output_config": {"effort": "low", "format": "json"}}
-    settings.model_provider = "anthropic"
-    settings.model_name = "claude-sonnet-4-5"
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-4-5"
 
     await app._handle_effort_command("/effort clear")
 
@@ -1118,8 +1118,8 @@ async def test_effort_selector_not_configurable_model_skips_screen() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
     app.push_screen = Mock()  # ty: ignore
-    settings.model_provider = "anthropic"
-    settings.model_name = "claude-sonnet-4-5"
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-4-5"
 
     await app._handle_effort_command("/effort")
 
@@ -1137,8 +1137,8 @@ async def test_set_effort_override_guards_non_configurable_model() -> None:
     """
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()  # ty: ignore
-    settings.model_provider = "anthropic"
-    settings.model_name = "claude-sonnet-4-5"
+    runtime_state.model_provider = "anthropic"
+    runtime_state.model_name = "claude-sonnet-4-5"
 
     await app._set_effort_override("high")
 
@@ -1158,8 +1158,8 @@ async def test_effort_selector_result_applies_and_refocuses() -> None:
     app.run_worker = Mock(  # ty: ignore
         side_effect=lambda coro, **kwargs: scheduled.append((coro, kwargs))
     )
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort")
     handle_result = app.push_screen.call_args.args[1]  # ty: ignore[unresolved-attribute]
@@ -1183,8 +1183,8 @@ async def test_effort_selector_cancel_refocuses_without_applying() -> None:
     app.push_screen = Mock()  # ty: ignore
     app._chat_input = Mock()  # ty: ignore
     app.run_worker = Mock()  # ty: ignore
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort")
     handle_result = app.push_screen.call_args.args[1]  # ty: ignore[unresolved-attribute]
@@ -1215,8 +1215,8 @@ async def test_effort_selector_apply_failure_reports_error(
     app.run_worker = Mock(  # ty: ignore
         side_effect=lambda coro, **_kwargs: scheduled.append(coro)
     )
-    settings.model_provider = "openai"
-    settings.model_name = "gpt-5.5"
+    runtime_state.model_provider = "openai"
+    runtime_state.model_name = "gpt-5.5"
 
     await app._handle_effort_command("/effort")
     handle_result = app.push_screen.call_args.args[1]  # ty: ignore[unresolved-attribute]

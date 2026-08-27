@@ -190,16 +190,26 @@ def _resolve_enable_interpreter(
     Returns:
         The explicit `enable_interpreter` value when not `None`; `False` for
             remote-sandbox defaults; otherwise the configured local default
-            (`settings.enable_interpreter`).
+            from `interpreter.enable_interpreter`.
+
+    Raises:
+        RuntimeError: If the interpreter option is absent from the manifest.
     """
     if enable_interpreter is not None:
         return enable_interpreter
     if sandbox_type and sandbox_type != "none":
         return False
 
-    from deepagents_code.config import settings
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
-    return settings.enable_interpreter
+    option = get_option("interpreter.enable_interpreter")
+    if option is None:
+        msg = "interpreter.enable_interpreter is missing from the config manifest"
+        raise RuntimeError(msg)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def _interpreter_suppressed_by_sandbox(
@@ -223,7 +233,7 @@ def _interpreter_suppressed_by_sandbox(
             `True`, `--no-interpreter` → `False`, unset → `None`).
         sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
             or `"none"` is treated as local execution.
-        local_default: The local-mode default (`settings.enable_interpreter`);
+        local_default: The resolver-backed local-mode default;
             gating on it keeps the advisory quiet for users who disabled the
             interpreter in config.
 
@@ -301,17 +311,16 @@ class ServerConfig:
     caller option via `_resolve_enable_interpreter` before constructing the
     config, so the `bool | None` "defer to default" sentinel never reaches this
     field. The `False` default here is only the bare-constructor/`from_env`
-    fallback; the user-facing default (on in local mode) lives in
-    `settings.enable_interpreter`.
+    fallback; the user-facing default (on in local mode) is resolver-backed.
 
     Local-mode only; the server graph raises if a sandbox is configured and
     this flag is `True`.
     """
 
     interpreter_ptc: str | list[str] | None = None
-    """Override for `settings.interpreter_ptc`.
+    """Invocation-scoped override for `interpreter.ptc`.
 
-    `None` means "fall through to whatever `settings.interpreter_ptc` resolves
+    `None` means "fall through to whatever `interpreter.ptc` resolves
     to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
     a list is an explicit allowlist of tool names that may also include the
     `"safe"` preset (expanded at agent-build time); `"all"` is rejected inside
@@ -319,7 +328,7 @@ class ServerConfig:
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False
-    """Mirror of `settings.interpreter_ptc_acknowledge_unsafe` — required when
+    """Override for `interpreter.ptc_acknowledge_unsafe` — required when
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
@@ -635,9 +644,9 @@ class ServerConfig:
             enable_ask_user: Enable ask_user tool.
             enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
                 agent. `None` uses the sandbox-aware default.
-            interpreter_ptc: Override for `settings.interpreter_ptc`.
-            interpreter_ptc_acknowledge_unsafe: Mirror of
-                `settings.interpreter_ptc_acknowledge_unsafe`.
+            interpreter_ptc: Invocation-scoped PTC allowlist override.
+            interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+                an invocation-scoped `interpreter_ptc="all"`.
             allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools`
                 param to forward to the server subprocess. `None` leaves the
                 SDK default (all tools).

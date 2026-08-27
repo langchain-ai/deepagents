@@ -87,6 +87,7 @@ _TRANSIENT_SDK_EXC_NAMES = frozenset(
         ("anthropic", "APIConnectionError"),
         ("anthropic", "APIConnectionTimeoutError"),
         ("anthropic", "APITimeoutError"),
+        ("botocore", "ConnectionClosedError"),
         ("botocore", "ConnectTimeoutError"),
         ("botocore", "EndpointConnectionError"),
         ("botocore", "ReadTimeoutError"),

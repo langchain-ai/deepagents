@@ -287,6 +287,10 @@ def test_predicate_retryable(exc: Exception) -> None:
 @pytest.mark.parametrize(
     "exc",
     [
+        pytest.param(
+            _typed_error("botocore.exceptions", "ConnectionClosedError"),
+            id="botocore-connection-closed",
+        ),
         pytest.param(_typed_error("httpcore", "ReadError"), id="httpcore-read"),
         pytest.param(
             _typed_error("httpcore._exceptions", "RemoteProtocolError"),

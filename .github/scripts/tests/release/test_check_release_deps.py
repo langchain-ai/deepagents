@@ -18,7 +18,6 @@ from check_release_deps import (
     _compare_with_published,
     _failure_markdown,
     _follow_up_markdown,
-    _prepend_step_summary,
     _ranges_may_overlap,
     _relevant_log,
     _toml_value,
@@ -368,36 +367,6 @@ def test_write_output_noop_without_env(monkeypatch) -> None:
 
     # Must not raise when run outside GitHub Actions (e.g. local debugging).
     _write_output("failed", "true")
-
-
-def test_prepend_step_summary_puts_new_block_first(monkeypatch, tmp_path) -> None:
-    summary = tmp_path / "github_summary"
-    summary.write_text("## Raised 2 minimum(s):\n\n| x | y |\n", encoding="utf-8")
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-
-    _prepend_step_summary("**PR:** https://example.com/pull/1\n")
-
-    assert summary.read_text(encoding="utf-8") == (
-        "**PR:** https://example.com/pull/1\n"
-        "\n"
-        "## Raised 2 minimum(s):\n\n| x | y |\n"
-    )
-
-
-def test_prepend_step_summary_creates_file_when_missing(monkeypatch, tmp_path) -> None:
-    summary = tmp_path / "github_summary"
-    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
-
-    _prepend_step_summary("**PR:** https://example.com/pull/1\n")
-
-    assert summary.read_text(encoding="utf-8") == "**PR:** https://example.com/pull/1\n\n"
-
-
-def test_prepend_step_summary_noop_without_env(monkeypatch) -> None:
-    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
-
-    # Must not raise when run outside GitHub Actions (e.g. local debugging).
-    _prepend_step_summary("**PR:** https://example.com/pull/1\n")
 
 
 def _failure(

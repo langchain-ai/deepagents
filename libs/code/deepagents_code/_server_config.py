@@ -70,6 +70,16 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
         raise ValueError(msg) from exc
 
 
+def _read_env_str_list(suffix: str) -> tuple[str, ...]:
+    raw = _read_env_json(suffix)
+    if raw is None:
+        return ()
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        return tuple(raw)
+    msg = f"Invalid {SERVER_ENV_PREFIX}{suffix}: expected a JSON string list"
+    raise ValueError(msg)
+
+
 def _read_env_allow_fs_tools() -> list[FsToolName] | None:
     """Read and shape-validate the `ALLOW_FS_TOOLS` filesystem allowlist.
 
@@ -369,10 +379,9 @@ class ServerConfig:
     recursion_limit: int | None = None
     """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
 
-    `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
-    `[runtime].recursion_limit` / the default at agent-build time"
-    (`resolve_recursion_limit`). An explicit value from `--recursion-limit` wins
-    over those layers. Must be a positive integer when set.
+    `None` resolves from runtime configuration. An explicit value from
+    `--recursion-limit` wins over the env var and `config.toml`, but managed
+    config outranks the flag. Must be a positive integer when set.
     """
 
     sandbox_type: str | None = None
@@ -406,6 +415,12 @@ class ServerConfig:
     trust_project_mcp: bool | None = None
     """Tri-state trust flag for project-scoped MCP servers: `True`/`False`/`None`
     (prompt user)."""
+
+    trust_project_extensions: bool = False
+    """Whether the project's Python extensions may execute for this run."""
+
+    extension_paths: tuple[str, ...] = ()
+    """Absolute one-run extension files or directories from repeatable CLI flags."""
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
@@ -535,6 +550,10 @@ class ServerConfig:
                 if self.trust_project_mcp is not None
                 else None
             ),
+            "TRUST_PROJECT_EXTENSIONS": str(self.trust_project_extensions).lower(),
+            "EXTENSION_PATHS": (
+                json.dumps(self.extension_paths) if self.extension_paths else None
+            ),
         }
 
     @classmethod
@@ -587,6 +606,8 @@ class ServerConfig:
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
+            trust_project_extensions=_read_env_bool("TRUST_PROJECT_EXTENSIONS"),
+            extension_paths=_read_env_str_list("EXTENSION_PATHS"),
         )
 
     # ------------------------------------------------------------------
@@ -625,6 +646,8 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        trust_project_extensions: bool = False,
+        extension_paths: tuple[str, ...] = (),
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -667,11 +690,13 @@ class ServerConfig:
             auto_classifier_model: Auto classifier model spec; `None` resolves from
                 env / `config.toml` and then reuses the main model.
             recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-                from env / `config.toml` / default at agent-build time.
+                from runtime configuration at agent-build time.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
             interactive: Whether the agent is interactive.
+            trust_project_extensions: Allow project extension execution.
+            extension_paths: Explicit one-run extension files or directories.
 
         Returns:
             A fully resolved `ServerConfig`.
@@ -721,6 +746,12 @@ class ServerConfig:
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=tuple(
+                path
+                for raw in extension_paths
+                if (path := _normalize_path(raw, project_context, "extension"))
+            ),
         )
 
 

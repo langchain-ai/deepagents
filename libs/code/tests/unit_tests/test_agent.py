@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
+from deepagents_code import _env_vars
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._paths import PATHS, get_built_in_skills_dir
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
@@ -1978,6 +1979,130 @@ class TestCreateCliAgentInteractiveForwarding:
         )
         assert call_order == ["register_profile", "create_agent"]
 
+    def test_unconfigured_recursion_limit_binds_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With no configured limit, the LangGraph server budget is left alone.
+
+        Both the env var and `config.toml` are neutralized: `create_cli_agent`
+        consults the real resolver, so a developer with an exported
+        `DEEPAGENTS_CODE_RECURSION_LIMIT` would otherwise redden this test.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+        model = _make_fake_chat_model()
+        mock_agent = Mock()
+
+        try:
+            with patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ):
+                agent, _ = create_cli_agent(
+                    model=model,
+                    assistant_id="test",
+                    enable_memory=False,
+                    enable_skills=False,
+                    enable_shell=False,
+                    system_prompt="test prompt",
+                    cwd=tmp_path,
+                )
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        mock_agent.copy.assert_not_called()
+        assert agent is mock_agent
+
+    def test_inherited_langgraph_recursion_limit_is_applied(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The upstream default replaces the SDK's bound fallback limit."""
+        from deepagents_code import model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
+        mock_agent = Mock(
+            config={
+                "recursion_limit": 9_999,
+                "metadata": {"ls_integration": "deepagents"},
+            }
+        )
+        configured = Mock()
+        mock_agent.copy.return_value = configured
+        try:
+            with patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ):
+                create_cli_agent(
+                    model=_make_fake_chat_model(),
+                    assistant_id="test",
+                    enable_memory=False,
+                    enable_skills=False,
+                    enable_shell=False,
+                    system_prompt="test prompt",
+                    cwd=tmp_path,
+                )
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        assert mock_agent.copy.call_args.args == (
+            {
+                "config": {
+                    "recursion_limit": 12_000,
+                    "metadata": {"ls_integration": "deepagents"},
+                }
+            },
+        )
+
+    def test_explicit_recursion_limit_is_applied(self, tmp_path: Path) -> None:
+        """An explicit recursion limit is bound onto the returned agent.
+
+        `copy` returns a distinct object so the assertion fails if the production
+        code drops the `agent = ` rebind and discards the binding.
+        """
+        model = _make_fake_chat_model()
+        mock_agent = Mock(config={"recursion_limit": 9_999})
+        configured = Mock()
+        mock_agent.copy.return_value = configured
+
+        with patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent):
+            agent, _ = create_cli_agent(
+                model=model,
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+                system_prompt="test prompt",
+                recursion_limit=3000,
+                cwd=tmp_path,
+            )
+
+        assert mock_agent.copy.call_args.args == (
+            {"config": {"recursion_limit": 3000}},
+        )
+        assert agent is configured
+
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""
         agent_dir = tmp_path / "agent"
@@ -2955,6 +3080,25 @@ class TestCreateCliAgentProjectContext:
 
         assert mock_shell.call_args.kwargs["root_dir"] == user_cwd
         assert "LANGSMITH_PROJECT" not in mock_shell.call_args.kwargs["env"]
+
+    @pytest.mark.parametrize("user_value", [None, "1"])
+    def test_local_shell_disables_git_terminal_prompts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        user_value: str | None,
+    ) -> None:
+        """Git prompts are disabled even when the caller requests them."""
+        if user_value is None:
+            monkeypatch.delenv("GIT_TERMINAL_PROMPT", raising=False)
+        else:
+            monkeypatch.setenv("GIT_TERMINAL_PROMPT", user_value)
+
+        mock_shell, _ = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project=None
+        )
+
+        assert mock_shell.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
 
     @pytest.mark.parametrize("user_project", ["user-project", ""])
     def test_project_context_restores_user_shell_langchain_project(

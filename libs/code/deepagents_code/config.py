@@ -44,10 +44,11 @@ from deepagents_code._paths import (
     PATHS,
 )
 from deepagents_code._version import __version__
-from deepagents_code.config_manifest import RECURSION_LIMIT_DEFAULT
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
+
+    from langchain_core.runnables import RunnableConfig
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import (
@@ -294,12 +295,17 @@ def _report_denied_env_key(key: str, dotenv_path: Path, *, is_project: bool) -> 
     logger.warning("%s", message)
 
 
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+"""Upstream recursion default that only trusted user input may override."""
+
+
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        _LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV,
         "TERM_PROGRAM",
     }
 )
@@ -323,6 +329,16 @@ a repo-supplied downgrade of a user-level security decision, not a project build
 setting. Choosing a classifier stays available through the trusted surfaces:
 shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
 `~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
+
+`LANGGRAPH_DEFAULT_RECURSION_LIMIT` controls the graph step budget whenever no
+Deep Agents override is configured. A project value would bypass the bounded
+`runtime.recursion_limit` resolver, so only the shell or global `.env` may set
+the upstream default.
+
+Membership is checked against the uppercased key for the same reason as
+`_is_dotenv_denied_env_key`: on Windows, `os.environ` normalizes assigned keys
+to uppercase, so a lowercase `langgraph_default_recursion_limit` would slip
+past an exact-match check yet become the active variable the local API reads.
 
 `AUTO_CLASSIFIER_TIMEOUT` tunes the same control's review deadline, so it is
 denied for the same reason: a cloned repo could otherwise stall every gated
@@ -424,10 +440,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             if key in env:
                 continue
-            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+            if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
                 # user-level trust decision — MCP trust lists or the Auto
-                # classifier model/deadline (the global `.env`/shell can).
+                # classifier model/deadline (the global `.env`/shell can). The
+                # key is uppercased so a case variant cannot slip past on
+                # Windows, where `os.environ` assignment normalizes it back to
+                # the active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -543,11 +562,14 @@ def _load_dotenv(
                 continue
             if key in os.environ:
                 continue
-            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+            if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust
                 # decision — MCP trust lists or the Auto classifier model and
                 # deadline that authorize this repo's own tool calls; the
-                # global `.env` and shell may (is_project=False).
+                # global `.env` and shell may (is_project=False). The key is
+                # uppercased so a case variant cannot slip past on Windows,
+                # where `os.environ` assignment normalizes it back to the
+                # active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -1912,20 +1934,6 @@ Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
 """
 
-config: RunnableConfig = {
-    "recursion_limit": RECURSION_LIMIT_DEFAULT,
-}
-"""Default LangGraph runnable config for the main agent.
-
-Sets `recursion_limit` to `RECURSION_LIMIT_DEFAULT` (2000) to accommodate deeply
-nested agent graphs in long-running sessions without hitting the default
-LangGraph ceiling. The literal lives in `config_manifest` so the default is
-defined in exactly one place. This value is the fallback: `create_cli_agent`
-resolves the effective limit at agent-build time via `resolve_recursion_limit`,
-which honors the `--recursion-limit` CLI flag, the `DEEPAGENTS_CODE_RECURSION_LIMIT`
-env var, and `[runtime].recursion_limit` in `config.toml`.
-"""
-
 _git_branch_cache: dict[str, str | None] = {}
 """Per-cwd cache of resolved git branch names.
 
@@ -2178,7 +2186,8 @@ def build_stream_config(
             When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
 
     Returns:
-        Config dict with `configurable` and `metadata` keys.
+        Config dict with `configurable` and `metadata` keys, plus
+            `recursion_limit` when one is configured.
     """
     from datetime import UTC, datetime
 
@@ -2233,10 +2242,19 @@ def build_stream_config(
             }
         )
 
-    return {
+    config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
     }
+
+    # Send configured limits with each run so the setting takes effect.
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    resolved_recursion_limit = resolve_recursion_limit()
+    if resolved_recursion_limit is not None:
+        config["recursion_limit"] = resolved_recursion_limit
+
+    return config
 
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass

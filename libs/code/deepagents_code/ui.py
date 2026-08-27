@@ -257,7 +257,6 @@ def show_help() -> None:
     )
     console.print(
         "  --recursion-limit N        Override the agent's graph recursion_limit"
-        " (default 2000)"
     )
     console.print(
         "  --timeout SECONDS          Hard wall-clock limit; exits 124 on expiry"

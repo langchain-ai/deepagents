@@ -4,10 +4,9 @@
 
 ## [0.0.11](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.10...deepagents-acp==0.0.11) (2026-08-27)
 
-
 ### Features
 
-* **acp:** stream visible reasoning as thought chunks ([#5880](https://github.com/langchain-ai/deepagents/issues/5880)) ([7e96bf0](https://github.com/langchain-ai/deepagents/commit/7e96bf0ab1494217251010a30d27198d0c9532c9))
+- Stream visible reasoning as thought chunks. ([#5880](https://github.com/langchain-ai/deepagents/issues/5880))
 
 ## [0.0.10](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.9...deepagents-acp==0.0.10) (2026-08-12)
 

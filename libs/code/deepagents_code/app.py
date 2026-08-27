@@ -18355,7 +18355,7 @@ class DeepAgentsApp(App):
                         message_type = MessageType.REASONING
                     else:
                         continue
-                    if not isinstance(text, str) or not text.strip():
+                    if not isinstance(text, str):
                         continue
                     if (
                         isinstance(msg.content, str)
@@ -18369,6 +18369,12 @@ class DeepAgentsApp(App):
                         result[-1].content += text
                     else:
                         result.append(MessageData(type=message_type, content=text))
+
+                result[content_start_index:] = [
+                    message
+                    for message in result[content_start_index:]
+                    if message.content.strip()
+                ]
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):

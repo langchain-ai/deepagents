@@ -21399,6 +21399,32 @@ class TestToolsSlashCommand:
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 
+    def test_whitespace_only_blocks_preserve_separators(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": " "},
+                    {"type": "text", "text": "world"},
+                    {"type": "reasoning", "reasoning": "Think"},
+                    {"type": "reasoning", "reasoning": "\n"},
+                    {"type": "reasoning", "reasoning": "again"},
+                ]
+            ),
+            AIMessage(content=[{"type": "text", "text": " "}]),
+        ]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+
+        assert [(message.type, message.content) for message in result] == [
+            (MessageType.ASSISTANT, "Hello world"),
+            (MessageType.REASONING, "Think\nagain"),
+        ]
+
     async def test_event_loop_progresses_during_message_preparation(self) -> None:
         """The loop keeps running while a long history is prepared.
 

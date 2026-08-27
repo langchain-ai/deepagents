@@ -7,6 +7,8 @@ import sys
 import tempfile
 import threading
 import warnings
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import suppress
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -359,6 +361,50 @@ async def test_local_shell_backend_async_cancellation_kills_process_group() -> N
 
     killpg.assert_called_once_with(1234, signal.SIGKILL)
     process.wait.assert_called_once_with()
+
+
+def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
+    """Test that cancellation does not wait for or run queued executor work."""
+
+    async def run_scenario() -> None:
+        loop = asyncio.get_running_loop()
+        executor_started = asyncio.Event()
+        release_executor = threading.Event()
+
+        def occupy_executor() -> None:
+            loop.call_soon_threadsafe(executor_started.set)
+            release_executor.wait()
+
+        executor = ThreadPoolExecutor(max_workers=1)
+        with patch.object(executor, "submit", wraps=executor.submit) as submit:
+            loop.set_default_executor(executor)
+            blocker = loop.run_in_executor(None, occupy_executor)
+            await executor_started.wait()
+
+            with tempfile.TemporaryDirectory() as tmpdir, patch("subprocess.Popen") as popen, patch("os.killpg"):
+                task = asyncio.create_task(LocalShellBackend(root_dir=tmpdir).aexecute("echo queued"))
+                for _ in range(100):
+                    if submit.call_count > 1:
+                        break
+                    await asyncio.sleep(0)
+                assert submit.call_count > 1, "command did not reach the executor queue"
+                task.cancel()
+                try:
+                    for _ in range(100):
+                        if task.done():
+                            break
+                        await asyncio.sleep(0)
+                    assert task.done(), "cancellation waited for queued executor work"
+                finally:
+                    release_executor.set()
+                    with suppress(asyncio.CancelledError):
+                        await task
+                    await blocker
+                    await loop.run_in_executor(None, lambda: None)
+
+            popen.assert_not_called()
+
+    asyncio.run(run_scenario())
 
 
 async def test_local_shell_backend_async_filesystem_operations() -> None:

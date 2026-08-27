@@ -270,6 +270,21 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         """
         return self._sandbox_id
 
+    def _execute_in_thread(
+        self,
+        command: str,
+        timeout: int | None,
+        cancellation_event: threading.Event,
+        execution_started: threading.Event,
+    ) -> ExecuteResponse:
+        """Run a command only if cancellation did not win the start race."""
+        # Publishing first makes it safe for `aexecute` to stop waiting when
+        # this event is unset: a worker that starts later will see cancellation.
+        execution_started.set()
+        if cancellation_event.is_set():
+            raise asyncio.CancelledError
+        return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
+
     async def aexecute(
         self,
         command: str,
@@ -289,15 +304,27 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             asyncio.CancelledError: If the caller cancels command execution.
         """
         cancellation_event = threading.Event()
-        worker = asyncio.create_task(asyncio.to_thread(self._execute, command, timeout=timeout, cancellation_event=cancellation_event))
+        execution_started = threading.Event()
+        worker = asyncio.create_task(
+            asyncio.to_thread(
+                self._execute_in_thread,
+                command,
+                timeout,
+                cancellation_event,
+                execution_started,
+            )
+        )
         try:
             return await asyncio.shield(worker)
         except asyncio.CancelledError:
             cancellation_event.set()
+            if not execution_started.is_set():
+                worker.cancel()
             while not worker.done():
                 with suppress(asyncio.CancelledError):
                     await asyncio.shield(worker)
-            worker.result()
+            with suppress(asyncio.CancelledError):
+                worker.result()
             raise
 
     def execute(

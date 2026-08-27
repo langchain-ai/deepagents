@@ -71,6 +71,28 @@ def test_local_shell_backend_interrupt_kills_process_group() -> None:
     process.wait.assert_called_once_with()
 
 
+def test_local_shell_backend_cleanup_errors_preserve_interrupt() -> None:
+    """Test that cleanup failures cannot replace an active interrupt."""
+    process = MagicMock(pid=1234)
+    process.communicate.side_effect = KeyboardInterrupt
+    process.kill.side_effect = PermissionError
+    process.wait.side_effect = OSError
+    process.stdout.close.side_effect = OSError
+    process.stderr.close.side_effect = OSError
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", return_value=process),
+        patch("os.killpg", side_effect=PermissionError),
+        pytest.raises(KeyboardInterrupt),
+    ):
+        LocalShellBackend(root_dir=tmpdir).execute("sleep 10")
+
+    process.kill.assert_called_once_with()
+    process.wait.assert_called_once_with()
+    process.stdout.close.assert_called_once_with()
+    process.stderr.close.assert_called_once_with()
+
+
 def test_local_shell_backend_timeout_kills_process_group() -> None:
     """Test that a timeout cannot leave detached descendants running."""
     process = MagicMock(pid=1234)

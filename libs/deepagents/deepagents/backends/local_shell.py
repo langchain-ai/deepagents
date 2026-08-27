@@ -38,20 +38,23 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
 
 def _kill_and_reap(process: subprocess.Popen[str]) -> None:
     """Kill a command's process group and reap its shell."""
-    try:
+    kill_succeeded = False
+    with suppress(BaseException):
         if sys.platform == "win32":
             process.kill()
         else:
             os.killpg(process.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
-    except OSError:
-        with suppress(ProcessLookupError):
+        kill_succeeded = True
+    if not kill_succeeded:
+        with suppress(BaseException):
             process.kill()
-    finally:
+
+    with suppress(BaseException):
         process.wait()
+    with suppress(BaseException):
         if process.stdout is not None:
             process.stdout.close()
+    with suppress(BaseException):
         if process.stderr is not None:
             process.stderr.close()
 

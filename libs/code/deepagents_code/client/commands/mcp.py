@@ -118,6 +118,7 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
 
     _print_resolution_notices(resolution)
     from deepagents_code.mcp_auth import FileTokenStorage, format_login_failure
+    from deepagents_code.mcp_config import resolve_mcp_server_env
     from deepagents_code.mcp_tools import _drop_invalid_mcp_config_servers
 
     valid_config, errors = _drop_invalid_mcp_config_servers(resolution.config)
@@ -131,7 +132,16 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
     for server_name, server_config in valid_config["mcpServers"].items():
         if server_config.get("auth") != "oauth":
             continue
-        storage = FileTokenStorage(server_name, server_url=server_config["url"])
+        try:
+            resolved_config = resolve_mcp_server_env(server_name, server_config)
+        except (RuntimeError, TypeError) as exc:
+            print(  # noqa: T201
+                f"Invalid MCP server config for {server_name!r}: {exc}",
+                file=sys.stderr,
+            )
+            unreadable += 1
+            continue
+        storage = FileTokenStorage(server_name, server_url=resolved_config["url"])
         try:
             tokens = await storage.get_tokens()
         except (OSError, RuntimeError, ValueError) as exc:

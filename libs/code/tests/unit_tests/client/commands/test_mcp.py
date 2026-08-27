@@ -118,6 +118,55 @@ class TestRunMCPLoginList:
         assert exit_code == 0
         assert capsys.readouterr().out.strip() == "No MCP servers need login."
 
+    async def test_resolves_url_before_looking_up_tokens(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Token identity uses the interpolated URL, matching login and runtime."""
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"${MCP_TEST_URL}","auth":"oauth"}}}'
+        )
+        resolved_url = "https://notion.test/mcp"
+        monkeypatch.setenv("MCP_TEST_URL", resolved_url)
+
+        with patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path):
+            storage = FileTokenStorage("notion", server_url=resolved_url)
+            await storage.set_tokens(
+                OAuthToken(access_token="secret", token_type="Bearer")
+            )
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        assert exit_code == 0
+        assert capsys.readouterr().out.strip() == "No MCP servers need login."
+
+    async def test_invalid_url_type_is_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A non-string OAuth URL is a config error, not a storage crash."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http","url":123,"auth":"oauth"}}}'
+        )
+
+        exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "Invalid MCP server config for 'notion'" in captured.err
+        assert "mcpServers.notion.url must be a string" in captured.err
+        assert "No MCP servers need login." not in captured.out
+
     async def test_unreadable_token_state_returns_nonzero(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:

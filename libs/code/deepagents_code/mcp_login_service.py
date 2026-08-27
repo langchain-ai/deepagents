@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 class ConfigErrorKind(StrEnum):
     """Discriminator for `ConfigResolutionError` reasons.
 
-    Only `NO_CONFIG_FOUND` maps to exit code 2 in `run_mcp_login`; all
-    other kinds map to exit code 1. The TUI surface translates them into
-    in-app status messages.
+    Only `NO_CONFIG_FOUND` maps to exit code 2 in the `mcp login` CLI
+    handlers (`run_mcp_login`, `run_mcp_login_list`); all other kinds map to
+    exit code 1. The TUI surface translates them into in-app status messages.
     """
 
     EXPLICIT_LOAD_FAILED = "explicit_load_failed"

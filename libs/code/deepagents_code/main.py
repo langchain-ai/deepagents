@@ -5829,6 +5829,7 @@ def cli_main() -> None:
             from deepagents_code.client.commands.mcp import (
                 run_mcp_config,
                 run_mcp_login,
+                run_mcp_login_list,
             )
             from deepagents_code.ui import show_mcp_help
 
@@ -5839,14 +5840,15 @@ def cli_main() -> None:
                         f"Using --mcp-config from top-level: {config_path}",
                         file=sys.stderr,
                     )
-                sys.exit(
-                    asyncio.run(
-                        run_mcp_login(
-                            server=args.server,
-                            config_path=config_path,
-                        )
+                command = (
+                    run_mcp_login(
+                        server=args.server,
+                        config_path=config_path,
                     )
+                    if args.server is not None
+                    else run_mcp_login_list(config_path=config_path)
                 )
+                sys.exit(asyncio.run(command))
             if args.mcp_command == "config":
                 sys.exit(run_mcp_config())
             show_mcp_help()

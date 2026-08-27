@@ -106,18 +106,21 @@ depends on how the graph is invoked.
 `merge_configs` (`langgraph/_internal/_config.py`) only defers to the bound
 value when the incoming config equals LangGraph core's own default (`10007`).
 `10011` is not `10007`, so **the server value overrides whatever the graph was
-bound with.** In the `langgraph dev` path the budget is 10011 regardless of
-layers 1 and 2. The in-process path (`agent.astream`, used by headless runs) has
-no such injection, so there the bound value stands: 9,999 unconfigured, or the
-resolved override.
+bound with.** Both the TUI and headless runs reach the graph over `RemoteGraph`
+(`client/remote_client.py`), so layer 2's binding never decided the budget on
+either path.
 
-*So what:* if you are debugging a `GRAPH_RECURSION_LIMIT` failure, the effective
-ceiling depends on the invocation path, not just on configuration. Do not assume
-any single number. Note the consequence for layer 2: through `langgraph dev`, an
-explicit `--recursion-limit` is bound onto the graph and then discarded by the
-server default, so the flag does not take effect on that path. The check to run
-on each sample: how close do the longest baseline/outlier runs get to 10011
-graph steps?
+A fourth layer now settles it: `build_stream_config` (`config.py`) puts the
+resolved limit into the run config the client sends. `recursion_limit` is in
+`langgraph_api`'s `CONFIG_KEYS`, so a client-supplied value replaces the server
+default. The key is omitted when nothing is configured, leaving 10011 in force.
+
+*So what:* the effective ceiling is the run config's value when one is
+configured, and 10011 otherwise. Layer 2's binding is now redundant on the
+server path and is what headless-without-a-server would use. If you are
+debugging a `GRAPH_RECURSION_LIMIT` failure, read the run config first. The
+check to run on each sample: how close do the longest baseline/outlier runs get
+to 10011 graph steps?
 
 ### Filesystem grep/glob timeouts
 
@@ -199,7 +202,8 @@ future runs; the *Correlated* code anchors and their implications stand today.
    override only when one is configured; `langgraph dev` injects 10011 into
    every run config and `merge_configs` lets it win. *Observed:* none this pull.
    *So what:* an agent changing the SDK's `.with_config` recursion value should
-   know it is inert on the `langgraph dev` path — and so is `--recursion-limit`.
+   know it is inert on the `langgraph dev` path; the run config built by
+   `build_stream_config` is the channel that decides the budget.
    Verify against outlier step counts once a sample exists.
 
 2. **Non-main model calls are a hidden token/latency sink.**

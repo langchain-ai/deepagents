@@ -420,6 +420,9 @@ class StreamState:
     boundary, so each unbroken run of reasoning blocks gets one heading.
     """
 
+    text_line_open: bool = False
+    """Whether streamed response text left stdout's current line unterminated."""
+
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
@@ -629,6 +632,9 @@ def _write_reasoning(text: str, state: StreamState) -> None:
     if not state.show_reasoning:
         return
     if not state.reasoning_active:
+        if state.text_line_open:
+            _write_newline()
+            state.text_line_open = False
         sys.stderr.write("Reasoning:\n")
         state.reasoning_active = True
     sys.stderr.write(text)
@@ -675,6 +681,7 @@ def _process_ai_message(
                     if state.spinner:
                         state.spinner.stop()
                     _write_text(text)
+                    state.text_line_open = not text.endswith("\n")
                 state.full_response.append(text)
         elif block_type == "reasoning":
             reasoning = block.get("reasoning")
@@ -709,8 +716,9 @@ def _process_ai_message(
                 if state.spinner:
                     state.spinner.stop()
                 if not state.quiet:
-                    if state.full_response:
+                    if state.text_line_open:
                         _write_newline()
+                        state.text_line_open = False
                     console.print(
                         f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
                         highlight=False,
@@ -1790,7 +1798,8 @@ async def _run_agent_loop(
     if state.full_response:
         if not state.stream:
             _write_text("".join(state.full_response))
-        _write_newline()
+        if not state.stream or state.text_line_open:
+            _write_newline()
 
     if not quiet:
         console.print()

@@ -129,6 +129,28 @@ def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
     assert state.full_response == ["answer"]
 
 
+def test_reasoning_after_streamed_text_starts_on_a_new_terminal_line(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    terminal = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", terminal)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    state = StreamState(show_reasoning=True)
+
+    _process_ai_message(
+        AIMessage(
+            content=[
+                {"type": "text", "text": "answer"},
+                {"type": "reasoning", "reasoning": "follow-up"},
+            ]
+        ),
+        state,
+        console,
+    )
+
+    assert terminal.getvalue() == "answer\nReasoning:\nfollow-up"
+
+
 async def test_reasoning_only_stream_ends_with_newline(
     console: Console, monkeypatch: pytest.MonkeyPatch
 ) -> None:

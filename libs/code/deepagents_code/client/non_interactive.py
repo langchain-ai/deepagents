@@ -1206,6 +1206,30 @@ def _reconcile_superseded_attempt(
     console.print(f"[dim]{escape_markup(_RETRY_BOUNDARY)}[/dim]", highlight=False)
 
 
+def _commit_attempt_lifecycle(
+    namespace: tuple[str, ...],
+    scope: _AttemptLifecycleScope,
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Commit one successful attempt whose lifecycle scope is still open."""
+    state.active_attempts.pop(namespace, None)
+    state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
+    if state.transcript is not None:
+        state.transcript.complete_attempt(
+            agent_id=scope.agent_id,
+            call_id=scope.call_id,
+            attempt=scope.attempt,
+        )
+    if namespace or not state.pending_tool_status_lines:
+        return
+    lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
+    if state.spinner:
+        state.spinner.stop()
+    for line in lines:
+        console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
+
+
 def _process_attempt_lifecycle(
     namespace: tuple[str, ...],
     data: dict[str, Any],
@@ -1236,29 +1260,36 @@ def _process_attempt_lifecycle(
             agent_id=_lifecycle_agent_id(state, namespace),
         )
         existing = state.active_attempts.get(namespace)
-        if existing is not None and (
-            existing.call_id != call_id or existing.attempt != attempt
-        ):
-            # A new attempt for a scope the previous one never closed — either a
-            # mismatched start or, far more likely, a `model_retry` lost to a
-            # writer fault. Reconcile it exactly as the retry path would, or the
-            # failed attempt's text, tool hooks, and staged status all survive
-            # into the replay. `output_may_have_started` is unknowable here, so
-            # assume the worst: an unmarked seam is worse than a redundant one.
-            logger.warning(
-                "Model attempt %s/%d superseded without a model_retry event; "
-                "reconciling as a lost retry",
-                existing.call_id,
-                existing.attempt,
-            )
-            _reconcile_superseded_attempt(
-                namespace,
-                existing,
-                state,
-                console,
-                attempt_id=(namespace, existing.call_id, existing.attempt),
-                output_may_have_started=True,
-            )
+        if existing is not None and existing != scope:
+            if existing.call_id != call_id:
+                # A different call can only begin after the prior call
+                # succeeded. Its completion event was lost, so commit the open
+                # scope before starting the next model step.
+                logger.warning(
+                    "Model attempt %s/%d did not receive a completion event; "
+                    "committing before model call %s",
+                    existing.call_id,
+                    existing.attempt,
+                    call_id,
+                )
+                _commit_attempt_lifecycle(namespace, existing, state, console)
+            else:
+                # A new attempt for the same call means `model_retry` was lost
+                # to a writer fault. Reconcile exactly as the retry path would.
+                logger.warning(
+                    "Model attempt %s/%d superseded without a model_retry event; "
+                    "reconciling as a lost retry",
+                    existing.call_id,
+                    existing.attempt,
+                )
+                _reconcile_superseded_attempt(
+                    namespace,
+                    existing,
+                    state,
+                    console,
+                    attempt_id=(namespace, existing.call_id, existing.attempt),
+                    output_may_have_started=True,
+                )
         state.active_attempts[namespace] = scope
         state.attempt_buffer_offsets.setdefault(
             _attempt_key(namespace, scope), len(state.full_response)
@@ -1274,22 +1305,7 @@ def _process_attempt_lifecycle(
     scope = state.active_attempts.get(namespace)
     if scope is None or scope.call_id != call_id or scope.attempt != attempt:
         return
-    del state.active_attempts[namespace]
-    state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
-    if state.transcript is not None:
-        state.transcript.complete_attempt(
-            agent_id=scope.agent_id,
-            call_id=call_id,
-            attempt=attempt,
-        )
-    if not namespace and state.pending_tool_status_lines:
-        # Flush the completed attempt's staged tool status (`--no-stream`
-        # mode); only successful attempts ever reach stdout this way.
-        lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
-        if state.spinner:
-            state.spinner.stop()
-        for line in lines:
-            console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
+    _commit_attempt_lifecycle(namespace, scope, state, console)
 
 
 def _settle_interrupted_tool_hooks(state: StreamState) -> None:

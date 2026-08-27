@@ -2087,12 +2087,9 @@ async def execute_task_textual(
                             )
                             if attempt_event["phase"] == "start":
                                 # A duplicate start for the same scope is
-                                # idempotent. A *different* scope means the
-                                # previous attempt never closed — its
-                                # `model_retry` was lost to a writer fault — so
-                                # reconcile it as the retry path would rather
-                                # than replacing the scope and leaving its text,
-                                # tool rows and staged transcript behind.
+                                # idempotent. A different attempt for the same
+                                # call means `model_retry` was lost; a different
+                                # call means the prior completion event was lost.
                                 existing_scope = active_attempt_by_namespace.get(ns_key)
                                 stale = (
                                     existing_scope is not None
@@ -2105,7 +2102,26 @@ async def execute_task_textual(
                                 )
                                 if stale_id is not None:
                                     stale = stale and stale_id not in settled_attempts
-                                if stale and existing_scope is not None:
+                                if (
+                                    stale
+                                    and existing_scope is not None
+                                    and existing_scope.call_id != attempt_scope.call_id
+                                ):
+                                    logger.warning(
+                                        "Model attempt %s/%d did not receive a "
+                                        "completion event; committing before "
+                                        "model call %s",
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                        attempt_scope.call_id,
+                                    )
+                                    if is_main_agent or transcript_agent_id is not None:
+                                        transcript.complete_attempt(
+                                            agent_id=transcript_agent_id,
+                                            call_id=existing_scope.call_id,
+                                            attempt=existing_scope.attempt,
+                                        )
+                                elif stale and existing_scope is not None:
                                     settled_attempts.add(
                                         (existing_scope.call_id, existing_scope.attempt)
                                     )

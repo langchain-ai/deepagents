@@ -3254,6 +3254,56 @@ class TestModelRetryLifecycleReconciliation:
         main = runtime.transcripts.materialize("thread-lost").path.read_text()
         assert "partial" not in main
 
+    async def test_new_call_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A different call preserves the reply when only completion was lost."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-lost-complete"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="first", id="m-1", chunk_position="last"), {}),
+            ),
+            # No completion for call-1; call-2 is a new model step, not a retry.
+            _attempt_start("call-2", 0),
+            (
+                (),
+                "messages",
+                (
+                    AIMessageChunk(content="second", id="m-2", chunk_position="last"),
+                    {},
+                ),
+            ),
+            _attempt_complete("call-2", 0),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        main = runtime.transcripts.materialize("thread-lost-complete").path.read_text()
+        assert '"content":"first"' in main
+        assert '"content":"second"' in main
+
     async def test_unusable_retry_counts_still_mark_the_partial_reply(
         self, tmp_path: Path
     ) -> None:

@@ -4710,6 +4710,46 @@ class TestAttemptLifecycle:
         assert "tool.error" in events
         assert state.active_attempts[()].attempt == 1
 
+    def test_new_call_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A different call preserves output when only completion was lost."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+        store = cast(
+            "TranscriptStore", cast("TranscriptRecorder", state.transcript).runtime
+        )
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            ((), "messages", (AIMessage(id="m-1", content="first"), {})),
+            state,
+            console,
+            tracker,
+        )
+        state.pending_tool_status_lines.append("Calling tool from first call")
+
+        # The completion for call-1 is lost, then a distinct model call starts.
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-2", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+
+        assert state.full_response == ["first"]
+        assert state.pending_tool_status_lines == []
+        assert "Calling tool from first call" in output.getvalue()
+        assert "first" in store.materialize("thread-1").path.read_text(encoding="utf-8")
+        assert state.active_attempts[()].call_id == "call-2"
+
     def test_reused_tool_id_after_retry_fires_one_terminal_each(
         self, tmp_path: Path
     ) -> None:

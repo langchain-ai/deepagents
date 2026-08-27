@@ -416,6 +416,23 @@ class TestUninstallCli:
     @pytest.mark.parametrize(
         "argv",
         [
+            ["dcode", "--package", "--uninstall", "ollama"],
+            ["dcode", "--uninstall", "ollama", "--package"],
+        ],
+    )
+    def test_package_modifier_is_rejected_for_uninstall(self, argv: list[str]) -> None:
+        from deepagents_code.main import parse_args
+
+        with (
+            patch.object(sys, "argv", argv),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            parse_args()
+        assert exc_info.value.code == 2
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
             ["dcode", "uninstall", "ollama"],
             ["dcode", "--uninstall", "ollama"],
         ],

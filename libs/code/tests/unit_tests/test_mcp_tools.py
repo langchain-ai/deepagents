@@ -28,9 +28,6 @@ if TYPE_CHECKING:
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_tools import (
-    _MCP_STDERR_DRAIN_JOIN_TIMEOUT,
-    _MCP_STDERR_LINE_LIMIT,
-    _MCP_STDERR_TRUNCATION_MARKER,
     DiscoveredMCPConfig,
     MCPConfigIdentity,
     MCPConfigScope,
@@ -42,11 +39,9 @@ from deepagents_code.mcp_tools import (
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
-    _create_mcp_session,
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
-    _MCPStderrSink,
     _normalize_mcp_arguments,
     _same_config_location,
     _warm_mcp_adapter_imports,

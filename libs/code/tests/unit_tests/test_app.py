@@ -4838,6 +4838,20 @@ class TestMessageQueue:
         assert child_ids.index("subagent-panel") < child_ids.index("startup-tip")
         assert child_ids.index("startup-tip") < child_ids.index("input-area")
 
+    async def test_ctrl_t_toggles_subagent_panel(self) -> None:
+        from deepagents_code.tui.widgets.subagent_panel import SubagentPanel
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            panel = app.query_one("#subagent-panel", SubagentPanel)
+            assert panel.expanded is True
+
+            await pilot.press("ctrl+t")
+            await pilot.pause()
+
+            assert panel.expanded is False
+
     async def test_startup_tip_respects_hide_env_var(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -18960,7 +18974,7 @@ class TestInterruptApprovalPriority:
     async def test_approval_arriving_during_prompt_search_keeps_shift_tab(
         self,
     ) -> None:
-        """A focused approval should retain shift+tab/ctrl+t after search opened."""
+        """A focused approval should retain Shift+Tab after search opened."""
         from deepagents_code.tui.widgets.approval import ApprovalMenu
 
         app = DeepAgentsApp()
@@ -19709,8 +19723,32 @@ class TestActionOpenEditor:
         assert text_area.text == "edited"
         chat_input.focus_input.assert_called_once()
 
+    async def test_ctrl_g_opens_chat_input_in_editor(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            chat_input = app._chat_input
+            assert chat_input is not None
+            text_area = chat_input._text_area
+            assert text_area is not None
+            text_area.text = "original"
+
+            with (
+                patch.object(app, "suspend"),
+                patch(
+                    "deepagents_code.editor.open_in_editor", return_value="edited"
+                ) as open_editor,
+            ):
+                await pilot.press("ctrl+g")
+                await pilot.pause()
+
+            open_editor.assert_called_once_with(
+                "original", allow_empty=False, raise_on_error=False
+            )
+            assert text_area.text == "edited"
+
     async def test_prompt_search_cancel_preserves_external_editor_result(self) -> None:
-        """Escape after Ctrl+X should not restore the pre-editor draft."""
+        """Escape after Ctrl+G should not restore the pre-editor draft."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -19817,8 +19855,8 @@ class TestActionOpenEditor:
         # Focus is still restored via the `finally` clause before propagation.
         chat_input.focus_input.assert_called_once()
 
-    async def test_ctrl_x_edits_focused_goal_criteria_without_submitting(self) -> None:
-        """Ctrl+X should round-trip criteria through the focused goal editor."""
+    async def test_ctrl_g_edits_focused_goal_criteria_without_submitting(self) -> None:
+        """Ctrl+G should round-trip criteria through the focused goal editor."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -19831,7 +19869,7 @@ class TestActionOpenEditor:
                     return_value="- revised criterion",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -19843,8 +19881,8 @@ class TestActionOpenEditor:
             assert menu._input_mode == "edit"
             assert future.done() is False
 
-    async def test_ctrl_x_edits_rejection_feedback_without_submitting(self) -> None:
-        """Ctrl+X should round-trip feedback without leaving rejection mode."""
+    async def test_ctrl_g_edits_rejection_feedback_without_submitting(self) -> None:
+        """Ctrl+G should round-trip feedback without leaving rejection mode."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -19861,7 +19899,7 @@ class TestActionOpenEditor:
                     return_value="add coverage and docs",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -19873,7 +19911,7 @@ class TestActionOpenEditor:
             assert menu._input_mode == "reject"
             assert future.done() is False
 
-    async def test_ctrl_x_preserves_empty_goal_editor_result(self) -> None:
+    async def test_ctrl_g_preserves_empty_goal_editor_result(self) -> None:
         """An empty external edit should remain for normal goal validation."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -19886,7 +19924,7 @@ class TestActionOpenEditor:
                     "deepagents_code.editor.open_in_editor", return_value=""
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -19898,7 +19936,7 @@ class TestActionOpenEditor:
             assert menu._input_mode == "edit"
             assert future.done() is False
 
-    async def test_ctrl_x_expands_and_resets_goal_editor_paste_state(
+    async def test_ctrl_g_expands_and_resets_goal_editor_paste_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """External edits should use logical paste text and discard stale backing."""
@@ -19929,7 +19967,7 @@ class TestActionOpenEditor:
                     return_value="replacement",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -19942,7 +19980,7 @@ class TestActionOpenEditor:
             assert app.focused is text_area
             assert future.done() is False
 
-    async def test_ctrl_x_cancel_preserves_goal_editor_and_paste_state(
+    async def test_ctrl_g_cancel_preserves_goal_editor_and_paste_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Cancelling the editor should preserve visible and stored paste text."""
@@ -19973,7 +20011,7 @@ class TestActionOpenEditor:
                     "deepagents_code.editor.open_in_editor", return_value=None
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -19985,7 +20023,7 @@ class TestActionOpenEditor:
             assert app.focused is text_area
             assert future.done() is False
 
-    async def test_ctrl_x_goal_editor_failure_preserves_text_and_focus(self) -> None:
+    async def test_ctrl_g_goal_editor_failure_preserves_text_and_focus(self) -> None:
         """Editor errors should notify without moving focus to the chat input."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -20005,7 +20043,7 @@ class TestActionOpenEditor:
                 ),
                 patch.object(app, "notify") as notify,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             notify.assert_called_once_with(
@@ -20018,10 +20056,10 @@ class TestActionOpenEditor:
             assert future.done() is False
 
     @pytest.mark.parametrize("state", ["hidden", "unfocused", "detached"])
-    async def test_inactive_goal_editor_does_not_intercept_chat_ctrl_x(
+    async def test_inactive_goal_editor_does_not_intercept_chat_ctrl_g(
         self, state: str
     ) -> None:
-        """Only the visible, attached, focused goal editor should capture Ctrl+X."""
+        """Only the visible, attached, focused goal editor should capture Ctrl+G."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20047,7 +20085,7 @@ class TestActionOpenEditor:
                     return_value="edited chat draft",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20088,10 +20126,10 @@ class TestActionOpenEditor:
         assert app.focused is other_input
         return menu, other_input, future
 
-    async def test_ctrl_x_edits_focused_ask_user_other_without_submitting(
+    async def test_ctrl_g_edits_focused_ask_user_other_without_submitting(
         self,
     ) -> None:
-        """Ctrl+X should round-trip the 'Other' draft through the editor."""
+        """Ctrl+G should round-trip the 'Other' draft through the editor."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20106,7 +20144,7 @@ class TestActionOpenEditor:
                     return_value="edited answer",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20117,7 +20155,7 @@ class TestActionOpenEditor:
             assert app.focused is other_input
             assert future.done() is False
 
-    async def test_ctrl_x_expands_and_resets_ask_user_other_paste_state(
+    async def test_ctrl_g_expands_and_resets_ask_user_other_paste_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """External edits should use logical paste text and discard stale backing."""
@@ -20147,7 +20185,7 @@ class TestActionOpenEditor:
                     return_value="replacement",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20160,7 +20198,7 @@ class TestActionOpenEditor:
             assert app.focused is other_input
             assert future.done() is False
 
-    async def test_ctrl_x_ask_user_other_failure_preserves_text_and_focus(
+    async def test_ctrl_g_ask_user_other_failure_preserves_text_and_focus(
         self,
     ) -> None:
         """Editor errors should notify without moving focus to the chat input."""
@@ -20183,7 +20221,7 @@ class TestActionOpenEditor:
                 ),
                 patch.object(app, "notify") as notify,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             notify.assert_called_once_with(
@@ -20196,10 +20234,10 @@ class TestActionOpenEditor:
             assert future.done() is False
 
     @pytest.mark.parametrize("state", ["hidden", "unfocused", "detached"])
-    async def test_inactive_ask_user_editor_does_not_intercept_chat_ctrl_x(
+    async def test_inactive_ask_user_editor_does_not_intercept_chat_ctrl_g(
         self, state: str
     ) -> None:
-        """Only the visible, attached, focused ask-user input should capture Ctrl+X."""
+        """Only the visible, attached, focused ask-user input should capture Ctrl+G."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20228,7 +20266,7 @@ class TestActionOpenEditor:
                     return_value="edited chat draft",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20238,7 +20276,7 @@ class TestActionOpenEditor:
             assert app.focused is chat_input.input_widget
             assert future.done() is False
 
-    async def test_stale_ask_user_editor_does_not_intercept_chat_ctrl_x(
+    async def test_stale_ask_user_editor_does_not_intercept_chat_ctrl_g(
         self,
     ) -> None:
         """A focused field must belong to the currently pending ask-user menu."""
@@ -20274,7 +20312,7 @@ class TestActionOpenEditor:
                     return_value="edited chat draft",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20304,10 +20342,10 @@ class TestActionOpenEditor:
         assert app.focused is text_input
         return menu, text_input, future
 
-    async def test_ctrl_x_edits_focused_ask_user_text_without_submitting(
+    async def test_ctrl_g_edits_focused_ask_user_text_without_submitting(
         self,
     ) -> None:
-        """Ctrl+X should round-trip the always-visible free-text draft."""
+        """Ctrl+G should round-trip the always-visible free-text draft."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20322,7 +20360,7 @@ class TestActionOpenEditor:
                     return_value="edited answer",
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20333,7 +20371,7 @@ class TestActionOpenEditor:
             assert app.focused is text_input
             assert future.done() is False
 
-    async def test_ctrl_x_cancel_preserves_ask_user_other_and_paste_state(
+    async def test_ctrl_g_cancel_preserves_ask_user_other_and_paste_state(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Cancelling the editor must preserve text and NOT reset paste state."""
@@ -20363,7 +20401,7 @@ class TestActionOpenEditor:
                     "deepagents_code.editor.open_in_editor", return_value=None
                 ) as open_editor,
             ):
-                await pilot.press("ctrl+x")
+                await pilot.press("ctrl+g")
                 await pilot.pause()
 
             open_editor.assert_called_once_with(
@@ -20402,7 +20440,9 @@ class TestHelpEditorHint:
 
         assert mount_message.await_count == 2
         message = mount_message.await_args_list[-1].args[0]
-        assert "Ctrl+X          Open prompt in code" in str(message._content)
+        content = str(message._content)
+        assert "Ctrl+G          Open prompt in code" in content
+        assert "Ctrl+T          Toggle the subagent panel" in content
 
     async def test_uses_generic_fallback(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("VISUAL", raising=False)
@@ -20415,7 +20455,7 @@ class TestHelpEditorHint:
 
         assert mount_message.await_count == 2
         message = mount_message.await_args_list[-1].args[0]
-        assert "Ctrl+X          Open prompt in external editor" in str(message._content)
+        assert "Ctrl+G          Open prompt in external editor" in str(message._content)
 
 
 class TestApprovalModeSlashCommands:

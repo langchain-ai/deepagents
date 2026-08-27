@@ -429,6 +429,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         cancellation terminate the command's entire process group with
         `SIGKILL`, then wait briefly for the shell process to exit.
 
+        On Windows, commands do not start in a new process group. Cleanup
+        terminates only the direct shell process, so descendants may continue
+        running after timeout, interruption, or async cancellation.
+
         Args:
             command: Shell command string to execute.
 

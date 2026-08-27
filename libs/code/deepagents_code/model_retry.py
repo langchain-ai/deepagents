@@ -842,7 +842,8 @@ def model_attempt_from_event(
     call_id = _validated_call_id(event.get("call_id"))
     attempt = event.get("attempt")
     if (
-        phase not in _ATTEMPT_PHASES
+        not isinstance(phase, str)
+        or phase not in _ATTEMPT_PHASES
         or call_id is None
         or not isinstance(attempt, int)
         or isinstance(attempt, bool)

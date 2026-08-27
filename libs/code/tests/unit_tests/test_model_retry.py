@@ -1174,6 +1174,14 @@ def test_attempt_parser_accepts_valid_events() -> None:
             {"phase": "explode", "call_id": "abc", "attempt": 0},
             id="unknown-phase",
         ),
+        pytest.param(
+            {"phase": ["start"], "call_id": "abc", "attempt": 0},
+            id="list-phase",
+        ),
+        pytest.param(
+            {"phase": {"value": "start"}, "call_id": "abc", "attempt": 0},
+            id="object-phase",
+        ),
         pytest.param({"phase": "start", "attempt": 0}, id="missing-call-id"),
         pytest.param(
             {"phase": "start", "call_id": 123, "attempt": 0}, id="non-string-call-id"

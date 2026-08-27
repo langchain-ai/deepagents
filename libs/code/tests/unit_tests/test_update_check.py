@@ -5182,6 +5182,75 @@ class TestPerformInstallPackage:
         assert success is True
         assert output == "ok"
 
+    async def test_lock_wraps_command_generation_and_subprocess(self) -> None:
+        """Receipt inspection and the package rebuild share one lock hold."""
+        events: list[str] = []
+
+        @contextmanager
+        def lock() -> Iterator[bool]:
+            events.append("acquire")
+            try:
+                yield True
+            finally:
+                events.append("release")
+
+        def command(_package: str) -> str:
+            events.append("command")
+            return "uv tool install safe-command"
+
+        def run_subprocess(*_args: object, **_kwargs: object) -> tuple[bool, str]:
+            events.append("run")
+            return True, "installed"
+
+        run = AsyncMock(side_effect=run_subprocess)
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch("deepagents_code.update_check.update_install_lock", lock),
+            patch(
+                "deepagents_code.update_check.install_package_command",
+                side_effect=command,
+            ),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+
+        assert (success, output) == (True, "installed")
+        assert events == ["acquire", "command", "run", "release"]
+
+    async def test_contended_lock_skips_receipt_read_and_subprocess(self) -> None:
+        """A concurrent mutation wins before this install reads the receipt."""
+        command = MagicMock()
+        run = AsyncMock()
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.update_install_lock",
+                return_value=nullcontext(False),
+            ),
+            patch("deepagents_code.update_check.install_package_command", command),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+
+        assert success is False
+        assert "already running" in output
+        command.assert_not_called()
+        run.assert_not_awaited()
+
     async def test_uv_missing_returns_actionable_error(self) -> None:
         """When `uv` is not on PATH, surface a clear error before exec."""
         with (

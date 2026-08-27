@@ -4034,7 +4034,9 @@ async def perform_install_package(
     --with <package> --prerelease allow`, the escape hatch for a provider whose
     package is not a `deepagents-code` extra (e.g. a custom or in-house
     `class_path` model). Already-installed extras are preserved so the reinstall
-    does not drop them.
+    does not drop them. Command construction and execution hold the shared
+    update/install lock so a concurrent install, removal, or upgrade cannot
+    rebuild from a stale receipt.
     Editable installs are refused
     — the caller should rerun their `uv tool install --editable` command with
     `--with <package>` added so it resolves against the editable source.
@@ -4085,25 +4087,31 @@ async def perform_install_package(
             "added."
         )
 
-    from deepagents_code.extras_info import ExtrasIntrospectionError
+    with update_install_lock() as holding_update_lock:
+        if not holding_update_lock:
+            return False, (
+                "Another dcode update or install is already running. "
+                "Wait for it to finish, then try again."
+            )
+        from deepagents_code.extras_info import ExtrasIntrospectionError
 
-    try:
-        cmd = install_package_command(package)
-    except ValueError as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
-        # Distinct from a malformed package name: the running distribution's own
-        # metadata, or the uv tool receipt, could not be read or parsed. Leave a
-        # breadcrumb so the cause is recoverable from logs, even though the user
-        # message is unchanged.
-        logger.warning(
-            "Could not introspect installed extras or uv receipt for package "
-            "install of %r",
-            package,
-            exc_info=True,
-        )
-        return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        try:
+            cmd = install_package_command(package)
+        except ValueError as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
+            # Distinct from a malformed package name: the running distribution's own
+            # metadata, or the uv tool receipt, could not be read or parsed. Leave a
+            # breadcrumb so the cause is recoverable from logs, even though the user
+            # message is unchanged.
+            logger.warning(
+                "Could not introspect installed extras or uv receipt for package "
+                "install of %r",
+                package,
+                exc_info=True,
+            )
+            return False, f"{type(exc).__name__}: {exc}"
+        return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
 # ---------------------------------------------------------------------------

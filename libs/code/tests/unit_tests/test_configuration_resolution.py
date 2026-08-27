@@ -38,7 +38,7 @@ from unit_tests.conftest import resolve_option_for_test
 
 
 def _resolve(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any],
     managed_toml_data: dict[str, Any] | None = None,
@@ -70,7 +70,7 @@ def _at_path(keys: tuple[str, ...] | None, value: object) -> dict[str, Any]:
     return root
 
 
-def _invalid_toml_value(option: ConfigOption) -> object:
+def _invalid_toml_value(option: ConfigOption[object]) -> object:
     """Return a value the option's TOML coercer rejects."""
     kind = option.kind
     if kind in {

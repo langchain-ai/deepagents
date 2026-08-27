@@ -100,12 +100,17 @@ the process is enforcing, and an edit the user just made is not in effect.
 
 
 def _found_for[T](option: ConfigOption[T], value: object) -> Found[T]:
-    """Bind a kind-validated provider value to its manifest option type.
+    """Assert a kind-validated provider value into its manifest option type.
 
-    Provider coercers validate the runtime shape selected by `option.kind`.
-    `ConfigOption.default` binds that kind's value type to `T`; this helper
-    carries the established relationship through branches that type checkers
-    cannot narrow from an enum member.
+    This checks nothing -- the body is a `cast`, and `option` is taken only to
+    bind `T` at the call site. What makes it sound is the caller: every branch
+    that reaches here sits behind a test on `option.kind`, and the
+    `ConfigOption.__new__` overloads map that same `kind` to `T`. A type
+    checker cannot follow an enum comparison to a class-level type parameter,
+    so the relationship the overloads establish is re-stated here by hand.
+
+    Keep the two in step: a branch that returns a shape the overload table does
+    not name for that kind is a silent lie, not a type error.
 
     Returns:
         The validated value wrapped in a typed provider result.
@@ -117,7 +122,11 @@ def _found_for[T](option: ConfigOption[T], value: object) -> Found[T]:
 def _ranked_for[T](
     option: ConfigOption[T], ranked: RankedProviderValue[object]
 ) -> RankedProviderValue[T]:
-    """Bind an option-specific special provider path to its value type.
+    """Assert an option-specific provider path into its value type.
+
+    Unchecked, for the same reason as `_found_for`: `option` binds `T` and the
+    body is a `cast`. Used by the theme/startup paths, which build their ranked
+    value before the kind is available to narrow on.
 
     Returns:
         The ranked value associated with the option's value type.

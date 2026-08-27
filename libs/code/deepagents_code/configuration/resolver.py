@@ -220,7 +220,7 @@ class ConfigResolver:
 
     def resolve_options(
         self,
-        options: Sequence[ConfigOption],
+        options: Sequence[ConfigOption[object]],
     ) -> Mapping[ConfigKey, ResolvedValue[object]]:
         """Resolve selected options against one provider generation.
 

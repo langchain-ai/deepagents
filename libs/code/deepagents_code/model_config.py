@@ -3072,7 +3072,7 @@ def _resolve_models_section(
 
 
 def _resolve_model_file_option(
-    option: ConfigOption,
+    option: ConfigOption[object],
     sources: ConfigSources,
     *,
     user_data: Mapping[str, Any],
@@ -3350,7 +3350,7 @@ class ModelConfig:
                 raise RuntimeError(msg)
             resolved = {
                 key: _resolve_model_file_option(
-                    cast("ConfigOption", option),
+                    cast("ConfigOption[object]", option),
                     sources,
                     user_data=user_data,
                 )[0]

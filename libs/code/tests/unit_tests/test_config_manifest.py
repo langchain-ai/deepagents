@@ -56,7 +56,7 @@ pytestmark = pytest.mark.self_managed_update_check
 
 
 def _resolve_manifest_option(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     toml_data: dict[str, Any],
     managed_toml_data: dict[str, Any] | None = None,
@@ -968,7 +968,9 @@ def test_bool_mode_default_rejects_declared_default() -> None:
     assert option.default is None
 
     with pytest.raises(TypeError, match="must not declare a default"):
-        ConfigOption(
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(  # ty: ignore[no-matching-overload]
             key="features.example",
             group="Tools",
             summary="Example.",
@@ -2290,7 +2292,9 @@ def test_config_option_rejects_type_mismatched_default() -> None:
     import pytest
 
     with pytest.raises(TypeError, match="not valid for kind int"):
-        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.INT, default="5")
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(key="x", group="g", summary="s", kind=OptionKind.INT, default="5")  # ty: ignore[no-matching-overload]
 
 
 def test_config_option_rejects_bool_default_for_int() -> None:
@@ -2306,7 +2310,9 @@ def test_config_option_rejects_mutable_default() -> None:
     import pytest
 
     with pytest.raises(TypeError, match="mutable default"):
-        ConfigOption(
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(  # ty: ignore[no-matching-overload]
             key="x", group="g", summary="s", kind=OptionKind.STR, default=["a"]
         )
 
@@ -2316,7 +2322,9 @@ def test_config_option_rejects_default_on_structured() -> None:
     import pytest
 
     with pytest.raises(TypeError, match="must not declare a default"):
-        ConfigOption(
+        # The `__new__` overloads now reject this statically too; the
+        # runtime guard still matters for options built dynamically.
+        ConfigOption(  # ty: ignore[no-matching-overload]
             key="x", group="g", summary="s", kind=OptionKind.STRUCTURED, default="x"
         )
 

@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
 
@@ -32,10 +33,6 @@ from deepagents_code.offload_middleware import (
     unchanged_offload_result,
 )
 from deepagents_code.server_graph import get_server_runtime
-from deepagents_code.server_lifespan import (
-    _extensions,
-    _lifespan as _extension_lifespan,
-)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -156,10 +153,32 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
         Control for the lifetime of the application.
     """
     try:
-        async with _extension_lifespan(_app):
-            yield
+        yield
     finally:
-        await _flush_traces()
+        try:
+            from deepagents_code.extensions.runtime import shutdown_server_extensions
+
+            await shutdown_server_extensions()
+        finally:
+            await _flush_traces()
+
+
+def _extensions(request: Request) -> JSONResponse:
+    """Return extension provenance only to a loopback client."""
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    host = request.client.host if request.client is not None else ""
+    try:
+        loopback = ip_address(host).is_loopback
+    except ValueError:
+        loopback = host == "localhost"
+    if not loopback:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    from deepagents_code.extensions.runtime import server_extension_report
+
+    return JSONResponse(server_extension_report())
 
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`

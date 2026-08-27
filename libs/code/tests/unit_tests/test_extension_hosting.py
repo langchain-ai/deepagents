@@ -151,47 +151,24 @@ def test_internal_backend_route_overlap_fails_agent_startup(tmp_path: Path) -> N
         )
 
 
-async def test_server_lifespan_releases_extensions_after_flag_changes(
+def test_provenance_endpoint_enforces_flag_and_loopback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """LangGraph shutdown does not depend on the mutable experimental flag."""
-    from starlette.applications import Starlette
-
-    from deepagents_code.server_lifespan import _lifespan
-
-    shutdown = AsyncMock()
-    with patch(
-        "deepagents_code.extensions.runtime.shutdown_server_extensions", shutdown
-    ):
-        async with _lifespan(Starlette()):
-            monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
-    shutdown.assert_awaited_once_with()
-
-
-def test_provenance_endpoint_is_loopback_only() -> None:
-    """The metadata route rejects remote peers."""
-    from deepagents_code.server_lifespan import _extensions
+    """The metadata route is experimental and loopback-only."""
+    from deepagents_code.offload_api import _extensions
 
     local = Request({"type": "http", "client": ("127.0.0.1", 1234)})
     remote = Request({"type": "http", "client": ("192.0.2.1", 1234)})
 
     assert _extensions(local).status_code == 200
     assert _extensions(remote).status_code == 404
-
-
-def test_provenance_endpoint_is_hidden_without_experimental_mode(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Even loopback clients cannot inspect the disabled experiment."""
-    from deepagents_code.server_lifespan import _extensions
-
     monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
-    local = Request({"type": "http", "client": ("127.0.0.1", 1234)})
-
     assert _extensions(local).status_code == 404
 
 
-async def test_builtin_http_app_hosts_extension_metadata() -> None:
+async def test_builtin_http_app_hosts_extension_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The built-in offload app also owns extension lifecycle and metadata."""
     from deepagents_code.offload_api import app
 
@@ -200,7 +177,7 @@ async def test_builtin_http_app_hosts_extension_metadata() -> None:
         "deepagents_code.extensions.runtime.shutdown_server_extensions", shutdown
     ):
         async with app.router.lifespan_context(app):
-            pass
+            monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL")
     shutdown.assert_awaited_once_with()
     assert any(
         isinstance(route, Route) and route.path == "/extensions" for route in app.routes

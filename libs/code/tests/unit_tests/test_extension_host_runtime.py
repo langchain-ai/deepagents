@@ -70,20 +70,6 @@ def test_runtime_tool_is_advertised_and_executable(tmp_path: Path) -> None:
     assert selected == [_late_tool]
 
 
-def test_runtime_backend_route_requires_restart(tmp_path: Path) -> None:
-    """A late backend route requires rebuilding the graph."""
-    registry = ExtensionRegistry()
-    bind_runtime_host_policy(registry, set())
-
-    registry.add_backend_route(
-        "/memories/",
-        StateBackend(),
-        SourceInfo(tmp_path / "extension.py"),
-    )
-
-    assert registry.restart_required
-
-
 def test_backend_route_policy_rejects_sandbox_filesystems(tmp_path: Path) -> None:
     """A sandbox cannot directly mount host filesystem backend subclasses."""
     source = SourceInfo(tmp_path / "extension.py")
@@ -113,16 +99,19 @@ def test_backend_route_policy_rejects_reserved_overlap(tmp_path: Path) -> None:
 
 
 def test_invalid_runtime_route_rolls_back_registration(tmp_path: Path) -> None:
-    """A late route that fails host policy never remains in the registry."""
+    """Runtime policy rolls back invalid routes and flags valid ones."""
     registry = ExtensionRegistry()
     bind_runtime_host_policy(registry, {"/artifacts/"})
+    source = SourceInfo(tmp_path / "extension.py")
 
     with pytest.raises(ExtensionError, match="overlaps an internal route"):
         registry.add_backend_route(
             "/artifacts/private/",
             StateBackend(),
-            SourceInfo(tmp_path / "extension.py"),
+            source,
         )
 
     assert not registry.backend_routes
     assert not registry.restart_required
+    registry.add_backend_route("/memories/", StateBackend(), source)
+    assert registry.restart_required

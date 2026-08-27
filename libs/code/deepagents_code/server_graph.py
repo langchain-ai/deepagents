@@ -345,9 +345,9 @@ async def _make_graphs() -> ServerRuntime:
             )
             sys.exit(1)
 
-    def _create_cli_graphs_sync(
-        extension_registry: ExtensionRegistry | None,
-    ) -> ServerRuntime:
+    extension_registry: ExtensionRegistry | None = None
+
+    def _create_cli_graphs_sync() -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
@@ -413,7 +413,6 @@ async def _make_graphs() -> ServerRuntime:
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    extension_registry = None
     if is_env_truthy(EXPERIMENTAL):
         from deepagents_code.extensions import ExtensionMode, load_extensions
         from deepagents_code.extensions.runtime import bind_server_extensions
@@ -445,10 +444,7 @@ async def _make_graphs() -> ServerRuntime:
             extension_registry = extension_result.registry
             bind_server_extensions(extension_result)
     try:
-        return await asyncio.to_thread(
-            _create_cli_graphs_sync,
-            extension_registry,
-        )
+        return await asyncio.to_thread(_create_cli_graphs_sync)
     except BaseException:
         if extension_registry is not None:
             from deepagents_code.extensions.runtime import shutdown_server_extensions

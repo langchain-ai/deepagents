@@ -20,7 +20,6 @@ from deepagents_code._server_config import ServerConfig
 def _disable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep user extension code out of server graph unit tests."""
     monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
-    monkeypatch.setenv("DEEPAGENTS_CODE_EXTENSIONS", "0")
 
 
 def _import_fresh_server_graph() -> ModuleType:

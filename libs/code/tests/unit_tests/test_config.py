@@ -8300,3 +8300,65 @@ class TestAgentDirStaysOffTheHeavyImportPath:
         )
 
         assert result.stdout.strip() == ""
+
+
+class TestBuildStreamConfigRecursionLimit:
+    """`build_stream_config` carries the resolved graph step budget."""
+
+    def test_omitted_when_nothing_is_configured(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No configured limit leaves the server default in force.
+
+        Sending an explicit value here would override `langgraph_api`'s own
+        default, so the key must be absent rather than `None`.
+        """
+        import deepagents_code.config as config_mod
+        from deepagents_code import _env_vars, model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            assert "recursion_limit" not in config_mod.build_stream_config(
+                "thread-123", assistant_id=None
+            )
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+    def test_resolved_limit_reaches_the_run_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A configured limit rides in the run config, not just the binding.
+
+        The graph runs inside the `langgraph dev` server, which stamps its own
+        `recursion_limit` over whatever `create_cli_agent` bound onto the
+        compiled graph. The run config is the only channel that survives, so a
+        regression here silently restores the server default.
+        """
+        import deepagents_code.config as config_mod
+        from deepagents_code import _env_vars, model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "3000")
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            config = config_mod.build_stream_config("thread-123", assistant_id=None)
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        assert config["recursion_limit"] == 3000

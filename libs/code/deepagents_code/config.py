@@ -48,6 +48,8 @@ from deepagents_code._version import __version__
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
 
+    from langchain_core.runnables import RunnableConfig
+
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import (
         ConfigResolver,
@@ -2173,7 +2175,8 @@ def build_stream_config(
             When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
 
     Returns:
-        Config dict with `configurable` and `metadata` keys.
+        Config dict with `configurable` and `metadata` keys, plus
+            `recursion_limit` when one is configured.
     """
     from datetime import UTC, datetime
 
@@ -2228,10 +2231,28 @@ def build_stream_config(
             }
         )
 
-    return {
+    config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
     }
+
+    # The graph runs inside the `langgraph dev` server, and `langgraph_api`
+    # stamps its own `recursion_limit` (10011) onto every run config it builds.
+    # `merge_configs` only defers to the value bound onto the compiled graph
+    # when the incoming one equals LangGraph core's default (10007), so the
+    # server value overrides the binding `create_cli_agent` applied -- the
+    # resolved limit never took effect on this path. `recursion_limit` is in
+    # `langgraph_api`'s `CONFIG_KEYS`, so a client-supplied value replaces the
+    # server default; sending it here is what makes the setting real.
+    #
+    # Omitted when nothing is configured so the server default still stands.
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    resolved_recursion_limit = resolve_recursion_limit()
+    if resolved_recursion_limit is not None:
+        config["recursion_limit"] = resolved_recursion_limit
+
+    return config
 
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass

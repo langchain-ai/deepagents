@@ -15629,32 +15629,35 @@ class DeepAgentsApp(App):
                     AppMessage(f"{label} model already set to {display}.")
                 )
                 return
-            auth_status = get_provider_auth_status(provider) if provider else None
-            if auth_status is not None and auth_status.blocks_start:
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` for the '{auth_status.provider}' provider, "
-                        f"then set the grader model again.",
-                    ),
-                )
-                return
-            try:
-                await asyncio.to_thread(
-                    _create_model_with_deepagents_import_lock,
-                    display,
-                    profile_overrides=self._profile_override,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Failed to resolve %s model %s",
-                    label.lower(),
-                    display,
-                )
-                await self._mount_message(
-                    ErrorMessage(_build_model_switch_error_body(exc))
-                )
-                return
+            # An external graph owns its provider packages, credentials, and
+            # model allowlist. Persist the spec and let that server validate it.
+            if self._remote_agent() is None or self._server_proc is not None:
+                auth_status = get_provider_auth_status(provider) if provider else None
+                if auth_status is not None and auth_status.blocks_start:
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                            f"Run `/auth` for the '{auth_status.provider}' provider, "
+                            f"then set the grader model again.",
+                        ),
+                    )
+                    return
+                try:
+                    await asyncio.to_thread(
+                        _create_model_with_deepagents_import_lock,
+                        display,
+                        profile_overrides=self._profile_override,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to resolve %s model %s",
+                        label.lower(),
+                        display,
+                    )
+                    await self._mount_message(
+                        ErrorMessage(_build_model_switch_error_body(exc))
+                    )
+                    return
         elif self._rubric_model is None and self._rubric_model_recorded:
             await self._mount_message(
                 AppMessage(f"{label} model already follows the active model.")

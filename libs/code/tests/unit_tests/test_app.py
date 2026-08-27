@@ -14853,8 +14853,11 @@ class TestRubricCommand:
             )
 
     async def test_set_rubric_model_supports_external_graph(self) -> None:
-        """External graph sessions can persist a thread-local grader model."""
-        app = DeepAgentsApp(agent=MagicMock())
+        """External graphs validate grader models with their own environment."""
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        app._agent = RemoteAgent("http://test:0")
         async with app.run_test() as pilot:
             await pilot.pause()
             app._lc_thread_id = "t-1"
@@ -14862,11 +14865,12 @@ class TestRubricCommand:
             app._server_kwargs = None
 
             with (
-                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.app._create_model_with_deepagents_import_lock"
+                ) as create_model,
                 patch(
                     "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=None,
-                ),
+                ) as get_auth_status,
                 patch.object(
                     app,
                     "_persist_goal_rubric_state",
@@ -14880,6 +14884,8 @@ class TestRubricCommand:
             assert app._rubric_model == "openai:gpt-5.1"
             assert app._rubric_model_recorded is True
             persist.assert_awaited_once_with()
+            get_auth_status.assert_not_called()
+            create_model.assert_not_called()
 
     async def test_set_rubric_model_refuses_without_a_thread(self) -> None:
         """A selection is only effective once it reaches thread state.

@@ -73,7 +73,12 @@ from deepagents_code._git import (
 )
 from deepagents_code._invocation import invoked_name
 from deepagents_code._markdown import escape_markdown as _escape_markdown
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import (
+    PATHS,
+    get_project_agent_md_path,
+    get_user_agent_md_path,
+    user_deepagents_dir,
+)
 from deepagents_code._session_stats import (
     USAGE_KIND_LABELS,
     USAGE_KIND_ORDER,
@@ -12738,10 +12743,8 @@ class DeepAgentsApp(App):
             except Exception:
                 logger.exception("Failed to build base prompt for /context-doctor")
             memory_paths = [
-                settings.get_user_agent_md_path(
-                    self._assistant_id or DEFAULT_AGENT_NAME
-                ),
-                *settings.get_project_agent_md_path(),
+                get_user_agent_md_path(self._assistant_id or DEFAULT_AGENT_NAME),
+                *get_project_agent_md_path(settings.project_root),
             ]
             for path in memory_paths:
                 try:
@@ -23230,8 +23233,6 @@ class DeepAgentsApp(App):
         Args:
             agent_name: The name of the agent to switch to.
         """
-        from deepagents_code.config import settings
-
         if agent_name == self._assistant_id:
             return
 
@@ -23291,7 +23292,7 @@ class DeepAgentsApp(App):
             return
 
         try:
-            agent_dir_exists = (settings.user_deepagents_dir / agent_name).is_dir()
+            agent_dir_exists = (user_deepagents_dir() / agent_name).is_dir()
         except OSError:
             logger.warning(
                 "Could not stat agent directory for %r",
@@ -27525,11 +27526,9 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Agent switch already in progress."))
             return
 
-        from deepagents_code.config import settings
-
         try:
             agent_available = await asyncio.to_thread(
-                (settings.user_deepagents_dir / target.agent_name).is_dir
+                (user_deepagents_dir() / target.agent_name).is_dir
             )
         except OSError:
             logger.warning(

@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import PATHS, get_built_in_skills_dir
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code._reserved_names import reserved_agent_dir_names
 from deepagents_code.agent import (
@@ -144,6 +144,67 @@ def _make_fake_chat_model() -> GenericFakeChatModel:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
     model.profile = {"max_input_tokens": 200000}
     return model
+
+
+@contextmanager
+def _patch_agent_paths(
+    *,
+    agent_dir: Path,
+    skills_dir: Path,
+    user_agent_skills_dir: Path | None = None,
+    project_skills_dir: Path | None = None,
+    project_agent_skills_dir: Path | None = None,
+    user_claude_skills_dir: Path | None = None,
+    project_claude_skills_dir: Path | None = None,
+    project_agent_md_paths: tuple[Path, ...] = (),
+    user_agents_dir: Path | None = None,
+    project_agents_dir: Path | None = None,
+) -> Iterator[None]:
+    """Patch the free path helpers used while constructing an agent."""
+    with (
+        patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
+        patch(
+            "deepagents_code.agent.ensure_user_skills_dir",
+            return_value=skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_user_agent_skills_dir",
+            return_value=user_agent_skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_project_skills_dir",
+            return_value=project_skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_project_agent_skills_dir",
+            return_value=project_agent_skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_user_claude_skills_dir",
+            return_value=user_claude_skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_project_claude_skills_dir",
+            return_value=project_claude_skills_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_user_agent_md_path",
+            return_value=agent_dir / "AGENTS.md",
+        ),
+        patch(
+            "deepagents_code.agent.get_project_agent_md_path",
+            return_value=list(project_agent_md_paths),
+        ),
+        patch(
+            "deepagents_code.agent.get_user_agents_dir",
+            return_value=user_agents_dir,
+        ),
+        patch(
+            "deepagents_code.agent.get_project_agents_dir",
+            return_value=project_agents_dir,
+        ),
+    ):
+        yield
 
 
 def _keep_model_spec(model_spec: str, _model_retries: int) -> BaseChatModel:
@@ -1841,9 +1902,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -1914,9 +1973,7 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -1985,6 +2042,10 @@ class TestListAgents:
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.user_deepagents_dir",
+                return_value=agents_dir,
+            ),
             patch("deepagents_code.agent.console") as mock_console,
         ):
             mock_console.print = capture_print
@@ -2059,6 +2120,10 @@ class TestListAgentsJson:
         buf = StringIO()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.user_deepagents_dir",
+                return_value=agents_dir,
+            ),
             patch("sys.stdout", buf),
         ):
             list_agents(output_format="json")
@@ -2091,6 +2156,10 @@ class TestListAgentsJson:
         buf = StringIO()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.user_deepagents_dir",
+                return_value=agents_dir,
+            ),
             patch("sys.stdout", buf),
         ):
             list_agents(output_format="json")
@@ -2116,6 +2185,10 @@ class TestListAgentsJson:
         buf = StringIO()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            patch(
+                "deepagents_code.agent.user_deepagents_dir",
+                return_value=agents_dir,
+            ),
             patch("sys.stdout", buf),
         ):
             list_agents(output_format="json")
@@ -2201,7 +2274,7 @@ class TestCreateCliAgentSkillsSources:
         project_skills_dir.mkdir()
         project_agent_skills_dir = tmp_path / "project-agent-skills"
         project_agent_skills_dir.mkdir()
-        built_in_dir = Settings.get_built_in_skills_dir()
+        built_in_dir = get_built_in_skills_dir()
         user_claude_skills_dir = tmp_path / "user-claude-skills"
         user_claude_skills_dir.mkdir()
         project_claude_skills_dir = tmp_path / "project-claude-skills"
@@ -2245,6 +2318,16 @@ class TestCreateCliAgentSkillsSources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            _patch_agent_paths(
+                agent_dir=agent_dir,
+                skills_dir=skills_dir,
+                user_agent_skills_dir=user_agent_skills_dir,
+                project_skills_dir=project_skills_dir,
+                project_agent_skills_dir=project_agent_skills_dir,
+                user_claude_skills_dir=user_claude_skills_dir,
+                project_claude_skills_dir=project_claude_skills_dir,
+                user_agents_dir=tmp_path / "agents",
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -2314,9 +2397,7 @@ class TestCreateCliAgentSkillsSources:
         mock_settings.get_user_agent_skills_dir.return_value = None
         mock_settings.get_project_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_claude_skills_dir.return_value = None
         mock_settings.get_project_claude_skills_dir.return_value = None
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
@@ -2339,6 +2420,11 @@ class TestCreateCliAgentSkillsSources:
         mock_agent.with_config.return_value = mock_agent
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            _patch_agent_paths(
+                agent_dir=agent_dir,
+                skills_dir=skills_dir,
+                user_agents_dir=tmp_path / "agents",
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -2357,7 +2443,7 @@ class TestCreateCliAgentSkillsSources:
 
         assert captured_sources == [
             [
-                (str(Settings.get_built_in_skills_dir()), "Built-in"),
+                (str(get_built_in_skills_dir()), "Built-in"),
                 (str(skills_dir), "User Deepagents"),
             ]
         ]
@@ -2380,9 +2466,7 @@ class TestCreateCliAgentMemorySources:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = [
             project_inner,
@@ -2410,6 +2494,12 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            _patch_agent_paths(
+                agent_dir=agent_dir,
+                skills_dir=skills_dir,
+                project_agent_md_paths=(project_inner, project_root),
+                user_agents_dir=tmp_path / "agents",
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch(
@@ -2449,9 +2539,7 @@ class TestCreateCliAgentMemorySources:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -2476,6 +2564,11 @@ class TestCreateCliAgentMemorySources:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            _patch_agent_paths(
+                agent_dir=agent_dir,
+                skills_dir=skills_dir,
+                user_agents_dir=tmp_path / "agents",
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch(
@@ -2515,9 +2608,7 @@ class TestCreateCliAgentMemoryAutoSave:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -2626,9 +2717,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_user_agent_skills_dir.return_value = user_agent_skills_dir
         mock_settings.get_project_skills_dir.return_value = None
         mock_settings.get_project_agent_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -2654,6 +2743,12 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            _patch_agent_paths(
+                agent_dir=agent_dir,
+                skills_dir=user_skills_dir,
+                user_agent_skills_dir=user_agent_skills_dir,
+                user_agents_dir=tmp_path / "agents",
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
             patch("deepagents_code.agent.MemoryMiddleware"),
             patch("deepagents_code.agent.list_subagents", return_value=[]) as mock_list,
@@ -2706,9 +2801,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -2734,6 +2827,11 @@ class TestCreateCliAgentProjectContext:
         fake_model = _make_fake_chat_model()
         with (
             patch("deepagents_code.agent.settings", mock_settings),
+            _patch_agent_paths(
+                agent_dir=agent_dir,
+                skills_dir=user_skills_dir,
+                user_agents_dir=tmp_path / "agents",
+            ),
             patch("deepagents_code.agent.PluginSkillsMiddleware"),
             patch("deepagents_code.agent.MemoryMiddleware", FakeMemoryMiddleware),
             patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent),
@@ -2786,9 +2884,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -2917,9 +3013,7 @@ class TestCreateCliAgentProjectContext:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = user_skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -2979,9 +3073,7 @@ class TestMiddlewareStackConformance:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -3067,9 +3159,7 @@ class TestEnableAskUser:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -3411,9 +3501,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -4173,9 +4261,7 @@ class TestCreateCliAgentFsToolsWiring:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -4798,9 +4884,7 @@ class TestAutoModeSubagentHITLWiring:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
@@ -4929,12 +5013,6 @@ class TestAutoModeSubagentHITLWiring:
                 assert store.get_calls == 0
 
 
-def _mock_agents_dir(agents_dir: Path) -> Mock:
-    mock_settings = Mock()
-    mock_settings.user_deepagents_dir = agents_dir
-    return mock_settings
-
-
 def _seed_agent(agents_dir: Path, name: str) -> Path:
     """Create an agent profile directory with the `AGENTS.md` marker."""
     agent_dir = agents_dir / name
@@ -4949,7 +5027,10 @@ class TestGetAvailableAgentNames:
     def test_returns_empty_when_dir_missing(self, tmp_path: Path) -> None:
         """No ~/.deepagents directory → empty list, no error."""
         missing = tmp_path / "does_not_exist"
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(missing)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=missing,
+        ):
             assert get_available_agent_names() == []
 
     def test_returns_sorted_agent_names(self, tmp_path: Path) -> None:
@@ -4959,7 +5040,10 @@ class TestGetAvailableAgentNames:
         for name in ("zebra", "alpha", "mango"):
             _seed_agent(agents_dir, name)
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["alpha", "mango", "zebra"]
 
     def test_requires_agents_md_marker(self, tmp_path: Path) -> None:
@@ -4971,7 +5055,10 @@ class TestGetAvailableAgentNames:
         (agents_dir / "skills-only").mkdir()
         (agents_dir / "skills-only" / "skills").mkdir()
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_ignores_files_and_non_dirs(self, tmp_path: Path) -> None:
@@ -4982,7 +5069,10 @@ class TestGetAvailableAgentNames:
         (agents_dir / "config.toml").write_text("")
         (agents_dir / ".DS_Store").write_text("")
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_ignores_symlinks(self, tmp_path: Path) -> None:
@@ -4998,7 +5088,10 @@ class TestGetAvailableAgentNames:
         # Dangling symlink (target doesn't exist).
         (agents_dir / "broken").symlink_to(tmp_path / "ghost")
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["real"]
 
     def test_ignores_symlink_marker_file(self, tmp_path: Path) -> None:
@@ -5012,7 +5105,10 @@ class TestGetAvailableAgentNames:
         target.write_text("external")
         (fake / _AGENT_DIR_MARKER).symlink_to(target)
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_ignores_dot_prefixed_dirs(self, tmp_path: Path) -> None:
@@ -5025,7 +5121,10 @@ class TestGetAvailableAgentNames:
         (state / _AGENT_DIR_MARKER).touch()
         (agents_dir / ".cache").mkdir()
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_ignores_app_owned_dirs_without_marker(self, tmp_path: Path) -> None:
@@ -5043,7 +5142,10 @@ class TestGetAvailableAgentNames:
         ):
             (agents_dir / name).mkdir()
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_ignores_app_owned_dirs_even_with_marker(self, tmp_path: Path) -> None:
@@ -5060,7 +5162,10 @@ class TestGetAvailableAgentNames:
         for name in reserved_agent_dir_names():
             _seed_agent(agents_dir, name)
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_ignores_case_aliased_reserved_dirs(
@@ -5081,7 +5186,10 @@ class TestGetAvailableAgentNames:
         _seed_agent(agents_dir, "Plugins")
         _seed_agent(agents_dir, "BIN")
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["agent"]
 
     def test_lists_case_aliased_dirs_on_case_sensitive_linux(
@@ -5099,7 +5207,10 @@ class TestGetAvailableAgentNames:
         _seed_agent(agents_dir, "agent")
         _seed_agent(agents_dir, "Plugins")
 
-        with patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)):
+        with patch(
+            "deepagents_code.agent.user_deepagents_dir",
+            return_value=agents_dir,
+        ):
             assert get_available_agent_names() == ["Plugins", "agent"]
 
     def test_reserved_agent_dir_names_includes_app_dirs(self) -> None:
@@ -5118,7 +5229,10 @@ class TestGetAvailableAgentNames:
             raise PermissionError(msg)
 
         with (
-            patch("deepagents_code.agent.settings", _mock_agents_dir(agents_dir)),
+            patch(
+                "deepagents_code.agent.user_deepagents_dir",
+                return_value=agents_dir,
+            ),
             patch.object(Path, "iterdir", boom),
         ):
             assert get_available_agent_names() == []
@@ -5138,9 +5252,7 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.ensure_agent_dir.return_value = agent_dir
         mock_settings.ensure_user_skills_dir.return_value = skills_dir
         mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_built_in_skills_dir.return_value = (
-            Settings.get_built_in_skills_dir()
-        )
+        mock_settings.get_built_in_skills_dir.return_value = get_built_in_skills_dir()
         mock_settings.get_user_agent_md_path.return_value = agent_dir / "AGENTS.md"
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"

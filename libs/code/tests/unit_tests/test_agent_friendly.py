@@ -364,6 +364,10 @@ class TestSkillsCreateIdempotency:
         mock_settings.ensure_user_skills_dir.return_value = tmp_path
         with (
             patch("deepagents_code.config.Settings") as settings_cls,
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=tmp_path,
+            ),
             patch("deepagents_code.config.console", test_console),
         ):
             settings_cls.from_environment.return_value = mock_settings
@@ -387,6 +391,10 @@ class TestSkillsCreateIdempotency:
         mock_settings.ensure_user_skills_dir.return_value = tmp_path
         with (
             patch("deepagents_code.config.Settings") as settings_cls,
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=tmp_path,
+            ),
             patch("deepagents_code.config.console"),
             patch("sys.stdout", stdout_buf),
         ):

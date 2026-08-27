@@ -29,6 +29,7 @@ from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
+    ReliableRubricState,
     RubricGraderState,
     _without_internal_control_messages,
 )
@@ -319,6 +320,110 @@ class TestReliableRubricMiddleware:
         assert selected.model_params == {}
         assert parent.model == "openai:gpt-5.5"
 
+    def test_state_schema_exposes_private_model_channels(self) -> None:
+        """The schema override is what makes the state channels readable.
+
+        Without it `_grader_context` reads `None` for every channel and
+        silently grades with the construction-time model.
+        """
+        from typing import get_type_hints
+
+        from langchain.agents.middleware.types import PrivateStateAttr
+
+        assert ReliableRubricMiddleware.state_schema is ReliableRubricState
+
+        hints = get_type_hints(ReliableRubricState, include_extras=True)
+        for channel in ("_model_spec", "_model_params", "_rubric_model_spec"):
+            assert channel in hints, channel
+            metadata = getattr(hints[channel], "__metadata__", ())
+            assert PrivateStateAttr in metadata, channel
+
+    def test_grader_context_copies_parent_mutable_containers(self) -> None:
+        """Concurrent grader calls must not share containers with the parent."""
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=True
+        )
+        parent = CLIContextSchema(
+            model="openai:gpt-5.5",
+            model_params={"temperature": 0.2},
+            profile_overrides={"context_window": 1000},
+            hooks_server_events=["PreToolUse"],
+        )
+
+        selected = middleware._grader_context(cast("Any", {}), parent)
+
+        assert selected.model_params is not parent.model_params
+        assert selected.profile_overrides is not parent.profile_overrides
+        assert selected.hooks_server_events is not parent.hooks_server_events
+        assert selected.profile_overrides == {"context_window": 1000}
+        assert selected.hooks_server_events == ["PreToolUse"]
+
+    def test_grader_context_carries_every_field_from_a_dict_payload(self) -> None:
+        """RemoteGraph delivers the context as JSON; no field may be dropped."""
+        payload = {
+            "model": "openai:gpt-5.5",
+            "model_params": {"temperature": 0.2},
+            "profile_overrides": {"context_window": 1000},
+            "model_context_limit": 4096,
+            "classifier_model": "openai:gpt-5.1",
+            "approval_mode": "yolo",
+            "auto_approve": True,
+            "approval_mode_key": "key-1",
+            "thread_id": "t-1",
+            "turn_id": "turn-1",
+            "hooks_snapshot_id": "snap-1",
+            "hooks_server_events": ["PreToolUse"],
+            "prompt_id": "prompt-1",
+        }
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=True
+        )
+
+        selected = middleware._grader_context(cast("Any", {}), payload)
+
+        # `model`/`model_params` are the grader's to choose; every other field
+        # describes the session and must survive the copy verbatim.
+        assert selected.model_context_limit == 4096
+        assert selected.classifier_model == "openai:gpt-5.1"
+        assert selected.approval_mode == "yolo"
+        assert selected.auto_approve is True
+        assert selected.approval_mode_key == "key-1"
+        assert selected.thread_id == "t-1"
+        assert selected.turn_id == "turn-1"
+        assert selected.hooks_snapshot_id == "snap-1"
+        assert selected.hooks_server_events == ["PreToolUse"]
+        assert selected.prompt_id == "prompt-1"
+        assert selected.profile_overrides == {"context_window": 1000}
+
+    def test_inherit_keeps_parent_model_and_params_together(self) -> None:
+        """A thread's first grading pass has no `_model_spec` checkpointed yet."""
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=True
+        )
+        parent = CLIContextSchema(
+            model="openai:gpt-5.5",
+            model_params={"temperature": 0.2},
+        )
+
+        selected = middleware._grader_context(cast("Any", {}), parent)
+
+        assert selected.model == "openai:gpt-5.5"
+        assert selected.model_params == {"temperature": 0.2}
+
+    def test_unrecognized_context_warns_instead_of_degrading_silently(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Defaults drop `approval_mode`, so a wiring bug must not be silent."""
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=True
+        )
+
+        with caplog.at_level("WARNING", logger="deepagents_code.reliable_rubric"):
+            selected = middleware._grader_context(cast("Any", {}), object())
+
+        assert selected.approval_mode == "manual"
+        assert "Unrecognized grader context type" in caplog.text
+
     async def test_grading_does_not_mutate_agent_transcript(self) -> None:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grader = AsyncMock()
@@ -328,7 +433,7 @@ class TestReliableRubricMiddleware:
         state["_current_grading_run_id"] = "run-123"
         messages_before = list(state["messages"])
 
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
         result = await middleware._agrade(state, 2, context=context)
 
         assert result.result == "satisfied"
@@ -438,7 +543,7 @@ class TestReliableRubricMiddleware:
             "deepagents.middleware.rubric.ensure_config",
             lambda: {"metadata": {"tenant_id": "tenant-123"}},
         )
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
 
         result = middleware._invoke_grader(_state(), 0, context=context)
 
@@ -450,7 +555,7 @@ class TestReliableRubricMiddleware:
                 "rubric_grader_effective_strategy": "ProviderStrategy",
             }
         }
-        assert grader.invoke.call_args.kwargs["context"].approval_mode == "manual"
+        assert grader.invoke.call_args.kwargs["context"].approval_mode == "yolo"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
@@ -480,7 +585,7 @@ class TestReliableRubricMiddleware:
             "deepagents.middleware.rubric.ensure_config",
             lambda: {"metadata": {"experiment_id": "experiment-123"}},
         )
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
 
         result = await middleware._ainvoke_grader(_state(), 0, context=context)
 
@@ -492,7 +597,7 @@ class TestReliableRubricMiddleware:
                 "rubric_grader_effective_strategy": "ProviderStrategy",
             }
         }
-        assert grader.ainvoke.await_args.kwargs["context"].approval_mode == "manual"
+        assert grader.ainvoke.await_args.kwargs["context"].approval_mode == "yolo"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
@@ -577,7 +682,7 @@ class TestReliableRubricMiddleware:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grade = AsyncMock(side_effect=GraphInterrupt(()))
         monkeypatch.setattr(middleware, "_agrade", grade)
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
         runtime = cast(
             "Runtime[Any]",
             SimpleNamespace(stream_writer=lambda _event: None, context=context),

@@ -689,6 +689,88 @@ class TestModelSwap:
         ):
             middleware.wrap_model_call(request, lambda _request: _make_response())
 
+    def test_context_payload_conversion_reads_every_field(self) -> None:
+        """Drift guard: a new `CLIContextSchema` field must be wired up here.
+
+        The dict branch runs for RemoteGraph sessions only, so a field it
+        forgets is dropped silently for remote users while in-process sessions
+        keep working. If this fails, add the field to
+        `CLIContextSchema.from_payload` (and check the `/offload` allowlists)
+        before updating the payload below.
+        """
+        from dataclasses import fields
+
+        payload = {
+            "model": "openai:gpt-5.5",
+            "model_params": {"temperature": 0.2},
+            "profile_overrides": {"context_window": 1000},
+            "model_context_limit": 4096,
+            "classifier_model": "openai:gpt-5.1",
+            "approval_mode": "yolo",
+            "auto_approve": True,
+            "approval_mode_key": "key-1",
+            "thread_id": "t-1",
+            "turn_id": "turn-1",
+            "hooks_snapshot_id": "snap-1",
+            "hooks_server_events": ["PreToolUse"],
+            "prompt_id": "prompt-1",
+        }
+        assert set(payload) == {spec.name for spec in fields(CLIContextSchema)}
+
+        resolved = CLIContextSchema.from_payload(payload)
+
+        assert resolved == CLIContextSchema(**payload)
+
+    def test_context_payload_conversion_rejects_unknown_shapes(self) -> None:
+        """Only a schema instance or a dict describes a run's context."""
+        schema = CLIContextSchema(model="openai:gpt-5.5")
+
+        assert CLIContextSchema.from_payload(schema) is schema
+        assert CLIContextSchema.from_payload(None) is None
+        assert CLIContextSchema.from_payload(object()) is None
+
+    def test_context_payload_conversion_drops_malformed_values(self) -> None:
+        """A malformed JSON payload must not reach model construction."""
+        resolved = CLIContextSchema.from_payload(
+            {
+                "model": 42,
+                "approval_mode": None,
+                "model_context_limit": True,
+                "hooks_server_events": ["PreToolUse", 7],
+            }
+        )
+
+        assert resolved is not None
+        assert resolved.model is None
+        assert resolved.approval_mode == "manual"
+        # `bool` is an `int` subclass; a limit of `True` is not a limit.
+        assert resolved.model_context_limit is None
+        assert resolved.hooks_server_events == ["PreToolUse"]
+
+    async def test_async_strict_model_resolution_propagates_config_error(self) -> None:
+        """The TUI streams, so the async path is the one the grader runs on."""
+        from deepagents_code.model_config import ModelConfigError
+
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="unknown:bad-model"),
+        )
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=False,
+            persist_model_state=False,
+            strict_model_resolution=True,
+        )
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with (
+            patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")),
+            pytest.raises(ModelConfigError, match="no such provider"),
+        ):
+            await middleware.awrap_model_call(request, handler)
+
     def test_model_policy_error_does_not_fall_back_to_original(self) -> None:
         """A blocked runtime switch propagates instead of using the old model."""
         from deepagents_code.model_config import ModelNotAllowedError

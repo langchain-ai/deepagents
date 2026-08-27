@@ -2504,7 +2504,9 @@ def create_cli_agent(
             Direct callers may omit this to resolve one for the current
             process. The server supplies a snapshot that incorporates its
             invocation-scoped PTC overrides.
-        rubric_model: Grader model for `RubricMiddleware`.
+        rubric_model: Default grader model. `None` makes the grader follow
+            the active main model. Either way a thread's recorded
+            `_rubric_model_spec` selection takes precedence.
 
             A `'provider:model'` string or `BaseChatModel`.
 

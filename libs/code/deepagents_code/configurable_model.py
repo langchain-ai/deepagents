@@ -339,31 +339,7 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     if runtime is None:
         return None
 
-    ctx = runtime.context
-    if isinstance(ctx, CLIContextSchema):
-        return ctx
-    if isinstance(ctx, dict):
-        raw_key = ctx.get("approval_mode_key")
-        raw_thread_id = ctx.get("thread_id")
-        raw_classifier_model = ctx.get("classifier_model")
-        return CLIContextSchema(
-            model=ctx.get("model"),
-            model_params=ctx.get("model_params") or {},
-            profile_overrides=ctx.get("profile_overrides") or {},
-            model_context_limit=ctx.get("model_context_limit"),
-            classifier_model=(
-                raw_classifier_model if isinstance(raw_classifier_model, str) else None
-            ),
-            approval_mode=(
-                ctx.get("approval_mode")
-                if isinstance(ctx.get("approval_mode"), str)
-                else "manual"
-            ),
-            auto_approve=bool(ctx.get("auto_approve", False)),
-            approval_mode_key=raw_key if isinstance(raw_key, str) else None,
-            thread_id=raw_thread_id if isinstance(raw_thread_id, str) else None,
-        )
-    return None
+    return CLIContextSchema.from_payload(runtime.context)
 
 
 def _model_spec_from_model(model: BaseChatModel) -> str | None:

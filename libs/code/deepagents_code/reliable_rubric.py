@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
 
@@ -17,7 +18,7 @@ from langchain.agents.middleware.types import (
     PrivateStateAttr,
 )
 
-from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.goal_state_notice import is_conversation_control_message
 from deepagents_code.resume_state import (
     INHERIT_RUBRIC_MODEL,
@@ -31,6 +32,9 @@ if TYPE_CHECKING:
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AnyMessage
     from langchain_core.tools import BaseTool
+
+
+logger = logging.getLogger(__name__)
 
 
 def _without_internal_control_messages(state: RubricState) -> RubricState:
@@ -54,11 +58,25 @@ def _without_internal_control_messages(state: RubricState) -> RubricState:
 
 
 class ReliableRubricState(RubricState):
-    """Rubric state carrying dcode's private runtime model selections."""
+    """Rubric state carrying dcode's private runtime model selections.
+
+    These three channels are declared a second time here, because this
+    middleware's `state_schema` must list every channel it reads. Each
+    annotation has to stay identical to its original in
+    `resume_state.GoalRubricChannels` / `resume_state.ResumeState`: dropping a
+    `PrivateStateAttr` marker leaks the field into the public graph input and
+    output schema.
+    """
 
     _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Active main model, written by `ConfigurableModelMiddleware`."""
+
     _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
+    """Params that belong to `_model_spec`, written alongside it."""
+
     _rubric_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Thread-scoped grader selection written by the TUI. Tri-state: absent,
+    `resume_state.INHERIT_RUBRIC_MODEL`, or a model spec."""
 
 
 class RubricGraderState(AgentState[GraderResponse]):
@@ -82,8 +100,16 @@ class ReliableRubricMiddleware(RubricMiddleware):
     failed model node without duplicating visible output or replaying completed
     grader tools. Other model retry middleware instances keep the streamed-output
     guard enabled.
+
+    The grader model is selected per request from thread state rather than
+    fixed at construction. `inherit_main_model` supplies the default for a
+    thread that has recorded no selection of its own.
     """
 
+    # Widens the SDK's `RubricState` so LangGraph passes dcode's private
+    # channels to this middleware. Without it `_grader_context` reads `None`
+    # for every one of them and silently grades with the construction-time
+    # model -- no error, no log, and the type checker stays happy.
     state_schema = ReliableRubricState
 
     def __init__(  # noqa: D107
@@ -116,36 +142,38 @@ class ReliableRubricMiddleware(RubricMiddleware):
         Returns:
             An independent context safe to customize for one grader call.
         """
-        if isinstance(context, CLIContextSchema):
-            return replace(
-                context,
-                model_params=dict(context.model_params),
-                profile_overrides=dict(context.profile_overrides),
-                hooks_server_events=list(context.hooks_server_events),
-            )
-        if isinstance(context, dict):
-            payload = cast("CLIContext", context)
-            return CLIContextSchema(
-                model=payload.get("model"),
-                model_params=dict(payload.get("model_params") or {}),
-                profile_overrides=dict(payload.get("profile_overrides") or {}),
-                model_context_limit=payload.get("model_context_limit"),
-                classifier_model=payload.get("classifier_model"),
-                approval_mode=payload.get("approval_mode") or "manual",
-                auto_approve=bool(payload.get("auto_approve", False)),
-                approval_mode_key=payload.get("approval_mode_key"),
-                thread_id=payload.get("thread_id"),
-                turn_id=payload.get("turn_id"),
-                hooks_snapshot_id=payload.get("hooks_snapshot_id"),
-                hooks_server_events=list(payload.get("hooks_server_events") or []),
-                prompt_id=payload.get("prompt_id"),
-            )
-        return CLIContextSchema()
+        resolved = CLIContextSchema.from_payload(context)
+        if resolved is None:
+            if context is not None:
+                # Defaults silently drop `approval_mode`/`auto_approve`, so a
+                # yolo session would become approval-gated inside the nested
+                # grader. That is a wiring bug, not a normal state.
+                logger.warning(
+                    "Unrecognized grader context type %s; using defaults",
+                    type(context).__name__,
+                )
+            return CLIContextSchema()
+        # The parent context is shared across concurrent grader calls; copy the
+        # mutable containers so one call cannot mutate another's.
+        return replace(
+            resolved,
+            model_params=dict(resolved.model_params),
+            profile_overrides=dict(resolved.profile_overrides),
+            hooks_server_events=list(resolved.hooks_server_events),
+        )
 
     def _grader_context(
         self, state: ReliableRubricState, context: object | None
     ) -> CLIContextSchema:
         """Select the effective grader model without mutating shared middleware.
+
+        `_rubric_model_spec` is a tri-state, so there are three outcomes:
+
+        - the inheritance sentinel, or no selection while `inherit_main_model`
+          is set, grades with the active main model;
+        - a recorded spec grades with that dedicated model;
+        - no selection while a construction-time grader model was configured
+          leaves `model` unset, which selects that model.
 
         Returns:
             Request-local grader context carrying the selected model and params.
@@ -156,12 +184,20 @@ class ReliableRubricMiddleware(RubricMiddleware):
             selected is None and self._inherit_main_model
         )
         if inherit:
-            grader_context.model = state.get("_model_spec") or grader_context.model
-            grader_context.model_params = dict(state.get("_model_params") or {})
+            # Model and params are resolved as a unit. `_model_spec` is written
+            # only after a main-model call, so on a thread's first grading pass
+            # the channel is absent and the parent context still holds the live
+            # `/model` override -- along with the params that belong to it.
+            main_model = state.get("_model_spec")
+            if main_model:
+                grader_context.model = main_model
+                grader_context.model_params = dict(state.get("_model_params") or {})
         elif selected:
             grader_context.model = selected
             grader_context.model_params = {}
         else:
+            # `None` means "no runtime override", which selects the model the
+            # grader was built with. Clearing the parent's model is deliberate.
             grader_context.model = None
             grader_context.model_params = {}
         return grader_context

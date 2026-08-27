@@ -30,8 +30,11 @@ write sites are called out below:
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
-- `_rubric_model_spec` — the thread-scoped rubric-grader model selection. It is
-    either a serializable model spec or the explicit inheritance sentinel.
+- `_rubric_model_spec` — the thread-scoped rubric-grader model selection,
+    written by the TUI client. It is a tri-state: absent means the thread has
+    recorded no selection, so the grader keeps its construction-time default;
+    `INHERIT_RUBRIC_MODEL` means the grader follows the active main model; any
+    other value is a dedicated model spec.
 - `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` /
     `_pending_goal_request_id` — a proposed goal or amendment and its originating
     request, written by `GoalCriteriaMiddleware` inside the main graph, then
@@ -81,7 +84,20 @@ if TYPE_CHECKING:
 
 
 INHERIT_RUBRIC_MODEL = "__dcode_inherit_rubric__"
-"""Checkpoint value meaning the rubric grader follows the active main model."""
+"""Checkpoint value meaning the rubric grader follows the active main model.
+
+`None` cannot carry this: checkpoint reads go through `state_values.get()`,
+which cannot tell an absent key from a key holding `None`. Absence has to keep
+meaning "this thread never chose", because that is what falls back to the
+startup grader model. `/rubric model clear` needs the stronger statement that
+grading follows the active model, which this sentinel carries.
+
+It cannot collide with a real spec: `create_model` resolves `provider:model`
+(or a bare model name) and has no provider or model named `__dcode_...`. The
+value stays plain ASCII for the same reason as `INHERIT_CLASSIFIER_MODEL` in
+`_cli_context` — it is serialized to JSON and persisted, and Postgres
+`text`/`jsonb` rejects NUL outright.
+"""
 
 
 GoalProposalKind = Literal["create", "amend"]
@@ -121,7 +137,20 @@ mishandling it.
 
 
 def coerce_rubric_model_spec(value: object) -> str | None:
-    """Return a nonblank rubric-model spec or inheritance sentinel."""
+    """Narrow a persisted rubric-model channel to a usable value.
+
+    `INHERIT_RUBRIC_MODEL` passes through unchanged; callers compare the result
+    against it themselves. Every reader of `_rubric_model_spec` must go through
+    this, so the TUI display and the grader cannot disagree about a malformed
+    checkpoint value.
+
+    Args:
+        value: Raw value read from checkpoint state.
+
+    Returns:
+        The stripped spec or sentinel, otherwise `None` when the channel is
+        absent, blank, or not a string.
+    """
     return value.strip() if isinstance(value, str) and value.strip() else None
 
 
@@ -199,7 +228,8 @@ class GoalRubricChannels(AgentState):
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""
 
     _rubric_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
-    """Thread-scoped rubric model spec or explicit inheritance sentinel."""
+    """Thread-scoped rubric model selection. Tri-state: absent, the
+    `INHERIT_RUBRIC_MODEL` sentinel, or a model spec. See the module docstring."""
 
 
 class ResumeState(GoalRubricChannels):

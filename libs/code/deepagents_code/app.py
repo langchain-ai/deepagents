@@ -2198,10 +2198,12 @@ class _ThreadHistoryPayload:
     """Persisted agent-provided completion evidence awaiting final grading."""
 
     rubric_model_spec: str | None = None
-    """Thread-scoped rubric model spec, or `None` when inheriting the main model."""
+    """Thread-scoped rubric model spec. `None` means inherit the main model
+    *or* nothing recorded -- read it with `rubric_model_recorded`."""
 
     rubric_model_recorded: bool = False
-    """Whether `_rubric_model_spec` was explicitly recorded in the checkpoint."""
+    """Whether `_rubric_model_spec` held a usable string. A malformed value
+    (blank or not a string) reads as unrecorded."""
 
     rubric_status: str | None = None
     """Latest rubric grading status from `RubricMiddleware`, if any."""
@@ -3746,9 +3748,9 @@ class DeepAgentsApp(App):
         ) or (model_kwargs or {}).get("model_spec")
         """Chat model captured when the rubric middleware is constructed.
 
-        Unlike `_effective_model_spec`, this does not follow per-turn `/model`
-        overrides because those only affect `ConfigurableModelMiddleware`; the
-        rubric middleware keeps using its construction-time model.
+        The grader follows runtime `/model` overrides, so this is not what it
+        grades with. It survives only as a display fallback in
+        `_grader_display_values` when no runtime spec resolves.
         """
 
         self._model_params_override: dict[str, Any] | None = (
@@ -3801,7 +3803,8 @@ class DeepAgentsApp(App):
         """Thread-scoped grader model; `None` follows the active main model."""
 
         self._rubric_model_recorded: bool = False
-        """Whether the active thread explicitly selected a rubric model."""
+        """Whether the active thread has a recorded grader selection, including
+        an explicit clear (which selects inheritance, not a model)."""
 
         self._rubric_max_iterations: int | None = (server_kwargs or {}).get(
             "rubric_max_iterations"
@@ -12994,6 +12997,10 @@ class DeepAgentsApp(App):
                 else self._active_rubric
             ),
             "_sticky_rubric": self._active_rubric,
+            # Omitted entirely while the thread has no selection, so a resume
+            # falls back to the startup grader model. An explicit clear writes
+            # the sentinel rather than `None`, which would be indistinguishable
+            # from absence on read.
             **(
                 {
                     "_rubric_model_spec": self._rubric_model
@@ -14032,28 +14039,16 @@ class DeepAgentsApp(App):
             return
         await self._set_rubric_max_iterations(value)
 
-    def _startup_chat_model_label(self) -> str:
-        """Return the construction-time chat model label used as the grader default.
-
-        Uses `_rubric_default_model` (not per-turn `/model` overrides) because the
-        rubric middleware keeps the model chosen when the graph was built. A
-        failed-startup retry rebuilds the graph and re-captures this value; a
-        `/model` override on a live server does not touch it. Falls back to a bare
-        "startup chat model" when that value is unknown.
-        """
-        chat_model = self._rubric_default_model
-        if chat_model:
-            return f"startup chat model ({chat_model})"
-        return "startup chat model"
-
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
-        When no explicit grader model is set, the model string reports the
-        active main model. An unset iteration cap
-        reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
-        rather than the word "default". Shared by `/goal show` and
-        `/rubric show` so the default wording stays in sync.
+        A dedicated grader model is reported as-is. Otherwise the model string
+        reports the active main model, falling back to the construction-time
+        model and then to the literal "active model" when no runtime spec
+        resolves (credentials unconfigured). An unset iteration cap reports the
+        concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`) rather than
+        the word "default". Shared by `/goal show` and `/rubric show` so the
+        default wording stays in sync.
         """
         model = (
             self._rubric_model
@@ -15592,7 +15587,17 @@ class DeepAgentsApp(App):
         *,
         source: Literal["goal", "rubric"] = "rubric",
     ) -> None:
-        """Set the thread's grader model without rebuilding the graph."""
+        """Set the thread's grader model without rebuilding the graph.
+
+        The selection is written to thread state. A failed write rolls both
+        `_rubric_model` and `_rubric_model_recorded` back and reports an error,
+        so the reported model always matches what grading uses.
+
+        Args:
+            model_spec: Model spec to grade with, or `None` to follow the
+                active main model.
+            source: Which command invoked this, for wording and `show` hints.
+        """
         from functools import partial
 
         from deepagents_code.config import detect_provider
@@ -15656,6 +15661,19 @@ class DeepAgentsApp(App):
             )
             return
 
+        # The selection is only effective once it reaches thread state, and
+        # `_persist_goal_rubric_state` reports success when there is nothing to
+        # write to. Refuse rather than confirm a change that is then discarded
+        # by the next restore.
+        if self._agent is None or not self._lc_thread_id:
+            await self._mount_message(
+                ErrorMessage(
+                    f"{label} model cannot be set until the session is "
+                    "connected to a thread."
+                )
+            )
+            return
+
         previous = self._rubric_model
         previous_recorded = self._rubric_model_recorded
         self._rubric_model = display
@@ -15665,12 +15683,22 @@ class DeepAgentsApp(App):
             async with self._goal_state_mutation_boundary():
                 persisted = await self._persist_goal_rubric_state()
         except Exception:
-            logger.warning("Failed to persist rubric model selection", exc_info=True)
+            logger.exception(
+                "Failed to persist %s model %r for thread %s",
+                label.lower(),
+                display,
+                self._lc_thread_id,
+            )
         if not persisted:
             self._rubric_model = previous
             self._rubric_model_recorded = previous_recorded
             await self._mount_message(
-                ErrorMessage(f"{label} model could not be saved for this thread.")
+                ErrorMessage(
+                    f"{label} model could not be saved to the thread and was "
+                    f"reverted; grading still uses "
+                    f"{previous or 'the active model'}. Retry, or run "
+                    f"`/{source} show` to confirm."
+                )
             )
             return
 
@@ -15786,6 +15814,17 @@ class DeepAgentsApp(App):
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
                 self._lc_thread_id = new_thread_id
+                # `_rubric_model` deliberately survives `/clear`, but the
+                # grader reads its selection from thread state -- which the
+                # fresh thread does not have yet. Carry it over, and on a
+                # failed write fall back to what the grader will actually use
+                # so `/rubric show` cannot report a model that is not in use.
+                if self._rubric_model_recorded:
+                    async with self._goal_state_mutation_boundary():
+                        carried = await self._persist_goal_rubric_state()
+                    if not carried:
+                        self._rubric_model = self._rubric_startup_model
+                        self._rubric_model_recorded = False
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)

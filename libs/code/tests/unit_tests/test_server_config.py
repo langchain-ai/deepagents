@@ -20,7 +20,6 @@ from deepagents_code._server_config import (
     _read_env_optional_bool,
     _read_env_str,
 )
-from deepagents_code.config import settings
 
 # ------------------------------------------------------------------
 # _read_env_bool
@@ -257,37 +256,44 @@ class TestServerConfigInterpreterDefault:
             interactive=True,
         )
 
-    def test_local_none_false_uses_settings_default(self) -> None:
-        with patch.object(settings, "enable_interpreter", False):
-            config = self._build(sandbox_type="none", enable_interpreter=None)
+    @staticmethod
+    def _write_default(tmp_path: Path, *, enabled: bool) -> None:
+        (tmp_path / "config.toml").write_text(
+            f"[interpreter]\nenable_interpreter = {str(enabled).lower()}\n",
+            encoding="utf-8",
+        )
+
+    def test_local_none_false_uses_resolver_default(self, tmp_path: Path) -> None:
+        self._write_default(tmp_path, enabled=False)
+        config = self._build(sandbox_type="none", enable_interpreter=None)
 
         assert config.enable_interpreter is False
 
-    def test_local_none_true_uses_settings_default(self) -> None:
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="none", enable_interpreter=None)
+    def test_local_none_true_uses_resolver_default(self, tmp_path: Path) -> None:
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="none", enable_interpreter=None)
 
         assert config.enable_interpreter is True
 
-    def test_local_explicit_false_is_preserved(self) -> None:
+    def test_local_explicit_false_is_preserved(self, tmp_path: Path) -> None:
         # An explicit `False` must win over a `True` config default rather than
         # falling through to the settings lookup.
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="none", enable_interpreter=False)
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="none", enable_interpreter=False)
 
         assert config.enable_interpreter is False
 
-    def test_empty_sandbox_is_treated_as_local(self) -> None:
+    def test_empty_sandbox_is_treated_as_local(self, tmp_path: Path) -> None:
         # An empty-string sandbox is falsy and must not be mistaken for a remote
         # backend, which would silently disable the interpreter.
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="", enable_interpreter=None)
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="", enable_interpreter=None)
 
         assert config.enable_interpreter is True
 
-    def test_remote_none_disables_interpreter(self) -> None:
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="daytona", enable_interpreter=None)
+    def test_remote_none_disables_interpreter(self, tmp_path: Path) -> None:
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="daytona", enable_interpreter=None)
 
         assert config.enable_interpreter is False
 

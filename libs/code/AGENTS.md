@@ -170,6 +170,6 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 **Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
 
 - `detect_provider()` in `config.py` — only needed for auto-detection from bare model names
-- `Settings.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
+- `Credentials.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
 
 Model discovery, credential checking, and UI integration are automatic once `PROVIDER_API_KEY_ENV` is populated and the `langchain-*` package is installed.

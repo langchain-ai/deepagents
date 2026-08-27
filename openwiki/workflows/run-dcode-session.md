@@ -1,11 +1,8 @@
 ---
 type: operator workflow guide
 title: "Workflow: Run & Extend a dcode Session"
-description: How to install and launch the deepagents-code terminal agent (dcode) in interactive or headless mode, control tool approvals, resume persisted sessions, and extend a session with skills, subagents, hooks, MCP servers, and sandboxes.
+description: "Run dcode as an interactive TUI, a bounded headless task, or an ACP server; manage persisted threads and approvals; and safely configure hooks, MCP, skills, and sandboxes."
 tags: [dcode, deepagents-code, cli, sessions, resume, approvals, headless, hooks, mcp, sandboxes]
-verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
 sources:
   - id: openwiki-source-30dce6a219e3f1a3175c3de9
     resource: repo://libs/code/COMMANDS.md
@@ -13,6 +10,8 @@ sources:
     resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-a9143c1c174362216a1cfa2c
     resource: repo://libs/code/deepagents_code/approval_mode.py
+  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
+    resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-620b4c9d0fcbd4c7e6aa0120
@@ -23,221 +22,119 @@ sources:
     resource: repo://libs/code/HOOKS.md
   - id: openwiki-source-1d73b3e2b56b5f0d27273379
     resource: repo://libs/code/README.md
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+  - id: openwiki-source-367158c802f149f08ef8801f
+    resource: repo://libs/code/tests/unit_tests/test_main_args.py
+  - id: openwiki-source-103d356d5a4b15ce2fd743f9
+    resource: repo://libs/code/tests/unit_tests/test_main.py
+  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
+    resource: repo://libs/code/tests/unit_tests/test_sessions.py
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-08-27T11:19:20.720Z
+generated: { by: "openwiki/0.4.2", at: "2026-08-27T11:19:20.720Z" }
 ---
 
 # Workflow: Run & Extend a dcode Session
 
-`deepagents-code` (`dcode`) is a pre-built terminal coding agent built on the Deep
-Agents SDK. It runs as a rich interactive TUI or non-interactively for scripting
-and CI, persists every conversation as a resumable thread, gates model-requested
-tool calls behind human-in-the-loop approval, and is extended through skills,
-subagents, lifecycle hooks, MCP servers, and remote sandboxes. This page is an
-operator's guide to running a session and the task-level extension surface.
+`deepagents-code` (`dcode`) is a terminal coding agent built on the Deep Agents SDK. The same top-level CLI first dispatches management subcommands, then chooses one of three session clients: the default Textual TUI, the headless client, or an Agent Client Protocol (ACP) server. Threads and graph checkpoints are durable; approval and extension choices determine what the agent can do within a run.
 
-For observed friction, hotspots, and startup timing seen at runtime, read
-[runtime-behavior](../runtime-behavior.md). Deeper subsystem detail lives in the
-[code-agent architecture](../architecture/code-agent.md),
-[config layering](../concepts/config-layering.md),
-[permissions & HITL](../concepts/permissions-hitl.md),
-[MCP integration](../integrations/mcp.md), and
-[cost & sessions](../operations/cost-and-sessions.md) pages.
+For subsystem detail, see [code-agent architecture](../architecture/code-agent.md), [config layering](../concepts/config-layering.md), [permissions & HITL](../concepts/permissions-hitl.md), [state persistence](../concepts/state-persistence.md), [ACP](../integrations/acp.md), [MCP](../integrations/mcp.md), and [cost & sessions](../operations/cost-and-sessions.md).
 
-## Install and launch
-
-Install with the bundled installer and run the `dcode` command:
+## Install and establish the trust boundary
 
 ```bash
 curl -LsSf https://langch.in/dcode | bash
 dcode
 ```
 
-OpenAI, Anthropic, and Gemini provider support is included by default; extra
-providers are opted in at install time with `DEEPAGENTS_CODE_EXTRAS`, for example
-`DEEPAGENTS_CODE_EXTRAS="nvidia,ollama"`.
+OpenAI, Anthropic, and Gemini support is bundled. Add optional providers during installation, for example `DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash`.
 
-By default `dcode` trusts the directory you launch it in and reads project
-artifacts before any approval prompt. Do not launch it in an untrusted repository
-without a remote sandbox; the security model expects an isolated backend for
-untrusted code.
+Launching in a directory is itself a trust decision: dcode reads project artifacts before its tool-approval UI appears. Do not run an untrusted repository locally; select a remote sandbox to isolate execution instead.
 
-## Interactive vs headless
+## Dispatch: administration is not an agent launch
 
-A launch resolves to one of a few run shapes, decided from the CLI flags and
-whether stdin is piped:
+Top-level subcommands are handled before session launch. In particular, `dcode threads list` (or `ls`) queries stored thread metadata and `dcode threads delete <ID>` removes a thread; neither starts an agent. Listing accepts `--agent`, `--branch`, `--cwd`, `--sort`, `--limit`, `--verbose`, and `--relative`; deletion has `--dry-run`. A supplied nonexistent `--cwd` emits a warning but is still used to query stored metadata.
 
-- **Interactive TUI** — the default. Launches the Textual UI with streaming
-  responses. `-m/--message` auto-submits a first prompt, `-s/--skill` invokes a
-  skill at startup, and `--startup-cmd` runs a shell command before the first
-  prompt.
-- **Headless / non-interactive** — `-n/--non-interactive "<task>"` runs one task
-  and exits via `run_non_interactive`. Piped stdin also lands here. In headless
-  mode the shell tool is disabled unless `-S/--shell-allow-list` is set. `-q`/`--quiet`
-  emits only the agent's response for piping, and `--no-stream` buffers the full
-  response instead of streaming.
-- **ACP server** — `--acp` runs an Agent Client Protocol server over stdio
-  instead of launching the UI.
-
-Several flags are headless-only guardrails and require `-n` (or piped stdin):
-`--max-turns` (turn-count cap), `--timeout` (wall-clock cap, exit code 124 on
-expiry), `--rubric` / `--rubric-model` / `--rubric-max-iterations`, and the
-`-q`/`--no-stream` output modifiers.
-
-## Approval modes
-
-Interactive sessions run under one of three approval policies, selected by
-`ApprovalMode` (`manual`, `auto`, `yolo`) and cycled in-session with Shift+Tab:
-
-- **Manual** (`/manual`) — every gated tool call is reviewed before it runs. This
-  is the fail-closed default; `coerce_approval_mode` normalizes any invalid stored
-  value back to Manual.
-- **Auto** (`/auto`, or launch with `-y/--auto-approve`) — a classifier model
-  reviews actions and auto-approves the safe ones. The classifier model comes from
-  `--auto-classifier-model`, then `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, then
-  `[models].auto_classifier`, then the main agent model; a weaker classifier
-  weakens the review.
-- **YOLO** (`/yolo`, or launch with `--yolo`) — runs gated actions without review
-  after a one-time local risk acknowledgement, and keeps a persistent status-bar
-  indicator while active.
-
-The Shift+Tab cycle is Manual → Auto → YOLO → Manual, but Auto is dropped when it
-is not eligible (for example under a remote sandbox) and YOLO is dropped when
-`startup.yolo_switcher` is disabled. `-y` and `--yolo` are mutually exclusive and
-are ignored with a warning in headless mode. See
-[permissions & HITL](../concepts/permissions-hitl.md) for the full model.
-
-## Sessions, threads, and resume
-
-Every conversation is a **thread** persisted through LangGraph's SQLite
-checkpointer. Thread state lives in a single global database at
-`DEFAULT_STATE_DIR / "sessions.db"`, opened as an `AsyncSqliteSaver` through
-`get_checkpointer`. New thread IDs are time-ordered UUID7 strings from
-`generate_thread_id`, so IDs sort naturally by creation time.
-
-Thread listing reads only the small per-checkpoint `metadata` (latest
-`updated_at`, `agent_name`, `git_branch`, `cwd`); a covering index
-(`idx_dcode_threads_list`) keeps `list_threads` an index-only scan so it stays
-fast even when the checkpoint blobs are large.
-
-Resume is driven by `-r/--resume`:
-
-- `dcode -r` resumes the most recent thread (`get_most_recent`).
-- `dcode -r <ID>` resumes a specific thread if `thread_exists`; otherwise it
-  notifies, suggests prefix-matched thread IDs (`find_similar_threads`), and
-  starts a fresh thread.
+After non-session commands are dispatched, stdin is applied and the CLI validates incompatible or mode-specific flags before creating a client. For example, `--no-mcp` and `--mcp-config` are mutually exclusive; `--max-turns`, `--timeout`, rubric options, `--quiet`, and `--no-stream` require `-n` or piped stdin and otherwise exit 2. `--goal` is interactive-only, cannot be blank, and conflicts with rubric options and startup prompt/skill options. These checks make mode selection explicit rather than silently dropping a safety or output setting.
 
 ```mermaid
 flowchart TD
-    Start["dcode -r or -r ID"] --> Intent{"resume intent"}
-    Intent -->|"__MOST_RECENT__"| Recent["get_most_recent"]
-    Intent -->|"explicit ID"| Exists{"thread_exists"}
-    Recent -->|none found| Fresh["generate_thread_id (new thread)"]
-    Recent -->|found| Candidate["candidate thread"]
-    Exists -->|no| Fresh
-    Exists -->|yes| Candidate
-    Candidate --> Cwd{"stored cwd differs"}
-    Cwd -->|no| Rehydrate["restore state from checkpoint"]
-    Cwd -->|yes| Prompt["cwd-switch prompt, abort starts fresh"]
-    Prompt --> Rehydrate
-    Rehydrate --> Ready["session ready"]
-    Fresh --> Ready
+    Parse["Parse CLI arguments"] --> Admin{"Management subcommand"}
+    Admin -->|"threads"| Threads["List or delete persisted threads"]
+    Admin -->|"other"| Other["Run selected administrative command"]
+    Admin -->|"no"| Input["Apply stdin and validate flags"]
+    Input --> ACP{"--acp"}
+    ACP -->|"yes"| ACPServer["ACP server over stdio"]
+    ACP -->|"no"| Headless{"-n or piped task"}
+    Headless -->|"yes"| Task["Headless client runs one task"]
+    Headless -->|"no"| TUI["Textual interactive session"]
 ```
 
-Resume intent resolution in `DeepAgentsApp._resolve_resume_thread`, falling back to a fresh thread on any miss or DB error.
+This shows the CLI branch boundary: thread administration finishes before session-client selection.
 
-On resume, `dcode` rehydrates the session without replaying or re-tokenizing
-history. `resume_state.py` declares the checkpointed private channels the CLI
-reads back from `state_values`: context-token count, the effective model spec and
-params (so `dcode -r` restores the model the thread was actually using), and the
-goal/rubric lifecycle state. Model-turn channels are written from inside the graph
-so they ride the same checkpoint as the model response; because they are versioned
-channel state, resuming a specific checkpoint yields values as of that checkpoint,
-not a thread-level aggregate.
+## Choose a session shape
 
-Headless runs do not resume: `run_non_interactive` takes no thread-id or resume
-argument, so every `-n` invocation starts a fresh thread with no checkpointed
-goal.
+- **Interactive TUI:** `dcode` opens the Textual UI. `-m/--message` auto-submits its initial prompt. `-s/--skill` invokes a skill at startup, and `--startup-cmd` runs a shell command before the first task; a non-zero startup-command exit warns but does not abort.
+- **Headless task:** `dcode -n "<task>"` and a plain piped task run `run_non_interactive`, stream or buffer one task's result, and exit. `-q/--quiet` routes diagnostics to stderr so stdout contains only response text; `--no-stream` buffers response text. The headless client uses an autonomous prompt and creates a new UUID7 thread every time; it does not accept a resume ID. It can also apply `--skill` and `--startup-cmd`; an unavailable, unreadable, empty, or out-of-bounds skill fails the task with exit code 1.
+- **ACP:** `--acp` serves ACP on stdio rather than mounting the Textual UI. ACP dependencies missing at runtime cause an explanatory exit 1. It accepts ACP-local approval configuration, unlike headless execution.
 
-Threads are managed from the CLI without launching the agent via the `threads`
-subcommand: `dcode threads list` (alias `ls`, with `--agent`, `--branch`, `--cwd`,
-`--sort`, `--limit`, `--verbose`, `--relative`) and `dcode threads delete <ID>`
-(with `--dry-run`). See [cost & sessions](../operations/cost-and-sessions.md) for
-cost and session accounting.
+Headless shell behavior is deliberately different from interactive approvals: without `--shell-allow-list`, the shell tool is disabled while non-shell tools are auto-approved. `recommended` or an explicit list enables only allowed shell commands; `all` permits every command and auto-approves all tools. Therefore treat `-n` as an automation interface and set its tool bounds deliberately.
 
-## In-session command surface
+Use `--max-turns N` to cap agentic turns and `--timeout SECONDS` to impose wall-clock cancellation. Either exhausted budget yields 124. The CLI wraps the headless coroutine in `asyncio.wait_for`, reports timeout on stderr, and maps Ctrl-C to 130.
 
-Interactive sessions expose a slash-command surface catalogued in
-[`COMMANDS.md`](../../libs/code/COMMANDS.md), generated from the command registry.
-It covers 42 public commands (plus 2 hidden debug commands), including session
-control (`/clear`, `/force-clear`, `/threads`, `/reload`, `/restart`, `/quit`),
-context and cost (`/context`, `/context-doctor`, `/offload` aka `/compact`,
-`/cost`, `/tokens`), approval switching (`/manual`, `/auto`, `/yolo`), model and
-agent selection (`/model`, `/agents`, `/effort`), and extension management
-(`/mcp`, `/skill-creator`, `/plugins`, `/install`, `/remember`, `/tools`).
+## Approvals in interactive and ACP sessions
 
-## Lifecycle hooks
+Interactive approval policy is `manual`, classifier-backed `auto`, or unrestricted `yolo`. Invalid persisted values fail closed to Manual. Shift+Tab normally cycles Manual → Auto → YOLO → Manual; it omits Auto when ineligible, such as with a remote sandbox, and omits YOLO when `startup.yolo_switcher` is disabled. A launch requested with Auto in a sandbox falls back to Manual.
 
-Hooks are user-configured shell commands that run at agent lifecycle events, as
-documented in [`HOOKS.md`](../../libs/code/HOOKS.md). Each matching handler
-receives a JSON event payload on stdin and can influence the session through its
-exit code and stdout. Hook commands run on your machine with your privileges, so
-every `hooks.json` entry is trusted code.
+- `-y/--auto-approve` starts Auto. Its classifier resolves from `--auto-classifier-model`, then `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`, then `[models].auto_classifier`, then the main model. A weaker classifier weakens the review boundary. The classifier-model flag is rejected outside local interactive TUI use.
+- `--yolo` skips gated-action review only after its versioned local acknowledgement. Its persistent status indicator remains even if its recurring toast is suppressed.
+- `-y` and `--yolo` are mutually exclusive. In a headless launch either is warned as ineffective and ignored; shell access remains governed by `--shell-allow-list`.
 
-Hooks load from three scopes with a fixed precedence: user
-(`~/.deepagents/hooks.json`, always), project
-(`{project_root}/.deepagents/hooks.json`, only after workspace trust), and plugin
-(`hooks/hooks.json` inside an enabled plugin). Every matching handler for an event
-runs concurrently and results are reduced project → user → plugin; the first
-handler that stops processing decides the event, but a plugin handler still runs
-even when a project or user handler stops the event.
+## Persist, inspect, and resume threads
 
-Events split by owner: client events (`SessionStart`, `UserPromptSubmit`,
-`SessionEnd`, `PermissionRequest`, `Notification`) and server events
-(`PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `PreCompact`, `Stop`,
-`SubagentStart`, `SubagentStop`). Because the server-owned event set is fixed when
-a session starts, newly enabled plugin hooks take effect only after `/reload`.
+Sessions use LangGraph's `AsyncSqliteSaver` against the global `DEFAULT_STATE_DIR/sessions.db`. The sessions module owns the connection lifecycle so it can drain it after an interrupted connection. IDs are UUID7, which sorts naturally by creation time.
 
-Handler exit code `2` is a synthetic block whose meaning depends on the event
-(deny on `PreToolUse` / `PermissionRequest`, block processing on
-`UserPromptSubmit` / `PreCompact`, feedback on the post-tool events); other
-non-zero exits are diagnostics only. JSON stdout can set `permissionDecision`,
-`additionalContext`, `systemMessage`, and continuation control.
+`list_threads` reads compact checkpoint metadata—timestamps, agent, branch, and working directory—not state blobs. Its `idx_dcode_threads_list` covering index makes the common grouping query index-only; an index-creation failure is non-fatal, preserving correct but potentially slower listing.
 
-### Workspace trust
+`-r` resolves the most recent thread, while `-r <ID>` targets one ID. During TUI startup, `_resolve_resume_thread` looks up the candidate asynchronously, offers a working-directory switch for a differing stored cwd, adopts the prior agent under the documented default-agent rules, and can restore its persisted model if the user did not explicitly select one. A missing thread offers prefix matches; a lookup error, no recent thread, or an aborted cwd switch creates a new thread instead.
 
-Project-scoped hooks can execute arbitrary repository commands, so they load only
-after workspace trust. Interactive `dcode` prompts for approval when
-`.deepagents/hooks.json` is present in an untrusted workspace; choosing
-always-allow persists trust in `~/.deepagents/.state/hooks_trust.json`, denying
-runs with user hooks only, and cancelling aborts startup. Headless / CI runs never
-prompt — pass `--trust-project-hooks` to opt a run into repository hooks.
+```mermaid
+flowchart TD
+    Intent["Resume intent"] --> Recent{"Most recent intent"}
+    Recent -->|"yes"| Lookup["Find most recent thread"]
+    Recent -->|"no"| Exists["Check explicit thread ID"]
+    Lookup --> Candidate{"Candidate found"}
+    Exists --> Candidate
+    Candidate -->|"no"| NewThread["Generate new UUID7 thread"]
+    Candidate -->|"yes"| Cwd["Offer stored cwd switch"]
+    Cwd -->|"abort"| NewThread
+    Cwd -->|"continue"| Restore["Adopt eligible agent and restore checkpoint state"]
+```
 
-## Extending a session
+This shows TUI resume resolution; headless runs always take the new-thread path.
 
-- **Skills** — reusable capabilities and slash commands. Invoke one at startup
-  with `-s/--skill`, author or refine them with `/skill-creator`, and persist
-  useful context with `/remember`.
-- **Subagents** — delegated agents that run as sub-tasks; their lifecycle is
-  observable through the `SubagentStart` / `SubagentStop` hook events.
-- **MCP servers** — external tool servers configured via `--mcp-config` (Claude
-  Desktop format, merged on top of auto-discovered configs) or managed at runtime
-  with `/mcp`. `--no-mcp` disables all MCP loading. Project-level stdio and remote
-  MCP servers require approval; `--trust-project-mcp` skips that prompt for
-  headless runs. See [MCP integration](../integrations/mcp.md).
-- **Sandboxes** — `--sandbox [TYPE]` runs code execution in an isolated remote
-  environment (built-ins include `agentcore`, `daytona`, `langsmith`, `modal`,
-  `runloop`, `vercel`). `--sandbox` with no value uses `[sandboxes].default`.
-  `--sandbox-id`, `--sandbox-snapshot-name`, and `--sandbox-setup` attach to or
-  provision a specific environment. Under a sandbox the local JS interpreter is
-  disabled and Auto approval is not eligible.
+Resume-state channels let the client rehydrate context-token count, effective model spec and parameters, goal/rubric state, and related lifecycle values without replaying history. Model-turn values are written inside the graph checkpoint with the model response, so a chosen checkpoint restores values at that point, not a thread-wide aggregate.
 
-## Configuration and operations
+## Extend a session safely
 
-`dcode` merges configuration across layers; administrators can enforce settings
-with a read-only `managed_config.toml` that overrides environment variables and
-`~/.deepagents/config.toml`, and can also override selected launch flags
-(model, interpreter toggle, shell allow list, recursion limit, startup mode, and
-more). Enforced keys fail closed: an unreadable or invalid managed file blocks
-every command except the diagnostic ones (`--help`, `--version`, `config`,
-`doctor`, `auth path`). See [config layering](../concepts/config-layering.md) for
-the precedence rules and enforcement semantics.
+**Skills and commands.** Skills provide reusable instructions and slash commands. Invoke one with `-s/--skill`, create or refine one using `/skill-creator`, and use `/remember` to save useful context. The generated command catalog documents 42 public slash commands plus two hidden debug commands, including session control, context/cost, model and approval selection, and MCP/plugin/tool management.
+
+**Hooks.** Hooks are trusted local shell commands receiving JSON on stdin at lifecycle events. User hooks always load; project hooks require workspace trust; enabled plugin hooks load from the plugin. Matching handlers run concurrently but results are reduced project → user → plugin, so precedence determines the first stopping result, not whether later plugin side effects run. Project-hook trust is prompted in interactive sessions and may be persisted per canonical workspace; denial continues with user hooks, cancellation aborts startup, and headless/CI requires `--trust-project-hooks` to opt in.
+
+Client events include `SessionStart`, `UserPromptSubmit`, `SessionEnd`, `PermissionRequest`, and `Notification`; server events include pre/post tool, compaction, stop, and subagent lifecycle events. Server hook registrations are fixed at session start, so newly enabled plugin hooks require `/reload`. Exit code 2 has event-specific blocking semantics; other non-zero exits are diagnostics. Structured JSON stdout can provide a permission decision, context, notices, and continuation controls. Hook timeouts are terminated and reported as diagnostics rather than approvals.
+
+**MCP and sandboxes.** `--mcp-config` accepts Claude Desktop-format server JSON and has highest precedence over discovered configuration; `--no-mcp` disables all MCP loading. Project stdio and remote servers require approval unless `--trust-project-mcp` is supplied. Select a remote execution backend with `--sandbox [TYPE]`; no value uses `[sandboxes].default`, while the default is local-only `none`. Built-ins include `agentcore`, `daytona`, `langsmith`, `modal`, `runloop`, and `vercel`; `--sandbox-id`, `--sandbox-snapshot-name`, and `--sandbox-setup` target or provision a particular environment. The CLI verifies selected sandbox dependencies before spawning the agent server.
+
+## Operational policy
+
+A read-only administrator-managed `managed_config.toml` overrides environment and user configuration and can enforce selected launch controls. Malformed or unreadable managed policy fails closed, allowing only help and diagnostic paths such as `config`, `doctor`, and `auth path`; dcode never writes that file. See [config layering](../concepts/config-layering.md) for exact precedence and deployment requirements.
+
+## Focused regression checks
+
+When changing this workflow, use focused tests to protect the branch boundaries rather than only testing parser help:
+
+- `tests/unit_tests/test_main_args.py` verifies headless-only timeout rejection, acceptance with piped stdin, forwarding to `asyncio.wait_for`, and exit 124 on expiry.
+- `tests/unit_tests/test_main.py` verifies `threads list --cwd` parsing and cwd normalization behavior.
+- `tests/unit_tests/test_sessions.py` asserts that thread listing creates and uses the covering index instead of scanning blob-bearing checkpoint rows.
+
+These tests complement integration coverage: preserve exit codes, stderr diagnostics, and the no-agent-launch behavior of administrative subcommands when extending dispatch.

@@ -1880,9 +1880,11 @@ def test_managed_skill_dirs_outrank_environment_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Managed skill containment roots cannot be replaced through the environment."""
-    from deepagents_code import config, model_config
+    from deepagents_code import model_config
     from deepagents_code._env_vars import EXTRA_SKILLS_DIRS
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     user = tmp_path / "config.toml"
     managed = tmp_path / "managed.toml"
@@ -1897,8 +1899,9 @@ def test_managed_skill_dirs_outrank_environment_override(
     monkeypatch.setenv(EXTRA_SKILLS_DIRS, str(env_dir))
     service.invalidate_config_sources()
     try:
-        settings = config.Settings.from_environment(start_path=tmp_path)
-        assert settings.extra_skills_dirs == [managed_dir]
+        option = get_option("skills.extra_allowed_dirs")
+        assert option is not None
+        assert get_config_resolver().get(option).value == [managed_dir]
     finally:
         service.invalidate_config_sources()
 
@@ -2632,14 +2635,16 @@ def test_reload_keeps_a_user_shell_allow_list(
     """`/reload` must not discard `[shell].allow_list` from the user's config.
 
     Regression: `_reload_values` resolved the option with `toml_data={}`, so it
-    saw only env and managed layers. `Settings.from_environment` reads the user
+    saw only env and managed layers. `Credentials.from_environment` reads the user
     layer, so a reload reset the allow list to `None` and reported a change that
     never happened. `skills.extra_allowed_dirs` in the same function already
     read its user layer, which is what made the omission clearly unintentional.
     """
     from deepagents_code import model_config
-    from deepagents_code.config import Settings
+    from deepagents_code.config import Credentials
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     user = tmp_path / "config.toml"
     user.write_text('[shell]\nallow_list = ["git status"]\n', encoding="utf-8")
@@ -2650,11 +2655,13 @@ def test_reload_keeps_a_user_shell_allow_list(
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
-        runtime = Settings.from_environment(start_path=tmp_path)
-        before = runtime.shell_allow_list
+        runtime = Credentials.from_environment(start_path=tmp_path)
+        option = get_option("shell.allow_list")
+        assert option is not None
+        before = get_config_resolver().get(option).value
         assert before is not None
         runtime.reload_from_environment(start_path=tmp_path)
-        assert runtime.shell_allow_list == before
+        assert get_config_resolver().get(option).value == before
     finally:
         service.invalidate_config_sources()
 
@@ -2665,8 +2672,10 @@ def test_managed_shell_allow_list_still_wins_a_reload(
 ) -> None:
     """Reading the user layer on reload must not cost managed precedence."""
     from deepagents_code import model_config
-    from deepagents_code.config import Settings
+    from deepagents_code.config import Credentials
+    from deepagents_code.config_manifest import get_option
     from deepagents_code.configuration import service
+    from deepagents_code.configuration.resolver import get_config_resolver
 
     user = tmp_path / "config.toml"
     user.write_text('[shell]\nallow_list = ["git status"]\n', encoding="utf-8")
@@ -2677,9 +2686,11 @@ def test_managed_shell_allow_list_still_wins_a_reload(
     service.invalidate_config_sources()
     model_config.clear_caches()
     try:
-        runtime = Settings.from_environment(start_path=tmp_path)
+        runtime = Credentials.from_environment(start_path=tmp_path)
         runtime.reload_from_environment(start_path=tmp_path)
-        assert runtime.shell_allow_list == ["ls"]
+        option = get_option("shell.allow_list")
+        assert option is not None
+        assert get_config_resolver().get(option).value == ["ls"]
     finally:
         service.invalidate_config_sources()
 
@@ -4512,7 +4523,7 @@ def test_blocked_reload_keeps_policy_and_says_so(
     nothing had happened.
     """
     from deepagents_code._env_vars import SHELL_ALLOW_LIST
-    from deepagents_code.config import Settings
+    from deepagents_code.config import Credentials
     from deepagents_code.configuration import service
 
     managed = tmp_path / "managed.toml"
@@ -4521,7 +4532,7 @@ def test_blocked_reload_keeps_policy_and_says_so(
     service.invalidate_config_sources()
     previous = _reload_previous()
     try:
-        refreshed, blocked = Settings._reload_values(
+        refreshed, blocked = Credentials._reload_values(
             start_path=tmp_path,
             env={SHELL_ALLOW_LIST: "all"},
             previous=previous,

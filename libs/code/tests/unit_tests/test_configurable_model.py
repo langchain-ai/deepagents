@@ -116,15 +116,15 @@ class TestCheckpointPersistence:
 
     def test_startup_custom_provider_uses_configured_spec(self) -> None:
         """Custom classes must checkpoint their configured provider alias."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         model = _make_model("fake")
         model._get_ls_params.return_value = {
             "ls_provider": "deterministicintegrationchatmodel"
         }
         with (
-            patch.object(settings, "model_provider", "itest"),
-            patch.object(settings, "model_name", "fake"),
+            patch.object(runtime_state, "model_provider", "itest"),
+            patch.object(runtime_state, "model_name", "fake"),
         ):
             assert _model_spec_from_model(model) == "itest:fake"
 

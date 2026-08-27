@@ -389,7 +389,7 @@ def test_preview_reload_does_not_swap_the_process_snapshot(
 ) -> None:
     """A dry run observes the cached policy without accepting a disk edit."""
     from deepagents_code import model_config
-    from deepagents_code.config import Settings
+    from deepagents_code.config import Credentials
     from deepagents_code.configuration import service
     from unit_tests.conftest import redirect_managed_config
 
@@ -400,7 +400,7 @@ def test_preview_reload_does_not_swap_the_process_snapshot(
     monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", user)
     redirect_managed_config(monkeypatch, managed)
     service.invalidate_config_sources()
-    runtime = Settings.from_environment(start_path=tmp_path)
+    runtime = Credentials.from_environment(start_path=tmp_path)
     assert service.get_managed_snapshot().data["shell"]["allow_list"] == ["ls"]
 
     managed.write_text('[shell]\nallow_list = ["git"]\n', encoding="utf-8")

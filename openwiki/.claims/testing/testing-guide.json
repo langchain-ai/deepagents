@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:ae15ff10dbff07e91c5d9da3a9e13dd2c3bc0e5d36c6498915d586b5d3c6ae11",
+  "pageVersion": "sha256:f202b1dec8661af3c5a68a3c61ad79769d982b710b159d7801103990e86bde16",
   "claims": [
     {
       "id": "claim_3bac20f00b4541488a1da51130484581",
@@ -16,7 +16,7 @@
         },
         {
           "resource": "repo://libs/code/tests/unit_tests/test_agent.py",
-          "version": "repo-file-v1:sha256:211d0585e9725f1dc71a1dc87fcd82db9dacfb6029791b9a961607f48f66b154"
+          "version": "repo-file-v1:sha256:63ad96d210fb7b4eee779f71cbd5d953bc3e57ff80e6a2c7165471937490d4c5"
         },
         {
           "resource": "repo://libs/deepagents/tests/benchmarks/test_benchmark_create_deep_agent.py",
@@ -225,10 +225,124 @@
           "version": "repo-lines-v1:sha256:ed9880542f0f3b67b806e9e1f610773afe49a2020e063097bcb4157b86d33560:eyJzZWxlY3RlZExpbmVDb3VudCI6NzgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3ZGNjMjUxYTMyN2Y5M2EzZGViNTg1ZDU1NTQ5ZWM0ZjE5MWY3ZDA0OGI3N2U1NjIzNDNkYTMwY2RmOTQ1OTQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1MWFkNzE5NDU3NmRiMTA4NDRmODE1YWU3N2QzNzEzMGIxNTVkZDRkMWYwZDRkNWU0NWVhZjc5OTgzY2MzNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhMzFiNjBjMGE1ZTIxZDExODU3YjExNDE4MGYwZTQ4ZmY0ODJjZDgzYzFjMmUxMWJhYjA3OWM3ZjQxMGU2N2YifQ"
         }
       ]
+    },
+    {
+      "id": "claim_cd96046dfae74112ad09ede1cf0a4f19",
+      "statement": "ACP's normal make test target runs its flat tests/ tree with socket access disabled, a ten-second timeout, and coverage for deepagents_acp.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/Makefile#L9-L15",
+          "version": "repo-lines-v1:sha256:bc7e4ea7521cb551d3d9586e8c1e92f33c14ed6a4912373139bb9756256783a0:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDlmM2E3MjQxYTY2Yjc2MDBiMzYzNWJmZDc3MTgwZTg0NjZhNmQzNjFkNGM4ZjVlODhmYTMxYWU1ODIxNmQ3ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNjEyZThlMDVmNmQzZDY1ZDM1NmQwM2FlNjA3OWYzODhhYjExMzE4YjRlMWI0MTJlZDYwMGFiNTJhYzc5MTRiZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzRlYmFjNTU5YjE4YjFlYThlOTFlZTMwYzdiYTRlYzEwZjhhNTk4ZDk0M2RhOGZkMjU0NGQzMmU0ZmVlZjAwMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjgwZmI5NTBkN2I3YTFiYzEyZTFjZWRmNDk3NTIxMDUzODE0MGIyNDllZGJhZGI4MzQyNjQ0YmZmMjMwMmQ5ZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_50240989f01f41a7965c9cc7692c117c",
+      "statement": "ACP agent tests use a fake ACP client and a MemorySaver-backed deep agent to assert protocol-visible streaming and cancellation behavior without a network connection.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py#L112-L157",
+          "version": "repo-lines-v1:sha256:5ebef0780bbe43f59db46ce7580dfe81fd03e16931b4c2302ecb6b4db964c152:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxYTRkNzEzYzBlOWYzNmFkMzZhOTRjNDExMmJkNTNmMjI0MzFiMGViMzM3N2ZmZmFiMDc5OTJkM2VlZjhhOTIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIyNDYzOTI2ZDlhOTkzNGY5ZTFhNTQ2ODFiODI2MDU5MjczNzI3ZjAzZTZlM2JkZjIyNzdkODBiNWQ1NThjZDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ5MjlhOWU3M2VmNzU3NWJiMWMxMTE2MjYzZTg0YTAyYmE5MzJjNDcyOGYzNzliNDBjOTk2MjM2NjQ4OTRmMWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM4YWRhM2ZlYzJiZGE1MTUyODI3YTI2NjdiMWRjMjA1NjMzOTNiN2RkYWY1ZjczNjdmOGJjNTQ0Y2QyZGUxYTQifQ"
+        },
+        {
+          "resource": "repo://libs/acp/tests/test_agent.py#L55-L94",
+          "version": "repo-lines-v1:sha256:2527759781169c02beb720c2a45579002ec095c16c2bc95d627189cd8c460296:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZlY2IxZjZmYzAxZDBmNjUzNzNmYmQ0MjA0OTg3ZGI1MjUzZGVhM2FhYmRjMDMyMDAyN2RlMzY4NjlhYjcwYTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVlYjEzNjMzZDhlMjJlYmI5M2MxOGUzY2ZhNTRmNmFkY2JiMmM2MWVlNmNlYzk4OGJkMWI0Y2ZiZDM4MjY3NTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkNmYyM2FkNzg4NWJiOGRlNTRhY2NjNWJmOWEwYWQzMDA0NDg5ZTEwNGViZGMxYTlkNzJhYTVjMDdiZmFjYzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5085dddc95204146a96530bc49e95517",
+      "statement": "Talon's normal make test target is socket-disabled and applies a ten-second timeout; its tests use recording channel doubles and temporary filesystem state to test host/channel lifecycle and retention behavior deterministically.",
+      "evidence": [
+        {
+          "resource": "repo://libs/talon/Makefile#L8-L15",
+          "version": "repo-lines-v1:sha256:8622c24c65896d4aee2731087eb391cb436e7e5ca7006c4a198e4ad33290e948:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlMDg2YmM3MTZlNDVmNWM3Y2QyMzAxMWRlODI2ODI1ZTZmMzk2Yjk0MGU5MzI0N2MzNjFmMmY5ZDlhY2M4ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZGViNjY1MWNiOGQ3ZTcwOTc0YjhjYmU5NGFkM2VkN2I1ODg0Mzc5NDI5OTk5OWE2NjdlMWNiZjcyMDYyOWMxOCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYjQ2M2RlMzg2ZTA3OTFhZGQ1MmUzZjZlM2EwOWYyYmY2NDhmZTQzMTMxOGUxOTE1YjdlNWRlOTlmN2E1ODQ1MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMGJkZDY4MTAyNGVkOGRmNzI5NTg3YmRkN2IxNmZjMjdhZWMwOTY0YmVlMTQ3Nzc0ODdlODY0ZDRlODdmOTA5ZCJ9"
+        },
+        {
+          "resource": "repo://libs/talon/tests/conftest.py#L17-L95",
+          "version": "repo-lines-v1:sha256:7a51ef94dc577a459bcdb54b0a9e3c372d84ba1ed8491886154f20d17225a9e1:eyJzZWxlY3RlZExpbmVDb3VudCI6NzksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwZmI3NWNmMjQ2MjYyM2Y2OWFhZWEyMjA5YWIwMGNmZTg2ZTc4ZGFmYjdmODFiZjQyYzhmZjUwNmY1MzhlNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZkYjM2NTMzMjU1ODlhYjIyZDNhYmFiNTVjYmEwY2QxY2ZjYWE1NjFmNDg5ODQxZDk3NDMwYWY2Zjg5ODAwYzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/talon/tests/test_data_lifecycle.py#L11-L47",
+          "version": "repo-lines-v1:sha256:b02450946b2db1fc8394e9d9e9e6658c52b6eff3a353d344d17309af2184d940:eyJzZWxlY3RlZExpbmVDb3VudCI6MzcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1ZGI2YzFiNTU5OWE5Y2Q3ZThjY2JmZjJkZjFmMDFlZmNkOTFkNDY5ODdiNTUwZTM0MTlmM2U5ZDg0NWNiMzIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc3YmYzNGVlODUzMjIwY2E0MzhjNzRjNzhkMTlmYzNmZDY3ZmY4NzU4NjRhYWFhOTgwZDhjZjc0NTJjMWJkOTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2ZmE4NDk1MjZiZGJhNjJkZjEzZjg3MmZkM2U4YWNmZWE4NTM4ODY0NDYyODc4YWI0ODM4NjZjYTdjZTk1NWMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a2fdb48de51a4b779da281f226904015",
+      "statement": "The eval package separates offline harness tests in tests/unit_tests from live model evaluations in tests/evals; make test runs only the offline directory with socket access disabled, while make evals requires MODEL and invokes pytest against tests/evals.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/Makefile#L9-L21",
+          "version": "repo-lines-v1:sha256:d490870fc89445ba3cf7f2ac87bc2cb3da12dfb6959be233da8d7290a635e42d:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA5ZjNhNzI0MWE2NmI3NjAwYjM2MzViZmQ3NzE4MGU4NDY2YTZkMzYxZDRjOGY1ZTg4ZmEzMWFlNTgyMTZkN2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjZTRiYmEyZjZhYWE3NTcwNDA4MWUxZTcyNGM3NmViZjg4MDMyZjgzOTUwZGQ0NmI3MGNhYzJlMDIxOGI4ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc0ZWJhYzU1OWIxOGIxZWE4ZTkxZWUzMGM3YmE0ZWMxMGY4YTU5OGQ5NDNkYThmZDI1NDRkMzJlNGZlZWYwMDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhMDg0NjMxY2FlZTVmN2NjMjZjMmNmNTM2YTM4NjNhYjdiNTgzNmI1MDFjYzBlYjAxNTEyOGRlMWQwN2VjMjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_60ee0d0150574ec1b3e5cb1465abf595",
+      "statement": "Live eval collection exits before running tests unless LangSmith tracing is enabled and an explicit --model is supplied; it supports category and tier selection through pytest options and markers.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/tests/evals/conftest.py#L30-L100",
+          "version": "repo-lines-v1:sha256:8b62cddd0636bc4a194b36952062446197c5769ac4c8c5f6efdffb2b866fbac7:eyJzZWxlY3RlZExpbmVDb3VudCI6NzEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxYTgwODc2MmE0YjAyOWQxNGQ5ZjFhOTFmZmVkZTdhYWE1OWM1NzEyYzJmNjNlMGEyZDE5ZWY3NzU1MmZjYjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwYTBiNmQyNmJlZTdiZWJjOGMyZjljYzg0NTQ2NmQzMTQ3MDU2Zjc3NGY2MDM4M2Y1ZGY1OGZlMjg1MGFiNDgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ3NDBlZmI0OGU0Nzg2YTkyZjVkM2U0ZmI2NjYzYzk5NmY3NDk3YmVmOTEzNDBmZDQ5OWVhMTE4YmEyYTE1ODgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY1NGIyODYxMWNlZTU1MjkwNmU5NjQ1MThmYmNmODAxNjQ1MmY3N2RhYjg0ZDlhNmNhZjJlODhkMWI3M2JjNzMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0a88dbd4647c4c67aa73b374235fdefe",
+      "statement": "The deepagents-evals console script is the canonical eval interface; it supports run, repeated trials, report aggregation, radar generation, catalog/model-group maintenance, and discovery, with JSON and dry-run support on most subcommands.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L3-L28",
+          "version": "repo-lines-v1:sha256:946ccc6b4e25a9d2a4c308d8f95d1eaf4ee7eb89146c6f164c79e00591f5349b:eyJzZWxlY3RlZExpbmVDb3VudCI6MjYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMjM0MGE0MjFlZmEzZmI3MGU2NjI2ZDBlODI2ZjRiYjQwZjNhNThmZWYyYjI1NmI4ZmRkOWU0MmNjMzA3YzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZGU5NTQ4MmI2ZWJkZjI3ZGJiMTRjNTY2OWJhODVjNDRiYWE2MmRkNTBjZDEwZTRiMGVjYzQ0OTc5YzU4ZGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjoyLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE0MTBkMTFkYjY1Mjg3ZDc2NTFmOTYzZTM2ZDNhMzU4ZTBlZGY2OTExYTQwOGQ5ZTU0MDQ0NmVhODJhMWRmMDAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjIyZWZkY2YwODA3NzRlOGY3ZWRiY2QwZTYzZmE5NjNjMGVjYmJmNTM2ZjI5YmQ0YjMzZmFiOWU5MTkwYmJiMzEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6d4072f8873a4c83a16a1e26ac9bd484",
+      "statement": "The eval reporter records aggregate outcomes, durations, categories, failure details, experiment links, and efficiency results; because it changes individual trial pytest status to zero, automation must use the CLI's aggregate failure decision rather than a per-trial pytest return code.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L82-L93",
+          "version": "repo-lines-v1:sha256:454ca05d63215b7bdc276df4ba2fee68130e7fda567eb2f0d873bf7468eab69e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmYTE2ZTRjYWM0MGIzOTRmYmI1YWFjOTc2MWU2NTljMDllMjZmZDZlNjQzMDVkNjU3NGU4NDk2NjEyNjljZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE5MzU1MzViZGQxNmU3ODZlMTBjY2E3MjQ2MjdkOTEyMjgyNTdkMGM5N2NjZGM2NWY5ODUyNTkzOThjZjRhZDUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyYWJjNDYyZjY5NjM4YjNmZDMzNTc3NDRkNDBjNGE5NzE5OGZhOGQ0M2NlMDQ2MGNhZDU1MDk0YmI0N2ExZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUxZmY1ZjE2Y2FjNTU0ZGVkNDEzNzBkNTA1ZmM1ZWU4NGQ5ZjE5OTQ0OWEwNDY5ODFiMzdjNmQ4YjEzZDcwZTgifQ"
+        },
+        {
+          "resource": "repo://libs/evals/tests/evals/pytest_reporter.py#L22-L49",
+          "version": "repo-lines-v1:sha256:f237a6e4197e4c249fdff7db82c4364f0c3686494e8a068465e6d6abb8979ee4:eyJzZWxlY3RlZExpbmVDb3VudCI6MjgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRjNTBiN2NmYzMxMmM0NDJlMTI5ZDg4MzMzYmFkNjcwMDYzZWIyNjdlNzExMDNjODk4YWVlYmE3YWU2OGFiMjkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQwMzcxODdkZDVlNjhjOGJiZjc5YzA3ZDQ4ZTZiNWU0MDY0OWVhNzI3ZjkwMTc3MjljODc3NDJmNjllYmMyMmEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU1YzFjNDYyZTJhMzlkNzQ3NTlmNWUxYjEyNmY3NjgzYTJiNzMwMTE4ZTE4ZjUxMjJiMDhjZWRlZWI2NTBlMjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjYyNjM3ZGVlNjk0NjY1NmFhZTljZjViMDM5MjYzZDA2OTAyYTUzY2Y5YmIyYjdiZmRiMmEwNjExOTFhZGE1MDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_5cdf566012294f1bba6ab2746fe66a0d",
+      "statement": "Dcode agent unit tests preserve behavioral seams: missing subagent credentials defer failure instead of aborting CLI startup, offload is exposed through the backend rather than graph input schema, and stored live approval mode overrides a run-context auto-approve snapshot.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py#L136-L167",
+          "version": "repo-lines-v1:sha256:981171d197850d5a550662e354c5671407fbdd7d4df14a7cec467f127422622c:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg0OThkMmUzYjBkZWJlNTNiZjM5MTQ1YmZhZDBmMmRhMzA4OTQyYTg1ZWU5NmM0NmViNTY0Nzc1YzAyZmRmMzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImExYmE0Y2Q1YTFiYWJlNjBhMDI5YjBkM2M2MDJiZWNhOWUxMmVmMjQzMzkyMjA1Yzc0OTM4NTYzMjVlNGQxZGIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE2OWNkZDBlN2E1NGZmOGQ2YTRlODZkNjRkYzgxMmViNmZlYTlhOTNiNjkwZWYxYzUwZGZkYTE0ZGIzZjI3YmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU2ODBiMGYyOTI4YWMwZGJmM2RkNGEzMWQ1YzE2ZTkxOThhMjlhNjA4NmQzOWNmYjU3YzIwZjYwYmUzM2E2NWQifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py#L208-L224",
+          "version": "repo-lines-v1:sha256:b4fddf3b05e80ca7a113dd6522140a4156446e81aaab6d6a0e86ca93878d5078:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkyYzNjNGIzZGFkN2RmYzY5ZWYxZGEyZDMzODhjNzE2ZTRlZmIwODk3NzdmNjgwYTIyNWFlZTViN2U1ZGJiMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZiMzJmYzZkMzdiODEwYTRmYWZmZjZhYWNkNDgwMmQ1Y2I4YTE3MjJlYjdmZDNmY2Y1Y2ZmZTExZDEzMWY3YjMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImZjOTllYTcwMzQ3OTljNjk0MDNhNDhiNjM0MmRjNGM0NDNlOThjMGE1OWY1MDc4YTE4YjcwN2I5NzJjZjNkYzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhZWU4ZjhmYjUyYTJhZjRlMzMyMDgxNDA0NDE1ZmM1NWVlYjI1Nzg1OWE2YmY0ODY1ZGE4OGU5MzIxYTJhMGYifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py#L442-L496",
+          "version": "repo-lines-v1:sha256:faa5c42ac1045560126e592420216f0ece0bfe44dbce633b90ea2f5dc0d8784b:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMyNGQyMTkzYmE1YWNiMWJlNTAzZjYzYTZiYWE4ZTQ5YmIyYzc5NjNkN2YxYmYxNTcxNGVmNjBiZDEyZmI0ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhMDA5YWM2ZWRjYzFkN2I2ZDc3N2FkZGVlZDkwOWI2NjgxZDljMTFlOGM1MTAzZDI4NWY0MDM4MGVjZjNiMzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4b9d542e7a8940b193cdad4444a9a289",
+      "statement": "Dcode agent unit tests verify that local conversation history is routed from an artifacts path to persistent storage, while large tool results fall through to a real filesystem location that the agent can inspect.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_agent.py#L227-L287",
+          "version": "repo-lines-v1:sha256:55a782df42b54ebb3ec8b388ee5f0d3cc44c575c2ec9b74828207effc9ed2aa5:eyJzZWxlY3RlZExpbmVDb3VudCI6NjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwM2U2NjNiOGU1M2QyZjQwM2I0OWJkMDZiYzA5MTk4OWYyNTVlYzNmYjI1YTI0MzU5YWRlZjY5OGVhNmYxMmYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRhYWMxZjczNGVhY2FmZmVmMGU4M2MzMDU0NGY1MGVjNDgxYmRiMDBkYjc4MzA4ZmEyZGM5OTYxYTFiZDE4MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ1ZjQ4ODFmYzFmMGQwNjZiMjAyZDNiMmY4ZDcwOTFiM2NiYjY5YjI5NWMxNDZmODc3YzI5ZTRlNGU2YTdlMDEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY2ZjE0NWNmNjc0YzBhMjJiMDBmNGYwNzE4ZGQ3YzY5ZDliMjkyMzY1MjYwZDhjYTEzYjIwOGRlOTI2ZWZlMmUifQ"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.4.0",
-    "at": "2026-08-26T21:35:57.774Z"
+    "by": "openwiki/0.4.2",
+    "at": "2026-08-27T11:19:20.720Z"
   }
 }

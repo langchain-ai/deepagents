@@ -3229,7 +3229,7 @@ class TestExecuteTaskTextualUsageStats:
     """`execute_task_textual` forwards the active provider into usage stats.
 
     The per-model recording API is unit-tested directly elsewhere; this guards
-    the call site actually reading `settings.model_provider` and threading it
+    the call site actually reading `runtime_state.model_provider` and threading it
     through `record_request`.
     """
 
@@ -3254,11 +3254,11 @@ class TestExecuteTaskTextualUsageStats:
         adapter._on_provisional_cost = record_cost
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
@@ -3307,11 +3307,11 @@ class TestExecuteTaskTextualUsageStats:
         )
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
             stats = await execute_task_textual(
                 user_input="hello",
                 agent=agent,
@@ -3375,11 +3375,11 @@ class TestExecuteTaskTextualUsageStats:
         ]
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
         ):
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent(chunks),
@@ -3451,11 +3451,11 @@ class TestExecuteTaskTextualUsageStats:
         turn_stats = SessionStats()
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
         ):
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
             await execute_task_textual(
                 user_input="hello",
                 agent=agent,
@@ -3508,11 +3508,11 @@ class TestExecuteTaskTextualUsageStats:
         turn_stats = SessionStats()
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
         ):
-            mock_settings.model_name = "configured-model"
-            mock_settings.model_provider = "google_genai"
+            mock_runtime_state.model_name = "configured-model"
+            mock_runtime_state.model_provider = "google_genai"
             await execute_task_textual(
                 user_input="hello",
                 agent=agent,
@@ -3639,11 +3639,11 @@ class TestSessionCostEvents:
         turn_stats = SessionStats()
 
         with (
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+            mock_runtime_state.model_name = "gpt-5.5"
+            mock_runtime_state.model_provider = "openai"
             await execute_task_textual(
                 user_input="hello",
                 agent=_FakeAgent(chunks),

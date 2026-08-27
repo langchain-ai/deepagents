@@ -658,7 +658,7 @@ class StatusBar(Vertical):
 
     def on_mount(self) -> None:
         """Set reactive values after mount to trigger watchers safely."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         self.cwd = self._initial_cwd
         if self._hide_cwd:
@@ -668,9 +668,9 @@ class StatusBar(Vertical):
                 self.query_one("#branch-display", BranchLabel).display = False
         # Set initial model display
         label = self.query_one("#model-display", ModelLabel)
-        label.provider = settings.model_provider or ""
-        label.model = settings.model_name or ""
-        self.set_context_limit(settings.model_context_limit)
+        label.provider = runtime_state.model_provider or ""
+        label.model = runtime_state.model_name or ""
+        self.set_context_limit(runtime_state.model_context_limit)
         with suppress(NoMatches):
             self.query_one("#rubric-display", Static).display = False
         # Reactives are `init=False`, so the connection watcher never fires on

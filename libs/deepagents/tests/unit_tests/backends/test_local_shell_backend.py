@@ -1,9 +1,11 @@
 """Unit tests for LocalShellBackend."""
 
+import asyncio
 import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import warnings
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -331,6 +333,32 @@ async def test_local_shell_backend_async_execute() -> None:
         assert isinstance(result, ExecuteResponse)
         assert result.exit_code == 0
         assert "async test" in result.output
+
+
+async def test_local_shell_backend_async_cancellation_kills_process_group() -> None:
+    """Test that async cancellation reaps the detached command."""
+    communication_started = threading.Event()
+    process = MagicMock(pid=1234)
+
+    def block_communication(*, timeout: float) -> tuple[str, str]:
+        communication_started.set()
+        timeout_error = subprocess.TimeoutExpired(process.args, timeout)
+        raise timeout_error
+
+    process.communicate.side_effect = block_communication
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", return_value=process),
+        patch("os.killpg") as killpg,
+    ):
+        task = asyncio.create_task(LocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
+        assert await asyncio.to_thread(communication_started.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    killpg.assert_called_once_with(1234, signal.SIGKILL)
+    process.wait.assert_called_once_with()
 
 
 async def test_local_shell_backend_async_filesystem_operations() -> None:

@@ -7,10 +7,13 @@ run directly on the host machine with full system access.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import signal
 import subprocess
 import sys
+import threading
+import time
 import uuid
 from contextlib import suppress
 from typing import TYPE_CHECKING
@@ -24,6 +27,8 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+_CANCELLATION_POLL_INTERVAL = 0.1
 
 
 def _kill_and_reap(process: subprocess.Popen[str]) -> None:
@@ -46,13 +51,34 @@ def _kill_and_reap(process: subprocess.Popen[str]) -> None:
             process.stderr.close()
 
 
-def _communicate(process: subprocess.Popen[str], timeout: int) -> tuple[str, str]:
+def _communicate(
+    process: subprocess.Popen[str],
+    timeout: int,
+    cancellation_event: threading.Event | None = None,
+) -> tuple[str, str]:
     """Collect output while ensuring interrupted commands cannot outlive us."""
-    try:
-        return process.communicate(timeout=timeout)
-    except BaseException:
-        _kill_and_reap(process)
-        raise
+    if cancellation_event is None:
+        try:
+            return process.communicate(timeout=timeout)
+        except BaseException:
+            _kill_and_reap(process)
+            raise
+
+    deadline = time.monotonic() + timeout
+    while not cancellation_event.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            _kill_and_reap(process)
+            raise subprocess.TimeoutExpired(process.args, timeout)
+        try:
+            return process.communicate(timeout=min(remaining, _CANCELLATION_POLL_INTERVAL))
+        except subprocess.TimeoutExpired:
+            continue
+        except BaseException:
+            _kill_and_reap(process)
+            raise
+    _kill_and_reap(process)
+    return "", ""
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -244,6 +270,36 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         """
         return self._sandbox_id
 
+    async def aexecute(
+        self,
+        command: str,
+        *,
+        timeout: int | None = None,  # noqa: ASYNC109  # Command timeout, not coroutine timeout.
+    ) -> ExecuteResponse:
+        """Execute a shell command asynchronously.
+
+        Args:
+            command: Shell command string to execute.
+            timeout: Maximum time in seconds to wait for the command.
+
+        Returns:
+            The command output, exit code, and truncation status.
+
+        Raises:
+            asyncio.CancelledError: If the caller cancels command execution.
+        """
+        cancellation_event = threading.Event()
+        worker = asyncio.create_task(asyncio.to_thread(self._execute, command, timeout=timeout, cancellation_event=cancellation_event))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            cancellation_event.set()
+            while not worker.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.shield(worker)
+            worker.result()
+            raise
+
     def execute(
         self,
         command: str,
@@ -319,6 +375,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             result = backend.execute("cat /etc/passwd")  # Can read system files!
             ```
         """
+        return self._execute(command, timeout=timeout)
+
+    def _execute(
+        self,
+        command: str,
+        *,
+        timeout: int | None,
+        cancellation_event: threading.Event | None = None,
+    ) -> ExecuteResponse:
+        """Execute a shell command, optionally observing async cancellation."""
         if not command or not isinstance(command, str):
             return ExecuteResponse(
                 output="Error: Command must be a non-empty string.",
@@ -343,7 +409,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=(sys.platform != "win32"),
             )
-            stdout, stderr = _communicate(process, effective_timeout)
+            stdout, stderr = _communicate(process, effective_timeout, cancellation_event)
 
             # Combine stdout and stderr
             # Prefix each stderr line with [stderr] for clear attribution.

@@ -60,6 +60,7 @@ from deepagents_code.auto_mode import (
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
+    AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
     USER_PROMPT_METADATA_KEY,
     AutoDecision,
@@ -5979,6 +5980,74 @@ async def test_policy_denial_becomes_error_tool_message(tmp_path: Path) -> None:
     assert denial.status == "error"
     assert denial.tool_call_id == "call-1"
     assert "destructive_action" in denial.content
+    # Stamped so the TUI can recognize a synthetic denial and skip its
+    # uncorrelated-result warning.
+    assert denial.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
+
+
+async def test_policy_denial_marker_survives_server_round_trip(
+    tmp_path: Path,
+) -> None:
+    """The stamp reaches the TUI, not just the middleware return value.
+
+    The TUI always runs against a server, so the denial is serialized and
+    rebuilt by `_convert_tool_message` before the adapter sees it. This links
+    the producer to the consumer: a stamp the converter drops is invisible to
+    `test_auto_denied_tool_result_skips_uncorrelated_warning`, which builds its
+    own message.
+    """
+    from deepagents_code.client.remote_client import _convert_message_data
+
+    middleware = _middleware(tmp_path)
+    call = {
+        "name": "delete",
+        "args": {"file_path": "old.py"},
+        "id": "call-1",
+        "type": "tool_call",
+    }
+    ai_message = AIMessage(content="", tool_calls=[call])
+    key = approval_mode_key("thread-1")
+    store = _Store()
+    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
+    runtime = SimpleNamespace(
+        context={"approval_mode_key": key, "thread_id": "thread-1"},
+        store=store,
+        stream_writer=lambda _event: None,
+    )
+    plan = {
+        "batch_id": __import__("hashlib").sha256(b"call-1").hexdigest(),
+        "thread_key": key,
+        "mode_at_proposal": "auto",
+        "phase": "planned",
+        "manual_gated_ids": ["call-1"],
+        "decisions": [
+            {
+                "tool_call_id": "call-1",
+                "disposition": "policy_deny",
+                "category": "destructive_action",
+                "reason": "not authorized",
+                "path": "classifier",
+            }
+        ],
+        "pending_result_ids": [],
+        "processed_result_ids": [],
+        "counters_applied": True,
+        "fallback_reason": None,
+    }
+    state = {"messages": [ai_message], "_auto_decision_plan": plan}
+
+    update = await middleware.aafter_model(
+        cast("AgentState[Any]", state), cast("Runtime[Any]", runtime)
+    )
+
+    assert update is not None
+    denial = next(
+        message for message in update["messages"] if isinstance(message, ToolMessage)
+    )
+    # Serialize as the server does, then rebuild as the client does.
+    rebuilt = _convert_message_data(denial.model_dump())
+    assert isinstance(rebuilt, ToolMessage)
+    assert rebuilt.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
 
 
 async def test_classifier_unavailable_emits_single_event_for_batch(
@@ -6043,6 +6112,12 @@ async def test_classifier_unavailable_emits_single_event_for_batch(
     ]
     assert {message.tool_call_id for message in denials} == {"call-1", "call-2"}
     assert all(message.status == "error" for message in denials)
+    # The classifier-unavailable fallback is stamped like a policy denial: the
+    # tool did not execute, so the TUI must not warn about the missing widget.
+    assert all(
+        message.additional_kwargs[AUTO_DENIED_METADATA_KEY] is True
+        for message in denials
+    )
     unavailable_events = [
         event for event in events if event.get("event") == "unavailable"
     ]

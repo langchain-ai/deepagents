@@ -1499,7 +1499,11 @@ async def execute_task_textual(
     from pydantic import ValidationError
 
     from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
-    from deepagents_code.auto_mode import USER_PROMPT_METADATA_KEY, user_prompt_metadata
+    from deepagents_code.auto_mode import (
+        AUTO_DENIED_METADATA_KEY,
+        USER_PROMPT_METADATA_KEY,
+        user_prompt_metadata,
+    )
     from deepagents_code.hooks.client_lifecycle import ClientHookStopError
     from deepagents_code.hooks.models.domain import HookEvent
 
@@ -2400,19 +2404,35 @@ async def execute_task_textual(
                             # widget concept; see `non_interactive.py`. The
                             # parity contract is documented in `_tool_stream`.
                             if tool_id:
-                                # Warning, not info/debug: a real-id result with
-                                # no mounted widget (its args never parsed, so no
-                                # tool.use fired) means a hook consumer sees a
-                                # `tool.result` with empty args for a tool that
-                                # actually executed — degraded audit fidelity worth
-                                # surfacing at default log levels, matching the
-                                # headless path.
-                                logger.warning(
-                                    "ToolMessage tool_call_id=%s not in "
-                                    "_current_tool_messages; no correlated "
-                                    "tool.use, sending empty tool_args",
-                                    tool_id,
+                                # An auto-mode denial is stamped at the source in
+                                # `auto_mode`. For a no-argument call no widget
+                                # ever mounts, so the denial result lands here as
+                                # a matter of course. That is a routine path, not
+                                # degraded audit fidelity, so skip the warning.
+                                # The tool.result hook below still fires with
+                                # empty args. The headless twin in
+                                # `non_interactive.py` keeps its warning: auto
+                                # mode is never installed on that surface, so it
+                                # cannot see a denial.
+                                metadata = message.additional_kwargs
+                                is_auto_denied = isinstance(metadata, dict) and bool(
+                                    metadata.get(AUTO_DENIED_METADATA_KEY)
                                 )
+                                if not is_auto_denied:
+                                    # Warning, not info/debug: a real-id result
+                                    # with no mounted widget (its args never
+                                    # parsed, so no tool.use fired) means a hook
+                                    # consumer sees a `tool.result` with empty
+                                    # args for a tool that actually executed —
+                                    # degraded audit fidelity worth surfacing at
+                                    # default log levels, matching the headless
+                                    # path.
+                                    logger.warning(
+                                        "ToolMessage tool_call_id=%s not in "
+                                        "_current_tool_messages; no correlated "
+                                        "tool.use, sending empty tool_args",
+                                        tool_id,
+                                    )
                             if tool_status == "error":
                                 _dispatch_tool_error_hook(tool_name)
                             _dispatch_tool_result_hook(

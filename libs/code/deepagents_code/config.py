@@ -335,6 +335,11 @@ Deep Agents override is configured. A project value would bypass the bounded
 `runtime.recursion_limit` resolver, so only the shell or global `.env` may set
 the upstream default.
 
+Membership is checked against the uppercased key for the same reason as
+`_is_dotenv_denied_env_key`: on Windows, `os.environ` normalizes assigned keys
+to uppercase, so a lowercase `langgraph_default_recursion_limit` would slip
+past an exact-match check yet become the active variable the local API reads.
+
 `AUTO_CLASSIFIER_TIMEOUT` tunes the same control's review deadline, so it is
 denied for the same reason: a cloned repo could otherwise stall every gated
 batch up to the ceiling, or squeeze the budget until reviews time out and the
@@ -435,10 +440,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             if key in env:
                 continue
-            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+            if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
                 # user-level trust decision — MCP trust lists or the Auto
-                # classifier model/deadline (the global `.env`/shell can).
+                # classifier model/deadline (the global `.env`/shell can). The
+                # key is uppercased so a case variant cannot slip past on
+                # Windows, where `os.environ` assignment normalizes it back to
+                # the active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -554,11 +562,14 @@ def _load_dotenv(
                 continue
             if key in os.environ:
                 continue
-            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+            if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust
                 # decision — MCP trust lists or the Auto classifier model and
                 # deadline that authorize this repo's own tool calls; the
-                # global `.env` and shell may (is_project=False).
+                # global `.env` and shell may (is_project=False). The key is
+                # uppercased so a case variant cannot slip past on Windows,
+                # where `os.environ` assignment normalizes it back to the
+                # active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )

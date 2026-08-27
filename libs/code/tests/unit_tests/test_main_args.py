@@ -1473,6 +1473,16 @@ class TestTimeoutArgument:
                 "RuntimeError",
                 2,
             ),
+            (
+                ["-n", "task", "--json", "--model-params", "not-json"],
+                "RuntimeError",
+                1,
+            ),
+            (
+                ["-n", "task", "--json", "--profile-override", "not-json"],
+                "RuntimeError",
+                1,
+            ),
         ],
     )
     def test_json_preflight_errors_emit_one_run_document(

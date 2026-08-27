@@ -5088,6 +5088,11 @@ def cli_main() -> None:
 
         _get_credentials()
 
+        if machine_run_json:
+            from rich.console import Console as _Console
+
+            console = _Console(stderr=True)
+
         if command is None:
             # The health gate already ran above, for every command, so the
             # violation check inside cannot fire. Kept as defense in depth: it

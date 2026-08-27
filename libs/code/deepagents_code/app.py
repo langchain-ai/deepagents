@@ -89,7 +89,7 @@ from deepagents_code._session_stats import (
     format_token_count,
 )
 
-# All config imports — settings, create_model, detect_provider, is_ascii_mode,
+# All config imports — credentials, create_model, detect_provider, is_ascii_mode,
 # etc. — are deferred to local imports at their call sites since they are only
 # accessed after user interaction begins. The one exception is
 # `configuration.theme_resolution` below: the theme helpers run before the
@@ -5994,7 +5994,7 @@ class DeepAgentsApp(App):
         # Refresh the status bar model so a successful retry after a failed
         # startup (e.g. `/model` switching providers after `ModelConfigError`)
         # surfaces the now-active model. `StatusBar.on_mount` only runs once,
-        # and `_retry_startup_with_model` updates `settings` via
+        # and `_retry_startup_with_model` updates `runtime_state` via
         # `apply_to_runtime_state` without pushing into the widget.
         if self._status_bar is None:
             logger.warning("Status bar not found during server ready transition")
@@ -17357,7 +17357,7 @@ class DeepAgentsApp(App):
         """Return the `provider:model` spec in effect for the next invocation.
 
         Prefers a per-session `/model` override; otherwise falls back to the
-        startup-resolved model from `settings`. Returns `None` when neither
+        startup-resolved model from `runtime_state`. Returns `None` when neither
         yields a usable spec (e.g. credentials not yet configured), so
         `ResumeStateMiddleware` records nothing rather than a malformed spec.
         """

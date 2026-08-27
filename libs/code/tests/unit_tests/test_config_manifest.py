@@ -1692,24 +1692,6 @@ def test_interpreter_defaults_match_resolver_snapshot() -> None:
     assert get_config_resolver().get(enabled).value == enabled.default
 
 
-def test_every_settings_field_names_a_credential_field() -> None:
-    """Catch a typo'd credential `settings_field` on any option.
-
-    `settings_field` is a free-form string with no compile-time link to the
-    credential snapshot, so a misspelling would only surface at runtime. This
-    locks the remaining mapping across the whole catalog.
-    """
-    from deepagents_code.config import _CREDENTIAL_FIELDS
-
-    bad = {
-        opt.key: opt.settings_field
-        for opt in get_config_options()
-        if opt.settings_field is not None
-        and opt.settings_field not in _CREDENTIAL_FIELDS
-    }
-    assert not bad, f"options reference unknown credential fields: {bad}"
-
-
 # --- Resolution -------------------------------------------------------------
 
 
@@ -3109,7 +3091,7 @@ def test_environment_coercion_delegate_returns_invalid_not_raw() -> None:
 
     PTC/STRUCTURED options declare no env var, so this branch is unreachable in
     the live manifest. The guard exists so that if one ever gains an env var,
-    an uncoerced raw string cannot leak into a typed `Settings` field.
+    an uncoerced raw string cannot leak into a typed credentials field.
     """
     from deepagents_code.configuration.providers import coerce_environment_value
     from deepagents_code.configuration.types import Invalid

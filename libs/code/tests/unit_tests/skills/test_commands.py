@@ -633,7 +633,7 @@ class TestInfoShadowWarning:
         self._make_skill_dir(project_dir, "web-research", "Project version")
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -671,7 +671,7 @@ class TestInfoShadowWarning:
         self._make_skill_dir(user_dir, "web-research", "User only skill")
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -727,7 +727,7 @@ class TestInfoBuiltInSkill:
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -767,7 +767,7 @@ class TestInfoBuiltInSkill:
         self._make_skill_dir(user_dir, "shared-skill", "User version")
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -822,7 +822,7 @@ class TestListBuiltInSkillsDisplay:
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -860,7 +860,7 @@ class TestListBuiltInSkillsDisplay:
         self._make_skill_dir(built_in_dir, "test-builtin", "A built-in skill")
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),
@@ -902,7 +902,7 @@ class TestSkillsLsDispatch:
         built_in_dir.mkdir()
 
         mock_settings = patch(
-            "deepagents_code.config.Settings.from_environment",
+            "deepagents_code.config.Credentials.from_environment",
             return_value=type(
                 "FakeSettings",
                 (),

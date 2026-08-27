@@ -1232,8 +1232,8 @@ class TestSplitCredentialSource:
     def _isolate_openai_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Clear every OpenAI key/endpoint env var so each test sets its own.
 
-        `dotenv.load_dotenv()` runs during config bootstrap (first `Settings`
-        access) and may inject prefixed variants from a developer's
+        `dotenv.load_dotenv()` runs during the first credentials access and may
+        inject prefixed variants from a developer's
         `~/.deepagents/.env` that would otherwise leak into these assertions.
         """
         for var in (

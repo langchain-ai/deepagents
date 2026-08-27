@@ -2601,9 +2601,9 @@ def create_cli_agent(
     restrictive_shell_allow_list: list[str] | None = None
     if interrupt_shell_only and not auto_approve:
         # Prefer the explicitly forwarded allow-list (set by the CLI process
-        # and passed through ServerConfig).  Fall back to settings only for
-        # direct callers (e.g. benchmarking frameworks) that don't go through
-        # the server subprocess path.
+        # and passed through ServerConfig). Resolve the shared shell policy
+        # only for direct callers (e.g. benchmarking frameworks) that don't go
+        # through the server subprocess path.
         if shell_allow_list:
             restrictive_shell_allow_list = list(shell_allow_list)
         elif resolved_shell_allow_list and not isinstance(

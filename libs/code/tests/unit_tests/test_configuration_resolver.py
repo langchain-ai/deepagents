@@ -985,11 +985,11 @@ def test_managed_rank_masks_cli_but_user_does_not() -> None:
 
 
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:
-    """Building `Settings` must not drag the theme registry onto the hot path.
+    """Building `Credentials` must not drag the theme registry onto the hot path.
 
     `resolve_all()` would resolve `display.theme`, whose `THEME_DELEGATE`
     coercion reaches the theme registry and imports Textual (~470ms). The four
-    CLI entry points in `skills/commands.py` build `Settings` without drawing
+    CLI entry points in `skills/commands.py` build `Credentials` without drawing
     a UI, so they must not pay for it.
     """
     home = tmp_path / "home"
@@ -1008,8 +1008,8 @@ def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> No
             "-c",
             (
                 "import sys\n"
-                "from deepagents_code.config import Settings\n"
-                "Settings.from_environment()\n"
+                "from deepagents_code.config import Credentials\n"
+                "Credentials.from_environment()\n"
                 "assert 'textual' not in sys.modules, 'Textual reached the "
                 "startup path'\n"
             ),

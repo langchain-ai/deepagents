@@ -43,7 +43,6 @@ from deepagents_code.config import (
     LangSmithProjectNotFoundError,
     LangsmithShadowResult,
     ModelResult,
-    Settings,
     _apply_default_langsmith_project,
     _apply_stored_langsmith_tracing,
     _create_model_from_class,
@@ -62,6 +61,7 @@ from deepagents_code.config import (
     configure_langsmith_secret_redaction,
     consume_orphaned_tracing_disabled_notice,
     create_model,
+    credentials,
     detect_mode_prefix,
     detect_provider,
     fetch_langsmith_project_url,
@@ -76,7 +76,6 @@ from deepagents_code.config import (
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     runtime_state,
-    settings,
     validate_model_capabilities,
 )
 from deepagents_code.configuration.interpreter import InterpreterConfig
@@ -130,7 +129,7 @@ class TestRuntimeDotenvReload:
 
         try:
             config_mod._load_dotenv(start_path=current)
-            runtime = Settings.from_environment(start_path=current)
+            runtime = Credentials.from_environment(start_path=current)
             assert runtime.openai_api_key == "sk-current"
 
             changes = runtime.reload_from_environment(start_path=target)
@@ -165,7 +164,7 @@ class TestRuntimeDotenvReload:
         caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
         reset_env_resolution_log()
         try:
-            runtime = Settings.from_environment(start_path=tmp_path)
+            runtime = Credentials.from_environment(start_path=tmp_path)
             assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
             runtime.reload_from_environment(start_path=tmp_path)
             assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
@@ -217,7 +216,7 @@ class TestRuntimeDotenvReload:
             # Agent-project override is active before the reload, cleared after.
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "agent-project")
 
-            runtime = Settings.from_environment(start_path=current)
+            runtime = Credentials.from_environment(start_path=current)
             assert runtime.deepagents_langchain_project == "agent-project"
 
             monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
@@ -829,7 +828,7 @@ class TestProjectAgentMdFinding:
         regular-file candidate to fail the absolute-vs-resolved equality check
         and be returned as the canonical target rather than reported as missing.
         Pin behavior so that callers passing an uncanonicalized root (common
-        when `Settings.project_root` originates from an unresolved cwd) still
+        when `Credentials.project_root` originates from an unresolved cwd) still
         find a regular AGENTS.md.
         """
         real_root = tmp_path / "real"
@@ -946,7 +945,7 @@ class TestNewlineShortcut:
 class TestValidateModelCapabilities:
     """Tests for model capability validation."""
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_without_profile_attribute_warns(self, mock_console: Mock) -> None:
         """Test that models without profile attribute trigger a warning."""
         model = Mock(spec=[])  # No profile attribute
@@ -957,7 +956,7 @@ class TestValidateModelCapabilities:
         assert "No capability profile" in call_args
         assert "test-model" in call_args
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_none_profile_warns(self, mock_console: Mock) -> None:
         """Test that models with `profile=None` trigger a warning."""
         model = Mock()
@@ -969,7 +968,7 @@ class TestValidateModelCapabilities:
         call_args = mock_console.print.call_args[0][0]
         assert "No capability profile" in call_args
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_tool_calling_false_exits(self, mock_console: Mock) -> None:
         """Test that models with `tool_calling=False` cause `sys.exit(1)`."""
         model = Mock()
@@ -985,7 +984,7 @@ class TestValidateModelCapabilities:
         assert "does not support tool calling" in error_call
         assert "no-tools-model" in error_call
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_tool_calling_true_passes(self, mock_console: Mock) -> None:
         """Test that models with `tool_calling=True` pass without messages."""
         model = Mock()
@@ -995,7 +994,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_tool_calling_none_passes(self, mock_console: Mock) -> None:
         """Test that models with `tool_calling=None` (missing) pass."""
         model = Mock()
@@ -1005,7 +1004,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_limited_context_warns(self, mock_console: Mock) -> None:
         """Test that models with <8000 token context trigger a warning."""
         model = Mock()
@@ -1019,7 +1018,7 @@ class TestValidateModelCapabilities:
         assert "4,096" in call_args
         assert "small-context-model" in call_args
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_adequate_context_passes(self, mock_console: Mock) -> None:
         """Confirm that models with >=8000 token context pass silently."""
         model = Mock()
@@ -1029,7 +1028,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_without_max_input_tokens_passes(self, mock_console: Mock) -> None:
         """Test that models without `max_input_tokens` key pass silently."""
         model = Mock()
@@ -1039,7 +1038,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_zero_max_input_tokens_passes(self, mock_console: Mock) -> None:
         """Test that models with `max_input_tokens=0` pass (falsy value check)."""
         model = Mock()
@@ -1050,7 +1049,7 @@ class TestValidateModelCapabilities:
         # Should pass because 0 is falsy, so the condition `if max_input_tokens` fails
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_empty_profile_passes(self, mock_console: Mock) -> None:
         """Test that models with empty profile dict pass silently."""
         model = Mock()
@@ -2510,8 +2509,8 @@ class TestGetLangsmithProjectName:
         with patch.dict("os.environ", env, clear=True):
             assert get_langsmith_project_name() is None
 
-    def test_returns_project_from_settings(self) -> None:
-        """Should prefer settings.deepagents_langchain_project."""
+    def test_returns_project_from_credentials(self) -> None:
+        """Should prefer `credentials.deepagents_langchain_project`."""
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -2519,10 +2518,10 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.credentials") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = "settings-project"
-            assert get_langsmith_project_name() == "settings-project"
+            mock_credentials.deepagents_langchain_project = "credentials-project"
+            assert get_langsmith_project_name() == "credentials-project"
 
     def test_falls_back_to_env_project(self) -> None:
         """Should fall back to LANGSMITH_PROJECT env var."""
@@ -2533,9 +2532,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.credentials") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
@@ -2548,9 +2547,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.credentials") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
@@ -2564,9 +2563,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.credentials") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
@@ -2607,7 +2606,7 @@ class TestGetLangsmithProjectName:
                 .value
             )
 
-        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
+        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no credential value.
         bare_env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -2616,9 +2615,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", bare_env, clear=False),
-            patch("deepagents_code.config.credentials") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
@@ -2631,9 +2630,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", default_env, clear=False),
-            patch("deepagents_code.config.credentials") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
@@ -6008,8 +6007,10 @@ max_tokens = 1024
 
         monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
         monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-east5")
-        runtime_settings = Settings.from_environment()
-        monkeypatch.setattr(config_module, "_get_settings", lambda: runtime_settings)
+        runtime_credentials = Credentials.from_environment()
+        monkeypatch.setattr(
+            config_module, "_get_credentials", lambda: runtime_credentials
+        )
         sync_client = Mock()
         async_client = Mock()
         monkeypatch.setattr(anthropic, "AnthropicVertex", sync_client)
@@ -6114,11 +6115,11 @@ class TestCreateModelEdgeCaseParsing:
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
 
-        settings.anthropic_api_key = "test"
+        credentials.anthropic_api_key = "test"
         try:
             result = create_model(":claude-opus-4-6")
         finally:
-            settings.anthropic_api_key = None
+            credentials.anthropic_api_key = None
 
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
         assert result.model_name == "claude-opus-4-6"
@@ -6536,77 +6537,77 @@ class TestDetectProvider:
         """detect_provider returns the correct provider for known patterns."""
         # Ensure both Anthropic and Google credentials are "available" so the
         # default paths are taken (not the Vertex AI fallbacks).
-        settings.anthropic_api_key = "test"
-        settings.google_api_key = "test"
+        credentials.anthropic_api_key = "test"
+        credentials.google_api_key = "test"
         try:
             assert detect_provider(model_name) == expected
         finally:
-            settings.anthropic_api_key = None
-            settings.google_api_key = None
+            credentials.anthropic_api_key = None
+            credentials.google_api_key = None
 
     def test_claude_falls_back_to_vertex_when_no_anthropic(self) -> None:
         """Claude models route to Anthropic Vertex when only Vertex is configured."""
-        settings.anthropic_api_key = None
-        settings.google_cloud_project = "my-project"
-        settings.google_api_key = None
+        credentials.anthropic_api_key = None
+        credentials.google_cloud_project = "my-project"
+        credentials.google_api_key = None
         try:
             assert detect_provider("claude-sonnet-4-5") == "google_anthropic_vertex"
         finally:
-            settings.google_cloud_project = None
+            credentials.google_cloud_project = None
 
     def test_gemini_falls_back_to_vertex_when_no_google(self) -> None:
         """Gemini models route to google_vertexai when only Vertex AI is configured."""
-        settings.google_api_key = None
-        settings.google_cloud_project = "my-project"
+        credentials.google_api_key = None
+        credentials.google_cloud_project = "my-project"
         try:
             assert detect_provider("gemini-3-pro") == "google_vertexai"
         finally:
-            settings.google_cloud_project = None
+            credentials.google_cloud_project = None
 
     def test_gemini_prefers_google_genai_when_both_available(self) -> None:
         """Gemini prefers google_genai when both Google and Vertex AI are configured."""
-        settings.google_api_key = "test"
-        settings.google_cloud_project = "my-project"
+        credentials.google_api_key = "test"
+        credentials.google_cloud_project = "my-project"
         try:
             # has_vertex_ai is False when google_api_key is set, so this
             # tests the google_genai path which is preferred.
             assert detect_provider("gemini-3-pro") == "google_genai"
         finally:
-            settings.google_api_key = None
-            settings.google_cloud_project = None
+            credentials.google_api_key = None
+            credentials.google_cloud_project = None
 
     def test_case_insensitive(self) -> None:
         """detect_provider is case-insensitive."""
-        settings.anthropic_api_key = "test"
+        credentials.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
             assert detect_provider("gpt-5.5") == "openai"
         finally:
-            settings.anthropic_api_key = None
+            credentials.anthropic_api_key = None
 
 
-class TestLazyModuleAttributes:
+class TestLazySingletons:
     """Tests for lazy process-wide state and console resolution."""
 
+    def test_settings_surface_is_removed(self) -> None:
+        """The dissolved `Settings` class and module hook stay absent."""
+        import deepagents_code.config as config_mod
+
+        assert "Settings" not in config_mod.__dict__
+        assert "settings" not in config_mod.__dict__
+        assert "__getattr__" not in config_mod.__dict__
+
     def test_getattr_returns_credentials(self) -> None:
-        """The credentials accessor shares the compatibility singleton."""
-        from deepagents_code.config import _get_credentials, _get_settings
+        """The credentials accessor returns the typed singleton."""
+        from deepagents_code.config import _get_credentials
 
         result = _get_credentials()
         assert isinstance(result, Credentials)
-        assert result is _get_settings()
         assert result is _get_credentials()
         assert result.active is result.active
 
-    def test_getattr_returns_settings(self) -> None:
-        """Module __getattr__ resolves 'settings' to a Settings instance."""
-        from deepagents_code.config import _get_settings
-
-        result = _get_settings()
-        assert isinstance(result, Settings)
-
     def test_getattr_returns_console(self) -> None:
-        """Module __getattr__ resolves 'console' to a Console instance."""
+        """The console accessor returns a Console instance."""
         from rich.console import Console
 
         from deepagents_code.config import _get_console
@@ -6615,7 +6616,7 @@ class TestLazyModuleAttributes:
         assert isinstance(result, Console)
 
     def test_getattr_raises_for_unknown(self) -> None:
-        """Module __getattr__ raises AttributeError for unknown names."""
+        """Unknown module attributes raise `AttributeError`."""
         import deepagents_code.config as config_mod
 
         with pytest.raises(AttributeError, match="no attribute"):
@@ -6625,10 +6626,12 @@ class TestLazyModuleAttributes:
         """_ensure_bootstrap is a no-op on second call."""
         from deepagents_code.config import _ensure_bootstrap
 
-        # First call already ran (settings was imported above).
+        # First call already ran (credentials were used above).
         # Calling again should be a harmless no-op.
         _ensure_bootstrap()
-        assert isinstance(settings, Settings)
+        from deepagents_code.config import _get_credentials
+
+        assert isinstance(_get_credentials(), Credentials)
 
     def test_ensure_bootstrap_marks_done_on_failure(self) -> None:
         """_ensure_bootstrap sets flag even when the try body raises."""
@@ -6650,12 +6653,12 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_state.done = original
 
-    def test_get_settings_returns_same_instance(self) -> None:
-        """_get_settings caches in globals — two calls return the same object."""
-        from deepagents_code.config import _get_settings
+    def test_get_credentials_returns_same_instance(self) -> None:
+        """The credentials accessor returns one process-wide object."""
+        from deepagents_code.config import _get_credentials
 
-        a = _get_settings()
-        b = _get_settings()
+        a = _get_credentials()
+        b = _get_credentials()
         assert a is b
 
     def test_ensure_bootstrap_langsmith_override(

@@ -47,7 +47,7 @@ from deepagents_code._version import __version__
 from deepagents_code.config_manifest import RECURSION_LIMIT_DEFAULT
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Mapping, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import (
@@ -1432,13 +1432,6 @@ if TYPE_CHECKING:
     from rich.console import Console
 
     from deepagents_code._git import RepositoryMetadata
-
-    # Static type stubs for lazy module attributes resolved by __getattr__.
-    # At runtime these are created on first access by the singleton helpers and
-    # cached in globals().
-    settings: Settings
-    runtime_state: RuntimeState
-    console: Console
 
 MODE_PREFIXES: dict[str, str] = {
     "shell_incognito": "!!",
@@ -3206,8 +3199,8 @@ class Credentials:
         # Detect LangSmith configuration
         # DEEPAGENTS_CODE_LANGSMITH_PROJECT: Project for deepagents agent tracing
         # user_langchain_project: User's ORIGINAL LANGSMITH_PROJECT (before override)
-        # When accessed via the module-level `settings` singleton,
-        # _ensure_bootstrap() has already run and may have overridden
+        # When accessed via the module-level `credentials` proxy,
+        # `_ensure_bootstrap()` has already run and may have overridden
         # LANGSMITH_PROJECT. We use the saved original value, not the
         # current os.environ value. Direct callers should ensure
         # bootstrap has run if they depend on the override.
@@ -3617,67 +3610,6 @@ class Credentials:
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
         return self.active.has_tavily
-
-
-class Settings(Credentials):
-    """Compatibility surface retained until the final dissolution layer."""
-
-    def __init__(
-        self,
-        openai_api_key: str | None,
-        anthropic_api_key: str | None,
-        google_api_key: str | None,
-        nvidia_api_key: str | None,
-        tavily_api_key: str | None,
-        google_cloud_project: str | None,
-        google_cloud_location: str | None,
-        deepagents_langchain_project: str | None,
-        user_langchain_project: str | None,
-        project_root: Path | None = None,
-    ) -> None:
-        """Preserve the legacy dataclass constructor during the migration."""
-        super().__init__(
-            CredentialsSnapshot(
-                openai_api_key=openai_api_key,
-                anthropic_api_key=anthropic_api_key,
-                google_api_key=google_api_key,
-                nvidia_api_key=nvidia_api_key,
-                tavily_api_key=tavily_api_key,
-                google_cloud_project=google_cloud_project,
-                google_cloud_location=google_cloud_location,
-                deepagents_langchain_project=deepagents_langchain_project,
-                user_langchain_project=user_langchain_project,
-                project_root=project_root,
-            )
-        )
-
-    @classmethod
-    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
-        """Build the compatibility owner from the environment.
-
-        Args:
-            start_path: Directory to start project detection from.
-
-        Returns:
-            A compatibility owner containing the resolved snapshot.
-        """
-        active = Credentials.from_environment(start_path=start_path).active
-        return cls(
-            openai_api_key=active.openai_api_key,
-            anthropic_api_key=active.anthropic_api_key,
-            google_api_key=active.google_api_key,
-            nvidia_api_key=active.nvidia_api_key,
-            tavily_api_key=active.tavily_api_key,
-            google_cloud_project=active.google_cloud_project,
-            google_cloud_location=active.google_cloud_location,
-            deepagents_langchain_project=active.deepagents_langchain_project,
-            user_langchain_project=active.user_langchain_project,
-            project_root=active.project_root,
-        )
-
-
-credentials: Credentials
-"""Lazily initialized process-wide credential and project snapshot."""
 
 
 DANGEROUS_SHELL_PATTERNS = (
@@ -6075,6 +6007,11 @@ def validate_model_capabilities(model: BaseChatModel, model_name: str) -> None:
         )
 
 
+_console_instance: Console | None = None
+_credentials_instance: Credentials | None = None
+_runtime_state_instance: RuntimeState | None = None
+
+
 def _get_console() -> Console:
     """Return the lazily-initialized global `Console` instance.
 
@@ -6084,94 +6021,91 @@ def _get_console() -> Console:
     Returns:
         The global Rich `Console` singleton.
     """
-    cached = globals().get("console")
+    global _console_instance  # noqa: PLW0603  # lazy process singleton
+    cached = _console_instance
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("console")
+        cached = _console_instance
         if cached is not None:
             return cached
         from rich.console import Console
 
         inst = Console(highlight=False)
-        globals()["console"] = inst
+        _console_instance = inst
         return inst
 
 
 def _get_credentials() -> Credentials:
     """Return the lazily initialized process-wide `Credentials` instance.
 
-    Bootstrap runs before credentials are read. During the stacked migration,
-    the instance uses the empty `Settings` compatibility subclass and is also
-    cached under the legacy `settings` name.
+    Bootstrap runs before credentials are read.
 
     Returns:
         The global credentials singleton.
     """
-    cached = globals().get("credentials")
+    global _credentials_instance  # noqa: PLW0603  # lazy process singleton
+    cached = _credentials_instance
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("credentials")
+        cached = _credentials_instance
         if cached is not None:
             return cached
         _ensure_bootstrap()
         try:
-            inst = Settings.from_environment(start_path=_bootstrap_state.start_path)
+            inst = Credentials.from_environment(start_path=_bootstrap_state.start_path)
         except Exception:
             logger.exception(
                 "Failed to initialize credentials from environment (start_path=%s)",
                 _bootstrap_state.start_path,
             )
             raise
-        globals()["credentials"] = inst
-        globals()["settings"] = inst
+        _credentials_instance = inst
         return inst
-
-
-def _get_settings() -> Settings:
-    """Return the legacy alias for the process-wide credentials singleton."""
-    cached = globals().get("settings")
-    if cached is not None:
-        return cast("Settings", cached)
-    inst = _get_credentials()
-    globals()["settings"] = inst
-    return cast("Settings", inst)
 
 
 def _get_runtime_state() -> RuntimeState:
     """Return the lazily initialized process-wide `RuntimeState` instance."""
-    cached = globals().get("runtime_state")
+    global _runtime_state_instance  # noqa: PLW0603  # lazy process singleton
+    cached = _runtime_state_instance
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("runtime_state")
+        cached = _runtime_state_instance
         if cached is not None:
             return cached
         state = RuntimeState()
-        globals()["runtime_state"] = state
+        _runtime_state_instance = state
         return state
 
 
-def __getattr__(name: str) -> Credentials | RuntimeState | Console:
-    """Lazy module attributes for process-wide state and the console.
+class _LazyProxy:
+    """Defer singleton construction until an attribute is first used."""
 
-    Defers heavy initialization until first access. Subsequent accesses hit
-    the module-level attribute directly (no `__getattr__` overhead).
+    __slots__ = ("_factory",)
+    _factory: Callable[[], object]
 
-    Returns:
-        The requested lazy singleton.
+    def __init__(self, factory: Callable[[], object]) -> None:
+        object.__setattr__(self, "_factory", factory)
 
-    Raises:
-        AttributeError: If *name* is not a lazily-provided attribute.
-    """
-    if name == "settings":
-        return _get_settings()
-    if name == "credentials":
-        return _get_credentials()
-    if name == "runtime_state":
-        return _get_runtime_state()
-    if name == "console":
-        return _get_console()
-    msg = f"module {__name__!r} has no attribute {name!r}"
-    raise AttributeError(msg)
+    def __getattr__(self, name: str) -> object:
+        """Forward reads to the initialized singleton.
+
+        Returns:
+            The requested attribute.
+        """
+        return getattr(self._factory(), name)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Forward mutations to the initialized singleton."""
+        setattr(self._factory(), name, value)
+
+    def __delattr__(self, name: str) -> None:
+        """Forward patch cleanup to the initialized singleton."""
+        delattr(self._factory(), name)
+
+
+credentials = cast("Credentials", _LazyProxy(_get_credentials))
+runtime_state = cast("RuntimeState", _LazyProxy(_get_runtime_state))
+console = cast("Console", _LazyProxy(_get_console))

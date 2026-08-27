@@ -69,16 +69,14 @@ class ResumeCompactPromptScreen(ModalScreen[bool]):
     }
     """
 
-    def __init__(self, *, context_tokens: int, threshold: int) -> None:
-        """Initialize the prompt.
-
-        Args:
-            context_tokens: Latest model-reported context size for the thread.
-            threshold: Configured token count that triggered the suggestion.
-        """
+    def __init__(
+        self, *, context_tokens: int, threshold: int, pending_work: bool = False
+    ) -> None:
+        """Initialize the prompt."""
         super().__init__()
         self._context_tokens = context_tokens
         self._threshold = threshold
+        self._pending_work = pending_work
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -88,21 +86,40 @@ class ResumeCompactPromptScreen(ModalScreen[bool]):
         """
         with Vertical():
             yield Static(
-                "Compact this thread?",
+                (
+                    "Cancel old operation and compact?"
+                    if self._pending_work
+                    else "Compact this thread?"
+                ),
                 classes="resume-compact-title",
                 markup=False,
             )
+            body = (
+                "This thread closed while an operation was unfinished. Nothing is "
+                "running now, but repeating the old operation could duplicate side "
+                "effects. Cancel its saved work, preserve the chat and files, and "
+                "shorten the conversation?"
+                if self._pending_work
+                else (
+                    f"This thread uses {format_token_count(self._context_tokens)} "
+                    "context tokens, above the configured "
+                    f"{format_token_count(self._threshold)} token threshold. "
+                    "Compacting summarizes older messages so later turns cost less."
+                )
+            )
             yield Static(
-                f"This thread uses {format_token_count(self._context_tokens)} context "
-                "tokens, above the configured "
-                f"{format_token_count(self._threshold)} token threshold. Compacting "
-                "summarizes older messages so later turns cost less.",
+                body,
                 classes="resume-compact-body",
                 markup=False,
             )
             yield Static(
                 f" {get_glyphs().bullet} ".join(
-                    ("Enter: compact now", "Esc: keep full context")
+                    (
+                        "Enter: cancel old operation and compact"
+                        if self._pending_work
+                        else "Enter: compact now",
+                        "Esc: keep full context",
+                    )
                 ),
                 classes="resume-compact-help",
                 markup=False,

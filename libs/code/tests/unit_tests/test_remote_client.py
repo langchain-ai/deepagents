@@ -15,6 +15,7 @@ from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
 from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
 from deepagents_code.client.remote_client import (
     RemoteAgent,
+    _cancelled_tool_messages,
     _convert_ai_message,
     _convert_human_message,
     _convert_interrupts,
@@ -902,6 +903,138 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         assert mock_graph.aupdate_state.await_count == 1
         runs_list.assert_not_called()
         runs_cancel.assert_not_called()
+
+
+class TestCancelledToolMessages:
+    def test_supports_serialized_messages_and_ignores_answered_calls(self) -> None:
+        values = {
+            "messages": [
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [
+                        {"name": "shell", "args": {}, "id": "answered"},
+                        {"name": "shell", "args": {}, "id": "pending"},
+                    ],
+                },
+                {
+                    "type": "tool",
+                    "content": "done",
+                    "tool_call_id": "answered",
+                },
+            ]
+        }
+
+        cancelled = _cancelled_tool_messages(values)
+
+        assert [message.tool_call_id for message in cancelled] == ["pending"]
+        assert cancelled[0].status == "error"
+
+    @pytest.mark.parametrize("values", [None, [], {}, {"messages": "invalid"}])
+    def test_ignores_state_without_a_message_list(self, values: object) -> None:
+        assert _cancelled_tool_messages(values) == []
+
+
+class TestRemoteAgentAbandonPendingWork:
+    async def test_cancels_runs_clears_checkpoint_and_verifies(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        runs_list = AsyncMock(return_value=[])
+        mock_client = MagicMock()
+        mock_client.runs.list = runs_list
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        mock_graph.aupdate_state = AsyncMock()
+        mock_graph.aget_state = AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    values={"messages": []},
+                    next=("tools",),
+                    tasks=(object(),),
+                    interrupts=(),
+                ),
+                SimpleNamespace(values={}, next=(), tasks=(), interrupts=()),
+            ]
+        )
+        agent._graph = mock_graph
+
+        await agent.aabandon_pending_work(_config())
+
+        assert runs_list.await_count == 2
+        mock_graph.aupdate_state.assert_awaited_once()
+        state_update = mock_graph.aupdate_state.await_args
+        assert state_update is not None
+        assert state_update.args[1] is None
+        assert state_update.kwargs == {"as_node": "__end__"}
+        assert mock_graph.aget_state.await_count == 2
+
+    async def test_terminalizes_dangling_tool_call_before_clearing(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_client = MagicMock()
+        mock_client.runs.list = AsyncMock(return_value=[])
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        mock_graph.aupdate_state = AsyncMock()
+        mock_graph.aget_state = AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    values={
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[
+                                    {"name": "shell", "args": {}, "id": "call-1"}
+                                ],
+                            )
+                        ]
+                    },
+                    next=("tools",),
+                    tasks=(object(),),
+                    interrupts=(),
+                ),
+                SimpleNamespace(values={}, next=(), tasks=(), interrupts=()),
+            ]
+        )
+        agent._graph = mock_graph
+
+        await agent.aabandon_pending_work(_config())
+
+        assert mock_graph.aupdate_state.await_count == 2
+        message_update = mock_graph.aupdate_state.await_args_list[0]
+        assert message_update.kwargs == {"as_node": "tools"}
+        cancelled = message_update.args[1]["messages"][0]
+        assert cancelled.tool_call_id == "call-1"
+        assert cancelled.status == "error"
+        assert mock_graph.aupdate_state.await_args_list[1].args[1] is None
+
+    async def test_raises_when_pending_work_remains(self) -> None:
+        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
+        mock_client = MagicMock()
+        mock_client.runs.list = AsyncMock(return_value=[])
+        mock_graph = MagicMock()
+        mock_graph._validate_client.return_value = mock_client
+        mock_graph.aupdate_state = AsyncMock()
+        mock_graph.aget_state = AsyncMock(
+            side_effect=[
+                SimpleNamespace(
+                    values={"messages": []},
+                    next=("tools",),
+                    tasks=(object(),),
+                    interrupts=(),
+                ),
+                SimpleNamespace(
+                    values={"messages": []},
+                    next=("tools",),
+                    tasks=(object(),),
+                    interrupts=(),
+                ),
+            ]
+        )
+        agent._graph = mock_graph
+
+        with pytest.raises(RuntimeError, match="could not be cancelled safely"):
+            await agent.aabandon_pending_work(_config())
 
 
 class TestRemoteAgentStore:

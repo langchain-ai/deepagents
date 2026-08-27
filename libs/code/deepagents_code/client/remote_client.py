@@ -166,6 +166,41 @@ def _require_thread_id(config: Mapping[str, Any] | None) -> str:
     return thread_id
 
 
+def _cancelled_tool_messages(values: object) -> list[Any]:
+    """Build terminal results for tool calls left unanswered by a lost run.
+
+    Returns:
+        Error results for every unanswered tool call in checkpoint history.
+    """
+    if not isinstance(values, dict):
+        return []
+    from langchain_core.messages import AIMessage, ToolMessage, convert_to_messages
+
+    raw_messages = values.get("messages")
+    if not isinstance(raw_messages, list):
+        return []
+    messages = convert_to_messages(cast("list[Any]", raw_messages))
+    answered = {
+        message.tool_call_id for message in messages if isinstance(message, ToolMessage)
+    }
+    calls = [
+        call
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+        if call["id"] not in answered
+    ]
+    return [
+        ToolMessage(
+            content="Tool call cancelled because the previous session ended.",
+            name=call["name"],
+            tool_call_id=call["id"],
+            status="error",
+        )
+        for call in calls
+    ]
+
+
 def agent_error_type(exc: BaseException) -> str:
     """Best-effort error-type name for an exception from `RemoteAgent.astream`.
 
@@ -573,7 +608,7 @@ class RemoteAgent:
     async def aupdate_state(
         self,
         config: Mapping[str, Any],
-        values: dict[str, Any],
+        values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
     ) -> None:
@@ -633,6 +668,28 @@ class RemoteAgent:
                 exc_info=True,
             )
             raise
+
+    async def aabandon_pending_work(self, config: Mapping[str, Any]) -> None:
+        """Cancel active runs and discard checkpointed work without replaying it.
+
+        Raises:
+            RuntimeError: If pending work remains after the state update.
+        """
+        thread_id = _require_thread_id(config)
+        prepared = _prepare_config(config)
+        graph = self._get_graph()
+        await _cancel_active_runs(graph, thread_id)
+        state = await graph.aget_state(prepared)
+        cancelled = _cancelled_tool_messages(getattr(state, "values", None))
+        if cancelled:
+            await graph.aupdate_state(
+                prepared, {"messages": cancelled}, as_node="tools"
+            )
+        await graph.aupdate_state(prepared, None, as_node="__end__")
+        state = await graph.aget_state(prepared)
+        if state and (state.next or state.tasks or state.interrupts):
+            msg = "The interrupted operation could not be cancelled safely."
+            raise RuntimeError(msg)
 
     async def aput_store_item(
         self,

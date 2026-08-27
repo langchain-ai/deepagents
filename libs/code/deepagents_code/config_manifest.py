@@ -2280,6 +2280,18 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("models", "recent"),
     ),
     ConfigOption(
+        key="models.summarization_default",
+        group="Models",
+        summary=(
+            "Default model spec ('provider:model') used for context-compaction "
+            "summaries; unset reuses the main agent model."
+        ),
+        kind=OptionKind.STR,
+        toml_keys=("models", "summarization_default"),
+        cli_flag="--summarization-model",
+        cli=CliSpec("--summarization-model"),
+    ),
+    ConfigOption(
         key="models.auto_classifier",
         group="Models",
         summary=(

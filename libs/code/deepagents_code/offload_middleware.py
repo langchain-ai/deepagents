@@ -116,7 +116,10 @@ class _RetryingModelInvoker(Runnable[LanguageModelInput, AIMessage]):
         )
 
 
-def _install_summary_model_retries(summarization: SummarizationMiddleware) -> None:
+def _install_summary_model_retries(
+    summarization: SummarizationMiddleware,
+    model: BaseChatModel | None = None,
+) -> None:
     """Replace LangChain's generic summary retries with dcode's exact policy.
 
     Raises:
@@ -133,7 +136,7 @@ def _install_summary_model_retries(summarization: SummarizationMiddleware) -> No
             "summarization internals have changed."
         )
         raise AttributeError(msg)
-    helper._summary_model = _RetryingModelInvoker(summarization.model)
+    helper._summary_model = _RetryingModelInvoker(model or summarization.model)
 
 
 class _OffloadState(CostState, SummarizationState, total=False):
@@ -456,6 +459,7 @@ class RuntimeModelConfig(NamedTuple):
     """
 
     model_spec: str | None
+    summarization_model_spec: str | None
     model_params: dict[str, Any]
     profile_overrides: dict[str, Any]
     context_limit: int | None
@@ -497,6 +501,7 @@ def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
     if isinstance(context, CLIContextSchema):
         return RuntimeModelConfig(
             model_spec=context.model,
+            summarization_model_spec=context.summarization_model,
             model_params=context.model_params,
             profile_overrides=context.profile_overrides,
             context_limit=context.model_context_limit,
@@ -506,11 +511,15 @@ def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
         # strings; the values stay unknown and are narrowed individually below.
         fields = cast("dict[str, Any]", context)
         model = fields.get("model")
+        summarization_model = fields.get("summarization_model")
         params = fields.get("model_params")
         profile_overrides = fields.get("profile_overrides")
         context_limit = fields.get("model_context_limit")
         return RuntimeModelConfig(
             model_spec=model if isinstance(model, str) else None,
+            summarization_model_spec=(
+                summarization_model if isinstance(summarization_model, str) else None
+            ),
             model_params=dict(params) if isinstance(params, dict) else {},
             profile_overrides=(
                 dict(profile_overrides) if isinstance(profile_overrides, dict) else {}
@@ -518,7 +527,11 @@ def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
             context_limit=context_limit if isinstance(context_limit, int) else None,
         )
     return RuntimeModelConfig(
-        model_spec=None, model_params={}, profile_overrides={}, context_limit=None
+        model_spec=None,
+        summarization_model_spec=None,
+        model_params={},
+        profile_overrides={},
+        context_limit=None,
     )
 
 
@@ -734,9 +747,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         )
         return _require_decision(decision, PreCompactDecision).continue_processing
 
-    def _auto_compaction_request(self, request: ModelRequest) -> ModelRequest | None:
+    @staticmethod
+    def _auto_compaction_request(
+        request: ModelRequest,
+        summarization: SummarizationMiddleware,
+    ) -> ModelRequest | None:
         """Return the prepared request when threshold compaction will run."""
-        summarization = self._summarization
         messages = summarization._get_effective_messages(request)
         tokens = summarization._count_tokens(
             messages, request.system_message, request.tools
@@ -757,13 +773,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         self,
         request: ModelRequest,
         overflow: ContextOverflowError,
+        summarization: SummarizationMiddleware,
     ) -> None:
         """Gate a provider-overflow fallback before it compacts.
 
         Raises:
             _AutoCompactionBlockedError: If the hook blocks compaction.
         """
-        if self._summarization._determine_cutoff_index(
+        if summarization._determine_cutoff_index(
             request.messages
         ) > 0 and not self._pre_auto_compact(request):
             raise _AutoCompactionBlockedError(overflow) from overflow
@@ -779,11 +796,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The model response.
         """
         call_model = partial(super().wrap_model_call, handler=handler)
-        prepared = self._auto_compaction_request(request)
+        summarization = self._summarization_for_runtime(request.runtime)
+        prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
                 return call_model(prepared)
-            return self._summarization.wrap_model_call(request, call_model)
+            return summarization.wrap_model_call(request, call_model)
 
         overflow_gated = False
 
@@ -794,27 +812,28 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             except ContextOverflowError as overflow:
                 if not overflow_gated:
                     overflow_gated = True
-                    self._pre_overflow_compact(next_request, overflow)
+                    self._pre_overflow_compact(next_request, overflow, summarization)
                 raise
 
         try:
-            return self._summarization.wrap_model_call(request, gated_handler)
+            return summarization.wrap_model_call(request, gated_handler)
         except _AutoCompactionBlockedError as blocked:
             raise blocked.overflow from None
 
+    @staticmethod
     async def _awrap_with_archive_lock(
-        self,
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
+        summarization: SummarizationMiddleware,
     ) -> ModelResponse | ExtendedModelResponse:
         """Serialize an automatic archive append with other compactions.
 
         Returns:
             The wrapped model response.
         """
-        session_id = self._summarization._get_session_id(request.state)
+        session_id = summarization._get_session_id(request.state)
         async with _archive_lock(session_id):
-            return await self._summarization.awrap_model_call(request, handler)
+            return await summarization.awrap_model_call(request, handler)
 
     async def awrap_model_call(  # ty: ignore[invalid-method-override]  # delegates auto summarizer
         self,
@@ -827,11 +846,16 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             The model response.
         """
         call_model = partial(super().awrap_model_call, handler=handler)
-        prepared = self._auto_compaction_request(request)
+        summarization = await asyncio.to_thread(
+            self._summarization_for_runtime, request.runtime
+        )
+        prepared = self._auto_compaction_request(request, summarization)
         if prepared is not None:
             if not self._pre_auto_compact(prepared):
                 return await call_model(prepared)
-            return await self._awrap_with_archive_lock(request, call_model)
+            return await self._awrap_with_archive_lock(
+                request, call_model, summarization
+            )
 
         overflow_gated = False
 
@@ -842,23 +866,40 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             except ContextOverflowError as overflow:
                 if not overflow_gated:
                     overflow_gated = True
-                    self._pre_overflow_compact(next_request, overflow)
+                    self._pre_overflow_compact(next_request, overflow, summarization)
                 raise
 
         try:
-            return await self._awrap_with_archive_lock(request, gated_handler)
+            return await self._awrap_with_archive_lock(
+                request, gated_handler, summarization
+            )
         except _AutoCompactionBlockedError as blocked:
             raise blocked.overflow from None
 
-    async def _arun_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
-        """Serialize a model-initiated archive append with other compactions.
+    def _run_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
+        """Run model-initiated compaction with a request-local summarizer.
 
         Returns:
             The compact tool's state command.
         """
-        session_id = self._summarization._get_session_id(runtime.state)
+        tool = SummarizationToolMiddleware(
+            self._summarization_for_runtime(runtime), system_prompt=None
+        )
+        return tool._run_compact(runtime)
+
+    async def _arun_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
+        """Serialize model-initiated compaction with a request-local summarizer.
+
+        Returns:
+            The compact tool's state command.
+        """
+        summarization = await asyncio.to_thread(
+            self._summarization_for_runtime, runtime
+        )
+        session_id = summarization._get_session_id(runtime.state)
+        tool = SummarizationToolMiddleware(summarization, system_prompt=None)
         async with _archive_lock(session_id):
-            return await super()._arun_compact(runtime)
+            return await tool._arun_compact(runtime)
 
     def _create_compact_tool(self) -> StructuredTool:
         """Create the CLI variant of `compact_conversation`.
@@ -898,18 +939,21 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 a model-aware summarizer using the same configured backend.
         """
         config = _runtime_model_config(runtime)
-        if not config.model_spec:
+        if not config.model_spec and not config.summarization_model_spec:
             return self._summarization
 
         from deepagents_code.config import create_model
 
-        model = create_model(
-            config.model_spec,
-            extra_kwargs=config.model_params or None,
-            profile_overrides=config.profile_overrides or None,
-            cli_max_retries=self._cli_max_retries,
-        ).model
-        context_limit = config.context_limit
+        if config.model_spec:
+            model = create_model(
+                config.model_spec,
+                extra_kwargs=config.model_params or None,
+                profile_overrides=config.profile_overrides or None,
+                cli_max_retries=self._cli_max_retries,
+            ).model
+        else:
+            model = self._summarization.model
+        context_limit = config.context_limit if config.model_spec else None
         if context_limit is not None:
             profile = getattr(model, "profile", None)
             native = (
@@ -948,7 +992,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization = create_summarization_middleware(
             model, self._summarization._backend
         )
-        _install_summary_model_retries(summarization)
+        summary_model = (
+            create_model(
+                config.summarization_model_spec,
+                cli_max_retries=self._cli_max_retries,
+            ).model
+            if config.summarization_model_spec
+            else model
+        )
+        _install_summary_model_retries(summarization, summary_model)
         return summarization
 
     async def _aplan_forced_compaction_update(

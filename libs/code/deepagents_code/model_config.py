@@ -3160,6 +3160,9 @@ class ModelConfig:
     differ from the classifier Auto actually reviews with.
     """
 
+    summarization_default_model: str | None = None
+    """The default summary model from `[models].summarization_default`."""
+
     allowed_models: tuple[str, ...] | None = None
     """Ordered model specs and provider wildcards the policy permits.
 
@@ -3341,6 +3344,7 @@ class ModelConfig:
             option_keys = (
                 "models.default",
                 "models.recent",
+                "models.summarization_default",
                 "models.auto_classifier",
                 "models.providers",
             )
@@ -3385,6 +3389,12 @@ class ModelConfig:
                 recent_model=_toml_model_spec(
                     resolved["models.recent"],
                     key="recent",
+                    path=config_path,
+                    source_label=source_label,
+                ),
+                summarization_default_model=_toml_model_spec(
+                    resolved["models.summarization_default"],
+                    key="summarization_default",
                     path=config_path,
                     source_label=source_label,
                 ),
@@ -3444,6 +3454,16 @@ class ModelConfig:
                 "recent_model '%s' should use provider:model format "
                 "(e.g., 'anthropic:claude-sonnet-4-5')",
                 self.recent_model,
+            )
+
+        if (
+            self.summarization_default_model
+            and ":" not in self.summarization_default_model
+        ):
+            logger.warning(
+                "summarization_default_model '%s' should use provider:model format "
+                "(e.g., 'openai:gpt-5.4-mini')",
+                self.summarization_default_model,
             )
 
         # Warn if auto_classifier_model is set but doesn't use provider:model format

@@ -3222,6 +3222,7 @@ class DeepAgentsApp(App):
         launch_init: bool = False,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
+        summarization_model: str | None = None,
         server_proc: ServerProcess | None = None,
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
@@ -3273,6 +3274,7 @@ class DeepAgentsApp(App):
                 the app override, including model selection details,
                 offload budget display, and on-demand `create_model()`
                 calls such as `/offload`.
+            summarization_model: Initial model used only for compaction summaries.
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
 
@@ -3748,6 +3750,9 @@ class DeepAgentsApp(App):
             model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
         )
         """Per-turn model params override set via startup or `/model` params."""
+
+        self._summarization_model_override = summarization_model
+        """Per-session model used only for context-compaction summaries."""
 
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
@@ -16020,6 +16025,8 @@ class DeepAgentsApp(App):
             self._open_notification_center()
         elif cmd == "/effort" or cmd.startswith("/effort "):
             await self._handle_effort_command(command)
+        elif cmd == "/summarization-model" or cmd.startswith("/summarization-model "):
+            await self._handle_summarization_model_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -16902,6 +16909,7 @@ class DeepAgentsApp(App):
             context = CLIContext(
                 model=self._effective_model_spec(),
                 model_params=self._model_params_override or {},
+                summarization_model=self._summarization_model_override,
                 profile_overrides=self._profile_override or {},
                 model_context_limit=runtime_state.model_context_limit,
                 thread_id=self._lc_thread_id,
@@ -17882,6 +17890,7 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    summarization_model=self._summarization_model_override,
                     profile_overrides=self._profile_override or {},
                     model_context_limit=runtime_state.model_context_limit,
                     classifier_model=self._auto_classifier_context_value(),
@@ -28709,6 +28718,41 @@ class DeepAgentsApp(App):
         self.notify(message, markup=False)
         return (message, now)
 
+    async def _handle_summarization_model_command(self, command: str) -> None:
+        """Set, clear, or display the session's summary-model override."""
+        await self._mount_message(UserMessage(command))
+        argument = command.strip()[len("/summarization-model") :].strip()
+        if not argument:
+            current = self._summarization_model_override or "the main agent model"
+            await self._mount_message(AppMessage(f"Summarization model: {current}"))
+            return
+        if argument == "--clear":
+            self._summarization_model_override = None
+            await self._mount_message(
+                AppMessage("Summarization model cleared; using the main agent model.")
+            )
+            return
+        if " " in argument:
+            await self._mount_message(
+                ErrorMessage("Usage: /summarization-model [provider:model|--clear]")
+            )
+            return
+
+        try:
+            result = await asyncio.to_thread(
+                _create_model_with_deepagents_import_lock,
+                argument,
+                cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
+            )
+        except Exception as exc:
+            logger.exception("Failed to resolve summarization model %s", argument)
+            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            return
+
+        display = f"{result.provider}:{result.model_name}"
+        self._summarization_model_override = display
+        await self._mount_message(AppMessage(f"Summarization model set to {display}."))
+
     async def _switch_model(
         self,
         model_spec: str,
@@ -29194,6 +29238,7 @@ async def run_textual_app(
     launch_init: bool = False,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     server_proc: ServerProcess | None = None,
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
@@ -29243,6 +29288,7 @@ async def run_textual_app(
             the app override, including model selection details, offload
             budget display, and on-demand `create_model()` calls such
             as `/offload`.
+        summarization_model: Initial model used only for compaction summaries.
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
@@ -29299,6 +29345,7 @@ async def run_textual_app(
         launch_init=launch_init,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
+        summarization_model=summarization_model,
         server_proc=server_proc,
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,

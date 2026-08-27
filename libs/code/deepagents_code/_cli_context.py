@@ -54,6 +54,8 @@ class CLIContextSchema:
 
     model_params: dict[str, Any] = field(default_factory=dict)
 
+    summarization_model: str | None = None
+
     profile_overrides: dict[str, Any] = field(default_factory=dict)
 
     model_context_limit: int | None = None
@@ -93,6 +95,13 @@ class CLIContext(TypedDict, total=False):
     model_params: dict[str, Any]
     """Invocation params (e.g. `temperature`, `max_tokens`) to merge
     into `model_settings`."""
+
+    summarization_model: str | None
+    """Model spec used only for context-compaction summary generation.
+
+    `None` or an absent key reuses the effective main agent model. This value
+    never changes the main model or its system-prompt identity.
+    """
 
     profile_overrides: dict[str, Any]
     """Model profile metadata supplied by `--profile-override`."""

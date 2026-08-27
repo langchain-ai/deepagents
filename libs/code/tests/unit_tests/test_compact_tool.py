@@ -476,6 +476,40 @@ class TestCLICompactionMiddleware:
         assert create_summarization.call_args.args[1] is startup._backend
         assert isinstance(selected._lc_helper._summary_model, _RetryingModelInvoker)
 
+    def test_runtime_summary_override_replaces_only_summary_invoker(self) -> None:
+        startup = self._summarization()
+        middleware = CLICompactionMiddleware(startup, cli_max_retries=0)
+        runtime = MagicMock()
+        runtime.context = {
+            "model": "provider:main-model",
+            "summarization_model": "provider:summary-model",
+        }
+        main_model = SimpleNamespace(profile={"max_input_tokens": 100_000})
+        summary_model = object()
+        selected = MagicMock()
+
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                side_effect=[
+                    SimpleNamespace(model=main_model),
+                    SimpleNamespace(model=summary_model),
+                ],
+            ) as create_model,
+            patch(
+                "deepagents_code.offload_middleware.create_summarization_middleware",
+                return_value=selected,
+            ) as create_summarization,
+        ):
+            actual = middleware._summarization_for_runtime(runtime)
+
+        assert actual is selected
+        assert create_model.call_args_list[0].args == ("provider:main-model",)
+        assert create_model.call_args_list[1].args == ("provider:summary-model",)
+        assert create_summarization.call_args.args[0] is main_model
+        assert selected._lc_helper._summary_model._model is summary_model
+        assert middleware._summarization is startup
+
     def test_runtime_profile_overrides_and_context_limit_are_applied(self) -> None:
         """Server-side offload uses the CLI's effective model profile."""
         startup = self._summarization()
@@ -615,6 +649,7 @@ class TestRuntimeModelConfig:
         ctx = CLIContextSchema(model="p:m", model_params={"temperature": 0})
         assert _runtime_model_config(self._runtime(ctx)) == (
             "p:m",
+            None,
             {"temperature": 0},
             {},
             None,
@@ -624,6 +659,7 @@ class TestRuntimeModelConfig:
         ctx = {"model": "p:m2", "model_params": {"x": 1}}
         assert _runtime_model_config(self._runtime(ctx)) == (
             "p:m2",
+            None,
             {"x": 1},
             {},
             None,
@@ -631,10 +667,29 @@ class TestRuntimeModelConfig:
 
     def test_dict_with_bad_types_normalizes(self) -> None:
         ctx = {"model": 123, "model_params": None}
-        assert _runtime_model_config(self._runtime(ctx)) == (None, {}, {}, None)
+        assert _runtime_model_config(self._runtime(ctx)) == (None, None, {}, {}, None)
 
     def test_unknown_shape(self) -> None:
-        assert _runtime_model_config(self._runtime(object())) == (None, {}, {}, None)
+        assert _runtime_model_config(self._runtime(object())) == (
+            None,
+            None,
+            {},
+            {},
+            None,
+        )
+
+    def test_summarization_model_accepts_schema_and_serialized_context(self) -> None:
+        schema = CLIContextSchema(summarization_model="openai:gpt-5.4-mini")
+        assert (
+            _runtime_model_config(self._runtime(schema)).summarization_model_spec
+            == "openai:gpt-5.4-mini"
+        )
+        assert (
+            _runtime_model_config(
+                self._runtime({"summarization_model": "anthropic:claude-haiku-4-5"})
+            ).summarization_model_spec
+            == "anthropic:claude-haiku-4-5"
+        )
 
     def test_named_fields_disambiguate_the_two_dict_slots(self) -> None:
         """The two `dict` slots are addressable by name, not just position.

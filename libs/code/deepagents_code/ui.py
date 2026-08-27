@@ -159,6 +159,9 @@ def show_help() -> None:
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
     console.print(
+        "  --summarization-model MODEL  Model for context-compaction summaries"
+    )
+    console.print(
         "  --max-retries N            Retries after a failed model request; 0 disables"
     )
     console.print("  --profile-override JSON    Override model profile fields as JSON")

@@ -1531,6 +1531,39 @@ class TestModelCommandIntegration:
         assert "cannot be used with --default" in captured_errors[0]
 
 
+class TestSummarizationModelCommand:
+    async def test_set_and_clear_do_not_change_main_model(self) -> None:
+        app = DeepAgentsApp()
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        app._model_override = "anthropic:claude-sonnet-4-5"
+        resolved = Mock(provider="openai", model_name="gpt-5.4-mini")
+
+        with patch(
+            "deepagents_code.app._create_model_with_deepagents_import_lock",
+            return_value=resolved,
+        ):
+            await app._handle_command("/summarization-model openai:gpt-5.4-mini")
+
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+
+        await app._handle_command("/summarization-model --clear")
+        assert app._summarization_model_override is None
+        assert app._model_override == "anthropic:claude-sonnet-4-5"
+
+    async def test_invalid_model_leaves_override_unchanged(self) -> None:
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+
+        with patch(
+            "deepagents_code.app._create_model_with_deepagents_import_lock",
+            side_effect=ValueError("bad model"),
+        ):
+            await app._handle_command("/summarization-model invalid:model")
+
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+
+
 class _StatusBarHarness(App[None]):
     """Minimal app that mounts a `StatusBar` so its child widgets exist.
 

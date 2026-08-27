@@ -2487,6 +2487,13 @@ def parse_args() -> argparse.Namespace:
         "These take priority, overriding config file values.",
     )
 
+    parser.add_argument(
+        "--summarization-model",
+        metavar="MODEL",
+        help="Model to use for context-compaction summaries. Falls back to "
+        "[models].summarization_default, then the main agent model.",
+    )
+
     from deepagents_code.ui import non_negative_int, positive_int, shell_allow_list_arg
 
     parser.add_argument(
@@ -3035,6 +3042,7 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
@@ -3075,6 +3083,10 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        summarization_model: Optional model spec for context-compaction summaries.
+
+            When absent, `[models].summarization_default` is used, then the
+            effective main agent model.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
 
@@ -3141,11 +3153,13 @@ async def run_textual_cli_async(
     from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
+        create_model,
         detect_provider,
         resolve_auto_classifier_model_with_problem,
         runtime_state,
     )
     from deepagents_code.model_config import (
+        ModelConfig,
         ModelConfigError,
         ModelSpec,
         NoCredentialsConfiguredError,
@@ -3175,6 +3189,31 @@ async def run_textual_cli_async(
 
         console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
+
+    resolved_summarization_model = (
+        summarization_model
+        if summarization_model is not None
+        else ModelConfig.load().summarization_default_model
+    )
+    if resolved_summarization_model:
+        try:
+            summary_result = await asyncio.to_thread(
+                create_model,
+                resolved_summarization_model,
+                cli_max_retries=cli_max_retries,
+            )
+            resolved_summarization_model = (
+                f"{summary_result.provider}:{summary_result.model_name}"
+            )
+        except (ModelConfigError, NoCredentialsConfiguredError) as e:
+            from rich.markup import escape
+
+            from deepagents_code.config import console
+
+            console.print(
+                f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False
+            )
+            return AppResult(return_code=1, thread_id=None)
 
     if resolved_spec:
         parsed = ModelSpec.try_parse(resolved_spec)
@@ -3284,6 +3323,7 @@ async def run_textual_cli_async(
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
+            summarization_model=resolved_summarization_model,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
@@ -6167,6 +6207,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        summarization_model=getattr(args, "summarization_model", None),
                         cli_max_retries=max_retries,
                         profile_override=profile_override,
                         thread_id=thread_id,

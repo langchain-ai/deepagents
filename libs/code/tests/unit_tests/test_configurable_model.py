@@ -775,6 +775,16 @@ class TestModelSwap:
         # A bare string is not exploded into per-character events.
         assert string_events.hooks_server_events == []
 
+    @pytest.mark.parametrize("value", ["false", 1, [True], {"enabled": True}])
+    def test_context_payload_conversion_rejects_non_boolean_auto_approve(
+        self, value: object
+    ) -> None:
+        """Malformed compatibility values must not enable legacy YOLO mode."""
+        resolved = CLIContextSchema.from_payload({"auto_approve": value})
+
+        assert resolved is not None
+        assert resolved.auto_approve is False
+
     async def test_async_strict_model_resolution_propagates_config_error(self) -> None:
         """The TUI streams, so the async path is the one the grader runs on."""
         from deepagents_code.model_config import ModelConfigError

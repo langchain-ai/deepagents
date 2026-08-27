@@ -120,6 +120,7 @@ class CLIContextSchema:
             else None
         )
         approval_mode = _str("approval_mode")
+        raw_auto_approve = data.get("auto_approve")
         # Only a real list is safe to iterate: `7` raises `TypeError`, and a
         # bare string (`"PreToolUse"`) would explode into per-character events.
         raw_events = data.get("hooks_server_events")
@@ -135,7 +136,11 @@ class CLIContextSchema:
             model_context_limit=limit,
             classifier_model=_str("classifier_model"),
             approval_mode=approval_mode or "manual",
-            auto_approve=bool(data.get("auto_approve", False)),
+            # Fail closed for malformed remote payloads. In particular,
+            # `bool("false")` is `True` and would enable legacy YOLO mode.
+            auto_approve=(
+                raw_auto_approve if isinstance(raw_auto_approve, bool) else False
+            ),
             approval_mode_key=_str("approval_mode_key"),
             thread_id=_str("thread_id"),
             turn_id=_str("turn_id"),

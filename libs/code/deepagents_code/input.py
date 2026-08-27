@@ -12,6 +12,7 @@ from urllib.parse import unquote, urlparse
 from rich.markup import escape as escape_markup
 
 from deepagents_code.config import console
+from deepagents_code.deepagentsignore import DeepagentsIgnore
 from deepagents_code.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
@@ -464,7 +465,9 @@ class MediaTracker:
         return max_id + 1 if max_id else fallback_count + 1
 
 
-def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
+def parse_file_mentions(
+    text: str, *, ignore: DeepagentsIgnore | None = None
+) -> tuple[str, list[Path]]:
     r"""Extract `@file` mentions and return the text with resolved file paths.
 
     Parses `@file` mentions from the input text and resolves them to absolute
@@ -484,6 +487,7 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
 
     Args:
         text: Input text potentially containing `@file` mentions.
+        ignore: Optional project ignore rules.
 
     Returns:
         Tuple of (original text unchanged, list of resolved file paths that exist).
@@ -507,7 +511,12 @@ def parse_file_mentions(text: str) -> tuple[str, list[Path]]:
                 path = Path.cwd() / path
 
             resolved = path.resolve()
-            if resolved.exists() and resolved.is_file():
+            if ignore is not None and ignore.is_ignored_path(resolved):
+                console.print(
+                    f"[yellow]Warning: File excluded by .deepagentsignore: "
+                    f"{escape_markup(raw_path)}[/yellow]"
+                )
+            elif resolved.exists() and resolved.is_file():
                 files.append(resolved)
             else:
                 console.print(

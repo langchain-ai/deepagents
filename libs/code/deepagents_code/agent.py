@@ -95,6 +95,11 @@ from deepagents_code.config import (
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
+from deepagents_code.deepagentsignore import (
+    DeepagentsIgnore,
+    IgnoringBackend,
+    IgnoringSandboxBackend,
+)
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -2848,9 +2853,16 @@ def create_cli_agent(
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
+    ignore: DeepagentsIgnore | None = None
     if sandbox is None:
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
+        ignore = DeepagentsIgnore.from_project(
+            root_dir,
+            project_root=(
+                project_context.project_root if project_context is not None else None
+            ),
+        )
         if enable_shell:
             # Create environment for shell commands.
             # Restore the user's original LANGSMITH_PROJECT so their code traces
@@ -2877,15 +2889,27 @@ def create_cli_agent(
             # `restore_user_tracing_api_keys` above depends on this too: flipping
             # to `inherit_env=True` would re-copy the agent's overridden
             # `LANGSMITH_API_KEY` and undo the restore, leaking it into `execute`.
-            backend = LocalShellBackend(
+            local_backend = LocalShellBackend(
                 root_dir=root_dir,
                 virtual_mode=False,
                 inherit_env=False,
                 env=shell_env,
             )
+            backend = IgnoringSandboxBackend(
+                local_backend,
+                ignore,
+                backend_root=root_dir,
+                virtual_mode=False,
+            )
         else:
             # No shell access - use plain FilesystemBackend
-            backend = FilesystemBackend(root_dir=root_dir, virtual_mode=False)
+            local_backend = FilesystemBackend(root_dir=root_dir, virtual_mode=False)
+            backend = IgnoringBackend(
+                local_backend,
+                ignore,
+                backend_root=root_dir,
+                virtual_mode=False,
+            )
     else:
         # ========== REMOTE SANDBOX MODE ==========
         backend = sandbox  # Remote sandbox (ModalSandbox, etc.)
@@ -2935,6 +2959,7 @@ def create_cli_agent(
         agent_middleware.append(
             LocalContextMiddleware(
                 backend=backend,
+                ignore=ignore,
                 mcp_server_info=mcp_server_info,
                 tracing_project=get_langsmith_project_name(),
                 user_tracing_project=settings.user_langchain_project,
@@ -3117,9 +3142,15 @@ def create_cli_agent(
                 criteria_backend = None
                 criteria_root = "/"
         elif project_context is not None and project_context.project_root is not None:
-            criteria_backend = FilesystemBackend(
+            criteria_filesystem = FilesystemBackend(
                 root_dir=project_context.project_root,
                 virtual_mode=True,
+            )
+            criteria_backend = IgnoringBackend(
+                criteria_filesystem,
+                ignore or DeepagentsIgnore.from_project(project_context.project_root),
+                backend_root=criteria_filesystem.cwd,
+                virtual_mode=criteria_filesystem.virtual_mode,
             )
             criteria_root = "/"
         else:
@@ -3170,9 +3201,15 @@ def create_cli_agent(
         grader_repository_backend: BackendProtocol | None = backend
         grader_repository_root = get_default_working_dir(sandbox_type)
     elif sandbox is None:
-        grader_repository_backend = FilesystemBackend(
+        grader_filesystem = FilesystemBackend(
             root_dir=root_dir,
             virtual_mode=True,
+        )
+        grader_repository_backend = IgnoringBackend(
+            grader_filesystem,
+            ignore or DeepagentsIgnore.from_project(root_dir),
+            backend_root=grader_filesystem.cwd,
+            virtual_mode=grader_filesystem.virtual_mode,
         )
         grader_repository_root = "/"
     else:

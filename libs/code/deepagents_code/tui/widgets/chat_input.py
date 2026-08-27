@@ -35,6 +35,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
+from deepagents_code.deepagentsignore import DeepagentsIgnore
 from deepagents_code.input import (
     IMAGE_PLACEHOLDER_PATTERN,
     VIDEO_PLACEHOLDER_PATTERN,
@@ -3398,7 +3399,18 @@ class ChatInput(Vertical):
 
         parts: list[str] = []
         attached = False
+        filtered = False
+        ignore = DeepagentsIgnore.from_project(self._cwd)
         for path in paths:
+            if ignore.is_ignored_path(path):
+                self.app.notify(
+                    f"File excluded by .deepagentsignore: {path.name}",
+                    severity="warning",
+                    timeout=5,
+                    markup=False,
+                )
+                filtered = True
+                continue
             media = get_media_from_path(path)
             if media is not None:
                 kind = "image" if isinstance(media, ImageData) else "video"
@@ -3436,7 +3448,7 @@ class ChatInput(Vertical):
             logger.debug("Could not load media from dropped path: %s", path)
             parts.append(str(path))
 
-        if not attached:
+        if not attached and not filtered:
             return raw_text, False
 
         separator = "\n" if "\n" in raw_text else " "

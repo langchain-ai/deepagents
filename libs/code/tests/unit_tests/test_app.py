@@ -14069,6 +14069,24 @@ class TestRubricCommand:
                 "checkmark", "Rubric set"
             )
 
+    async def test_rubric_file_rejects_deepagentsignore_match(
+        self, tmp_path: Path
+    ) -> None:
+        """`/rubric file` must not read ignored project files."""
+        rubric_file = tmp_path / "rubric.md"
+        rubric_file.write_text("secret criteria\n", encoding="utf-8")
+        (tmp_path / ".deepagentsignore").write_text("rubric.md\n", encoding="utf-8")
+
+        app = DeepAgentsApp(agent=MagicMock(), cwd=tmp_path)
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            await app._handle_command("/rubric file rubric.md")
+            await pilot.pause()
+
+            errors = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert ".deepagentsignore" in errors
+            assert app._active_rubric is None
+
     async def test_oversized_rubric_file_preserves_current_state(
         self, tmp_path: Path
     ) -> None:

@@ -14,6 +14,8 @@ import html
 import inspect
 import json
 import logging
+import re
+from pathlib import Path
 from typing import (
     TYPE_CHECKING,
     Annotated,
@@ -48,6 +50,7 @@ if TYPE_CHECKING:
     from deepagents.middleware.summarization import SummarizationEvent
     from langgraph.runtime import Runtime
 
+    from deepagents_code.deepagentsignore import DeepagentsIgnore
     from deepagents_code.mcp_tools import MCPServerInfo
 
 
@@ -666,6 +669,60 @@ def build_detect_script() -> str:
 
 DETECT_CONTEXT_SCRIPT = build_detect_script()
 
+
+def _filter_file_context(output: str, ignore: DeepagentsIgnore) -> str:
+    """Remove ignored paths from file-derived local-context sections.
+
+    Returns:
+        Filtered local-context markdown.
+    """
+    lines = output.splitlines()
+    filtered: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if line.startswith("**Files**"):
+            block, index = _take_markdown_block(lines, index)
+            entries = [
+                item
+                for item in block[1:]
+                if not item.startswith("- ")
+                or not ignore.is_ignored_relative(
+                    item[2:].rstrip("/"), is_dir=item.endswith("/")
+                )
+            ]
+            if entries:
+                filtered.extend([block[0], *entries])
+            continue
+        if line.startswith("**Tree**"):
+            _block, index = _take_markdown_block(lines, index)
+            continue
+        if line.startswith("**Makefile**"):
+            block, index = _take_markdown_block(lines, index)
+            match = re.search(r"\(`([^`]+)`", line)
+            makefile = match.group(1) if match else "Makefile"
+            if Path(makefile).is_absolute():
+                try:
+                    makefile = (
+                        Path(makefile).resolve().relative_to(ignore.root).as_posix()
+                    )
+                except ValueError:
+                    makefile = ""
+            if not makefile or not ignore.is_ignored_relative(makefile):
+                filtered.extend(block)
+            continue
+        filtered.append(line)
+        index += 1
+    return "\n".join(filtered).strip()
+
+
+def _take_markdown_block(lines: list[str], start: int) -> tuple[list[str], int]:
+    end = start + 1
+    while end < len(lines) and lines[end]:
+        end += 1
+    return lines[start:end], min(end + 1, len(lines))
+
+
 # ---------------------------------------------------------------------------
 # State schema
 # ---------------------------------------------------------------------------
@@ -716,6 +773,7 @@ class LocalContextMiddleware(AgentMiddleware):
         self,
         backend: _ExecutableBackend | _AsyncExecutableBackend,
         *,
+        ignore: DeepagentsIgnore | None = None,
         mcp_server_info: list[MCPServerInfo] | None = None,
         tracing_project: str | None = None,
         user_tracing_project: str | None = None,
@@ -724,6 +782,7 @@ class LocalContextMiddleware(AgentMiddleware):
 
         Args:
             backend: Backend instance that provides shell command execution.
+            ignore: Optional project ignore rules for file-derived context.
             mcp_server_info: MCP server metadata to include in the system prompt.
             tracing_project: LangSmith project the agent's own runs trace to, or
                 `None` when tracing is disabled (the tracing section is omitted).
@@ -731,14 +790,14 @@ class LocalContextMiddleware(AgentMiddleware):
                 shell commands the agent runs.
         """
         self.backend = backend
+        self._ignore = ignore
         tracing_context = _build_tracing_context(tracing_project, user_tracing_project)
         mcp_context = _build_mcp_context(mcp_server_info or [])
         self._static_context = "\n\n".join(
             context for context in (tracing_context, mcp_context) if context
         )
 
-    @staticmethod
-    def _handle_detect_result(result: ExecuteResponse) -> str | None:
+    def _handle_detect_result(self, result: ExecuteResponse) -> str | None:
         """Validate detection script output and normalize it for state storage.
 
         Args:
@@ -762,6 +821,8 @@ class LocalContextMiddleware(AgentMiddleware):
             logger.debug(
                 "Local context detection script succeeded but produced no output"
             )
+        if output and self._ignore is not None:
+            output = _filter_file_context(output, self._ignore)
         return output or None
 
     def _run_detect_script(self) -> str | None:
@@ -800,7 +861,7 @@ class LocalContextMiddleware(AgentMiddleware):
             )
             return None
 
-        return LocalContextMiddleware._handle_detect_result(result)
+        return self._handle_detect_result(result)
 
     @staticmethod
     def _build_refresh_message(context: str, cutoff: int) -> HumanMessage:
@@ -940,7 +1001,7 @@ class LocalContextMiddleware(AgentMiddleware):
             )
             return None
 
-        return LocalContextMiddleware._handle_detect_result(result)
+        return self._handle_detect_result(result)
 
     async def abefore_agent(  # ty: ignore[invalid-method-override]
         self,

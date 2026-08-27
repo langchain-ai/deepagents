@@ -2932,8 +2932,11 @@ class TestCreateCliAgentProjectContext:
                 cwd=user_cwd,
             )
 
-        assert isinstance(composite_backend.default, FilesystemBackend)
-        assert composite_backend.default.cwd == user_cwd.resolve()
+        from deepagents_code.deepagentsignore import IgnoringBackend
+
+        assert isinstance(composite_backend.default, IgnoringBackend)
+        assert isinstance(composite_backend.default._backend, FilesystemBackend)
+        assert composite_backend.default._backend.cwd == user_cwd.resolve()
 
 
 class TestMiddlewareStackConformance:

@@ -9,6 +9,7 @@ import logging
 import math
 import time
 import uuid
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import httpx
@@ -22,7 +23,6 @@ if TYPE_CHECKING:
         Mapping,
         Sequence,
     )
-    from pathlib import Path
     from typing import Literal, Protocol
 
     from langchain.agents.middleware.human_in_the_loop import (
@@ -108,6 +108,7 @@ from deepagents_code._tool_stream import (
 )
 from deepagents_code._tracing import stream_trace_config
 from deepagents_code.config import build_stream_config, get_glyphs
+from deepagents_code.deepagentsignore import DeepagentsIgnore
 from deepagents_code.file_ops import FileOpTracker, record_display_caveat
 from deepagents_code.hooks import (
     dispatch_hook,
@@ -1513,8 +1514,9 @@ async def execute_task_textual(
 
     message_content: str | list[dict[str, Any]] | None = None
     if graph_input is None:
+        ignore = DeepagentsIgnore.from_project(Path.cwd())
         prompt_text, mentioned_files = await asyncio.to_thread(
-            parse_file_mentions, user_input
+            parse_file_mentions, user_input, ignore=ignore
         )
         max_embed_bytes = 256 * 1024
 

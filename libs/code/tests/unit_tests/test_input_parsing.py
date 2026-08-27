@@ -63,6 +63,28 @@ def test_parse_file_mentions_with_escaped_spaces(
     assert files == [file_path.resolve()]
 
 
+def test_parse_file_mentions_excludes_deepagentsignore_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+) -> None:
+    """Ignored mentions are rejected before their content is read."""
+    file_path = tmp_path / "secret.txt"
+    file_path.write_text("secret")
+    (tmp_path / ".deepagentsignore").write_text("secret.txt\n")
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    monkeypatch.chdir(tmp_path)
+    mock_console = mocker.patch("deepagents_code.input.console")
+    from deepagents_code.deepagentsignore import DeepagentsIgnore
+
+    ignore = DeepagentsIgnore.from_project(
+        tmp_path, project_root=tmp_path, profile_root=profile
+    )
+    _, files = parse_file_mentions("@secret.txt", ignore=ignore)
+
+    assert files == []
+    assert ".deepagentsignore" in mock_console.print.call_args[0][0]
+
+
 def test_parse_file_mentions_warns_for_nonexistent_file(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
 ) -> None:

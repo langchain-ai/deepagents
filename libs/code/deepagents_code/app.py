@@ -99,6 +99,7 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_terminal_mapping as _resolve_terminal_mapping,
     resolve_theme_name as _resolve_theme_name,
 )
+from deepagents_code.deepagentsignore import DeepagentsIgnore
 from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
@@ -362,6 +363,24 @@ direction is safe — it only over-offers a hint that
 def _message_timestamp_footer_id(message_id: str) -> str:
     """Return the DOM id for a message timestamp footer."""
     return f"{message_id}-timestamp-footer"
+
+
+def _read_rubric_file(path_arg: str, cwd: str) -> tuple[Path, str]:
+    """Read a rubric file unless project ignore rules exclude it.
+
+    Returns:
+        Resolved path and file contents.
+
+    Raises:
+        PermissionError: If project ignore rules exclude the path.
+    """
+    path = Path(path_arg).expanduser()
+    if not path.is_absolute():
+        path = Path(cwd) / path
+    if DeepagentsIgnore.from_project(cwd).is_ignored_path(path):
+        msg = f"Rubric file is excluded by .deepagentsignore: {path}"
+        raise PermissionError(msg)
+    return _read_text_file_expanding_user(str(path))
 
 
 def _read_text_file_expanding_user(path_arg: str) -> tuple[Path, str]:
@@ -15317,9 +15336,7 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(self._rubric_file_usage_text()))
             return
         try:
-            path, text = await asyncio.to_thread(
-                _read_text_file_expanding_user, parts[0]
-            )
+            path, text = await asyncio.to_thread(_read_rubric_file, parts[0], self._cwd)
         except (OSError, UnicodeError) as exc:
             # `UnicodeError` (e.g. `UnicodeDecodeError`) subclasses `ValueError`,
             # not `OSError`, so a binary/non-UTF-8 file would otherwise escape

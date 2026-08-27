@@ -153,6 +153,34 @@ class TestLocalContextMiddleware:
             "_local_context_refreshed_at_cutoff",
         } <= fields
 
+    def test_before_agent_filters_ignored_file_context(self, tmp_path: Path) -> None:
+        """Ignored names and file-derived sections stay out of local context."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        (tmp_path / ".deepagentsignore").write_text("secret.txt\nMakefile\n")
+        from deepagents_code.deepagentsignore import DeepagentsIgnore
+
+        ignore = DeepagentsIgnore.from_project(
+            tmp_path, project_root=tmp_path, profile_root=profile
+        )
+        output = (
+            "## Local Context\n\n"
+            "**Files** (2):\n- visible.txt\n- secret.txt\n\n"
+            "**Tree** (3 levels):\n```text\n.\n├── secret.txt\n```\n\n"
+            "**Makefile** (`Makefile`, first 20 lines):\n```makefile\nall:\n```\n"
+        )
+        backend = _make_backend(output=output)
+        middleware = LocalContextMiddleware(backend=backend, ignore=ignore)
+
+        result = middleware.before_agent({"messages": []}, Mock())
+
+        assert result is not None
+        context = result["_local_context"]
+        assert "visible.txt" in context
+        assert "secret.txt" not in context
+        assert "**Tree**" not in context
+        assert "**Makefile**" not in context
+
     def test_before_agent_stores_context(self) -> None:
         """Test before_agent runs script and stores output in state."""
         backend = _make_backend(output=SAMPLE_CONTEXT)
@@ -884,17 +912,32 @@ class TestHandleDetectResult:
     def test_none_exit_code_returns_none(self) -> None:
         """Test that exit_code=None is treated as failure."""
         result = ExecuteResponse(output="some output", exit_code=None)
-        assert LocalContextMiddleware._handle_detect_result(result) is None
+        assert (
+            LocalContextMiddleware(backend=_make_backend())._handle_detect_result(
+                result
+            )
+            is None
+        )
 
     def test_zero_exit_code_with_output(self) -> None:
         """Test that exit_code=0 with output returns stripped output."""
         result = ExecuteResponse(output="  hello  ", exit_code=0)
-        assert LocalContextMiddleware._handle_detect_result(result) == "hello"
+        assert (
+            LocalContextMiddleware(backend=_make_backend())._handle_detect_result(
+                result
+            )
+            == "hello"
+        )
 
     def test_zero_exit_code_empty_output(self) -> None:
         """Test that exit_code=0 with empty output returns None."""
         result = ExecuteResponse(output="", exit_code=0)
-        assert LocalContextMiddleware._handle_detect_result(result) is None
+        assert (
+            LocalContextMiddleware(backend=_make_backend())._handle_detect_result(
+                result
+            )
+            is None
+        )
 
 
 class TestAsyncExecutableBackend:

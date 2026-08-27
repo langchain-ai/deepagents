@@ -966,6 +966,22 @@ class TestGetProjectFiles:
         assert "untracked.py" in files
         assert files.index("tracked.py") < files.index("untracked.py")
 
+    def test_excludes_deepagentsignore_files(self, tmp_path: Path) -> None:
+        """Files matched by `.deepagentsignore` are not returned."""
+        self._init_repo(tmp_path)
+        (tmp_path / ".deepagentsignore").write_text("secret.py\n")
+        (tmp_path / "secret.py").write_text("z = 3\n")
+        (tmp_path / "visible.py").write_text("a = 4\n")
+        from deepagents_code.deepagentsignore import DeepagentsIgnore
+
+        ignore = DeepagentsIgnore.from_project(
+            tmp_path, project_root=tmp_path, profile_root=tmp_path / "profile"
+        )
+        files = ignore.filter_relative(_get_project_files(tmp_path))
+
+        assert "visible.py" in files
+        assert "secret.py" not in files
+
     def test_excludes_ignored_files(self, tmp_path: Path) -> None:
         """Files matched by .gitignore are not returned."""
         self._init_repo(tmp_path)
@@ -1316,6 +1332,23 @@ class TestFuzzyFileControllerScope:
         await controller.warm_cache()
 
         assert controller._file_cache == ["main.py"]
+
+    async def test_warm_cache_excludes_deepagentsignore_files(
+        self, mock_view, monkeypatch, tmp_path
+    ):
+        """Background cache warming applies `.deepagentsignore`."""
+        (tmp_path / ".git").mkdir()
+        (tmp_path / ".deepagentsignore").write_text("secret.py\n")
+        monkeypatch.setattr(
+            autocomplete_module,
+            "_get_project_files",
+            lambda _root: ["visible.py", "secret.py"],
+        )
+
+        controller = FuzzyFileController(mock_view, cwd=tmp_path)
+        await controller.warm_cache()
+
+        assert controller._file_cache == ["visible.py"]
 
     async def test_warm_cache_force_refreshes_populated_cache(
         self, mock_view, monkeypatch, tmp_path

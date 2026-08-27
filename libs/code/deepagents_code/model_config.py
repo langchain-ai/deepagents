@@ -3961,6 +3961,11 @@ def _save_toml_field(
             else:
                 data = {}
 
+            existing_section = data.get(section)
+            if isinstance(existing_section, dict):
+                existing = existing_section.get(field)
+                if type(existing) is type(value) and existing == value:
+                    return True
             if section not in data:
                 data[section] = {}
             data[section][field] = value

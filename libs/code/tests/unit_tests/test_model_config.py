@@ -6308,6 +6308,17 @@ recent = "researcher"
         assert 'recent = "coder"' in content
         assert "researcher" not in content
 
+    def test_save_same_value_preserves_file_identity(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        content = b'[agents]\nrecent = "coder"\n'
+        config_path.write_bytes(content)
+        inode = config_path.stat().st_ino
+
+        assert save_recent_agent("coder", config_path) is True
+
+        assert config_path.stat().st_ino == inode
+        assert config_path.read_bytes() == content
+
     def test_load_returns_recent(self, tmp_path):
         config_path = tmp_path / "config.toml"
         save_recent_agent("coder", config_path)

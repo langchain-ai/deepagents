@@ -10,6 +10,7 @@ from acp.exceptions import RequestError
 from acp.interfaces import Client
 from acp.schema import (
     AgentMessageChunk,
+    AgentThoughtChunk,
     AllowedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
@@ -135,6 +136,166 @@ async def test_acp_agent_prompt_streams_text() -> None:
     assert texts == ["Hello!"]
 
 
+async def test_acp_agent_prompt_streams_visible_reasoning_in_block_order() -> None:
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            chunk = AIMessageChunk(
+                content=[
+                    {"type": "text", "text": "Before"},
+                    {"type": "reasoning", "reasoning": "Considering options"},
+                    {"type": "text", "text": "After"},
+                    {"type": "reasoning", "reasoning": ""},
+                    {"type": "reasoning", "reasoning": {"not": "a string"}},
+                    {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+                ]
+            )
+            yield ((), "messages", (chunk, {}))
+            yield (
+                ("subagent",),
+                "messages",
+                (AIMessageChunk(content=[{"type": "reasoning", "reasoning": "Nested secret"}]), {}),
+            )
+
+        async def aget_state(self, config: Any) -> Any:
+            class State:
+                next = ()
+                interrupts: list[Any] = []
+
+            return State()
+
+    agent = AgentServerACP(
+        agent=create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([])), checkpointer=MemorySaver()
+        )
+    )
+    agent._agent = Graph()  # type: ignore[assignment]
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    updates = [event["update"] for event in client.events]
+    assert [update.session_update for update in updates] == [
+        "agent_message_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert [update.content.text for update in updates] == [
+        "Before",
+        "Considering options",
+        "After",
+    ]
+    assert isinstance(updates[1], AgentThoughtChunk)
+
+
+def _streaming_server(chunks: list[tuple[tuple[str, ...], Any]]) -> tuple[Any, FakeACPClient]:
+    """Build a server whose graph streams `chunks` as (namespace, message)."""
+
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            for namespace, chunk in chunks:
+                yield (namespace, "messages", (chunk, {}))
+
+        async def aget_state(self, config: Any) -> Any:
+            class State:
+                next = ()
+                interrupts: list[Any] = []
+
+            return State()
+
+    agent = AgentServerACP(
+        agent=create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([])), checkpointer=MemorySaver()
+        )
+    )
+    agent._agent = Graph()  # type: ignore[assignment]
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+    return agent, client
+
+
+async def test_acp_agent_prompt_keeps_whitespace_between_reasoning_deltas() -> None:
+    """Reasoning streams one delta at a time, so whitespace-only deltas matter.
+
+    Dropping them concatenates words and collapses paragraph breaks.
+    """
+    deltas = ["Considering", " ", "options.", "\n\n", "Now deciding."]
+    agent, client = _streaming_server(
+        [((), AIMessageChunk(content=[{"type": "reasoning", "reasoning": d}])) for d in deltas]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    updates = [event["update"] for event in client.events]
+    assert all(isinstance(update, AgentThoughtChunk) for update in updates)
+    assert "".join(update.content.text for update in updates) == (
+        "Considering options.\n\nNow deciding."
+    )
+
+
+async def test_acp_agent_prompt_streams_image_and_audio_blocks() -> None:
+    """The live path forwards every block type that session replay forwards."""
+    agent, client = _streaming_server(
+        [
+            (
+                (),
+                AIMessageChunk(
+                    content=[
+                        {"type": "image", "base64": "aW1n", "mime_type": "image/png"},
+                        {"type": "audio", "base64": "c25k", "mime_type": "audio/wav"},
+                    ]
+                ),
+            )
+        ]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    contents = [event["update"].content for event in client.events]
+    assert [content.type for content in contents] == ["image", "audio"]
+    assert [content.data for content in contents] == ["aW1n", "c25k"]
+
+
+async def test_acp_agent_prompt_streams_content_before_tool_calls() -> None:
+    """Live block order matches replay, which emits content before tool calls."""
+    chunk = AIMessageChunk(
+        content=[{"type": "text", "text": "Calling a tool"}],
+        tool_call_chunks=[
+            {
+                "name": "ls",
+                "args": '{"path": "."}',
+                "id": "call-1",
+                "index": 0,
+                "type": "tool_call_chunk",
+            }
+        ],
+    )
+    agent, client = _streaming_server([((), chunk)])
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    kinds = [event["update"].session_update for event in client.events]
+    assert kinds.index("agent_message_chunk") < kinds.index("tool_call")
+
+
 async def test_acp_agent_cancel_stops_prompt() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not appear")]))
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
@@ -158,21 +319,20 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
 
 
 async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
-    class ListContentMessage:
-        content = [
-            {"type": "text", "text": "Hello"},
-            " ",
-            {"type": "text", "text": "world"},
-        ]
-        tool_call_chunks: list[dict[str, Any]] = []
-
-    async def astream(*args: Any, **kwargs: Any):
-        yield (ListContentMessage(), {})
+    def list_content_message() -> AIMessageChunk:
+        """Mixed list content, so `content_blocks` normalization is exercised."""
+        return AIMessageChunk(
+            content=[
+                {"type": "text", "text": "Hello"},
+                " ",
+                {"type": "text", "text": "world"},
+            ]
+        )
 
     class Graph:
         @staticmethod
         async def astream(*args: Any, **kwargs: Any):
-            yield ((), "messages", (ListContentMessage(), {}))
+            yield ((), "messages", (list_content_message(), {}))
 
         async def aget_state(self, config: Any) -> Any:
             class S:
@@ -199,11 +359,11 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
     )
     assert resp.stop_reason == "end_turn"
 
-    assert any(
-        e["update"] == update_agent_message(text_block("Hello world"))
-        for e in client.events
-        if e["type"] == "session_update"
-    )
+    assert [
+        event["update"].content.text
+        for event in client.events
+        if event["type"] == "session_update" and isinstance(event["update"], AgentMessageChunk)
+    ] == ["Hello", " ", "world"]
 
 
 async def test_acp_agent_initialize_and_modes() -> None:
@@ -262,6 +422,47 @@ async def test_acp_agent_load_session_replays_persisted_history() -> None:
     agent_updates = [update for update in updates if isinstance(update, AgentMessageChunk)]
     assert [update.content.text for update in user_updates] == ["Ping"]
     assert [update.content.text for update in agent_updates] == ["Pong"]
+
+
+async def test_acp_agent_load_session_replays_visible_reasoning_in_order() -> None:
+    checkpointer = MemorySaver()
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await graph.aupdate_state(
+        server._session_config(session.session_id),
+        {
+            "messages": [
+                AIMessage(
+                    id="agent-message",
+                    content=[
+                        {"type": "text", "text": "Before"},
+                        {"type": "reasoning", "reasoning": "Considering options"},
+                        {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+                        {"type": "text", "text": "After"},
+                    ],
+                )
+            ]
+        },
+        as_node="__start__",
+    )
+
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
+    await restarted_server.load_session(cwd="/tmp", session_id=session.session_id, mcp_servers=[])
+
+    updates = [event["update"] for event in client.events]
+    assert [update.session_update for update in updates] == [
+        "agent_message_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert [update.content.text for update in updates] == [
+        "Before",
+        "Considering options",
+        "After",
+    ]
+    assert isinstance(updates[1], AgentThoughtChunk)
+    assert [update.message_id for update in updates] == ["agent-message"] * 3
 
 
 async def test_acp_agent_load_session_replays_tool_calls() -> None:

@@ -5109,6 +5109,65 @@ class TestAttemptLifecycle:
 class TestRunAgentLoopRetryTeardown:
     """End-to-end reconciliation through `_run_agent_loop`."""
 
+    async def test_clean_teardown_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful stream preserves output when its completion event is lost."""
+        transcripts = TranscriptStore(tmp_path / "transcripts")
+        recorder = TranscriptRecorder(transcripts, "thread-1")
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            console: Console,
+            file_op_tracker: FileOpTracker,
+            _context: object,
+        ) -> None:
+            state.transcript = recorder
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 0, phase="start")),
+                state,
+                console,
+                file_op_tracker,
+            )
+            _process_stream_chunk(
+                ((), "messages", (AIMessage(id="m-1", content="kept"), {})),
+                state,
+                console,
+                file_op_tracker,
+            )
+
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive._stream_agent",
+                new=staged_stream,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "task",
+                {"configurable": {"thread_id": "thread-1"}},
+                Console(quiet=True),
+                file_op_tracker,
+                quiet=True,
+            )
+
+        assert recorder._attempts == {}
+        main = transcripts.materialize("thread-1").path.read_text(encoding="utf-8")
+        assert '"content":"kept"' in main
+
     async def test_terminal_teardown_drops_uncommitted_transcript_scopes(
         self, tmp_path: Path
     ) -> None:

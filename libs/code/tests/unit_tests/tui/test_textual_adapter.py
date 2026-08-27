@@ -3438,6 +3438,41 @@ class TestModelRetryLifecycleReconciliation:
         main = runtime.transcripts.materialize("thread-error").path.read_text()
         assert "lost" not in main
 
+    async def test_clean_teardown_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful stream preserves output when its completion event is lost."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, _mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-clean"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
+            ),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        main = runtime.transcripts.materialize("thread-clean").path.read_text()
+        assert '"content":"kept"' in main
+
     async def test_retry_usage_scope_separates_replayed_message_ids(
         self, tmp_path: Path
     ) -> None:

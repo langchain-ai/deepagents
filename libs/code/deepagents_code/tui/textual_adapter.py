@@ -1906,6 +1906,7 @@ async def execute_task_textual(
                 outcome.stop_reason or "Compact session start stopped by hook"
             )
 
+    stream_completed = False
     try:
         while True:
             interrupt_occurred = False
@@ -3938,6 +3939,7 @@ async def execute_task_textual(
                     )
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
+                stream_completed = True
                 break
 
     except ClientHookStopError:
@@ -3958,14 +3960,28 @@ async def execute_task_textual(
         )
         return turn_stats
     finally:
-        # Any attempt scope still open at teardown never completed, so its
-        # staged transcript records must not leak into a later turn. Guarded so
-        # cleanup never masks the exception propagating from the stream.
+        # A clean stream can leave its successful final attempt open when the
+        # best-effort completion event was lost. Commit those scopes; only an
+        # aborted stream owns incomplete records that must be discarded.
         try:
-            transcript.drop_uncommitted()
+            if stream_completed:
+                for scope in active_attempt_by_namespace.values():
+                    agent_id = (
+                        None
+                        if not scope.namespace
+                        else transcript_agent_by_namespace.get(scope.namespace)
+                    )
+                    if not scope.namespace or agent_id is not None:
+                        transcript.complete_attempt(
+                            agent_id=agent_id,
+                            call_id=scope.call_id,
+                            attempt=scope.attempt,
+                        )
+            else:
+                transcript.drop_uncommitted()
         except Exception:
             logger.warning(
-                "Failed to drop uncommitted transcript attempts", exc_info=True
+                "Failed to finalize uncommitted transcript attempts", exc_info=True
             )
 
         # Streamed text is coalesced in each AssistantMessage's `_pending_append`

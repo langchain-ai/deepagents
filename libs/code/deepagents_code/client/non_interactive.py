@@ -2196,6 +2196,7 @@ async def _run_agent_loop(
 
     start_time = time.monotonic()
 
+    run_completed = False
     try:
         # Initial stream
         await _stream_agent(
@@ -2234,6 +2235,7 @@ async def _run_agent_loop(
             await _stream_agent(
                 agent, stream_input, config, state, console, file_op_tracker, context
             )
+        run_completed = True
     except BaseException:
         await _end_headless_session(state, SessionEndCause.OTHER)
         raise
@@ -2281,14 +2283,19 @@ async def _run_agent_loop(
                 "Unparsed tool-call buffer check failed unexpectedly",
                 exc_info=True,
             )
-        # Terminal teardown: staged transcript messages belong to attempts
-        # that never completed (abort, exhaustion, cancellation), so drop them
-        # rather than committing output the model node never returned.
+        # A clean stream can leave its successful final attempt open when the
+        # best-effort completion event was lost. Commit those scopes; only an
+        # aborted stream owns incomplete records that must be discarded.
         try:
-            if state.transcript is not None:
+            if run_completed:
+                for namespace, scope in list(state.active_attempts.items()):
+                    _commit_attempt_lifecycle(namespace, scope, state, console)
+            elif state.transcript is not None:
                 state.transcript.drop_uncommitted()
         except Exception:
-            logger.warning("Transcript uncommitted-scope drop failed", exc_info=True)
+            logger.warning(
+                "Transcript uncommitted-scope finalization failed", exc_info=True
+            )
         state.active_attempts.clear()
         state.attempt_buffer_offsets.clear()
         state.settled_attempts.clear()

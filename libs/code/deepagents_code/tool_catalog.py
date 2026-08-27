@@ -228,13 +228,13 @@ def collect_built_in_tools(
         RuntimeError: If the compiled graph does not expose its bound tools.
     """
     from deepagents_code.agent import create_cli_agent
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     # Keep in sync with `server_graph._build_tools`: web_search is bound only
     # when Tavily is configured, so it appears here only under the same gate.
     custom_tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
+    if credentials.has_tavily:
         custom_tools.append(web_search)
 
     agent, _backend = create_cli_agent(

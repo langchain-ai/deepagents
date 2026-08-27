@@ -1719,13 +1719,13 @@ async def execute_task_textual(
     completed_compaction_ids: set[str] = set()
 
     async def _after_automatic_compact() -> None:
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
         from deepagents_code.hooks.models.domain import SessionStartCause
 
         outcome = await hooks.on_session_start(
             SessionStartCause.COMPACT,
-            model=settings.model_name or None,
+            model=runtime_state.model_name or None,
         )
         if not outcome.ok:
             raise ClientHookStopError(
@@ -1857,14 +1857,14 @@ async def execute_task_textual(
                     # recorded is still ours, not input for the handlers below.
                     if not is_main_agent and _session_stats.is_model_usage_event(data):
                         try:
-                            from deepagents_code.config import settings
+                            from deepagents_code.config import runtime_state
 
                             recorded_usage = _session_stats.record_model_usage_event(
                                 turn_stats,
                                 data,
                                 active_thread_id=thread_id,
-                                fallback_model=settings.model_name or "",
-                                fallback_provider=settings.model_provider or "",
+                                fallback_model=runtime_state.model_name or "",
+                                fallback_provider=runtime_state.model_provider or "",
                                 recorded_requests=recorded_usage_requests,
                             )
                         except Exception:
@@ -2157,13 +2157,13 @@ async def execute_task_textual(
                     # spend money even though their text stays out of the chat.
                     recorded_usage = None
                     if getattr(message, "usage_metadata", None):
-                        from deepagents_code.config import settings
+                        from deepagents_code.config import runtime_state
 
                         recorded_usage = _session_stats.record_message_usage(
                             turn_stats,
                             message,
-                            fallback_model=settings.model_name or "",
-                            fallback_provider=settings.model_provider or "",
+                            fallback_model=runtime_state.model_name or "",
+                            fallback_provider=runtime_state.model_provider or "",
                             request_metadata=(
                                 metadata if isinstance(metadata, dict) else None
                             ),

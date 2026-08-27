@@ -1,8 +1,8 @@
 {
-  "updatedAt": "2026-08-26T22:57:24.096Z",
-  "command": "init",
-  "gitHead": "ffae2ebdbd3b4f5c8f7a2e584179063a2a84fcb0",
-  "model": "claude-opus-4-8",
+  "updatedAt": "2026-08-27T11:32:05.867Z",
+  "command": "update",
+  "gitHead": "92e15dc0cb6d39fce1024483c30408f1b33e7549",
+  "model": "gpt-5.6-terra",
   "status": "complete",
   "language": "en"
 }

@@ -26,6 +26,7 @@ from deepagents_code.configuration.resolver import (
     DEFAULT_RANK,
     ENVIRONMENT_RANK,
     MANAGED_RANK,
+    RELOAD_RANK,
     USER_RANK,
     ConfigResolver,
     RankedProviderValue,
@@ -152,9 +153,9 @@ def test_deep_merge_provenance_uses_tuple_paths_and_numeric_ranks() -> None:
     assert resolved.provenance[USER_RANK] == frozenset({("a", "user"), ("sibling",)})
 
 
-def test_rank_space_reserves_but_does_not_require_a_cli_provider() -> None:
-    """The unwired CLI seam outranks environment and yields to managed policy."""
-    assert MANAGED_RANK < CLI_RANK < ENVIRONMENT_RANK < USER_RANK
+def test_rank_space_orders_invocation_and_reload_overrides() -> None:
+    """Invocation and retained reload values outrank the live environment."""
+    assert MANAGED_RANK < CLI_RANK < RELOAD_RANK < ENVIRONMENT_RANK < USER_RANK
 
     over_environment = resolve_ranked(
         (
@@ -984,11 +985,11 @@ def test_managed_rank_masks_cli_but_user_does_not() -> None:
 
 
 def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:
-    """Building `Settings` must not drag the theme registry onto the hot path.
+    """Building `Credentials` must not drag the theme registry onto the hot path.
 
     `resolve_all()` would resolve `display.theme`, whose `THEME_DELEGATE`
     coercion reaches the theme registry and imports Textual (~470ms). The four
-    CLI entry points in `skills/commands.py` build `Settings` without drawing
+    CLI entry points in `skills/commands.py` build `Credentials` without drawing
     a UI, so they must not pay for it.
     """
     home = tmp_path / "home"
@@ -1007,8 +1008,8 @@ def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> No
             "-c",
             (
                 "import sys\n"
-                "from deepagents_code.config import Settings\n"
-                "Settings.from_environment()\n"
+                "from deepagents_code.config import Credentials\n"
+                "Credentials.from_environment()\n"
                 "assert 'textual' not in sys.modules, 'Textual reached the "
                 "startup path'\n"
             ),

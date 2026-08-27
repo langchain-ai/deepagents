@@ -364,11 +364,12 @@ class TestOnboardingSkipsReservedAgents:
     def test_a_reserved_agent_name_writes_nothing(self, tmp_path: Path) -> None:
         from deepagents_code.onboarding import write_onboarding_name_memory
 
-        with patch("deepagents_code.config.settings") as mock_settings:
-            mock_settings.get_user_agent_md_path.side_effect = ValueError(
+        with patch(
+            "deepagents_code._paths.get_user_agent_md_path",
+            side_effect=ValueError(
                 "Invalid agent name: 'plugins' is reserved for dcode's own state.",
-            )
-
+            ),
+        ):
             assert write_onboarding_name_memory("plugins", "Mason") is False
 
         assert list(tmp_path.iterdir()) == []

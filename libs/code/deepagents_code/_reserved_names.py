@@ -4,7 +4,7 @@ Agent profiles are siblings of the app's own directories under the profile
 root, so an agent named after one of them would resolve onto app state. Both
 the picker and the write path need that list.
 
-This module is imported on the CLI startup path (`config.get_agent_dir` and
+This module is imported on the CLI startup path (`_paths.get_agent_dir` and
 `main`) and by the agent picker. Keep its module level free of heavy imports.
 The constants are read inside the function, so importing this module never
 pulls in `deepagents` or LangChain. The function itself must stay light too,

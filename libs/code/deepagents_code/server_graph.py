@@ -22,6 +22,8 @@ from deepagents_code._startup_error import (
     STARTUP_ERROR_MARKER as _STARTUP_ERROR_MARKER,
     emit_startup_failure,
 )
+from deepagents_code.configuration.interpreter import InterpreterConfig
+from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
 
 if TYPE_CHECKING:
@@ -99,11 +101,11 @@ async def _build_tools(
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
+    if credentials.has_tavily:
         tools.append(web_search)
 
     mcp_server_info: list[Any] | None = None
@@ -240,7 +242,6 @@ async def _make_graphs() -> ServerRuntime:
         Any,
         Any,
         Any,
-        Any,
     ]:
         project_context = get_server_project_context()
 
@@ -248,19 +249,18 @@ async def _make_graphs() -> ServerRuntime:
         from deepagents_code.config import (
             configure_langsmith_secret_redaction,
             create_model,
+            credentials,
             is_memory_auto_save_enabled,
-            settings,
         )
 
         if project_context is not None:
-            settings.reload_from_environment(start_path=project_context.user_cwd)
+            credentials.reload_from_environment(start_path=project_context.user_cwd)
         return (
             project_context,
             create_cli_agent,
             load_async_subagents,
             create_model,
             is_memory_auto_save_enabled,
-            settings,
             configure_langsmith_secret_redaction,
         )
 
@@ -270,7 +270,6 @@ async def _make_graphs() -> ServerRuntime:
         load_async_subagents,
         create_model,
         is_memory_auto_save_enabled,
-        settings,
         configure_langsmith_secret_redaction,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
     configure_langsmith_secret_redaction()
@@ -286,7 +285,7 @@ async def _make_graphs() -> ServerRuntime:
         profile_overrides=config.profile_overrides,
         cli_max_retries=config.cli_max_retries,
     )
-    result.apply_to_settings()
+    result.apply_to_runtime_state()
 
     tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
     read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
@@ -348,14 +347,15 @@ async def _make_graphs() -> ServerRuntime:
         async_subagents = load_async_subagents() or None
         auto_mode_enabled = config.interactive and sandbox_backend is None
 
-        # These process-global settings writes are safe here because `make_graph`
-        # is lock-serialized and caches one graph for the server process lifetime.
-        if config.interpreter_ptc is not None:
-            settings.interpreter_ptc = config.interpreter_ptc
-        if config.interpreter_ptc_acknowledge_unsafe:
-            settings.interpreter_ptc_acknowledge_unsafe = True
-        if config.enable_interpreter:
-            settings.enable_interpreter = True
+        interpreter_config = (
+            InterpreterConfig.from_resolver(
+                get_config_resolver(),
+                ptc=config.interpreter_ptc,
+                ptc_acknowledge_unsafe=config.interpreter_ptc_acknowledge_unsafe,
+            )
+            if config.enable_interpreter
+            else None
+        )
 
         agent, composite_backend = create_cli_agent(
             model=result.model,
@@ -377,6 +377,7 @@ async def _make_graphs() -> ServerRuntime:
             enable_skills=config.enable_skills,
             enable_shell=config.enable_shell,
             enable_interpreter=config.enable_interpreter,
+            interpreter_config=interpreter_config,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
             auto_classifier_model=config.auto_classifier_model,

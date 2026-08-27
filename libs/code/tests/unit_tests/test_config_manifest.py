@@ -1669,39 +1669,27 @@ def test_charset_auto_display_value_includes_effective_glyph_mode() -> None:
 # --- Single-source defaults -------------------------------------------------
 
 
-def test_interpreter_defaults_match_settings() -> None:
-    """Manifest interpreter defaults are the same objects `Settings` uses.
+def test_interpreter_defaults_match_resolver_snapshot() -> None:
+    """The interpreter snapshot consumes the manifest-owned defaults."""
+    from deepagents_code.configuration.interpreter import InterpreterConfig
+    from deepagents_code.configuration.resolver import get_config_resolver
 
-    This is what makes the manifest the single source of truth: the dataclass
-    default and the manifest default cannot diverge because they are one value.
-    """
-    from deepagents_code.config import Settings
-
-    settings = Settings.from_environment()
-    for opt in get_config_options():
-        if opt.group != "Interpreter" or opt.settings_field is None:
-            continue
-        assert getattr(settings, opt.settings_field) == opt.default
-
-
-def test_every_settings_field_names_a_real_settings_attribute() -> None:
-    """Catch a typo'd `settings_field` on any option, not just interpreter ones.
-
-    `settings_field` is a free-form string with no compile-time link to the
-    `Settings` dataclass, so a misspelling would only surface at runtime
-    `getattr`. This locks the mapping across the whole catalog.
-    """
-    from dataclasses import fields
-
-    from deepagents_code.config import Settings
-
-    valid = {f.name for f in fields(Settings)}
-    bad = {
-        opt.key: opt.settings_field
-        for opt in get_config_options()
-        if opt.settings_field is not None and opt.settings_field not in valid
+    interpreter = InterpreterConfig.from_resolver()
+    values = {
+        "interpreter.timeout_seconds": interpreter.timeout_seconds,
+        "interpreter.memory_limit_mb": interpreter.memory_limit_mb,
+        "interpreter.max_ptc_calls": interpreter.max_ptc_calls,
+        "interpreter.max_result_chars": interpreter.max_result_chars,
+        "interpreter.ptc": interpreter.ptc,
+        "interpreter.ptc_acknowledge_unsafe": interpreter.ptc_acknowledge_unsafe,
     }
-    assert not bad, f"options reference unknown Settings fields: {bad}"
+    for key, value in values.items():
+        option = get_option(key)
+        assert option is not None
+        assert value == option.default
+    enabled = get_option("interpreter.enable_interpreter")
+    assert enabled is not None
+    assert get_config_resolver().get(enabled).value == enabled.default
 
 
 # --- Resolution -------------------------------------------------------------
@@ -3103,7 +3091,7 @@ def test_environment_coercion_delegate_returns_invalid_not_raw() -> None:
 
     PTC/STRUCTURED options declare no env var, so this branch is unreachable in
     the live manifest. The guard exists so that if one ever gains an env var,
-    an uncoerced raw string cannot leak into a typed `Settings` field.
+    an uncoerced raw string cannot leak into a typed credentials field.
     """
     from deepagents_code.configuration.providers import coerce_environment_value
     from deepagents_code.configuration.types import Invalid

@@ -397,7 +397,7 @@ class TestCrossAgentResume:
         app._restart_server_for_agent_swap = AsyncMock(return_value=True)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings") as settings,
+            patch("deepagents_code.config.credentials") as settings,
             patch(
                 "deepagents_code.app.user_deepagents_dir",
                 return_value=tmp_path,
@@ -432,7 +432,7 @@ class TestCrossAgentResume:
         app._fetch_thread_history_data = fetch  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings") as settings,
+            patch("deepagents_code.config.credentials") as settings,
             patch(
                 "deepagents_code.app.user_deepagents_dir",
                 return_value=tmp_path,

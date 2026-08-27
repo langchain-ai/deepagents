@@ -61,7 +61,7 @@ def discover_skills_and_roots(
     """
     from pathlib import Path
 
-    from deepagents_code.config import _use_extra_skills_path_base, settings
+    from deepagents_code.config import _use_extra_skills_path_base, credentials
     from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
     from deepagents_code.configuration.resolver import get_config_resolver
     from deepagents_code.skills.load import list_skills
@@ -71,11 +71,13 @@ def discover_skills_and_roots(
         built_in_skills_dir=get_built_in_skills_dir(),
         plugin_skill_sources=plugin_skill_sources,
         user_skills_dir=get_user_skills_dir(assistant_id),
-        project_skills_dir=get_project_skills_dir(settings.project_root),
+        project_skills_dir=get_project_skills_dir(credentials.project_root),
         user_agent_skills_dir=get_user_agent_skills_dir(),
-        project_agent_skills_dir=get_project_agent_skills_dir(settings.project_root),
+        project_agent_skills_dir=get_project_agent_skills_dir(credentials.project_root),
         user_claude_skills_dir=get_user_claude_skills_dir(),
-        project_claude_skills_dir=get_project_claude_skills_dir(settings.project_root),
+        project_claude_skills_dir=get_project_claude_skills_dir(
+            credentials.project_root
+        ),
     )
     roots = [
         path.resolve()
@@ -83,11 +85,11 @@ def discover_skills_and_roots(
             get_built_in_skills_dir(),
             *plugin_skill_roots,
             get_user_skills_dir(assistant_id),
-            get_project_skills_dir(settings.project_root),
+            get_project_skills_dir(credentials.project_root),
             get_user_agent_skills_dir(),
-            get_project_agent_skills_dir(settings.project_root),
+            get_project_agent_skills_dir(credentials.project_root),
             get_user_claude_skills_dir(),
-            get_project_claude_skills_dir(settings.project_root),
+            get_project_claude_skills_dir(credentials.project_root),
         )
         if path is not None
     ]

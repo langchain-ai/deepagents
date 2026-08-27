@@ -113,7 +113,7 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
     skills_dir.mkdir(parents=True)
 
     with (
-        patch("deepagents_code.agent.settings") as mock_s,
+        patch("deepagents_code.agent.credentials") as mock_s,
         patch("deepagents_code.agent.runtime_state") as mock_runtime_state,
         patch("deepagents_code.agent.ensure_agent_dir", return_value=agent_dir),
         patch(

@@ -101,11 +101,11 @@ async def _build_tools(
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import settings
+    from deepagents_code.config import credentials
     from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if settings.has_tavily:
+    if credentials.has_tavily:
         tools.append(web_search)
 
     mcp_server_info: list[Any] | None = None
@@ -249,12 +249,12 @@ async def _make_graphs() -> ServerRuntime:
         from deepagents_code.config import (
             configure_langsmith_secret_redaction,
             create_model,
+            credentials,
             is_memory_auto_save_enabled,
-            settings,
         )
 
         if project_context is not None:
-            settings.reload_from_environment(start_path=project_context.user_cwd)
+            credentials.reload_from_environment(start_path=project_context.user_cwd)
         return (
             project_context,
             create_cli_agent,

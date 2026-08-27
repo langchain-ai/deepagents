@@ -1692,24 +1692,22 @@ def test_interpreter_defaults_match_resolver_snapshot() -> None:
     assert get_config_resolver().get(enabled).value == enabled.default
 
 
-def test_every_settings_field_names_a_real_settings_attribute() -> None:
-    """Catch a typo'd `settings_field` on any option, not just interpreter ones.
+def test_every_settings_field_names_a_credential_field() -> None:
+    """Catch a typo'd credential `settings_field` on any option.
 
     `settings_field` is a free-form string with no compile-time link to the
-    `Settings` dataclass, so a misspelling would only surface at runtime
-    `getattr`. This locks the mapping across the whole catalog.
+    credential snapshot, so a misspelling would only surface at runtime. This
+    locks the remaining mapping across the whole catalog.
     """
-    from dataclasses import fields
+    from deepagents_code.config import _CREDENTIAL_FIELDS
 
-    from deepagents_code.config import Settings
-
-    valid = {f.name for f in fields(Settings)}
     bad = {
         opt.key: opt.settings_field
         for opt in get_config_options()
-        if opt.settings_field is not None and opt.settings_field not in valid
+        if opt.settings_field is not None
+        and opt.settings_field not in _CREDENTIAL_FIELDS
     }
-    assert not bad, f"options reference unknown Settings fields: {bad}"
+    assert not bad, f"options reference unknown credential fields: {bad}"
 
 
 # --- Resolution -------------------------------------------------------------

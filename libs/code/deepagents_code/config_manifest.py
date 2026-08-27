@@ -7,7 +7,7 @@ locations. The typed defaults for config-file-only options (notably the
 its dataclass defaults from them — so a default is defined in exactly one place.
 
 Resolution runs through the shared `ConfigResolver` (see
-`configuration.resolver`): the runtime (`Settings.from_environment`) reads the
+`configuration.resolver`): the runtime (`Credentials.from_environment`) reads the
 shared process resolver and the `config` CLI command builds one from the
 generation it snapshots, so introspection can never drift from what the app
 actually reads. Resolution precedence mirrors the loaders: managed TOML beats

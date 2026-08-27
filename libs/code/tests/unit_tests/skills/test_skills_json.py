@@ -23,7 +23,7 @@ class TestSkillsListJson:
         ]
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             patch(
                 "deepagents_code.skills.commands.get_user_skills_dir",
                 return_value=tmp_path / "skills",
@@ -56,7 +56,7 @@ class TestSkillsListJson:
         """JSON mode returns empty array when no skills found."""
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             patch(
                 "deepagents_code.skills.commands.get_user_skills_dir",
                 return_value=tmp_path / "skills",
@@ -99,7 +99,7 @@ class TestSkillsInfoJson:
         ]
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             patch(
                 "deepagents_code.skills.commands.get_user_skills_dir",
                 return_value=tmp_path / "skills",
@@ -138,7 +138,7 @@ class TestSkillsCreateJson:
 
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             patch(
                 "deepagents_code.skills.commands.ensure_user_skills_dir",
                 return_value=skills_dir,
@@ -177,7 +177,7 @@ class TestSkillsDeleteJson:
         ]
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             patch(
                 "deepagents_code.skills.commands.get_user_skills_dir",
                 return_value=skills_dir,

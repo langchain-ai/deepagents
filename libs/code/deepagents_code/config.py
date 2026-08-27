@@ -15,7 +15,11 @@ import sys
 import threading
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field as dataclass_field
+from dataclasses import (
+    dataclass,
+    field as dataclass_field,
+    replace as dataclass_replace,
+)
 from enum import StrEnum
 from importlib.metadata import PackageNotFoundError, distribution
 from pathlib import Path
@@ -56,9 +60,9 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
-# detection are deferred until first access of `settings` (via module
+# detection are deferred until first access of `credentials` (via module
 # `__getattr__`).  This avoids disk I/O and path traversal during import for
-# callers that never touch `settings` (e.g. `deepagents --help`).
+# callers that never touch credentials (e.g. `deepagents --help`).
 # ---------------------------------------------------------------------------
 
 
@@ -1309,7 +1313,7 @@ def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
     Idempotent and thread-safe — subsequent calls are no-ops. Called
-    automatically by `_get_settings()` when `settings` is first accessed.
+    automatically by `_get_credentials()` when `credentials` is first accessed.
 
     The flag is set in `finally` so that partial failures (e.g. a
     malformed `.env`) still mark bootstrap as done — preventing infinite retry
@@ -3070,16 +3074,9 @@ class RuntimeState:
     """Input modalities not indicated as supported by the model profile."""
 
 
-@dataclass
-class Settings:
-    """Global settings and environment detection for deepagents-code.
-
-    This class is initialized once at startup and provides access to:
-    - Available models and API keys
-    - Current project information
-    - Tool availability (e.g., Tavily)
-    - File system paths
-    """
+@dataclass(frozen=True, slots=True)
+class CredentialsSnapshot:
+    """One complete generation of credentials and project context."""
 
     openai_api_key: str | None
     """OpenAI API key if available."""
@@ -3111,15 +3108,88 @@ class Settings:
     project_root: Path | None = None
     """Current project root directory, or `None` if not in a git project."""
 
+    @property
+    def has_anthropic(self) -> bool:
+        """Check if Anthropic API key is configured."""
+        return self.anthropic_api_key is not None
+
+    @property
+    def has_google(self) -> bool:
+        """Check if Google API key is configured."""
+        return self.google_api_key is not None
+
+    @property
+    def has_vertex_ai(self) -> bool:
+        """Check if VertexAI is available (Google Cloud project set, no API key)."""
+        return self.google_cloud_project is not None and self.google_api_key is None
+
+    @property
+    def has_tavily(self) -> bool:
+        """Check if Tavily API key is configured."""
+        return self.tavily_api_key is not None
+
+
+_CREDENTIAL_FIELDS = frozenset(CredentialsSnapshot.__dataclass_fields__)
+
+
+class Credentials:
+    """Stable owner of the active credential and project-context snapshot.
+
+    Reloads construct a complete immutable `CredentialsSnapshot` and publish it
+    with one reference assignment. Callers that need a consistent multi-field
+    view can retain `active` while ordinary field reads remain source compatible.
+    """
+
+    openai_api_key: str | None
+    anthropic_api_key: str | None
+    google_api_key: str | None
+    nvidia_api_key: str | None
+    tavily_api_key: str | None
+    google_cloud_project: str | None
+    google_cloud_location: str | None
+    deepagents_langchain_project: str | None
+    user_langchain_project: str | None
+    project_root: Path | None
+
+    def __init__(self, active: CredentialsSnapshot) -> None:
+        """Create a stable owner for one complete credential generation."""
+        self._active = active
+
+    @property
+    def active(self) -> CredentialsSnapshot:
+        """Complete credential generation currently in force."""
+        return self._active
+
+    def __getattr__(self, name: str) -> object:
+        """Forward credential field reads to the active immutable snapshot.
+
+        Returns:
+            The requested credential field value.
+
+        Raises:
+            AttributeError: If `name` is not a credential field.
+        """
+        if name in _CREDENTIAL_FIELDS:
+            return getattr(self._active, name)
+        msg = f"{type(self).__name__!s} has no attribute {name!r}"
+        raise AttributeError(msg)
+
+    def __setattr__(self, name: str, value: object) -> None:
+        """Publish a replacement snapshot for compatibility field mutations."""
+        if name in _CREDENTIAL_FIELDS:
+            self._active = dataclass_replace(self._active, **{name: value})
+            return
+        object.__setattr__(self, name, value)
+
     @classmethod
-    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
-        """Create settings by detecting the current environment.
+    def from_environment(cls, *, start_path: Path | None = None) -> Credentials:
+        """Create credentials by detecting the current environment.
 
         Args:
             start_path: Directory to start project detection from (defaults to cwd)
 
         Returns:
-            Settings instance with detected configuration
+            Credentials instance with detected configuration.
 
         """
         # Detect API keys (normalize empty strings to None).
@@ -3160,16 +3230,18 @@ class Settings:
         )
 
         return cls(
-            openai_api_key=openai_key,
-            anthropic_api_key=anthropic_key,
-            google_api_key=google_key,
-            nvidia_api_key=nvidia_key,
-            tavily_api_key=tavily_key,
-            google_cloud_project=google_cloud_project,
-            google_cloud_location=google_cloud_location,
-            deepagents_langchain_project=deepagents_langchain_project,
-            user_langchain_project=user_langchain_project,
-            project_root=project_root,
+            CredentialsSnapshot(
+                openai_api_key=openai_key,
+                anthropic_api_key=anthropic_key,
+                google_api_key=google_key,
+                nvidia_api_key=nvidia_key,
+                tavily_api_key=tavily_key,
+                google_cloud_project=google_cloud_project,
+                google_cloud_location=google_cloud_location,
+                deepagents_langchain_project=deepagents_langchain_project,
+                user_langchain_project=user_langchain_project,
+                project_root=project_root,
+            )
         )
 
     @staticmethod
@@ -3431,7 +3503,8 @@ class Settings:
             A list of human-readable change descriptions that would be produced by
             `reload_from_environment`.
         """
-        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        active = self.active
+        previous = {field: getattr(active, field) for field in _RELOADABLE_FIELDS}
         previous.update(_remembered_resolver_reload_values())
         env = _preview_dotenv_environ(start_path=start_path)
         refreshed, blocked = self._reload_values(
@@ -3471,7 +3544,8 @@ class Settings:
             A list of human-readable change descriptions. Empty when nothing
             changed; a single notice when managed policy blocked the reload.
         """
-        previous = {field: getattr(self, field) for field in _RELOADABLE_FIELDS}
+        active = self.active
+        previous = {field: getattr(active, field) for field in _RELOADABLE_FIELDS}
         previous.update(_remembered_resolver_reload_values())
         _resolver_with_reload_overrides()
         _load_dotenv(start_path=start_path, refresh_loaded=True)
@@ -3481,8 +3555,10 @@ class Settings:
             previous=previous,
         )
 
-        for field in _RELOADABLE_FIELDS:
-            setattr(self, field, refreshed[field])
+        replacement = dataclass_replace(
+            active,
+            **{field: refreshed[field] for field in _RELOADABLE_FIELDS},
+        )
         _remember_resolver_reload_values(refreshed)
         _sync_reload_overrides(refreshed, path_base=start_path)
 
@@ -3513,17 +3589,19 @@ class Settings:
 
         reset_env_resolution_log()
         changes = self._format_reload_changes(previous, refreshed)
+        if managed_reload_block([blocked] if blocked else []) is None:
+            self._active = replacement
         return [blocked, *changes] if blocked else changes
 
     @property
     def has_anthropic(self) -> bool:
         """Check if Anthropic API key is configured."""
-        return self.anthropic_api_key is not None
+        return self.active.has_anthropic
 
     @property
     def has_google(self) -> bool:
         """Check if Google API key is configured."""
-        return self.google_api_key is not None
+        return self.active.has_google
 
     @property
     def has_vertex_ai(self) -> bool:
@@ -3533,12 +3611,73 @@ class Settings:
         so if GOOGLE_CLOUD_PROJECT is set and GOOGLE_API_KEY is not, we assume
         VertexAI.
         """
-        return self.google_cloud_project is not None and self.google_api_key is None
+        return self.active.has_vertex_ai
 
     @property
     def has_tavily(self) -> bool:
         """Check if Tavily API key is configured."""
-        return self.tavily_api_key is not None
+        return self.active.has_tavily
+
+
+class Settings(Credentials):
+    """Compatibility surface retained until the final dissolution layer."""
+
+    def __init__(
+        self,
+        openai_api_key: str | None,
+        anthropic_api_key: str | None,
+        google_api_key: str | None,
+        nvidia_api_key: str | None,
+        tavily_api_key: str | None,
+        google_cloud_project: str | None,
+        google_cloud_location: str | None,
+        deepagents_langchain_project: str | None,
+        user_langchain_project: str | None,
+        project_root: Path | None = None,
+    ) -> None:
+        """Preserve the legacy dataclass constructor during the migration."""
+        super().__init__(
+            CredentialsSnapshot(
+                openai_api_key=openai_api_key,
+                anthropic_api_key=anthropic_api_key,
+                google_api_key=google_api_key,
+                nvidia_api_key=nvidia_api_key,
+                tavily_api_key=tavily_api_key,
+                google_cloud_project=google_cloud_project,
+                google_cloud_location=google_cloud_location,
+                deepagents_langchain_project=deepagents_langchain_project,
+                user_langchain_project=user_langchain_project,
+                project_root=project_root,
+            )
+        )
+
+    @classmethod
+    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
+        """Build the compatibility owner from the environment.
+
+        Args:
+            start_path: Directory to start project detection from.
+
+        Returns:
+            A compatibility owner containing the resolved snapshot.
+        """
+        active = Credentials.from_environment(start_path=start_path).active
+        return cls(
+            openai_api_key=active.openai_api_key,
+            anthropic_api_key=active.anthropic_api_key,
+            google_api_key=active.google_api_key,
+            nvidia_api_key=active.nvidia_api_key,
+            tavily_api_key=active.tavily_api_key,
+            google_cloud_project=active.google_cloud_project,
+            google_cloud_location=active.google_cloud_location,
+            deepagents_langchain_project=active.deepagents_langchain_project,
+            user_langchain_project=active.user_langchain_project,
+            project_root=active.project_root,
+        )
+
+
+credentials: Credentials
+"""Lazily initialized process-wide credential and project snapshot."""
 
 
 DANGEROUS_SHELL_PATTERNS = (
@@ -3708,7 +3847,7 @@ def get_langsmith_project_name() -> str | None:
 
     Checks for the required API key and tracing environment variables.
     When both are present, resolves the project name with priority:
-    `settings.deepagents_langchain_project` (from
+    `credentials.deepagents_langchain_project` (from
     `DEEPAGENTS_CODE_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
     to match `DEEPAGENTS_CODE_LANGSMITH_PROJECT`), then `'deepagents-code'`.
@@ -3726,7 +3865,7 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     return (
-        _get_settings().deepagents_langchain_project
+        _get_credentials().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
         or LANGSMITH_PROJECT_DEFAULT
     )
@@ -4867,14 +5006,14 @@ def detect_provider(model_name: str) -> str | None:
         return "perplexity"
 
     if model_lower.startswith("claude"):
-        s = _get_settings()
-        if not s.has_anthropic and s.has_vertex_ai:
+        credentials = _get_credentials()
+        if not credentials.has_anthropic and credentials.has_vertex_ai:
             return "google_anthropic_vertex"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
-        s = _get_settings()
-        if s.has_vertex_ai and not s.has_google:
+        credentials = _get_credentials()
+        if credentials.has_vertex_ai and not credentials.has_google:
             return "google_vertexai"
         return "google_genai"
 
@@ -5183,11 +5322,11 @@ def _apply_google_anthropic_vertex_kwargs(
     """
     if provider != "google_anthropic_vertex":
         return
-    settings = _get_settings()
-    if settings.google_cloud_project:
-        kwargs.setdefault("project", settings.google_cloud_project)
-    if settings.google_cloud_location:
-        kwargs.setdefault("location", settings.google_cloud_location)
+    credentials = _get_credentials()
+    if credentials.google_cloud_project:
+        kwargs.setdefault("project", credentials.google_cloud_project)
+    if credentials.google_cloud_location:
+        kwargs.setdefault("location", credentials.google_cloud_location)
     if not kwargs.get("location"):
         from deepagents_code.model_config import ModelConfigError
 
@@ -5959,21 +6098,21 @@ def _get_console() -> Console:
         return inst
 
 
-def _get_settings() -> Settings:
-    """Return the lazily-initialized global `Settings` instance.
+def _get_credentials() -> Credentials:
+    """Return the lazily initialized process-wide `Credentials` instance.
 
-    Ensures bootstrap has run before constructing settings. The result is cached
-    in `globals()["settings"]` so subsequent access — including
-    `from config import settings` in other modules — resolves instantly.
+    Bootstrap runs before credentials are read. During the stacked migration,
+    the instance uses the empty `Settings` compatibility subclass and is also
+    cached under the legacy `settings` name.
 
     Returns:
-        The global `Settings` singleton.
+        The global credentials singleton.
     """
-    cached = globals().get("settings")
+    cached = globals().get("credentials")
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("settings")
+        cached = globals().get("credentials")
         if cached is not None:
             return cached
         _ensure_bootstrap()
@@ -5981,12 +6120,23 @@ def _get_settings() -> Settings:
             inst = Settings.from_environment(start_path=_bootstrap_state.start_path)
         except Exception:
             logger.exception(
-                "Failed to initialize settings from environment (start_path=%s)",
+                "Failed to initialize credentials from environment (start_path=%s)",
                 _bootstrap_state.start_path,
             )
             raise
+        globals()["credentials"] = inst
         globals()["settings"] = inst
         return inst
+
+
+def _get_settings() -> Settings:
+    """Return the legacy alias for the process-wide credentials singleton."""
+    cached = globals().get("settings")
+    if cached is not None:
+        return cast("Settings", cached)
+    inst = _get_credentials()
+    globals()["settings"] = inst
+    return cast("Settings", inst)
 
 
 def _get_runtime_state() -> RuntimeState:
@@ -6003,7 +6153,7 @@ def _get_runtime_state() -> RuntimeState:
         return state
 
 
-def __getattr__(name: str) -> Settings | RuntimeState | Console:
+def __getattr__(name: str) -> Credentials | RuntimeState | Console:
     """Lazy module attributes for process-wide state and the console.
 
     Defers heavy initialization until first access. Subsequent accesses hit
@@ -6017,6 +6167,8 @@ def __getattr__(name: str) -> Settings | RuntimeState | Console:
     """
     if name == "settings":
         return _get_settings()
+    if name == "credentials":
+        return _get_credentials()
     if name == "runtime_state":
         return _get_runtime_state()
     if name == "console":

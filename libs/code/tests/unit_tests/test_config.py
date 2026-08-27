@@ -7,6 +7,7 @@ import textwrap
 import time
 import warnings
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import Mock, patch
@@ -37,6 +38,7 @@ from deepagents_code.config import (
     MODEL_RETRIES_ATTR,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
+    Credentials,
     LangSmithApiError,
     LangSmithProjectNotFoundError,
     LangsmithShadowResult,
@@ -2517,7 +2519,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = "settings-project"
             assert get_langsmith_project_name() == "settings-project"
@@ -2531,7 +2533,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "env-project"
@@ -2546,7 +2548,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
@@ -2562,7 +2564,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
@@ -2614,7 +2616,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", bare_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             manifest_value = resolve()
@@ -2629,7 +2631,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", default_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             manifest_value = resolve()
@@ -6030,10 +6032,13 @@ max_tokens = 1024
     ) -> None:
         """Explicit model params outrank Google Cloud environment defaults."""
         mock_init_chat_model.return_value = _make_init_chat_model_mock()
-        with (
-            patch.object(settings, "google_cloud_project", "env-project"),
-            patch.object(settings, "google_cloud_location", "us-east5"),
-        ):
+        owner = config_module._get_credentials()
+        replacement = replace(
+            owner.active,
+            google_cloud_project="env-project",
+            google_cloud_location="us-east5",
+        )
+        with patch.object(owner, "_active", replacement):
             create_model(
                 "google_anthropic_vertex:claude-sonnet-4-6",
                 extra_kwargs={"project": "param-project", "location": "europe-west1"},
@@ -6044,9 +6049,14 @@ max_tokens = 1024
 
     def test_google_anthropic_vertex_requires_location(self) -> None:
         """Missing Claude-on-Vertex location produces an actionable error."""
+        owner = config_module._get_credentials()
+        replacement = replace(
+            owner.active,
+            google_cloud_project="test-project",
+            google_cloud_location=None,
+        )
         with (
-            patch.object(settings, "google_cloud_project", "test-project"),
-            patch.object(settings, "google_cloud_location", None),
+            patch.object(owner, "_active", replacement),
             pytest.raises(
                 ModelConfigError,
                 match=r"GOOGLE_CLOUD_LOCATION.*DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION",
@@ -6576,7 +6586,17 @@ class TestDetectProvider:
 
 
 class TestLazyModuleAttributes:
-    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
+    """Tests for lazy process-wide state and console resolution."""
+
+    def test_getattr_returns_credentials(self) -> None:
+        """The credentials accessor shares the compatibility singleton."""
+        from deepagents_code.config import _get_credentials, _get_settings
+
+        result = _get_credentials()
+        assert isinstance(result, Credentials)
+        assert result is _get_settings()
+        assert result is _get_credentials()
+        assert result.active is result.active
 
     def test_getattr_returns_settings(self) -> None:
         """Module __getattr__ resolves 'settings' to a Settings instance."""

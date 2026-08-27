@@ -3752,7 +3752,11 @@ class DeepAgentsApp(App):
         )
         """Per-turn model params override set via startup or `/model` params."""
 
-        self._summarization_model_override: str | None = summarization_model
+        self._summarization_model_override: str | None = (
+            INHERIT_SUMMARIZATION_MODEL
+            if summarization_model is not None and not summarization_model
+            else summarization_model
+        )
         """Per-session model used only for context-compaction summaries.
 
         `None` leaves the graph's startup choice unchanged, while

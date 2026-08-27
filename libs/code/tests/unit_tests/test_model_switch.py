@@ -1657,6 +1657,17 @@ class TestSummarizationModelCommand:
 
         assert any("main agent model" in text for text in captured)
 
+    async def test_blank_launch_override_names_the_main_model(self) -> None:
+        app = DeepAgentsApp(summarization_model="")
+        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
+        captured, capture_init = self._capture_app_messages()
+
+        with patch.object(AppMessage, "__init__", capture_init):
+            await app._handle_command("/summarization-model")
+
+        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
+        assert any("main agent model" in text for text in captured)
+
     async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
         """The grammar is a single bare spec -- no params, unlike `/model`."""
         app = DeepAgentsApp()

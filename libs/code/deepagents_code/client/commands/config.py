@@ -42,8 +42,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
-_LANGGRAPH_API_DEFAULT_RECURSION_LIMIT = 10_011
-"""Upstream in-memory server default, mirrored for configuration display only."""
 
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
@@ -225,22 +223,15 @@ def _load_stored_credentials() -> _StoredCredentialView:
 
 
 def _langgraph_default_recursion_limit() -> tuple[bool, str, object]:
-    """Return the graph step budget inherited by the local API server.
-
-    A present but non-numeric `LANGGRAPH_DEFAULT_RECURSION_LIMIT` cannot be
-    reported as an int, and letting `int()` raise here would crash the
-    diagnostic command the user runs to find the bad value. Surface it as the
-    raw string with an `invalid` marker instead; the local API fails on its own
-    when it reads the variable.
-    """
+    """Return the configured LangGraph recursion default, if any."""
     raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
-    if raw is not None:
-        source = f"env ({_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV})"
-        try:
-            return True, source, int(raw)
-        except ValueError:
-            return True, f"{source}; invalid", raw
-    return False, "default", _LANGGRAPH_API_DEFAULT_RECURSION_LIMIT
+    if raw is None:
+        return False, "default", None
+    source = f"env ({_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV})"
+    try:
+        return True, source, int(raw)
+    except ValueError:
+        return True, f"{source}; invalid", raw
 
 
 def _resolve(

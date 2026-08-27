@@ -363,9 +363,7 @@ class ServerConfig:
     recursion_limit: int | None = None
     """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
 
-    `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
-    `[runtime].recursion_limit` at agent-build time, then leave the budget to the
-    LangGraph server default" (`resolve_recursion_limit`). An explicit value from
+    `None` resolves from runtime configuration. An explicit value from
     `--recursion-limit` wins over the env var and `config.toml`, but managed
     config outranks the flag. Must be a positive integer when set.
     """
@@ -657,8 +655,7 @@ class ServerConfig:
             auto_classifier_model: Auto classifier model spec; `None` resolves from
                 env / `config.toml` and then reuses the main model.
             recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-                from env / `config.toml` at agent-build time, then leaves the
-                budget to the LangGraph server default.
+                from runtime configuration at agent-build time.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.

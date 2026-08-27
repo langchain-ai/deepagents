@@ -84,43 +84,26 @@ approach it, or never come close? A ceiling production sits far below, a limit
 that never fires, or a capability installed but never exercised is a more useful
 finding than any raw metric.
 
-### The main-agent recursion limit is set in three places, and the server wins
+### The main-agent recursion limit is set twice, and the product value wins
 
-**Correlated.** Three layers set `recursion_limit`, and which one survives
-depends on how the graph is invoked.
+**Correlated.** `create_deep_agent` finishes by calling `.with_config` with
+`"recursion_limit": 9_999` on the compiled graph
+(`libs/deepagents/deepagents/graph.py`, `create_deep_agent`, L936). The dcode
+product then wraps that same agent in a *second* `.with_config` that sets
+`recursion_limit` to `effective_recursion_limit`
+(`libs/code/deepagents_code/agent.py`, L3167-L3182), which defaults to
+`RECURSION_LIMIT_DEFAULT = 2000` via `resolve_recursion_limit`
+(`libs/code/deepagents_code/config_manifest.py`, L93-L99). The outer config
+wins, so **in the dcode CLI the graph step budget is 2000 by default, not the
+SDK's 9,999.** The resolver clamps any override to `[RECURSION_LIMIT_FLOOR=25,
+RECURSION_LIMIT_CEILING=100_000]`
+(`config_manifest.py`, L102-L115).
 
-1. `create_deep_agent` finishes by calling `.with_config` with
-   `"recursion_limit": 9_999` on the compiled graph
-   (`libs/deepagents/deepagents/graph.py`, `create_deep_agent`, L936).
-2. dcode binds a *second* `.with_config` only when a limit is actually
-   configured (`libs/code/deepagents_code/agent.py`, `create_cli_agent`).
-   `resolve_recursion_limit` returns `None` when the env var and
-   `[runtime].recursion_limit` are both unset, so the common case binds nothing.
-   Any override is clamped to `[RECURSION_LIMIT_FLOOR=25,
-   RECURSION_LIMIT_CEILING=100_000]` (`config_manifest.py`).
-3. `langgraph dev` — the server dcode launches — injects
-   `recursion_limit=10011` into every run config
-   (`langgraph_api/utils/config.py`, `DEFAULT_RECURSION_LIMIT` /
-   `ensure_config`).
-
-`merge_configs` (`langgraph/_internal/_config.py`) only defers to the bound
-value when the incoming config equals LangGraph core's own default (`10007`).
-`10011` is not `10007`, so **the server value overrides whatever the graph was
-bound with.** Both the TUI and headless runs reach the graph over `RemoteGraph`
-(`client/remote_client.py`), so layer 2's binding never decided the budget on
-either path.
-
-A fourth layer now settles it: `build_stream_config` (`config.py`) puts the
-resolved limit into the run config the client sends. `recursion_limit` is in
-`langgraph_api`'s `CONFIG_KEYS`, so a client-supplied value replaces the server
-default. The key is omitted when nothing is configured, leaving 10011 in force.
-
-*So what:* the effective ceiling is the run config's value when one is
-configured, and 10011 otherwise. Layer 2's binding is now redundant on the
-server path and is what headless-without-a-server would use. If you are
-debugging a `GRAPH_RECURSION_LIMIT` failure, read the run config first. The
-check to run on each sample: how close do the longest baseline/outlier runs get
-to 10011 graph steps?
+*So what:* if you are debugging a `GRAPH_RECURSION_LIMIT` failure, the effective
+ceiling depends on which layer built the agent. Do not assume 9,999. The check
+to run on each sample: how close do the longest baseline/outlier runs get to
+2000 graph steps? If production never approaches it, the default is comfortable;
+if outliers cluster near it, that ceiling is a real hazard for long sessions.
 
 ### Filesystem grep/glob timeouts
 
@@ -197,14 +180,12 @@ operational "so what." Because no trace sample was accessible this pull, the
 evidence rows are marked **Observed: none this pull** and should be filled by
 future runs; the *Correlated* code anchors and their implications stand today.
 
-1. **Recursion-limit triple-set — the server value is the live one.**
-   *Correlated:* `graph.py` L936 binds 9,999; `agent.py` binds a resolved
-   override only when one is configured; `langgraph dev` injects 10011 into
-   every run config and `merge_configs` lets it win. *Observed:* none this pull.
-   *So what:* an agent changing the SDK's `.with_config` recursion value should
-   know it is inert on the `langgraph dev` path; the run config built by
-   `build_stream_config` is the channel that decides the budget.
-   Verify against outlier step counts once a sample exists.
+1. **Recursion-limit double-set — the SDK value is dead in dcode.**
+   *Correlated:* `graph.py` L936 sets 9,999; `agent.py` L3182 overrides to the
+   resolved default (2000). *Observed:* none this pull. *So what:* an agent
+   changing the SDK's `.with_config` recursion value should know the dcode
+   product silently overrides it — fixing the SDK number will not change CLI
+   behavior. Verify against outlier step counts once a sample exists.
 
 2. **Non-main model calls are a hidden token/latency sink.**
    *Correlated:* recorder covers summarization, the Auto-mode classifier, and

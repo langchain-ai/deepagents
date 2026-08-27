@@ -2247,20 +2247,7 @@ def build_stream_config(
         "metadata": metadata,
     }
 
-    # The graph runs inside the `langgraph dev` server, and `langgraph_api`
-    # stamps its own `recursion_limit` (10011) onto every run config it builds.
-    # `merge_configs` only defers to the value bound onto the compiled graph
-    # when the incoming one equals LangGraph core's default (10007), so the
-    # server value overrides the binding `create_cli_agent` applied -- the
-    # resolved limit never took effect on this path. `recursion_limit` is in
-    # `langgraph_api`'s `CONFIG_KEYS`, so a client-supplied value replaces the
-    # server default; sending it here is what makes the setting real.
-    #
-    # The upstream environment default must be resolved too: LangGraph treats
-    # that value as its merge sentinel and would otherwise discard the API's
-    # incoming value in favor of `create_deep_agent`'s bound limit. Resolving it
-    # here also resolves it while building the agent, so both sides agree.
-    # Omitted only when neither Deep Agents nor LangGraph has an env override.
+    # Send configured limits with each run so the setting takes effect.
     from deepagents_code.config_manifest import resolve_recursion_limit
 
     resolved_recursion_limit = resolve_recursion_limit()

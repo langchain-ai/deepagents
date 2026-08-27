@@ -103,17 +103,8 @@ through to the next layer / default.
 RECURSION_LIMIT_FLOOR = 25
 """Smallest `recursion_limit` accepted from managed config, the env var, or TOML.
 
-`25` is the LangChain-core runnable default, the smallest budget any LangGraph
-run is expected to survive. A value below it would break otherwise-valid runs,
-so a resolved value under the floor is rejected and falls through to the next
-layer. The `--recursion-limit` flag is exempt and accepts any value `>= 1`
-(`_is_valid_cli_recursion_limit`): an operator who types a small budget on the
-command line is bounding one run on purpose.
-
-Rejection raises the effective budget rather than lowering it. A `config.toml`
-value of `20` is discarded, and the run falls through to the server default
-(`10_011`), so the user gets a far larger budget than they asked for. Use the
-CLI flag to bound a run below the floor.
+Lower values are rejected and resolution falls through to the next layer. The
+`--recursion-limit` flag is exempt and accepts any value `>= 1`.
 """
 
 RECURSION_LIMIT_CEILING = 100_000
@@ -1802,11 +1793,9 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The explicit or inherited recursion limit, or `None` when nothing valid
-            is configured and LangGraph's built-in server default should stand.
+        The resolved recursion limit, or `None` when nothing valid is configured.
             CLI values are `>= 1`; Deep Agents managed, env, and TOML values are
-            within `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`; the
-            inherited value follows LangGraph's integer contract.
+            within `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
     data = toml_data
     option = get_option("runtime.recursion_limit")
@@ -1843,8 +1832,7 @@ def resolve_recursion_limit(
             break
         logger.warning(
             "Ignoring %s recursion_limit %r (expected int in [%d, %d]); "
-            "falling through to the next config source, then to the "
-            "LangGraph server default",
+            "falling through to the next config source",
             source,
             value,
             RECURSION_LIMIT_FLOOR,

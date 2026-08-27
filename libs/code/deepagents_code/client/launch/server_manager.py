@@ -354,8 +354,7 @@ async def start_server_and_get_agent(
         auto_classifier_model: Auto classifier model spec; `None` resolves from
             env / `config.toml` and then reuses the main model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env / `config.toml` at agent-build time, then leaves the
-            budget to the LangGraph server default.
+            from runtime configuration at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
@@ -535,8 +534,7 @@ async def server_session(
         auto_classifier_model: Auto classifier model spec; `None` resolves from
             env / `config.toml` and then reuses the main model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env / `config.toml` at agent-build time, then leaves the
-            budget to the LangGraph server default.
+            from runtime configuration at agent-build time.
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.

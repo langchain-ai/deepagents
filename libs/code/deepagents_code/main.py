@@ -3034,6 +3034,15 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
 def _resolve_summarization_model(spec: str | None) -> str | None:
     """Resolve the invocation override before entering a supported launch mode.
 
+    Deliberately does not build the model: an invalid spec surfaces at the
+    first compaction rather than at launch, which keeps `create_model`'s
+    provider imports off the pre-first-paint path. `_LazySummaryModel` degrades
+    to the main model and logs, so a bad spec cannot wedge the session.
+
+    Args:
+        spec: The `--summarization-model` value, or `None` when unset. A blank
+            string overrides the configured default with "use the main model".
+
     Returns:
         The explicit spec, configured default, or `None` to reuse the main model.
     """
@@ -3098,8 +3107,10 @@ async def run_textual_cli_async(
             These override config file values.
         summarization_model: Optional model spec for context-compaction summaries.
 
-            When absent, `[models].summarization_default` is used, then the
-            effective main agent model.
+            When `None`, `[models].summarization_default` is used, then the
+            effective main agent model. A blank string means the flag was
+            explicitly supplied with no value: it overrides any configured
+            default and falls back to the main model for this launch.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
 

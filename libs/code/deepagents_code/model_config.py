@@ -3161,7 +3161,14 @@ class ModelConfig:
     """
 
     summarization_default_model: str | None = None
-    """The default summary model from `[models].summarization_default`."""
+    """The default summary model from `[models].summarization_default`.
+
+    Not the resolution path -- `--summarization-model` outranks this value at
+    launch, so it may differ from the model summaries are actually generated
+    with. Stored unvalidated: `_validate` only warns when the spec omits a
+    `provider:` prefix, because `create_model`'s provider auto-detection makes
+    a bare name legitimate.
+    """
 
     allowed_models: tuple[str, ...] | None = None
     """Ordered model specs and provider wildcards the policy permits.

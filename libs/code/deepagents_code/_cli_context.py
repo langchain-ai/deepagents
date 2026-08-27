@@ -99,8 +99,11 @@ class CLIContext(TypedDict, total=False):
     summarization_model: str | None
     """Model spec used only for context-compaction summary generation.
 
-    `None` or an absent key reuses the effective main agent model. This value
-    never changes the main model or its system-prompt identity.
+    `None` or an absent key reuses the main agent model. This value never
+    changes the main model or its system-prompt identity: its only consumers
+    are the summary-generation slots installed by
+    `offload_middleware._summarization_for_runtime`, so compaction thresholds
+    and token counting still track the main model.
     """
 
     profile_overrides: dict[str, Any]

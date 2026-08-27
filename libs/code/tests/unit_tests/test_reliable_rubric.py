@@ -292,7 +292,7 @@ class TestReliableRubricMiddleware:
         if selection is not None:
             state["_rubric_model_spec"] = selection
         parent = CLIContextSchema(
-            model="stale:model",
+            model="openai:gpt-5.5",
             model_params={"max_tokens": 1},
             profile_overrides={"context_window": 1000},
         )
@@ -302,8 +302,30 @@ class TestReliableRubricMiddleware:
         assert selected.model == expected_model
         assert selected.model_params == expected_params
         assert selected.profile_overrides == {"context_window": 1000}
-        assert parent.model == "stale:model"
+        assert parent.model == "openai:gpt-5.5"
         assert parent.model_params == {"max_tokens": 1}
+
+    def test_inherit_clears_stale_params_after_main_model_fallback(self) -> None:
+        """A failed runtime switch records its fallback without new params."""
+        middleware = ReliableRubricMiddleware(
+            model="startup:model", inherit_main_model=True
+        )
+        state = cast(
+            "Any",
+            {
+                "_model_spec": "fallback:model",
+                "_model_params": {"temperature": 0.2},
+            },
+        )
+        parent = CLIContextSchema(
+            model="rejected:model",
+            model_params={"max_tokens": 1},
+        )
+
+        selected = middleware._grader_context(state, parent)
+
+        assert selected.model == "fallback:model"
+        assert selected.model_params == {}
 
     def test_startup_dedicated_model_ignores_main_context(self) -> None:
         middleware = ReliableRubricMiddleware(

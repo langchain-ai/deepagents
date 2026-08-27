@@ -64,6 +64,19 @@ def _coerce_main_model_params(value: object) -> dict[str, Any]:
     return {key: item for key, item in value.items() if isinstance(key, str)}
 
 
+def _model_specs_match(actual: str, requested: str) -> bool:
+    """Compare canonical specs while tolerating one bare model name.
+
+    Returns:
+        Whether both values select the same model.
+    """
+    if actual == requested:
+        return True
+    if ":" in actual and ":" in requested:
+        return False
+    return actual.rsplit(":", 1)[-1] == requested.rsplit(":", 1)[-1]
+
+
 def _without_internal_control_messages(state: RubricState) -> RubricState:
     """Remove dcode control turns before the SDK builds grader evidence.
 
@@ -217,9 +230,13 @@ class ReliableRubricMiddleware(RubricMiddleware):
             # `/model` override -- along with the params that belong to it.
             main_model = _coerce_main_model_spec(state.get("_model_spec"))
             if main_model is not None:
+                requested_model = _coerce_main_model_spec(grader_context.model)
                 grader_context.model = main_model
-                grader_context.model_params = _coerce_main_model_params(
-                    state.get("_model_params")
+                grader_context.model_params = (
+                    _coerce_main_model_params(state.get("_model_params"))
+                    if requested_model is None
+                    or _model_specs_match(main_model, requested_model)
+                    else {}
                 )
         elif selected:
             grader_context.model = selected

@@ -13657,6 +13657,22 @@ class TestRubricCommand:
             assert "/rubric set <criteria>" in rendered
             assert "Rubric grader model:" not in rendered
 
+    async def test_rubric_show_surfaces_recorded_model_inheritance(self) -> None:
+        """An explicit grader clear remains visible after checkpoint restore."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = None
+            app._rubric_model_recorded = True
+            app._model_override = "openai:gpt-5.5"
+
+            await app._handle_command("/rubric show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No rubric set." in rendered
+            assert "Rubric grader model: openai:gpt-5.5" in rendered
+
     async def test_rubric_set_without_criteria_shows_usage_tip(self) -> None:
         """Bare `/rubric set` should include a short example tip."""
         app = DeepAgentsApp(agent=MagicMock())

@@ -15356,7 +15356,11 @@ class DeepAgentsApp(App):
         if not lines:
             # Grader settings can exist without criteria; still teach how to set
             # a rubric when nothing is grading yet.
-            if self._rubric_model or self._rubric_max_iterations is not None:
+            if (
+                self._rubric_model_recorded
+                or self._rubric_model
+                or self._rubric_max_iterations is not None
+            ):
                 grader_model, grader_iterations = self._grader_display_values()
                 await self._mount_message(
                     AppMessage(

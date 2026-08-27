@@ -385,11 +385,14 @@ def _render_node_compat_assignment(active_tools: frozenset[str]) -> str:
     """
     fs_methods: list[str] = []
     if "ls" in active_tools:
-        fs_methods.append("readdir: (path = '/') => globalThis.tools.ls({ path })")
+        fs_methods.append(
+            "readdir: (path = '/', options = {}) => globalThis.tools.ls({ "
+            "path: typeof path === 'string' ? path : (path?.path || '/') })"
+        )
     if "readFile" in active_tools:
         fs_methods.append(
             "readFile: (filePath, options = {}) => globalThis.tools.readFile({ "
-            "file_path: filePath, offset: options.offset, limit: options.limit })"
+            "file_path: filePath, offset: options?.offset, limit: options?.limit })"
         )
     if "writeFile" in active_tools:
         fs_methods.append(
@@ -401,23 +404,34 @@ def _render_node_compat_assignment(active_tools: frozenset[str]) -> str:
         fs_methods.append(
             "editFile: (filePath, oldString, newString, options = {}) => "
             "globalThis.tools.editFile({ file_path: filePath, old_string: oldString, "
-            "new_string: newString, replace_all: options.replaceAll })"
+            "new_string: newString, replace_all: typeof options === 'boolean' "
+            "? options : (options?.replaceAll || options?.replace_all) })"
         )
     if "delete" in active_tools:
         fs_methods.append(
-            "rm: (filePath) => globalThis.tools.delete({ file_path: filePath })"
+            "rm: (filePath, options = {}) => "
+            "globalThis.tools.delete({ file_path: filePath })"
         )
     if "glob" in active_tools:
         fs_methods.append(
             "glob: (pattern, options = {}) => globalThis.tools.glob({ "
-            "pattern, path: options.cwd })"
+            "pattern, path: typeof options === 'string' "
+            "? options : (options?.cwd || options?.path) })"
+        )
+    if "grep" in active_tools:
+        fs_methods.append(
+            "grep: (pattern, options = {}) => globalThis.tools.grep({ "
+            "pattern, path: options?.cwd || options?.path, glob: options?.glob, "
+            "output_mode: options?.outputMode || options?.output_mode, "
+            "max_count: options?.maxCount || options?.max_count })"
         )
     fs_namespace = ", ".join(fs_methods)
     bash_namespace = ""
     if "execute" in active_tools:
         bash_namespace = (
             "Object.freeze({ exec: (command, options = {}) => "
-            "globalThis.tools.execute({ command, timeout: options.timeout }) })"
+            "globalThis.tools.execute({ command, "
+            "timeout: typeof options === 'number' ? options : options?.timeout }) })"
         )
     else:
         bash_namespace = "Object.freeze({})"

@@ -997,3 +997,58 @@ async def test_retained_bridge_reference_cannot_call_removed_tool(
 def test_camel_case_collision_is_rejected(repl: _ThreadREPL) -> None:
     with pytest.raises(ValueError, match="both map to JavaScript name 'aB'"):
         repl.install_tools([_echo_tool("a-b"), _echo_tool("a_b")])
+
+
+async def test_node_style_grep_adapter(repl: _ThreadREPL) -> None:
+    class _GrepInput(BaseModel):
+        pattern: str
+        path: str | None = None
+        glob: str | None = None
+        output_mode: str | None = None
+        max_count: int | None = None
+
+    calls: list[dict[str, object]] = []
+
+    def grep(
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        output_mode: str | None = None,
+        max_count: int | None = None,
+    ) -> str:
+        calls.append(
+            {
+                "pattern": pattern,
+                "path": path,
+                "glob": glob,
+                "output_mode": output_mode,
+                "max_count": max_count,
+            }
+        )
+        return "grep result"
+
+    repl.install_tools(
+        [
+            StructuredTool.from_function(
+                name="grep",
+                description="Search for pattern.",
+                func=grep,
+                args_schema=_GrepInput,
+            ),
+        ]
+    )
+    outcome = await repl.eval_async(
+        "await fs.promises.grep('def test', "
+        "{ cwd: '/src', glob: '*.py', outputMode: 'content', maxCount: 10 })"
+    )
+    assert outcome.error_type is None, outcome.error_message
+    assert outcome.result == "grep result"
+    assert calls == [
+        {
+            "pattern": "def test",
+            "path": "/src",
+            "glob": "*.py",
+            "output_mode": "content",
+            "max_count": 10,
+        }
+    ]

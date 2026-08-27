@@ -1475,3 +1475,15 @@ def test_sync_path_still_works(repl: _ThreadREPL) -> None:
     """After the v0.2 split, the sync path continues to use `ctx.eval`."""
     repl.eval_sync("let n = 7")
     assert repl.eval_sync("n * 6").result == "42"
+
+
+def test_format_outcome_preserves_code_characters() -> None:
+    """Code with `<`, `>`, and `&` inside `<result>` must not be XML-escaped."""
+    from langchain_quickjs._repl import EvalOutcome
+
+    code_output = "if (a < b && b > c) { return '<a>&amp;</a>'; }"
+    outcome = EvalOutcome(result=code_output)
+    formatted = format_outcome(outcome, max_result_chars=30_000)
+    assert formatted == f"<result>{code_output}</result>"
+    assert "&lt;" not in formatted
+    assert "&gt;" not in formatted

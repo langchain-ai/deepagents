@@ -56,7 +56,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MEMORY_LIMIT = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
-_DEFAULT_MAX_RESULT_CHARS = 4_000
+_DEFAULT_MAX_RESULT_CHARS = 30_000
 _DEFAULT_TOOL_NAME = "eval"
 
 PersistenceMode = Literal["thread", "turn", "call"]

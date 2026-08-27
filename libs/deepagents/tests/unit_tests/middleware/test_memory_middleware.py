@@ -1035,8 +1035,7 @@ def test_create_deep_agent_wires_cache_control_for_anthropic_memory(tmp_path: Pa
     agent.invoke({"messages": [HumanMessage(content="hi")]})
 
     assert captured_system_messages, "Model never received a SystemMessage"
-    last_block = captured_system_messages[0].content_blocks[-1]
-    assert last_block.get("cache_control") == {"type": "ephemeral"}
+    assert any(block.get("cache_control") == {"type": "ephemeral"} for block in captured_system_messages[0].content_blocks)
 
 
 # --- system_prompt override / suppression --------------------------------

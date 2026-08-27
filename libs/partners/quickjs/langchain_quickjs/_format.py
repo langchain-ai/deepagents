@@ -193,16 +193,15 @@ def format_outcome(
         inner = outcome.error_message
         if outcome.error_stack:
             inner = f"{inner}\n{outcome.error_stack}"
+        truncated_inner = _truncate(inner, max_result_chars)
         parts.append(
-            f'<error type="{_xml_escape(outcome.error_type)}">'
-            f"{_xml_escape(_truncate(inner, max_result_chars))}"
-            f"</error>"
+            f'<error type="{_xml_escape(outcome.error_type)}">{truncated_inner}</error>'
         )
     else:
         body = outcome.result if outcome.result is not None else "undefined"
         kind_attr = f' kind="{outcome.result_kind}"' if outcome.result_kind else ""
-        body_xml = _xml_escape(_truncate(body, max_result_chars))
-        parts.append(f"<result{kind_attr}>{body_xml}</result>")
+        truncated_body = _truncate(body, max_result_chars)
+        parts.append(f"<result{kind_attr}>{truncated_body}</result>")
     return "\n".join(parts)
 
 

@@ -631,16 +631,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     )
 
     backend = backend if backend is not None else StateBackend()
-    has_per_tool_hitl = bool(interrupt_on) or any(
-        rule.mode == "interrupt" for rule in permissions or []
-    )
+    has_per_tool_hitl = bool(interrupt_on) or any(rule.mode == "interrupt" for rule in permissions or [])
     use_code_mode = (
-        code_mode
-        and not has_per_tool_hitl
-        and not any(
-            middleware_instance.name == "CodeInterpreterMiddleware"
-            for middleware_instance in middleware
-        )
+        code_mode and not has_per_tool_hitl and not any(middleware_instance.name == "CodeInterpreterMiddleware" for middleware_instance in middleware)
     )
 
     def _code_interpreter_middleware() -> AgentMiddleware[Any, Any, Any]:

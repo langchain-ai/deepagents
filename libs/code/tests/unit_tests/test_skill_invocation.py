@@ -312,6 +312,7 @@ def _make_app() -> MagicMock:
 
     app = MagicMock(spec=DeepAgentsApp)
     app._assistant_id = "agent"
+    app._cwd = str(Path.cwd())
     app._discovered_skills = []
     app._skill_allowed_roots = []
     app._skill_trust_denied = set()
@@ -931,6 +932,42 @@ class TestDiscoverSkillsAndRoots:
         assert real_trusted.resolve() not in roots
         # `extra_allowed_dirs` is the declarative allowlist and is resolved.
         assert real_extra.resolve() in roots
+
+    def test_relative_extra_dirs_use_user_cwd_not_project_root(
+        self, tmp_path: Path
+    ) -> None:
+        """Relative allowlist entries keep the cwd used by config loading."""
+        from deepagents_code.skills.invocation import discover_skills_and_roots
+
+        project_root = tmp_path / "project"
+        user_cwd = project_root / "subdir"
+        configured = user_cwd / "shared"
+        wrong = project_root / "shared"
+        configured.mkdir(parents=True)
+        wrong.mkdir()
+        (tmp_path / "config.toml").write_text(
+            '[skills]\nextra_allowed_dirs = ["shared"]\n',
+            encoding="utf-8",
+        )
+
+        with (
+            patch(
+                "deepagents_code.config.settings",
+                SimpleNamespace(project_root=project_root),
+            ),
+            patch("deepagents_code.skills.load.list_skills", return_value=[]),
+            patch(
+                "deepagents_code.skills.trust.load_trusted_skill_dirs",
+                return_value=[],
+            ),
+        ):
+            _skills, roots = discover_skills_and_roots(
+                "agent",
+                path_base=user_cwd,
+            )
+
+        assert configured.resolve() in roots
+        assert wrong.resolve() not in roots
 
 
 class TestResolveParentDir:

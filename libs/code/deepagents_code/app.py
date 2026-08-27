@@ -5619,6 +5619,7 @@ class DeepAgentsApp(App):
             assistant_id,
             plugin_skill_sources=plugin_skill_sources,
             plugin_skill_roots=plugin_skill_roots,
+            path_base=Path(self._cwd),
         )
 
     def _discover_skills_and_roots_with_import_lock(

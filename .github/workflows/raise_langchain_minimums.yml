@@ -15,7 +15,10 @@
 # - Runs on a weekly cron (Monday 09:00 UTC) for every release package
 #   (`package = all`).
 # - Can also be run manually from the Actions UI / `gh` CLI against a single
-#   package or `all`.
+#   package or `all`. The optional `dependencies` CSV input narrows the run to
+#   the listed PyPI distribution names (e.g. `langchain-core,langsmith`); when
+#   empty, every `langchain*`/`langgraph*`/`langsmith*`/`deepagents*`
+#   dependency is in scope.
 #
 # Notes:
 # - One PR is opened per run containing every raised bound plus the regenerated
@@ -41,7 +44,7 @@
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
 
-name: "Raise dependency minimums"
+name: "📦 Raise dependency minimums"
 
 on:
   schedule:
@@ -65,6 +68,11 @@ on:
           - "langchain-quickjs"
           - "langchain-runloop"
           - "langchain-vercel-sandbox"
+      dependencies:
+        description: "Optional comma-separated PyPI distribution names to restrict the run to (e.g. 'langchain-core,langsmith'). Names are matched exactly; the usual `langchain*`/`langgraph*`/`langsmith*`/`deepagents*` scope prefixes no longer apply. Empty raises every in-scope dependency."
+        required: false
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -76,7 +84,7 @@ concurrency:
 
 jobs:
   raise:
-    name: "Raise dependency minimums for ${{ inputs.package || 'all' }}"
+    name: "Raise dependency minimums for ${{ inputs.package || 'all' }}${{ inputs.dependencies && format(' [{0}]', inputs.dependencies) || '' }}"
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -110,11 +118,24 @@ jobs:
         id: raise
         env:
           PACKAGE: ${{ inputs.package || 'all' }}
+          DEPENDENCIES: ${{ inputs.dependencies || '' }}
         run: |
           set -euo pipefail
+          # Validate the free-text CSV before it is used as a shell argument.
+          # Reject anything outside a comma-separated identifier charset
+          # (PEP 508 distribution names: letters, digits, `.`, `-`, `_`) so a
+          # malformed dispatch value fails here rather than inside the script.
+          if [ -n "$DEPENDENCIES" ] && ! printf '%s' "$DEPENDENCIES" | grep -qE '^[A-Za-z0-9._-]+([[:space:]]*,[[:space:]]*[A-Za-z0-9._-]+)*$'; then
+            echo "::error::dependencies must be a comma-separated list of distribution names (letters, digits, '.', '-', '_'); got: $DEPENDENCIES"
+            exit 1
+          fi
+          args=(--package "$PACKAGE")
+          if [ -n "$DEPENDENCIES" ]; then
+            args+=(--dependencies "$DEPENDENCIES")
+          fi
           uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/checks/raise_langchain_minimums.py \
-            --package "$PACKAGE"
+            "${args[@]}"
           echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
 
       - name: Regenerate lockfiles for affected packages

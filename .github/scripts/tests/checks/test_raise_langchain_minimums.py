@@ -17,6 +17,7 @@ from raise_langchain_minimums import (
     _in_scope,
     _latest_compatible_version,
     _load_scope,
+    _parse_dependency_csv,
     _plan_manifest,
     _project_requirement_strings,
     _raise_lower_bound,
@@ -342,6 +343,31 @@ class TestInScope:
 
         assert not _in_scope(requirement, "langchain", frozenset(), None)
 
+    def test_narrow_to_replaces_prefix_matching(self) -> None:
+        narrow_to = frozenset({"langsmith"})
+
+        assert _in_scope(
+            Requirement("langsmith>=0.1"), "langsmith", frozenset(), None, narrow_to
+        )
+        # An in-prefix name not on the list is out of scope when narrowed.
+        assert not _in_scope(
+            Requirement("langchain>=1.0"), "langchain", frozenset(), None, narrow_to
+        )
+
+    def test_narrow_to_matches_exactly_not_by_prefix(self) -> None:
+        narrow_to = frozenset({"langchain"})
+
+        assert _in_scope(
+            Requirement("langchain>=1.0"), "langchain", frozenset(), None, narrow_to
+        )
+        assert not _in_scope(
+            Requirement("langchain-openai>=1.0"),
+            "langchain-openai",
+            frozenset(),
+            None,
+            narrow_to,
+        )
+
 
 class TestEditsMarkdown:
     def test_renders_one_table_row_per_edit(self) -> None:
@@ -359,6 +385,17 @@ class TestEditsMarkdown:
             "|---|---|---|\n"
             "| `libs/code/pyproject.toml` | `langsmith` | "
             "`langsmith>=0.1.0` → `langsmith>=0.4.0` |"
+        )
+
+
+class TestParseDependencyCsv:
+    def test_empty_means_no_narrowing(self) -> None:
+        assert _parse_dependency_csv("") is None
+        assert _parse_dependency_csv(" , ") is None
+
+    def test_canonicalizes_and_deduplicates(self) -> None:
+        assert _parse_dependency_csv("LangChain-Core, langsmith ,langchain_core") == (
+            frozenset({"langchain-core", "langsmith"})
         )
 
 

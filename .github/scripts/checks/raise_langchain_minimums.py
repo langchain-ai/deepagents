@@ -14,6 +14,10 @@ A dependency whose PyPI metadata could not be fetched, or a manifest that could
 not be rewritten, is reported as a failure rather than silently omitted: an
 unattended weekly cron must never render "PyPI was unreachable" as "everything
 is already up to date".
+
+`--dependencies` narrows the run to an exact comma-separated name list (the
+prefix scope no longer applies), so a manual dispatch can raise just
+`langchain-core,langsmith` without touching the rest of the ecosystem.
 """
 
 from __future__ import annotations
@@ -290,18 +294,26 @@ def _in_scope(
     canonical_name: str,
     local_names: frozenset[str],
     self_name: str | None,
+    narrow_to: frozenset[str] | None = None,
 ) -> bool:
     """Return whether a dependency is an in-scope, externally-resolved dependency.
 
     Whether it declares a raiseable floor is a separate question, answered by
     `extract_minimum` and `_raiseable_specifier` at the call site.
+
+    When `narrow_to` is provided (the `--dependencies` CSV), it replaces the
+    prefix scope: a name must be listed there exactly to be in scope.
     """
     if requirement.url or canonical_name in local_names or canonical_name == self_name:
         return False
+    if narrow_to is not None:
+        return canonical_name in narrow_to
     return canonical_name.startswith(IN_SCOPE_PREFIXES)
 
 
-def _load_scope(manifest_path: str) -> ManifestScope:
+def _load_scope(
+    manifest_path: str, narrow_to: frozenset[str] | None = None
+) -> ManifestScope:
     """Read and parse one manifest, returning its in-scope requirements.
 
     Raises:
@@ -333,7 +345,9 @@ def _load_scope(manifest_path: str) -> ManifestScope:
             )
             continue
         canonical_name = canonicalize_name(requirement.name)
-        if not _in_scope(requirement, canonical_name, local_names, self_name):
+        if not _in_scope(
+            requirement, canonical_name, local_names, self_name, narrow_to
+        ):
             continue
         requirements.append((raw, requirement))
     return ManifestScope(
@@ -600,20 +614,34 @@ def _select_manifests(package: str, packages: Mapping[str, str]) -> list[str] | 
     return [f"{path}/pyproject.toml" for path in selected]
 
 
-def _run(package: str) -> int:
-    """Raise in-scope lower bounds for `package`, writing manifests and outputs."""
+def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
+    """Raise in-scope lower bounds for `package`, writing manifests and outputs.
+
+    When `narrow_to` is provided, only those distribution names are raised
+    instead of every dependency matching `IN_SCOPE_PREFIXES`.
+    """
     manifests = _select_manifests(package, load_release_packages())
     if manifests is None:
         return 1
     _notice(f"Raising dependency minimums for {package}: " + ", ".join(manifests))
+    if narrow_to is not None:
+        _notice("Restricted to dependencies: " + ", ".join(sorted(narrow_to)))
 
-    scopes = [_load_scope(manifest_path) for manifest_path in manifests]
+    scopes = [_load_scope(manifest_path, narrow_to) for manifest_path in manifests]
     in_scope_names = {
         canonicalize_name(requirement.name)
         for scope in scopes
         for _, requirement in scope.requirements
     }
     if not in_scope_names:
+        if narrow_to is not None:
+            # A deliberate narrow can legitimately match nothing (typo, or the
+            # dependency was dropped) — that is "nothing to do", not a defect.
+            _notice(
+                f"None of the requested dependencies ({', '.join(sorted(narrow_to))}) "
+                f"appear in {package}'s manifests; nothing to do."
+            )
+            return 0
         # Every release package declares in-scope dependencies, so an empty set
         # means the manifests are shaped differently than this script expects —
         # a defect to surface, not a quiet no-op.
@@ -679,6 +707,19 @@ def _run(package: str) -> int:
     return 0
 
 
+def _parse_dependency_csv(value: str) -> frozenset[str] | None:
+    """Parse a comma-separated distribution-name list, or `None` when empty.
+
+    Canonicalizes each entry so PEP 503 spelling differences (`LangChain-Core`
+    vs `langchain-core`) still match manifest names. An empty string means
+    "no narrowing" and returns `None` so the prefix scope applies.
+    """
+    names = frozenset(
+        canonicalize_name(entry.strip()) for entry in value.split(",") if entry.strip()
+    )
+    return names or None
+
+
 def main() -> int:
     """Entry point: raise in-scope lower bounds for the selected package(s)."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -690,9 +731,18 @@ def main() -> int:
             "release package."
         ),
     )
+    parser.add_argument(
+        "--dependencies",
+        default="",
+        help=(
+            "Comma-separated PyPI distribution names to restrict the run to "
+            "(e.g. 'langchain-core,langsmith'). When empty, every dependency "
+            "matching IN_SCOPE_PREFIXES is raised."
+        ),
+    )
     args = parser.parse_args()
     try:
-        return _run(args.package)
+        return _run(args.package, _parse_dependency_csv(args.dependencies))
     except Exception as err:  # noqa: BLE001  # fail closed on script defects
         _error(f"Raising dependency minimums failed unexpectedly: {err}")
         return 2

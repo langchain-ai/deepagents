@@ -963,6 +963,39 @@ class TestJsonArg:
         assert args.skills_command == "list"
         assert args.output_format == "json"
 
+    def test_headless_dispatch_forwards_json_and_timeout(self) -> None:
+        """The public CLI must connect machine-output flags to the runner."""
+        from deepagents_code.main import cli_main
+
+        runner = AsyncMock(return_value=124)
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "-n", "task", "--json", "--timeout", "9", "--no-mcp"],
+            ),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.main.apply_stdin_pipe"),
+            patch("deepagents_code.main._install_termination_signal_handlers"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled", return_value=False
+            ),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                runner,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 124
+        await_args = runner.await_args
+        assert await_args is not None
+        assert await_args.kwargs["output_format"] == "json"
+        assert await_args.kwargs["time_limit"] == 9
+
 
 class TestReservedAgentArg:
     """`-a plugins` must fail at the CLI, not inside agent construction.

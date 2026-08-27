@@ -1263,28 +1263,6 @@ class TestMaxTurnsArgument:
         assert exc_info.value.code == 2
 
 
-async def _raise_timeout_and_close(awaitable: object, **_kwargs: object) -> None:
-    """Close the mocked awaitable before simulating a timeout."""
-    close = getattr(awaitable, "close", None)
-    if callable(close):
-        close()
-    await asyncio.sleep(0)
-    raise TimeoutError
-
-
-def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
-    """Extract the `timeout` arg from a mocked `asyncio.wait_for` call.
-
-    Handles both positional and keyword call styles so the assertion does not
-    depend on how production code passes the argument.
-    """
-    import inspect
-
-    call = mock_wait_for.call_args
-    bound = inspect.signature(asyncio.wait_for).bind(*call.args, **call.kwargs)
-    return bound.arguments["timeout"]
-
-
 def test_cli_main_forwards_recursion_limit_to_headless_server() -> None:
     """A headless launch serializes the CLI limit to its server process."""
     from deepagents_code.main import cli_main
@@ -1456,8 +1434,8 @@ class TestTimeoutArgument:
         assert await_args is not None
         assert await_args.kwargs["max_turns"] == 5
 
-    def test_forwarded_via_wait_for(self) -> None:
-        """--timeout value is used as the asyncio.wait_for timeout."""
+    def test_forwarded_to_runner(self) -> None:
+        """--timeout value is forwarded to the headless runner."""
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
@@ -1476,43 +1454,16 @@ class TestTimeoutArgument:
                 "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
-            ),
-            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait_for,
+            ) as mock_run,
             pytest.raises(SystemExit),
         ):
             cli_main()
-        assert _wait_for_timeout(mock_wait_for) == 45
-
-    def test_timeout_exits_124(self, capsys: pytest.CaptureFixture[str]) -> None:
-        """Exits with 124 and warns on stderr when `asyncio.TimeoutError` is raised."""
-        from deepagents_code.main import cli_main
-
-        mock_stdin = MagicMock()
-        mock_stdin.isatty.return_value = True
-        with (
-            patch.object(
-                sys, "argv", ["deepagents", "-n", "slow task", "--timeout", "1"]
-            ),
-            patch.object(sys, "stdin", mock_stdin),
-            patch("deepagents_code.main.check_optional_tools", return_value=[]),
-            patch(
-                "deepagents_code.main._should_ensure_managed_ripgrep",
-                return_value=False,
-            ),
-            patch(
-                "asyncio.wait_for",
-                side_effect=_raise_timeout_and_close,
-            ),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-        assert exc_info.value.code == 124
-        stderr = capsys.readouterr().err
-        assert "timed out" in stderr
-        assert "1s" in stderr
+        await_args = mock_run.await_args
+        assert await_args is not None
+        assert await_args.kwargs["time_limit"] == 45
 
     def test_no_timeout_when_omitted(self) -> None:
-        """When --timeout is omitted, wait_for is called with timeout=None."""
+        """When --timeout is omitted, the runner receives no time limit."""
         from deepagents_code.main import cli_main
 
         mock_stdin = MagicMock()
@@ -1529,12 +1480,13 @@ class TestTimeoutArgument:
                 "deepagents_code.client.non_interactive.run_non_interactive",
                 new_callable=AsyncMock,
                 return_value=0,
-            ),
-            patch("asyncio.wait_for", wraps=asyncio.wait_for) as mock_wait_for,
+            ) as mock_run,
             pytest.raises(SystemExit),
         ):
             cli_main()
-        assert _wait_for_timeout(mock_wait_for) is None
+        await_args = mock_run.await_args
+        assert await_args is not None
+        assert await_args.kwargs["time_limit"] is None
 
     @pytest.mark.parametrize("bad_value", ["0", "-1", "-60", "abc"])
     def test_rejects_non_positive_and_non_integer(

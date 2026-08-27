@@ -99,9 +99,36 @@ the process is enforcing, and an edit the user just made is not in effect.
 """
 
 
-def coerce_environment_value(
-    option: ConfigOption[Any], raw: str, name: str
-) -> ProviderResult[object]:
+def _found_for[T](option: ConfigOption[T], value: object) -> Found[T]:
+    """Bind a kind-validated provider value to its manifest option type.
+
+    Provider coercers validate the runtime shape selected by `option.kind`.
+    `ConfigOption.default` binds that kind's value type to `T`; this helper
+    carries the established relationship through branches that type checkers
+    cannot narrow from an enum member.
+
+    Returns:
+        The validated value wrapped in a typed provider result.
+    """
+    del option
+    return Found(cast("T", value))
+
+
+def _ranked_for[T](
+    option: ConfigOption[T], ranked: RankedProviderValue[object]
+) -> RankedProviderValue[T]:
+    """Bind an option-specific special provider path to its value type.
+
+    Returns:
+        The ranked value associated with the option's value type.
+    """
+    del option
+    return cast("RankedProviderValue[T]", ranked)
+
+
+def coerce_environment_value[T](
+    option: ConfigOption[T], raw: str, name: str
+) -> ProviderResult[T]:
     """Coerce one present environment value within the env provider domain.
 
     The returned reason preserves the established diagnostic text. Resolution
@@ -123,27 +150,27 @@ def coerce_environment_value(
         classified = classify_env_bool(raw)
         if classified is None:
             return Invalid(f"Ignoring {name}={raw!r} (expected bool)")
-        return Found(classified)
+        return _found_for(option, classified)
     if kind is OptionKind.BOOL_PRESENCE:
-        return Found(bool(raw))
+        return _found_for(option, bool(raw))
     if kind is OptionKind.STR:
-        return Found(raw)
+        return _found_for(option, raw)
     if kind is OptionKind.NON_EMPTY_STR:
         value = raw.strip()
         if value:
-            return Found(value)
+            return _found_for(option, value)
         return Invalid(f"Ignoring {name}={raw!r} (expected non-empty string)")
     if kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._debug import LOG_LEVELS
 
         level = raw.strip().upper()
         if level in LOG_LEVELS:
-            return Found(level)
+            return _found_for(option, level)
         valid = ", ".join(LOG_LEVELS)
         return Invalid(f"Ignoring {name}={raw!r} (expected one of {valid})")
     if kind is OptionKind.INT:
         try:
-            return Found(int(raw.strip()))
+            return _found_for(option, int(raw.strip()))
         except ValueError:
             return Invalid(f"Ignoring {name}={raw!r} (expected int)")
     if kind is OptionKind.NON_NEGATIVE_INT:
@@ -152,34 +179,34 @@ def coerce_environment_value(
         except ValueError:
             return Invalid(f"Ignoring {name}={raw!r} (expected int >= 0)")
         if value >= 0:
-            return Found(value)
+            return _found_for(option, value)
         return Invalid(f"Ignoring {name}={raw!r} (expected int >= 0)")
     if kind is OptionKind.FLOAT:
         try:
-            return Found(float(raw.strip()))
+            return _found_for(option, float(raw.strip()))
         except ValueError:
             return Invalid(f"Ignoring {name}={raw!r} (expected number)")
     if kind is OptionKind.SHELL_LIST_DELEGATE:
         from deepagents_code.config import parse_shell_allow_list
 
         try:
-            return Found(parse_shell_allow_list(raw))
+            return _found_for(option, parse_shell_allow_list(raw))
         except ValueError:
             return Invalid(f"Ignoring invalid {name}")
     if kind is OptionKind.SKILLS_DIRS_DELEGATE:
         from deepagents_code.config import _parse_extra_skills_dirs
 
         try:
-            return Found(_parse_extra_skills_dirs(raw, None))
+            return _found_for(option, _parse_extra_skills_dirs(raw, None))
         except (ValueError, RuntimeError):
             return Invalid(f"Ignoring {name} (could not resolve a path)")
     if kind is OptionKind.THEME_DELEGATE:
         # Theme names are resolved by the theme-aware provider path. Keep this
         # defensive passthrough for the compatibility wrapper.
-        return Found(raw)
+        return _found_for(option, raw)
     if kind is OptionKind.CURSOR_STYLE_DELEGATE:
         if raw in VALID_CURSOR_STYLES:
-            return Found(raw)
+            return _found_for(option, raw)
         return Invalid(f"Ignoring {name}={raw!r} (expected 'block' or 'underline')")
     if kind in {
         OptionKind.MODEL_LIST_DELEGATE,
@@ -201,16 +228,16 @@ def coerce_environment_value(
         from deepagents_code.model_config import VALID_STARTUP_MODES
 
         if raw in VALID_STARTUP_MODES:
-            return Found(raw)
+            return _found_for(option, raw)
         return Invalid(
             f"Ignoring {name}={raw!r} (expected 'manual', 'auto', or 'yolo')"
         )
     assert_never(kind)
 
 
-def coerce_toml_value(
-    option: ConfigOption[Any], raw: object, *, source: str
-) -> ProviderResult[object]:
+def coerce_toml_value[T](
+    option: ConfigOption[T], raw: object, *, source: str
+) -> ProviderResult[T]:
     """Coerce one present TOML value within the file-provider domain.
 
     Args:
@@ -228,7 +255,7 @@ def coerce_toml_value(
 
     if option.key == "threads.sort_order":
         if isinstance(raw, str) and raw in {"created_at", "updated_at"}:
-            return Found(raw)
+            return _found_for(option, raw)
         return Invalid(
             f"Ignoring {label}={raw!r} in {source} "
             "(expected 'created_at' or 'updated_at')"
@@ -240,27 +267,27 @@ def coerce_toml_value(
     }:
         if isinstance(raw, bool):
             value = not raw if option.invert_toml_bool else raw
-            return Found(value)
+            return _found_for(option, value)
     elif kind is OptionKind.INT:
         if isinstance(raw, int) and not isinstance(raw, bool):
-            return Found(raw)
+            return _found_for(option, raw)
     elif kind is OptionKind.NON_NEGATIVE_INT:
         if isinstance(raw, int) and not isinstance(raw, bool) and raw >= 0:
-            return Found(raw)
+            return _found_for(option, raw)
     elif kind is OptionKind.FLOAT:
         if isinstance(raw, (int, float)) and not isinstance(raw, bool):
-            return Found(float(raw))
+            return _found_for(option, float(raw))
     elif kind is OptionKind.STR:
         if isinstance(raw, str):
-            return Found(raw)
+            return _found_for(option, raw)
     elif kind is OptionKind.NON_EMPTY_STR:
         if isinstance(raw, str) and (value := raw.strip()):
-            return Found(value)
+            return _found_for(option, value)
     elif kind is OptionKind.MODEL_LIST_DELEGATE:
         from deepagents_code.model_config import parse_model_allowlist
 
         try:
-            return Found(parse_model_allowlist(raw))
+            return _found_for(option, parse_model_allowlist(raw))
         except (TypeError, ValueError) as exc:
             return Invalid(f"Ignoring {label} in {source}: {exc}")
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
@@ -268,7 +295,9 @@ def coerce_toml_value(
             from deepagents_code.config import _parse_extra_skills_dirs
 
             try:
-                return Found(_parse_extra_skills_dirs(None, cast("list[str]", raw)))
+                return _found_for(
+                    option, _parse_extra_skills_dirs(None, cast("list[str]", raw))
+                )
             except (ValueError, RuntimeError):
                 return Invalid(
                     f"Ignoring {label} in {source} (could not resolve a path)"
@@ -277,12 +306,12 @@ def coerce_toml_value(
         from deepagents_code.config import _parse_interpreter_ptc
 
         try:
-            return Found(_parse_interpreter_ptc(raw))
+            return _found_for(option, _parse_interpreter_ptc(raw))
         except ValueError as exc:
             return Invalid(f"Ignoring {label} in {source}: {exc}")
     elif kind is OptionKind.CURSOR_STYLE_DELEGATE:
         if isinstance(raw, str) and raw in VALID_CURSOR_STYLES:
-            return Found(raw)
+            return _found_for(option, raw)
         return Invalid(
             f"Ignoring {label}={raw!r} in {source} (expected 'block' or 'underline')"
         )
@@ -290,13 +319,13 @@ def coerce_toml_value(
         from deepagents_code.model_config import VALID_STARTUP_MODES
 
         if isinstance(raw, str) and raw in VALID_STARTUP_MODES:
-            return Found(raw)
+            return _found_for(option, raw)
         return Invalid(
             f"Ignoring {label}={raw!r} in {source} "
             "(expected 'manual', 'auto', or 'yolo')"
         )
     elif kind is OptionKind.STRUCTURED:
-        return Found(raw)
+        return _found_for(option, raw)
     elif kind is OptionKind.SHELL_LIST_DELEGATE:
         from deepagents_code.config import (
             parse_shell_allow_list,
@@ -305,23 +334,26 @@ def coerce_toml_value(
 
         try:
             if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
-                return Found(parse_shell_allow_list_items(cast("list[str]", raw)))
+                return _found_for(
+                    option,
+                    parse_shell_allow_list_items(cast("list[str]", raw)),
+                )
             if isinstance(raw, str):
-                return Found(parse_shell_allow_list(raw))
+                return _found_for(option, parse_shell_allow_list(raw))
         except ValueError as exc:
             return Invalid(f"Ignoring {label} in {source}: {exc}")
 
     return Invalid(f"Ignoring {label}={raw!r} in {source} (expected {option.type})")
 
 
-def ranked_toml_value(
-    option: ConfigOption[Any],
+def ranked_toml_value[T](
+    option: ConfigOption[T],
     data: Mapping[str, Any],
     *,
     rank: int,
     durable: bool,
     status: ProviderStatus,
-) -> RankedProviderValue[object]:
+) -> RankedProviderValue[T]:
     """Read and coerce one option from a parsed TOML provider.
 
     Args:
@@ -337,7 +369,7 @@ def ranked_toml_value(
     from deepagents_code.configuration.resolver import RankedProviderValue
 
     if not status.usable or not option.toml_keys:
-        result: ProviderResult[object] = Unset()
+        result: ProviderResult[T] = Unset()
     else:
         node: object = data
         result = Unset()
@@ -357,12 +389,12 @@ def ranked_toml_value(
     return RankedProviderValue(rank, durable, status, result)
 
 
-def ranked_environment_value(
-    option: ConfigOption[Any],
+def ranked_environment_value[T](
+    option: ConfigOption[T],
     environ: Mapping[str, str],
     *,
     rank: int,
-) -> RankedProviderValue[object]:
+) -> RankedProviderValue[T]:
     """Read and coerce one option from the process-environment domain.
 
     Args:
@@ -396,7 +428,9 @@ def ranked_environment_value(
         status = replace(status, name=f"env ({name})")
         if not raw.strip():
             if option.empty_env_is_false:
-                return RankedProviderValue(rank, False, status, Found(False))
+                return RankedProviderValue(
+                    rank, False, status, _found_for(option, False)
+                )
             if raw:
                 last_invalid = Invalid(
                     f"Ignoring {name}={raw!r} (whitespace-only; treated as unset)"
@@ -518,9 +552,9 @@ def ranked_theme_environment_value(
     )
 
 
-def ranked_default_value(
-    option: ConfigOption[Any], *, rank: int
-) -> RankedProviderValue[object]:
+def ranked_default_value[T](
+    option: ConfigOption[T], *, rank: int
+) -> RankedProviderValue[T]:
     """Produce an option's typed or mode-dependent default provider result.
 
     Args:
@@ -551,7 +585,7 @@ def ranked_default_value(
     else:
         value = option.default
     status = ProviderStatus("default", None, ProviderHealth.OK)
-    return RankedProviderValue(rank, True, status, Found(value))
+    return RankedProviderValue(rank, True, status, _found_for(option, value))
 
 
 def _build_remote_opener() -> _RemoteOpener:
@@ -1370,7 +1404,7 @@ class TomlFileProvider:
             ProviderStatus(self.name, self.path, ProviderHealth.OK),
         )
 
-    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Read one option from the current file snapshot.
 
         Args:
@@ -1383,11 +1417,14 @@ class TomlFileProvider:
 
         snapshot = self.current_snapshot()
         if option.kind is OptionKind.THEME_DELEGATE:
-            ranked = ranked_theme_toml_value(
-                snapshot.data,
-                rank=self.rank,
-                durable=self.durable,
-                status=snapshot.status,
+            ranked = _ranked_for(
+                option,
+                ranked_theme_toml_value(
+                    snapshot.data,
+                    rank=self.rank,
+                    durable=self.durable,
+                    status=snapshot.status,
+                ),
             )
         else:
             ranked = ranked_toml_value(
@@ -1412,12 +1449,12 @@ class TomlFileProvider:
         )
 
     @staticmethod
-    def _with_rejection_diagnostic(
-        ranked: RankedProviderValue[object],
+    def _with_rejection_diagnostic[T](
+        ranked: RankedProviderValue[T],
         status: ProviderStatus,
         *,
         retained: bool,
-    ) -> RankedProviderValue[object]:
+    ) -> RankedProviderValue[T]:
         """Attach the reason when the file on disk was rejected as a whole.
 
         Neither rejection is visible in the result otherwise. A file refused on
@@ -1539,7 +1576,7 @@ class EnvProvider:
         """
         return False
 
-    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Read one option from the live environment.
 
         Args:
@@ -1551,7 +1588,10 @@ class EnvProvider:
         from deepagents_code.config_manifest import OptionKind
 
         if option.kind is OptionKind.THEME_DELEGATE:
-            return ranked_theme_environment_value(self.environ, rank=self.rank)
+            return _ranked_for(
+                option,
+                ranked_theme_environment_value(self.environ, rank=self.rank),
+            )
         return ranked_environment_value(option, self.environ, rank=self.rank)
 
     def status(self) -> ProviderStatus:
@@ -1579,7 +1619,7 @@ class DefaultProvider:
         """
         return True
 
-    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Return one option's manifest default.
 
         Args:
@@ -1590,7 +1630,7 @@ class DefaultProvider:
         """
         ranked = ranked_default_value(option, rank=self.rank)
         if isinstance(ranked.result, Unset):
-            return replace(ranked, result=Found(option.default))
+            return replace(ranked, result=_found_for(option, option.default))
         return ranked
 
     def status(self) -> ProviderStatus:

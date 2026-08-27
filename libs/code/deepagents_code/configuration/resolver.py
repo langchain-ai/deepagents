@@ -25,7 +25,6 @@ if TYPE_CHECKING:
 
 from deepagents_code.configuration.types import (
     Found,
-    ProviderHealth,
     ProviderResult,
     ProviderStatus,
 )
@@ -158,7 +157,7 @@ class ConfigResolver:
             Resolved value with rank-keyed provenance and health.
         """
         with self._lock:
-            return cast("ResolvedValue[T]", self._resolve(option, self._providers))
+            return self._resolve(option, self._providers)
 
     def get_without_ranks[T](
         self, option: ConfigOption[T], ranks: Collection[int]
@@ -176,13 +175,13 @@ class ConfigResolver:
             providers = tuple(
                 provider for provider in self._providers if provider.rank not in ranks
             )
-            return cast("ResolvedValue[T]", self._resolve(option, providers))
+            return self._resolve(option, providers)
 
     @staticmethod
-    def _resolve(
-        option: ConfigOption[Any],
+    def _resolve[T](
+        option: ConfigOption[T],
         providers: Sequence[ConfigProvider],
-    ) -> ResolvedValue[object]:
+    ) -> ResolvedValue[T]:
         """Resolve one option against a lock-held provider generation.
 
         Args:
@@ -204,12 +203,9 @@ class ConfigResolver:
         )
         resolved = resolve_ranked(effective_values, strategy=strategy)
         if resolved is None:
-            fallback = RankedProviderValue(
-                DEFAULT_RANK,
-                True,
-                ProviderStatus("default", None, ProviderHealth.OK),
-                Found(option.default),
-            )
+            from deepagents_code.configuration.providers import DefaultProvider
+
+            fallback = DefaultProvider().get(option)
             without_default = tuple(
                 value for value in values if value.rank != DEFAULT_RANK
             )

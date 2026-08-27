@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Self, assert_type
+from typing import Any, Self, assert_type, cast
 
 import pytest
 
@@ -245,7 +245,7 @@ class _TrackingProvider:
     def __init__(
         self,
         rank: int,
-        result: ProviderResult[Any],
+        result: ProviderResult[object],
         calls: list[int] | None = None,
     ) -> None:
         """Store a fixed result and optional shared call log."""
@@ -255,15 +255,18 @@ class _TrackingProvider:
         self.calls = calls if calls is not None else []
         self.reloads = 0
 
-    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> RankedProviderValue[T]:
         """Return the fixed result and record provider order."""
         del option
         self.calls.append(self.rank)
+        # This test double intentionally injects arbitrary provider results so
+        # resolver precedence can be exercised independently of coercion.
+        result = cast("ProviderResult[T]", self.result)
         return RankedProviderValue(
             self.rank,
             self.durable,
             self.status(),
-            self.result,
+            result,
         )
 
     def status(self) -> ProviderStatus:
@@ -304,7 +307,7 @@ def test_concrete_providers_implement_protocol(tmp_path: Path) -> None:
 def test_config_resolver_preserves_option_type() -> None:
     """A resolved value retains its option's static and runtime value type."""
     resolver = ConfigResolver((DefaultProvider(),))
-    option: ConfigOption[int] = ConfigOption(
+    option = ConfigOption[int](
         key="test.count",
         group="Test",
         summary="test option",

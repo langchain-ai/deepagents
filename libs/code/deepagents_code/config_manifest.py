@@ -342,7 +342,7 @@ class ConfigOption[T]:
     kind: OptionKind
     """How env/TOML values are coerced to a typed value."""
 
-    default: Any = None
+    default: T | None = None
     """Typed default value, or `None` when there is no static default."""
 
     env_var: str | None = None
@@ -495,10 +495,18 @@ class ConfigOption[T]:
                 f"{self.kind.value}"
             )
             raise TypeError(msg)
-        if self.kind is OptionKind.NON_NEGATIVE_INT and default < 0:
+        if (
+            self.kind is OptionKind.NON_NEGATIVE_INT
+            and isinstance(default, int)
+            and default < 0
+        ):
             msg = f"{self.key}: default {default!r} must be >= 0"
             raise TypeError(msg)
-        if self.kind is OptionKind.NON_EMPTY_STR and not default.strip():
+        if (
+            self.kind is OptionKind.NON_EMPTY_STR
+            and isinstance(default, str)
+            and not default.strip()
+        ):
             msg = f"{self.key}: default must not be blank"
             raise TypeError(msg)
 

@@ -382,6 +382,7 @@ type _StrKind = Literal[
     OptionKind.STR,
     OptionKind.NON_EMPTY_STR,
     OptionKind.CURSOR_STYLE_DELEGATE,
+    OptionKind.EXTENSION_TRUST_DELEGATE,
     OptionKind.STARTUP_MODE_DELEGATE,
 ]
 # Kinds whose default is synthesized by `ranked_default_value` rather than

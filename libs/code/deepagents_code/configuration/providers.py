@@ -174,7 +174,7 @@ def coerce_environment_value[T](
 
         policy = parse_trust_policy(raw)
         if policy is not None:
-            return Found(policy.value)
+            return _found_for(option, policy.value)
         return Invalid(f"Ignoring {name}={raw!r} (expected ask, always, or never)")
     if kind is OptionKind.LOG_LEVEL_DELEGATE:
         from deepagents_code._debug import LOG_LEVELS
@@ -311,7 +311,7 @@ def coerce_toml_value[T](
 
         policy = parse_trust_policy(raw)
         if policy is not None:
-            return Found(policy.value)
+            return _found_for(option, policy.value)
     elif kind is OptionKind.SKILLS_DIRS_DELEGATE:
         if isinstance(raw, list):
             from deepagents_code.config import _parse_extra_skills_dirs

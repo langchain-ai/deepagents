@@ -2901,6 +2901,7 @@ def create_cli_agent(
             # `deepagents-code` default applied at bootstrap) entirely so shell
             # commands don't inherit it.
             shell_env = os.environ.copy()
+            shell_env["GIT_TERMINAL_PROMPT"] = "0"
             if credentials.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = credentials.user_langchain_project
             else:

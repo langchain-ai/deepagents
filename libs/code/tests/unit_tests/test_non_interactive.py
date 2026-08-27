@@ -48,6 +48,7 @@ from deepagents_code.client.non_interactive import (
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
+    _stream_agent,
     _summarization_stream_status,
     run_non_interactive,
 )
@@ -114,14 +115,45 @@ def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
             {"type": "text", "text": "answer"},
             {"type": "reasoning", "reasoning": "third"},
             {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+            {"type": "tool_call", "name": "search", "args": {}, "id": None},
         ]
     )
 
     _process_ai_message(message, state, console)
 
-    assert stdout.getvalue() == "answer"
-    assert stderr.getvalue() == "Reasoning:\nfirst secondReasoning:\nthird"
+    assert stdout.getvalue() == "answer\n"
+    assert stderr.getvalue() == "Reasoning:\nfirst second\nReasoning:\nthird\n"
+    assert state.reasoning_active is False
     assert state.full_response == ["answer"]
+
+
+async def test_reasoning_only_stream_ends_with_newline(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ReasoningOnlyAgent:
+        async def astream(self, *_args: Any, **_kwargs: Any) -> AsyncIterator[object]:
+            yield (
+                (),
+                "messages",
+                (AIMessage(content=[{"type": "reasoning", "reasoning": "solo"}]), {}),
+            )
+
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    state = StreamState(show_reasoning=True)
+
+    await _stream_agent(
+        ReasoningOnlyAgent(),
+        {"messages": []},
+        {},
+        state,
+        console,
+        FileOpTracker(assistant_id="assistant"),
+        {},
+    )
+
+    assert stderr.getvalue() == "Reasoning:\nsolo\n"
+    assert state.reasoning_active is False
 
 
 def test_visible_reasoning_defaults_off(

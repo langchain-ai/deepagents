@@ -620,6 +620,14 @@ def _write_reasoning(text: str, state: StreamState) -> None:
     sys.stderr.flush()
 
 
+def _end_reasoning(state: StreamState) -> None:
+    """Terminate an active reasoning phase before other output begins."""
+    if state.reasoning_active:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        state.reasoning_active = False
+
+
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
@@ -647,7 +655,7 @@ def _process_ai_message(
         if block_type == "text":
             text = block.get("text", "")
             if text:
-                state.reasoning_active = False
+                _end_reasoning(state)
                 if state.stream:
                     if state.spinner:
                         state.spinner.stop()
@@ -664,7 +672,7 @@ def _process_ai_message(
                     state.spinner.stop()
                 _write_reasoning(reasoning, state)
         elif block_type in {"tool_call_chunk", "tool_call"}:
-            state.reasoning_active = False
+            _end_reasoning(state)
             chunk_name = block.get("name")
             chunk_id = block.get("id")
             chunk_index = block.get("index")
@@ -1344,6 +1352,7 @@ async def _stream_agent(
             await _after_headless_compact(state)
             state.summarization_observed = False
     finally:
+        _end_reasoning(state)
         # Close the ledger at the round boundary, including on an aborted round:
         # the next HITL pass replays these chunks, which would otherwise revise
         # their requests a second time and double the run's tokens and cost.

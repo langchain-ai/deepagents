@@ -3031,6 +3031,19 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
     return None
 
 
+def _resolve_summarization_model(spec: str | None) -> str | None:
+    """Resolve the invocation override before entering a supported launch mode.
+
+    Returns:
+        The explicit spec, configured default, or `None` to reuse the main model.
+    """
+    if spec is not None:
+        return spec
+    from deepagents_code.model_config import ModelConfig
+
+    return ModelConfig.load().summarization_default_model
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -3360,6 +3373,7 @@ async def _run_acp_cli_async(
     agent_server_cls: type[Any],
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     mcp_config_path: str | None = None,
@@ -3379,6 +3393,7 @@ async def _run_acp_cli_async(
         agent_server_cls: ACP server class constructor.
         model_name: Optional model name to use.
         model_params: Extra kwargs from `--model-params` to pass to the model.
+        summarization_model: Model spec used only for context-compaction summaries.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
@@ -3541,6 +3556,7 @@ async def _run_acp_cli_async(
                     project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
                     model_retries=session_model.model_retries,
                     cli_max_retries=session_model.cli_max_retries,
+                    summarization_model=summarization_model,
                 )
                 return agent_graph
 
@@ -5271,6 +5287,9 @@ def cli_main() -> None:
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    summarization_model=_resolve_summarization_model(
+                        getattr(args, "summarization_model", None)
+                    ),
                     cli_max_retries=max_retries,
                     profile_override=profile_override,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -6033,6 +6052,9 @@ def cli_main() -> None:
                             assistant_id=assistant_id,
                             model_name=getattr(args, "model", None),
                             model_params=model_params,
+                            summarization_model=_resolve_summarization_model(
+                                getattr(args, "summarization_model", None)
+                            ),
                             cli_max_retries=max_retries,
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,

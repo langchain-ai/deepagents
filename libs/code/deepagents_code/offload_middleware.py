@@ -732,6 +732,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         *,
         system_prompt: str | None = None,
         cli_max_retries: int | None = None,
+        summarization_model_spec: str | None = None,
     ) -> None:
         """Initialize the CLI compaction middleware.
 
@@ -740,9 +741,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             system_prompt: Optional prompt fragment advertising the compact tool.
             cli_max_retries: Explicit `--max-retries` value to retain when
                 rebuilding a runtime-selected model for `/offload`.
+            summarization_model_spec: Startup model spec to use only for summaries.
         """
         super().__init__(summarization, system_prompt=system_prompt)
         self._cli_max_retries = cli_max_retries
+        self._summarization_model_spec = summarization_model_spec
 
     @property
     def name(self) -> str:
@@ -977,7 +980,10 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 a model-aware summarizer using the same configured backend.
         """
         config = _runtime_model_config(runtime)
-        if not config.model_spec and not config.summarization_model_spec:
+        summary_model_spec = config.summarization_model_spec
+        if summary_model_spec is None:
+            summary_model_spec = self._summarization_model_spec
+        if not config.model_spec and not summary_model_spec:
             return self._summarization
 
         from deepagents_code.config import create_model
@@ -1032,14 +1038,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         )
         summary_model = (
             create_model(
-                config.summarization_model_spec,
+                summary_model_spec,
                 cli_max_retries=self._cli_max_retries,
             ).model
-            if config.summarization_model_spec
+            if summary_model_spec
             else model
         )
         _install_summary_model_retries(summarization, summary_model)
-        if config.summarization_model_spec:
+        if summary_model_spec:
             _install_summary_token_counter(summarization, summary_model)
             summarization._lc_helper.trim_tokens_to_summarize = _summary_trim_limit(
                 summary_model
@@ -1216,6 +1222,7 @@ def _create_cli_compaction_middleware(
     backend: BackendProtocol,
     *,
     cli_max_retries: int | None = None,
+    summarization_model_spec: str | None = None,
 ) -> CLICompactionMiddleware:
     """Create the dcode compaction middleware from the SDK configuration.
 
@@ -1223,6 +1230,7 @@ def _create_cli_compaction_middleware(
         model: Startup model or model specification.
         backend: Agent backend used for archive persistence.
         cli_max_retries: Explicit `--max-retries` value for runtime rebuilds.
+        summarization_model_spec: Startup model spec to use only for summaries.
 
     Returns:
         CLI compaction middleware with the SDK's model-aware defaults.
@@ -1233,6 +1241,7 @@ def _create_cli_compaction_middleware(
         sdk_middleware._summarization,
         system_prompt=sdk_middleware.system_prompt,
         cli_max_retries=cli_max_retries,
+        summarization_model_spec=summarization_model_spec,
     )
 
 

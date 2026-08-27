@@ -2389,6 +2389,7 @@ def create_cli_agent(
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     model_retries: int = DEFAULT_MODEL_RETRIES,
     cli_max_retries: int | None = None,
+    summarization_model: str | None = None,
     enforce_model_policy: bool = True,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
@@ -2549,6 +2550,10 @@ def create_cli_agent(
             Forwarded to subagent, Auto classifier, and runtime offload models
             so each one resolves its own provider's configured budget unless the
             user overrode it globally.
+        summarization_model: Model spec used only for context-compaction summaries.
+
+            The model is resolved lazily when compaction first runs. `None`
+            reuses the effective main model.
         enforce_model_policy: Check every model string against `models.allowed`.
             Pass `False` **only** from callers that compile a graph they never
             invoke (tool enumeration), so a blocked subagent model degrades the
@@ -3061,6 +3066,7 @@ def create_cli_agent(
         model,
         composite_backend,
         cli_max_retries=cli_max_retries,
+        summarization_model_spec=summarization_model,
     )
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware

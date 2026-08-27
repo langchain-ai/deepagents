@@ -1132,6 +1132,81 @@ class TestSkillFlagValidation:
         assert mock_run.await_args.kwargs["message"] == "review this repo"  # ty: ignore
 
 
+class TestSummarizationModelForwarding:
+    """The dedicated summary model reaches every headless input route."""
+
+    def test_cli_override_reaches_explicit_headless_mode(self) -> None:
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--summarization-model",
+                    "openai:summary-model",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            mock_run.await_args.kwargs["summarization_model"]  # ty: ignore
+            == "openai:summary-model"
+        )
+
+    def test_config_default_reaches_piped_stdin(self) -> None:
+        from deepagents_code.main import cli_main
+        from deepagents_code.model_config import ModelConfig
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "piped task"
+        config = ModelConfig(summarization_default_model="openai:config-summary")
+        with (
+            patch.object(sys, "argv", ["deepagents"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch.object(ModelConfig, "load", return_value=config),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            mock_run.await_args.kwargs["summarization_model"]  # ty: ignore
+            == "openai:config-summary"
+        )
+
+
 class TestMaxTurnsArgument:
     """Tests for --max-turns argument parsing and validation."""
 

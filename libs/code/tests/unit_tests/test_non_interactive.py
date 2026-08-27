@@ -529,7 +529,9 @@ class TestSandboxTypeForwarding:
             mock_settings.has_tavily = False
             runtime_state.model_name = None
 
-            await run_non_interactive(message="test task")
+            await run_non_interactive(
+                message="test task", summarization_model="openai:summary-model"
+            )
 
         _, server_kwargs = mock_start_server.call_args
         assert server_kwargs["auto_approve"] is False
@@ -538,6 +540,7 @@ class TestSandboxTypeForwarding:
         assert loop_kwargs["hooks"].has_handlers(HookEvent.PERMISSION_REQUEST)
         assert loop_kwargs["approval_mode"] is ApprovalMode.YOLO
         assert loop_kwargs["prompt_id"] is not None
+        assert loop_kwargs["summarization_model"] == "openai:summary-model"
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
@@ -1732,10 +1735,12 @@ class TestMaxTurns:
                 console,
                 file_op_tracker,
                 quiet=True,
+                summarization_model="openai:summary-model",
             )
 
         _, kwargs = agent.astream.call_args
         assert kwargs["context"]["thread_id"] == "t1"
+        assert kwargs["context"]["summarization_model"] == "openai:summary-model"
 
     async def test_user_prompt_hook_suppresses_legacy_duplicate_and_prompt(
         self,

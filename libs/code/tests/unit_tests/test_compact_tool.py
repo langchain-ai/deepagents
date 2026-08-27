@@ -517,12 +517,11 @@ class TestCLICompactionMiddleware:
 
     def test_runtime_summary_override_uses_summary_counter_and_fallback(self) -> None:
         startup = self._summarization()
-        middleware = CLICompactionMiddleware(startup)
+        middleware = CLICompactionMiddleware(
+            startup, summarization_model_spec="provider:summary-model"
+        )
         runtime = MagicMock()
-        runtime.context = {
-            "model": "provider:main-model",
-            "summarization_model": "provider:summary-model",
-        }
+        runtime.context = {"model": "provider:main-model"}
         main_model = SimpleNamespace(profile={"max_input_tokens": 100_000})
         summary_model = SimpleNamespace(profile=None)
         selected = MagicMock()

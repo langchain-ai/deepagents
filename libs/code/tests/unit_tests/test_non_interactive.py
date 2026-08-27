@@ -29,7 +29,7 @@ from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.client.non_interactive import (
     _MAX_HITL_ITERATIONS,
-    _RETRY_BOUNDARY,
+    RETRY_BOUNDARY_LINE,
     HITLIterationLimitError,
     InFlightToolCall,
     StreamState,
@@ -4593,7 +4593,7 @@ class TestAttemptLifecycle:
         # No scope match means no recorded offset, so the failed text cannot be
         # found and removed. Carry the boundary into the buffer rather than
         # splicing partial and replayed text together with no marker at all.
-        assert state.full_response == ["partial", f"\n{_RETRY_BOUNDARY}\n"]
+        assert state.full_response == ["partial", f"\n{RETRY_BOUNDARY_LINE}\n"]
         assert "Retrying model request 1/5" in output.getvalue()
         assert () in state.active_attempts  # scope untouched
 

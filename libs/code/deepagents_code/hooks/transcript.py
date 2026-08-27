@@ -407,11 +407,9 @@ class TranscriptRecorder:
             call_id: LLM call identifier for this attempt.
             attempt: Zero-based attempt number within the call.
         """
-        existing = self._attempts.get(agent_id)
-        if existing is not None and (
-            existing.call_id == call_id and existing.attempt == attempt
-        ):
+        if self._active_scope(agent_id, call_id=call_id, attempt=attempt) is not None:
             return
+        existing = self._attempts.get(agent_id)
         if existing is not None and existing.staged:
             # A start for a different attempt replaces the open scope outright,
             # which drops whatever it staged. Callers are expected to discard
@@ -497,9 +495,8 @@ class TranscriptRecorder:
 
     def _drop_chunks(self, agent_id: str | None) -> None:
         """Drop every partial chunk accumulator belonging to one agent."""
-        self._chunks = {
-            key: chunk for key, chunk in self._chunks.items() if key[0] != agent_id
-        }
+        for key in [key for key in self._chunks if key[0] == agent_id]:
+            del self._chunks[key]
 
     def _active_scope(
         self,

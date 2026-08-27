@@ -119,9 +119,13 @@ from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.model_retry import (
+    INTERRUPTED_TOOL_OUTPUT,
+    RETRY_MARKER_FALLBACK,
+    TERMINAL_ATTEMPT_MARKER,
     legacy_retry_index,
     model_attempt_from_event,
     model_retry_from_event,
+    retry_marker_from_event,
     retry_status_from_event,
 )
 from deepagents_code.tool_display import format_tool_message_content
@@ -466,50 +470,6 @@ class _ModelAttemptScope(NamedTuple):
     attempt: int
 
 
-_RETRY_MARKER_FALLBACK = (
-    "Connection dropped; the partial response above is incomplete. Retrying."
-)
-_TERMINAL_ATTEMPT_MARKER = (
-    "The model request failed; the partial response above is incomplete."
-)
-
-
-def _retry_marker_text(data: Mapping[Any, object]) -> str:
-    """Build the retry marker from validated numeric fields only.
-
-    The event's own `message` field is untrusted render text, so the marker is
-    re-derived from `attempt`/`max_retries` and never parses markup out of it.
-
-    Always returns a marker. By the time this is called the partial reply has
-    already been finalized and detached from the stream, so returning nothing
-    would leave a truncated answer in the chat that reads as a complete one,
-    followed by a second full answer, with nothing saying the first was cut off.
-    Unusable numbers cost the "1/5" suffix, not the marker -- the same way
-    `retry_status_from_event` degrades to a cause-free status line.
-
-    Returns:
-        The marker line, counted when the numbers allow it.
-    """
-    attempt = data.get("attempt")
-    max_retries = data.get("max_retries")
-    if (
-        not isinstance(attempt, int)
-        or isinstance(attempt, bool)
-        or not isinstance(max_retries, int)
-        or isinstance(max_retries, bool)
-        or not 1 <= attempt <= max_retries
-    ):
-        logger.warning(
-            "Unusable retry counts in model_retry payload; marking the "
-            "superseded reply without them"
-        )
-        return _RETRY_MARKER_FALLBACK
-    return (
-        "Connection dropped; the partial response above is incomplete. "
-        f"Retrying {attempt}/{max_retries}."
-    )
-
-
 async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
     adapter: TextualUIAdapter,
     *,
@@ -570,8 +530,6 @@ async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
         # belongs to the message store, so the replay mounts its own bubble.
         if adapter._set_active_message:
             adapter._set_active_message(None)
-
-    from deepagents_code.model_retry import INTERRUPTED_TOOL_OUTPUT
 
     # Rows awaiting a deferred result are left tracked: an answered `ask_user`
     # made the turn resume, so it still expects its authoritative `ToolMessage`
@@ -1828,12 +1786,10 @@ async def execute_task_textual(
     # scope alone. Identity is tracked here so a duplicate is a no-op instead of
     # a second marker row and a second settle of the same tool rows.
     settled_attempts: set[tuple[str, int]] = set()
-    transcript_agent_by_namespace: dict[tuple, str] = {}
-
-    def _attempt_scope_for(ns_key: tuple) -> _ModelAttemptScope | None:
-        # A legacy producer emits no lifecycle events, so usage falls back to
-        # provider message-id dedupe with a `None` scope.
-        return active_attempt_by_namespace.get(ns_key)
+    transcript_agent_by_namespace: dict[tuple[str, ...], str] = {}
+    # A legacy producer emits no lifecycle events, so a namespace with no entry
+    # in `active_attempt_by_namespace` falls back to provider message-id
+    # dedupe with a `None` usage scope.
 
     hooks = session_state.hooks
     transcript = hooks.recorder(thread_id)
@@ -2014,8 +1970,10 @@ async def execute_task_textual(
 
                 namespace, current_stream_mode, data = chunk
 
-                # Convert namespace to hashable tuple for dict keys
-                ns_key = tuple(str(part) for part in namespace) if namespace else ()
+                # LangGraph always supplies a `tuple[str, ...]` namespace, so a
+                # cast gives the type checker what it needs without rebuilding
+                # the tuple on every chunk of this hot loop.
+                ns_key = cast("tuple[str, ...]", namespace) if namespace else ()
 
                 # Filter out subagent outputs - only show main agent (empty
                 # namespace). Subagents run via Task tool and should only
@@ -2044,7 +2002,7 @@ async def execute_task_textual(
                                 fallback_model=runtime_state.model_name or "",
                                 fallback_provider=runtime_state.model_provider or "",
                                 recorded_requests=recorded_usage_requests,
-                                attempt_scope=_attempt_scope_for(ns_key),
+                                attempt_scope=active_attempt_by_namespace.get(ns_key),
                             )
                         except Exception:
                             logger.warning(
@@ -2098,14 +2056,12 @@ async def execute_task_textual(
                                 stale = (
                                     existing_scope is not None
                                     and existing_scope != attempt_scope
+                                    and (
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                    )
+                                    not in settled_attempts
                                 )
-                                stale_id = (
-                                    (existing_scope.call_id, existing_scope.attempt)
-                                    if existing_scope is not None
-                                    else None
-                                )
-                                if stale_id is not None:
-                                    stale = stale and stale_id not in settled_attempts
                                 if (
                                     stale
                                     and existing_scope is not None
@@ -2157,7 +2113,7 @@ async def execute_task_textual(
                                         )
                                         with contextlib.suppress(Exception):
                                             await adapter._mount_message(
-                                                AppMessage(_RETRY_MARKER_FALLBACK)
+                                                AppMessage(RETRY_MARKER_FALLBACK)
                                             )
                                 active_attempt_by_namespace[ns_key] = attempt_scope
                                 if (
@@ -2267,7 +2223,7 @@ async def execute_task_textual(
                                 # left that can say it was cut off. Falling back
                                 # to the spinner keeps that visible when the
                                 # mount fails.
-                                marker = _retry_marker_text(data)
+                                marker = retry_marker_from_event(data)
                                 try:
                                     await adapter._mount_message(AppMessage(marker))
                                 except Exception:
@@ -2510,7 +2466,14 @@ async def execute_task_textual(
                         continue
 
                     message, metadata = data
-                    if not is_main_agent and isinstance(metadata, dict):
+                    if (
+                        not is_main_agent
+                        and ns_key not in transcript_agent_by_namespace
+                        and isinstance(metadata, dict)
+                    ):
+                        # Only the first message of a namespace can teach us its
+                        # transcript identity; later chunks would re-resolve the
+                        # same id and re-open the same staging scope.
                         transcript_agent_id = metadata.get(
                             SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
                         )
@@ -2560,7 +2523,7 @@ async def execute_task_textual(
                                 ),
                             ),
                             recorded_requests=recorded_usage_requests,
-                            attempt_scope=_attempt_scope_for(ns_key),
+                            attempt_scope=active_attempt_by_namespace.get(ns_key),
                         )
                     _apply_recorded_usage(adapter, recorded_usage)
 
@@ -3980,7 +3943,7 @@ async def execute_task_textual(
                     tool_call_buffers=tool_call_buffers,
                 )
                 if preserve_partial:
-                    await adapter._mount_message(AppMessage(_TERMINAL_ATTEMPT_MARKER))
+                    await adapter._mount_message(AppMessage(TERMINAL_ATTEMPT_MARKER))
             except Exception:
                 logger.warning(
                     "Failed to reconcile the terminal model attempt", exc_info=True
@@ -3992,13 +3955,13 @@ async def execute_task_textual(
         # aborted stream owns incomplete records that must be discarded.
         try:
             if stream_completed:
-                for scope in active_attempt_by_namespace.values():
+                for scope_ns, scope in active_attempt_by_namespace.items():
                     agent_id = (
                         None
-                        if not scope.namespace
-                        else transcript_agent_by_namespace.get(scope.namespace)
+                        if not scope_ns
+                        else transcript_agent_by_namespace.get(scope_ns)
                     )
-                    if not scope.namespace or agent_id is not None:
+                    if not scope_ns or agent_id is not None:
                         transcript.complete_attempt(
                             agent_id=agent_id,
                             call_id=scope.call_id,

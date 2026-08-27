@@ -25,7 +25,7 @@ import logging
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
 from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
@@ -80,7 +80,16 @@ from deepagents_code.hooks import (
     dispatch_hook_fire_and_forget,
     drain_pending_hooks,
 )
+from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 from deepagents_code.model_config import ModelConfigError
+from deepagents_code.model_retry import (
+    INTERRUPTED_TOOL_OUTPUT,
+    RETRY_BOUNDARY_LINE,
+    legacy_retry_index,
+    model_attempt_from_event,
+    model_retry_from_event,
+    retry_status_from_event,
+)
 from deepagents_code.sessions import generate_thread_id
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.unicode_security import (
@@ -147,17 +156,15 @@ _MAX_HITL_ITERATIONS = 50
 """Safety cap on the number of HITL interrupt round-trips to prevent infinite
 loops (e.g. when the agent keeps retrying rejected commands)."""
 
-_RETRY_BOUNDARY = (
-    "--- connection dropped; the output above is incomplete — retrying ---"
-)
-"""Safe retry boundary printed between failed partial output and the replay."""
-
 
 @dataclass(frozen=True, slots=True)
 class _AttemptLifecycleScope:
-    """Client-side identity of one active model attempt."""
+    """Client-side identity of one active model attempt.
 
-    namespace: tuple[str, ...]
+    The owning namespace is the `StreamState.active_attempts` key rather than a
+    field here, so a scope cannot disagree with where it is stored.
+    """
+
     call_id: str
     attempt: int
     agent_id: str | None
@@ -1098,12 +1105,7 @@ def _retarget_transcript_scope(
         call_id=scope.call_id,
         attempt=scope.attempt,
     )
-    state.active_attempts[namespace] = _AttemptLifecycleScope(
-        namespace=scope.namespace,
-        call_id=scope.call_id,
-        attempt=scope.attempt,
-        agent_id=agent_id,
-    )
+    state.active_attempts[namespace] = replace(scope, agent_id=agent_id)
     state.transcript.start_attempt(
         agent_id=agent_id,
         call_id=scope.call_id,
@@ -1196,7 +1198,7 @@ def _reconcile_superseded_attempt(
             # the buffer. Carry a boundary instead of silently splicing it into
             # the replay. Legacy servers cannot retry after output and omit this
             # flag, so their retries leave earlier successful steps untouched.
-            state.full_response.append(f"\n{_RETRY_BOUNDARY}\n")
+            state.full_response.append(f"\n{RETRY_BOUNDARY_LINE}\n")
         return
 
     if not output_may_have_started:
@@ -1209,7 +1211,18 @@ def _reconcile_superseded_attempt(
     # text-only.
     if state.full_response:
         _write_newline()
-    console.print(f"[dim]{escape_markup(_RETRY_BOUNDARY)}[/dim]", highlight=False)
+    console.print(f"[dim]{escape_markup(RETRY_BOUNDARY_LINE)}[/dim]", highlight=False)
+
+
+def _flush_pending_tool_status(state: StreamState, console: Console) -> None:
+    """Print and clear `--no-stream` tool status staged by completed attempts.
+
+    Lines are only ever staged outside `--quiet` mode, so reaching here with
+    anything to print already means the console is a rendering surface.
+    """
+    lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
+    for line in lines:
+        console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
 
 
 def _commit_attempt_lifecycle(
@@ -1229,11 +1242,9 @@ def _commit_attempt_lifecycle(
         )
     if namespace or not state.pending_tool_status_lines:
         return
-    lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
     if state.spinner:
         state.spinner.stop()
-    for line in lines:
-        console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
+    _flush_pending_tool_status(state, console)
 
 
 def _process_attempt_lifecycle(
@@ -1260,7 +1271,6 @@ def _process_attempt_lifecycle(
     attempt = cast("int", data["attempt"])
     if data["phase"] == "start":
         scope = _AttemptLifecycleScope(
-            namespace=namespace,
             call_id=call_id,
             attempt=attempt,
             agent_id=_lifecycle_agent_id(state, namespace),
@@ -1335,8 +1345,6 @@ def _settle_interrupted_tool_hooks(state: StreamState) -> None:
     Args:
         state: Shared stream state.
     """
-    from deepagents_code.model_retry import INTERRUPTED_TOOL_OUTPUT
-
     settled_ids = list(state.in_flight_tool_calls)
     _dispatch_orphaned_tool_result_hooks(
         state,
@@ -1376,8 +1384,6 @@ def _process_retry_lifecycle(
         state: Shared stream state.
         console: Rich console for status output (stderr in `--quiet` mode).
     """
-    from deepagents_code.model_retry import retry_status_from_event
-
     call_id = correlation["call_id"]
     failed_attempt = correlation["failed_attempt"]
     output_may_have_started = cast("bool", correlation["output_may_have_started"])
@@ -1396,27 +1402,20 @@ def _process_retry_lifecycle(
         scope = None
 
     attempt_id = (namespace, cast("str", call_id), cast("int", failed_attempt))
-    if namespace:
-        _reconcile_superseded_attempt(
-            namespace,
-            scope,
-            state,
-            console,
-            attempt_id=attempt_id,
-            output_may_have_started=output_may_have_started,
-        )
-        return
-
-    if state.spinner:
+    if not namespace and state.spinner:
         state.spinner.stop()
     _reconcile_superseded_attempt(
-        (),
+        namespace,
         scope,
         state,
         console,
         attempt_id=attempt_id,
         output_may_have_started=output_may_have_started,
     )
+    if namespace:
+        # Nested output is filtered before rendering, so a nested retry has no
+        # visible surface beyond the reconciliation above.
+        return
     # A `Retry-After` backoff can hold the turn for a minute, so this line is
     # the only explanation for the stall; the spinner is stopped first so it
     # cannot overwrite it. `highlight=False` keeps Rich from bolding the "1/5",
@@ -1457,13 +1456,10 @@ def _process_stream_chunk(
         return
 
     namespace, stream_mode, data = chunk
-    ns_key = (
-        # `namespace` unpacks from an untyped 3-tuple, so the cast is what makes
-        # it iterable to the type checker.
-        tuple(str(part) for part in cast("tuple[object, ...]", namespace))
-        if namespace
-        else ()
-    )
+    # `namespace` unpacks from an untyped 3-tuple; LangGraph always supplies a
+    # `tuple[str, ...]`, so a cast gives the type checker what it needs without
+    # rebuilding the tuple on every chunk of this hot loop.
+    ns_key = cast("tuple[str, ...]", namespace) if namespace else ()
     is_main_agent = not ns_key
 
     if (
@@ -1478,15 +1474,18 @@ def _process_stream_chunk(
             if isinstance(metadata, dict)
             else None
         )
-        if ns_key and isinstance(transcript_metadata, dict):
-            from deepagents_code.hooks.transcript import (
-                SUBAGENT_TRANSCRIPT_ID_METADATA_KEY,
-            )
-
+        if (
+            ns_key
+            and ns_key not in state.transcript_agent_ids
+            and isinstance(transcript_metadata, dict)
+        ):
+            # Only the first message of a namespace can teach us its transcript
+            # identity; once recorded, scopes open under it directly and later
+            # chunks have nothing left to retarget.
             agent_id = transcript_metadata.get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY)
             if isinstance(agent_id, str) and agent_id:
-                known = state.transcript_agent_ids.setdefault(ns_key, agent_id)
-                _retarget_transcript_scope(state, ns_key, known)
+                state.transcript_agent_ids[ns_key] = agent_id
+                _retarget_transcript_scope(state, ns_key, agent_id)
         state.transcript.record(
             message,
             transcript_metadata,
@@ -1496,11 +1495,6 @@ def _process_stream_chunk(
     # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
         if stream_mode == "custom":
-            from deepagents_code.model_retry import (
-                model_attempt_from_event,
-                model_retry_from_event,
-            )
-
             if isinstance(data, dict) and data.get("type") == "model_attempt":
                 parsed = model_attempt_from_event(data)
                 if parsed is not None:
@@ -1556,12 +1550,6 @@ def _process_stream_chunk(
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
         if data.get("type") == "model_retry":
-            from deepagents_code.model_retry import (
-                legacy_retry_index,
-                model_retry_from_event,
-                retry_status_from_event,
-            )
-
             correlation = model_retry_from_event(data)
             if correlation is not None:
                 _process_retry_lifecycle(
@@ -1592,8 +1580,6 @@ def _process_stream_chunk(
                 if state.spinner:
                     state.spinner.start()
         elif data.get("type") == "model_attempt":
-            from deepagents_code.model_retry import model_attempt_from_event
-
             parsed = model_attempt_from_event(data)
             if parsed is not None:
                 _process_attempt_lifecycle(ns_key, parsed, state, console)
@@ -2310,10 +2296,7 @@ async def _run_agent_loop(
     # Flush `--no-stream` tool status staged by completed attempts before the
     # buffered response text (a failed attempt's staging was already dropped
     # at its retry boundary; anything left here never saw a lifecycle).
-    if state.pending_tool_status_lines and not quiet:
-        lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
-        for line in lines:
-            console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
+    _flush_pending_tool_status(state, console)
 
     if state.full_response:
         if not state.stream:

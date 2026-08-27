@@ -113,10 +113,23 @@ _RETRY_STATUS_FALLBACK = "Retrying model request"
 # `Retry-After` hints of `_MAX_RETRY_AFTER_SECONDS` each would stall a turn for
 # five minutes behind a spinner. One full honoured hint still fits.
 _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS = 60.0
-# Synthetic tool output for a call whose attempt was superseded before the tool
-# ran. Both clients render it and both dispatch it to hooks, so it lives with
-# the event builders rather than being spelled twice.
+# What the product says when an attempt is superseded. Every surface renders
+# some part of this set, so the wording lives with the event builders rather
+# than being spelled once per client.
 INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
+"""Synthetic tool output for a call superseded before the tool ran."""
+RETRY_BOUNDARY_LINE = (
+    "--- connection dropped; the output above is incomplete — retrying ---"
+)
+"""Rule printed between a failed attempt's partial output and its replay."""
+RETRY_MARKER_FALLBACK = (
+    "Connection dropped; the partial response above is incomplete. Retrying."
+)
+"""Retry marker for a payload whose attempt counts are unusable."""
+TERMINAL_ATTEMPT_MARKER = (
+    "The model request failed; the partial response above is incomplete."
+)
+"""Marker for partial output left behind by an exhausted retry budget."""
 _ATTEMPT_PHASES = frozenset({"start", "complete"})
 _CALL_ID_MAX_LENGTH = 64
 _CALL_ID_CHARS = frozenset(
@@ -773,20 +786,20 @@ async def aretry_model_call[ResultT](
     )
 
 
-def retry_status_from_event(event: Mapping[Any, object]) -> str:
-    """Return retry status text for an untrusted `model_retry` payload.
+def retry_counts_from_event(
+    event: Mapping[Any, object],
+) -> tuple[int, int] | None:
+    """Validate the attempt counters of an untrusted `model_retry` payload.
 
-    Both the TUI and the headless client render this status line, so its
-    validation lives with the producer rather than being written twice with
-    different strictness. The TUI's in-chat marker is a separate string with its
-    own fallback, so it validates the same two fields again in
-    `_retry_marker_text`; keep the two ranges identical.
+    Every surface that renders a retry needs the same two numbers under the
+    same range, so the check lives once with the producer rather than being
+    re-derived per surface with drifting strictness.
 
     Args:
         event: Custom-stream payload, not trusted to hold sane numbers.
 
     Returns:
-        The validated status line, or a cause-free fallback for malformed data.
+        The `(attempt, max_retries)` pair, or `None` when either is unusable.
     """
     attempt = event.get("attempt")
     max_retries = event.get("max_retries")
@@ -797,9 +810,61 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str:
         and not isinstance(max_retries, bool)
         and 1 <= attempt <= max_retries
     ):
-        return format_retry_status(attempt, max_retries)
-    logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
-    return _RETRY_STATUS_FALLBACK
+        return (attempt, max_retries)
+    return None
+
+
+def retry_status_from_event(event: Mapping[Any, object]) -> str:
+    """Return retry status text for an untrusted `model_retry` payload.
+
+    Both the TUI and the headless client render this status line, so its
+    validation lives with the producer rather than being written twice with
+    different strictness.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The validated status line, or a cause-free fallback for malformed data.
+    """
+    counts = retry_counts_from_event(event)
+    if counts is None:
+        logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
+        return _RETRY_STATUS_FALLBACK
+    return format_retry_status(*counts)
+
+
+def retry_marker_from_event(event: Mapping[Any, object]) -> str:
+    """Build the in-chat retry marker from validated numeric fields only.
+
+    The event's own `message` field is untrusted render text, so the marker is
+    re-derived from `attempt`/`max_retries` and never parses markup out of it.
+
+    Always returns a marker. By the time this is called the partial reply has
+    already been finalized and detached from the stream, so returning nothing
+    would leave a truncated answer in the chat that reads as a complete one,
+    followed by a second full answer, with nothing saying the first was cut off.
+    Unusable numbers cost the "1/5" suffix, not the marker -- the same way
+    `retry_status_from_event` degrades to a cause-free status line.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The marker line, counted when the numbers allow it.
+    """
+    counts = retry_counts_from_event(event)
+    if counts is None:
+        logger.warning(
+            "Unusable retry counts in model_retry payload; marking the "
+            "superseded reply without them"
+        )
+        return RETRY_MARKER_FALLBACK
+    attempt, max_retries = counts
+    return (
+        "Connection dropped; the partial response above is incomplete. "
+        f"Retrying {attempt}/{max_retries}."
+    )
 
 
 def legacy_retry_index(event: Mapping[Any, object]) -> int:

@@ -40,7 +40,8 @@ server from recovering the model call.
 - Keep tool hooks balanced when a failed attempt streamed a tool call that never
   executed.
 - Preserve the existing retry budget, backoff, `Retry-After`, cancellation, and
-  error-classification behavior.
+  error-classification behavior, except for one new bound: a total-delay cap on
+  interactive model retries (see step 5 of *Retry semantics*).
 - Remain compatible with clients and servers that do not yet understand attempt
   lifecycle events.
 
@@ -290,7 +291,13 @@ On a retryable exception:
 3. Emit `model_retry` with the failed tracker's `has_streamed` value as
    `output_may_have_started`, gated by `stream_output_is_visible`.
 4. Let clients reconcile the failed attempt.
-5. Wait using the existing bounded backoff.
+5. Wait using the existing bounded backoff, subject to a new 60-second cap on
+   the total delay one interactive model call may sleep across its retries
+   (`_MAX_INTERACTIVE_TOTAL_DELAY_SECONDS`). Per-delay caps bound nothing once a
+   call can retry several times: five honoured `Retry-After` hints at the
+   per-delay maximum would stall a turn for five minutes behind a spinner. The
+   cap ends the retry loop early rather than shortening a delay, so a turn that
+   would previously have waited out its full budget can now fail sooner.
 6. Emit the next start event, create a fresh tracker, and invoke the same model
    handler again.
 7. Continue merging `seen` IDs from every attempt into the original LangGraph
@@ -514,8 +521,8 @@ failure cannot prevent model recovery.
   escape terminal control characters and markup from every untrusted field.
 - Consumers validate counters, phases, booleans, and identifier lengths before
   use. Unknown or malformed events degrade to the existing generic retry status.
-- Existing retry limits, maximum `Retry-After`, and backoff caps remain the
-  resource bounds. Attempt staging is bounded by the same model-output limits as
+- Existing retry limits, maximum `Retry-After`, backoff caps, and the
+  interactive total-delay cap above remain the resource bounds. Attempt staging is bounded by the same model-output limits as
   the response itself and is released on retry, completion, cancellation, or
   stream teardown.
 - Logs use structured fields or parameterized messages. Detailed exceptions stay

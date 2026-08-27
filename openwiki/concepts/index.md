@@ -1,7 +1,7 @@
 # Files
 
 - [Backends (Filesystem, State, Store, Sandbox)](backends.md) - How deepagents' pluggable BackendProtocol decides where agent files, memory, and shell execution live — covering the state, store, filesystem, sandbox, composite, langsmith, local_shell, and context_hub implementations and how the resolved backend fixes durability and shell availability.
-- [dcode Configuration Model](config-layering.md) - How Deep Agents Code layers user, project, session, and runtime configuration into one process-wide resolution generation, when that generation advances, and which readers deliberately snapshot files on their own.
+- [dcode Configuration Model](config-layering.md) - dcode resolves typed settings through ranked providers while retaining one shared file-snapshot generation. This page covers precedence, safe reload and retention behavior, and the limited callers that intentionally read independent snapshots.
 - [Context Management (Summarization, Eviction, Offload)](context-management.md) - How deepagents keeps model context bounded by summarizing long message histories, evicting or clipping large tool outputs to disk, and offloading full conversation history to per-session archives.
 - [Middleware Catalog](middleware-catalog.md) - Index of the built-in deepagents SDK middleware modules — what each contributes, its responsibility, and where the deeper concept page lives.
 - [Permissions & Human-in-the-Loop](permissions-hitl.md) - How deepagents enforces filesystem permissions at the tool level and how the SDK and dcode pause tool calls for human approval, including path-scoped interrupt rules, dcode approval modes, and the ask_user flow.

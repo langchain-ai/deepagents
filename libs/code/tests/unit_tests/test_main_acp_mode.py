@@ -217,7 +217,9 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
         ),
         patch("deepagents_code.main.parse_args", return_value=args),
-        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=True)),
+        patch(
+            "deepagents_code.config.credentials", new=SimpleNamespace(has_tavily=True)
+        ),
         patch(
             "deepagents_code.config.is_memory_auto_save_enabled", return_value=False
         ) as mock_memory_auto_save,
@@ -317,7 +319,9 @@ def test_acp_mode_auto_forwards_classifier_and_store() -> None:
     with (
         patch.object(sys, "argv", ["deepagents", "--acp", "--auto-approve"]),
         patch("deepagents_code.main.parse_args", return_value=args),
-        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch(
+            "deepagents_code.config.credentials", new=SimpleNamespace(has_tavily=False)
+        ),
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch("deepagents_code.config.create_model", return_value=model_result),
         patch(
@@ -373,7 +377,9 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
         ),
         patch("deepagents_code.main.parse_args", return_value=args),
-        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch(
+            "deepagents_code.config.credentials", new=SimpleNamespace(has_tavily=False)
+        ),
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch("deepagents_code.config.create_model", return_value=model_result),
         patch(
@@ -427,7 +433,9 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
         ),
         patch("deepagents_code.main.parse_args", return_value=args),
-        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch(
+            "deepagents_code.config.credentials", new=SimpleNamespace(has_tavily=False)
+        ),
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch("deepagents_code.config.create_model", return_value=model_result),
         patch(
@@ -474,7 +482,9 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
         ),
         patch("deepagents_code.main.parse_args", return_value=args),
-        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch(
+            "deepagents_code.config.credentials", new=SimpleNamespace(has_tavily=False)
+        ),
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch("deepagents_code.config.create_model", return_value=model_result),
         patch(
@@ -526,7 +536,9 @@ def test_acp_mode_forwards_recursion_limit() -> None:
             side_effect=AssertionError("check_cli_dependencies should be skipped"),
         ),
         patch("deepagents_code.main.parse_args", return_value=args),
-        patch("deepagents_code.config.settings", new=SimpleNamespace(has_tavily=False)),
+        patch(
+            "deepagents_code.config.credentials", new=SimpleNamespace(has_tavily=False)
+        ),
         patch("deepagents_code.model_config.save_recent_model", return_value=True),
         patch("deepagents_code.config.create_model", return_value=model_result),
         patch(

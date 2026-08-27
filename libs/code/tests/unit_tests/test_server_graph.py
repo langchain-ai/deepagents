@@ -262,7 +262,7 @@ class TestServerGraph:
             configure_langsmith_secret_redaction=configure_redaction,
             create_model=create_model,
             is_memory_auto_save_enabled=MagicMock(return_value=True),
-            settings=SimpleNamespace(
+            credentials=SimpleNamespace(
                 has_tavily=True,
                 reload_from_environment=reload_from_environment,
             ),
@@ -413,7 +413,7 @@ class TestServerGraph:
         resolve_mcp_tools = AsyncMock()
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
+            credentials=SimpleNamespace(has_tavily=False),
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
@@ -474,7 +474,7 @@ class TestServerGraph:
                 ),
             ),
             is_memory_auto_save_enabled=MagicMock(return_value=True),
-            settings=settings_obj,
+            credentials=settings_obj,
         )
         agent_module = _module_with_attrs(
             "deepagents_code.agent",
@@ -540,7 +540,7 @@ class TestServerGraph:
         resolve_mcp_tools = AsyncMock(return_value=(discovered_mcp_tools, None, []))
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
+            credentials=SimpleNamespace(has_tavily=False),
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
@@ -605,7 +605,7 @@ class TestServerGraph:
 
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
+            credentials=SimpleNamespace(has_tavily=False),
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",

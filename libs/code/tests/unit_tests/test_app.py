@@ -2308,7 +2308,9 @@ class TestStartupSequence:
         app._push_screen_wait = AsyncMock(side_effect=capture_prompt)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False)
+            ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
@@ -2340,7 +2342,9 @@ class TestStartupSequence:
         app._push_screen_wait = AsyncMock(return_value=AuthResult.CANCELLED)  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False)
+            ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials"
             ) as apply_credentials,
@@ -2356,7 +2360,9 @@ class TestStartupSequence:
         app._push_screen_wait = push_screen_wait  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=True)),
+            patch(
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=True)
+            ),
             patch("deepagents_code.auth_store.set_stored_key") as set_stored_key,
         ):
             await app._prompt_launch_tavily()
@@ -2381,7 +2387,9 @@ class TestStartupSequence:
             monkeypatch.setenv("TAVILY_API_KEY", "tvly-real-key")
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False)
+            ),
             patch(
                 "deepagents_code.model_config.apply_stored_service_credentials",
                 side_effect=export_key,
@@ -2408,7 +2416,9 @@ class TestStartupSequence:
         app.notify = notify_mock  # ty: ignore
 
         with (
-            patch("deepagents_code.config.settings", SimpleNamespace(has_tavily=False)),
+            patch(
+                "deepagents_code.config.credentials", SimpleNamespace(has_tavily=False)
+            ),
             # No side_effect: the export is a no-op, so `TAVILY_API_KEY` stays
             # unset (the autouse `_clear_tavily_env` fixture cleared it).
             patch(
@@ -26531,7 +26541,7 @@ class TestSwitchAgentGuards:
         (tmp_path / "coder").mkdir()
         async with app.run_test():
             with (
-                patch("deepagents_code.config.settings") as mock_settings,
+                patch("deepagents_code.config.credentials") as mock_settings,
                 patch(
                     "deepagents_code.app.user_deepagents_dir",
                     return_value=tmp_path,
@@ -26554,7 +26564,7 @@ class TestSwitchAgentGuards:
         (tmp_path / "researcher").mkdir()
         async with app.run_test():
             with (
-                patch("deepagents_code.config.settings") as mock_settings,
+                patch("deepagents_code.config.credentials") as mock_settings,
                 patch(
                     "deepagents_code.app.user_deepagents_dir",
                     return_value=tmp_path,

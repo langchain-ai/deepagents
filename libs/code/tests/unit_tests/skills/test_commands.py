@@ -980,7 +980,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1005,7 +1005,7 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
             patch("deepagents_code.config.console") as mock_console,
         ):
@@ -1034,7 +1034,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1056,7 +1056,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1078,7 +1078,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1100,7 +1100,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1122,7 +1122,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1156,7 +1156,7 @@ class TestDeleteSkill:
             output.clear()
 
             with (
-                patch("deepagents_code.config.Settings") as mock_settings_cls,
+                patch("deepagents_code.config.Credentials") as mock_settings_cls,
                 _patch_skill_paths(user=user_skills_dir, project=None),
                 patch("deepagents_code.config.console") as mock_console,
             ):
@@ -1185,7 +1185,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_dir, project=project_skills_dir),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1206,7 +1206,7 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_dir, project=None),
             patch("deepagents_code.config.console") as mock_console,
         ):
@@ -1240,7 +1240,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1266,7 +1266,7 @@ class TestDeleteSkill:
         mock_settings.get_project_agent_skills_dir.return_value = None
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=agent1_skills_dir, project=None),
         ):
             mock_settings_cls.from_environment.return_value = mock_settings
@@ -1293,7 +1293,7 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(user=user_skills_dir, project=None),
             patch("deepagents_code.config.console") as mock_console,
             patch("shutil.rmtree", side_effect=OSError("Permission denied")),
@@ -1327,7 +1327,7 @@ class TestDeleteSkill:
             output.append(" ".join(str(a) for a in args))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             _patch_skill_paths(
                 user=None,
                 project=None,
@@ -1414,7 +1414,7 @@ class TestDeleteArgparsing:
             output.append(" ".join(str(a) for a in args_p))
 
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
             patch("deepagents_code.config.console") as mock_console,
         ):
             mock_settings_cls.from_environment.return_value = mock_settings

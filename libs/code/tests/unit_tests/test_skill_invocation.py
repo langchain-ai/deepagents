@@ -441,7 +441,7 @@ class TestHandleSkillCommand:
         app = _make_app()
         with (
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:nonexistent")
 
@@ -455,7 +455,7 @@ class TestHandleSkillCommand:
         with (
             patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
             patch("deepagents_code.skills.load.load_skill_content", return_value=None),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -475,7 +475,7 @@ class TestHandleSkillCommand:
                     "all allowed skill directories."
                 ),
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -489,7 +489,7 @@ class TestHandleSkillCommand:
         with (
             patch("deepagents_code.skills.load.list_skills", return_value=[skill]),
             patch("deepagents_code.skills.load.load_skill_content", return_value=""),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -508,7 +508,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -532,7 +532,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill find quantum")
 
@@ -553,7 +553,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Instructions\nDo stuff",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._invoke_skill("test-skill", "  keep leading whitespace")
 
@@ -572,7 +572,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.list_skills",
                 side_effect=PermissionError("access denied"),
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -587,7 +587,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.list_skills",
                 side_effect=TypeError("bad argument"),
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:test-skill")
 
@@ -640,7 +640,7 @@ class TestHandleSkillCommand:
                 "deepagents_code.skills.load.load_skill_content",
                 return_value="# Fresh\nContent",
             ),
-            patch("deepagents_code.config.settings"),
+            patch("deepagents_code.config.credentials"),
         ):
             await app._handle_skill_command("/skill:new-skill")
 
@@ -916,7 +916,7 @@ class TestDiscoverSkillsAndRoots:
 
         with (
             patch(
-                "deepagents_code.config.settings",
+                "deepagents_code.config.credentials",
                 SimpleNamespace(project_root=tmp_path),
             ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),

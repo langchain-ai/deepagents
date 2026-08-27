@@ -56,9 +56,9 @@ logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Lazy bootstrap: dotenv loading, LANGSMITH_PROJECT override, and start-path
-# detection are deferred until first access of `settings` (via module
+# detection are deferred until first access of `credentials` (via module
 # `__getattr__`).  This avoids disk I/O and path traversal during import for
-# callers that never touch `settings` (e.g. `deepagents --help`).
+# callers that never touch credentials (e.g. `deepagents --help`).
 # ---------------------------------------------------------------------------
 
 
@@ -1309,7 +1309,7 @@ def _ensure_bootstrap() -> None:
     """Run one-time bootstrap: dotenv loading and `LANGSMITH_PROJECT` override.
 
     Idempotent and thread-safe — subsequent calls are no-ops. Called
-    automatically by `_get_settings()` when `settings` is first accessed.
+    automatically by `_get_credentials()` when `credentials` is first accessed.
 
     The flag is set in `finally` so that partial failures (e.g. a
     malformed `.env`) still mark bootstrap as done — preventing infinite retry
@@ -3071,14 +3071,12 @@ class RuntimeState:
 
 
 @dataclass
-class Settings:
-    """Global settings and environment detection for deepagents-code.
+class Credentials:
+    """Environment-backed credentials and reloadable project context.
 
-    This class is initialized once at startup and provides access to:
-    - Available models and API keys
-    - Current project information
-    - Tool availability (e.g., Tavily)
-    - File system paths
+    This mutable snapshot owns the environment values that can change after
+    login, `/reload`, or a cwd switch. Resolver-backed configuration and model
+    runtime metadata live in their dedicated holders.
     """
 
     openai_api_key: str | None
@@ -3112,14 +3110,14 @@ class Settings:
     """Current project root directory, or `None` if not in a git project."""
 
     @classmethod
-    def from_environment(cls, *, start_path: Path | None = None) -> Settings:
-        """Create settings by detecting the current environment.
+    def from_environment(cls, *, start_path: Path | None = None) -> Credentials:
+        """Create credentials by detecting the current environment.
 
         Args:
             start_path: Directory to start project detection from (defaults to cwd)
 
         Returns:
-            Settings instance with detected configuration
+            Credentials instance with detected configuration.
 
         """
         # Detect API keys (normalize empty strings to None).
@@ -3541,6 +3539,14 @@ class Settings:
         return self.tavily_api_key is not None
 
 
+class Settings(Credentials):
+    """Compatibility surface retained until the final dissolution layer."""
+
+
+credentials: Credentials
+"""Lazily initialized process-wide credential and project snapshot."""
+
+
 DANGEROUS_SHELL_PATTERNS = (
     "$(",  # Command substitution
     "`",  # Backtick command substitution
@@ -3708,7 +3714,7 @@ def get_langsmith_project_name() -> str | None:
 
     Checks for the required API key and tracing environment variables.
     When both are present, resolves the project name with priority:
-    `settings.deepagents_langchain_project` (from
+    `credentials.deepagents_langchain_project` (from
     `DEEPAGENTS_CODE_LANGSMITH_PROJECT`), then `LANGSMITH_PROJECT` from the
     environment (note: this may already have been overridden at bootstrap time
     to match `DEEPAGENTS_CODE_LANGSMITH_PROJECT`), then `'deepagents-code'`.
@@ -3726,7 +3732,7 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     return (
-        _get_settings().deepagents_langchain_project
+        _get_credentials().deepagents_langchain_project
         or os.environ.get("LANGSMITH_PROJECT")
         or LANGSMITH_PROJECT_DEFAULT
     )
@@ -4867,14 +4873,14 @@ def detect_provider(model_name: str) -> str | None:
         return "perplexity"
 
     if model_lower.startswith("claude"):
-        s = _get_settings()
-        if not s.has_anthropic and s.has_vertex_ai:
+        credentials = _get_credentials()
+        if not credentials.has_anthropic and credentials.has_vertex_ai:
             return "google_anthropic_vertex"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
-        s = _get_settings()
-        if s.has_vertex_ai and not s.has_google:
+        credentials = _get_credentials()
+        if credentials.has_vertex_ai and not credentials.has_google:
             return "google_vertexai"
         return "google_genai"
 
@@ -5183,11 +5189,11 @@ def _apply_google_anthropic_vertex_kwargs(
     """
     if provider != "google_anthropic_vertex":
         return
-    settings = _get_settings()
-    if settings.google_cloud_project:
-        kwargs.setdefault("project", settings.google_cloud_project)
-    if settings.google_cloud_location:
-        kwargs.setdefault("location", settings.google_cloud_location)
+    credentials = _get_credentials()
+    if credentials.google_cloud_project:
+        kwargs.setdefault("project", credentials.google_cloud_project)
+    if credentials.google_cloud_location:
+        kwargs.setdefault("location", credentials.google_cloud_location)
     if not kwargs.get("location"):
         from deepagents_code.model_config import ModelConfigError
 
@@ -5959,21 +5965,21 @@ def _get_console() -> Console:
         return inst
 
 
-def _get_settings() -> Settings:
-    """Return the lazily-initialized global `Settings` instance.
+def _get_credentials() -> Credentials:
+    """Return the lazily initialized process-wide `Credentials` instance.
 
-    Ensures bootstrap has run before constructing settings. The result is cached
-    in `globals()["settings"]` so subsequent access — including
-    `from config import settings` in other modules — resolves instantly.
+    Bootstrap runs before credentials are read. During the stacked migration,
+    the instance uses the empty `Settings` compatibility subclass and is also
+    cached under the legacy `settings` name.
 
     Returns:
-        The global `Settings` singleton.
+        The global credentials singleton.
     """
-    cached = globals().get("settings")
+    cached = globals().get("credentials")
     if cached is not None:
         return cached
     with _singleton_lock:
-        cached = globals().get("settings")
+        cached = globals().get("credentials")
         if cached is not None:
             return cached
         _ensure_bootstrap()
@@ -5981,12 +5987,23 @@ def _get_settings() -> Settings:
             inst = Settings.from_environment(start_path=_bootstrap_state.start_path)
         except Exception:
             logger.exception(
-                "Failed to initialize settings from environment (start_path=%s)",
+                "Failed to initialize credentials from environment (start_path=%s)",
                 _bootstrap_state.start_path,
             )
             raise
+        globals()["credentials"] = inst
         globals()["settings"] = inst
         return inst
+
+
+def _get_settings() -> Settings:
+    """Return the legacy alias for the process-wide credentials singleton."""
+    cached = globals().get("settings")
+    if cached is not None:
+        return cast("Settings", cached)
+    inst = _get_credentials()
+    globals()["settings"] = inst
+    return cast("Settings", inst)
 
 
 def _get_runtime_state() -> RuntimeState:
@@ -6003,7 +6020,7 @@ def _get_runtime_state() -> RuntimeState:
         return state
 
 
-def __getattr__(name: str) -> Settings | RuntimeState | Console:
+def __getattr__(name: str) -> Credentials | RuntimeState | Console:
     """Lazy module attributes for process-wide state and the console.
 
     Defers heavy initialization until first access. Subsequent accesses hit
@@ -6017,6 +6034,8 @@ def __getattr__(name: str) -> Settings | RuntimeState | Console:
     """
     if name == "settings":
         return _get_settings()
+    if name == "credentials":
+        return _get_credentials()
     if name == "runtime_state":
         return _get_runtime_state()
     if name == "console":

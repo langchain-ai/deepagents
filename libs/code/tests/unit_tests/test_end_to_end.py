@@ -89,7 +89,7 @@ def mock_settings(
 
     # Patch settings
     with (
-        patch("deepagents_code.agent.settings") as mock_settings_obj,
+        patch("deepagents_code.agent.credentials") as mock_settings_obj,
         patch("deepagents_code.agent.runtime_state") as mock_runtime_state,
         patch(
             "deepagents_code.agent._offload_fallback_root",

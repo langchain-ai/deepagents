@@ -37,6 +37,7 @@ from deepagents_code.config import (
     MODEL_RETRIES_ATTR,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
+    Credentials,
     LangSmithApiError,
     LangSmithProjectNotFoundError,
     LangsmithShadowResult,
@@ -2517,7 +2518,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = "settings-project"
             assert get_langsmith_project_name() == "settings-project"
@@ -2531,7 +2532,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "env-project"
@@ -2546,7 +2547,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
@@ -2562,7 +2563,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
@@ -2614,7 +2615,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", bare_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             manifest_value = resolve()
@@ -2629,7 +2630,7 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", default_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config.credentials") as mock_settings,
         ):
             mock_settings.deepagents_langchain_project = None
             manifest_value = resolve()
@@ -6576,7 +6577,15 @@ class TestDetectProvider:
 
 
 class TestLazyModuleAttributes:
-    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
+    """Tests for lazy process-wide state and console resolution."""
+
+    def test_getattr_returns_credentials(self) -> None:
+        """The credentials accessor shares the compatibility singleton."""
+        from deepagents_code.config import _get_credentials, _get_settings
+
+        result = _get_credentials()
+        assert isinstance(result, Credentials)
+        assert result is _get_settings()
 
     def test_getattr_returns_settings(self) -> None:
         """Module __getattr__ resolves 'settings' to a Settings instance."""

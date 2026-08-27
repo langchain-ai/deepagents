@@ -32,7 +32,7 @@ dependencies = [
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
-    "langgraph-sdk>=0.4.3,<1.0.0",
+    "langgraph-sdk>=0.4.4,<1.0.0",
     "langgraph-cli[inmem]>=0.4.31,<1.0.0",
     "langgraph-runtime-inmem>=0.33.0,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
@@ -112,7 +112,7 @@ baseten = ["langchain-baseten>=0.2.4,<1.0.0"]
 bedrock = ["langchain-aws>=1.7.4,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.6.0,<2.0.0"]
+fireworks = ["langchain-fireworks>=1.6.1,<2.0.0"]
 google-genai = ["langchain-google-genai>=4.3.7,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]

@@ -601,19 +601,23 @@ class TestReliableRubricMiddleware:
             lambda: {"metadata": {"tenant_id": "tenant-123"}},
         )
         context = {"approval_mode": "yolo"}
+        state = cast("ReliableRubricState", _state())
+        state["_rubric_model_spec"] = "openai:gpt-5.5"
 
-        result = middleware._invoke_grader(_state(), 0, context=context)
+        result = middleware._invoke_grader(state, 0, context=context)
 
         assert result.result == "satisfied"
         assert grader.invoke.call_args.kwargs["config"] == {
             "metadata": {
                 "tenant_id": "tenant-123",
-                "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
-                "rubric_grader_effective_strategy": "ProviderStrategy",
+                "rubric_grader_configured_model": "openai:gpt-5.5",
+                "rubric_grader_effective_strategy": "unknown",
             }
         }
         assert grader.invoke.call_args.kwargs["context"].approval_mode == "yolo"
-        assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert recorded[0]["rubric_grader_configured_model"] == "openai:gpt-5.5"
+        assert recorded[0]["rubric_grader_effective_strategy"] == "unknown"
+        assert recorded[-1]["rubric_grader_configured_model"] == "openai:gpt-5.5"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
     async def test_async_grade_preserves_trace_metadata_and_context(
@@ -657,6 +661,40 @@ class TestReliableRubricMiddleware:
         assert grader.ainvoke.await_args.kwargs["context"].approval_mode == "yolo"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
+
+    async def test_grader_error_reports_runtime_selected_model(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        middleware = ReliableRubricMiddleware(model="startup:model")
+        grader = AsyncMock()
+        grader.ainvoke.side_effect = TimeoutError("provider timed out")
+        middleware._grader = grader
+        recorded: list[dict[str, str]] = []
+        monkeypatch.setattr(
+            middleware,
+            "_record_grader_trace_metadata",
+            recorded.append,
+        )
+        state = cast("ReliableRubricState", _state())
+        state["_rubric_model_spec"] = "openai:gpt-5.5"
+        runtime = cast(
+            "Runtime[Any]",
+            SimpleNamespace(stream_writer=lambda _event: None, context={}),
+        )
+
+        update = await middleware.aafter_agent(state, runtime)
+
+        assert update is not None
+        evaluation = update["_rubric_evaluations"][-1]
+        assert evaluation["result"] == "grader_error"
+        assert "configured_model='openai:gpt-5.5'" in evaluation["explanation"]
+        assert "startup:model" not in evaluation["explanation"]
+        assert recorded
+        assert all(
+            item["rubric_grader_configured_model"] == "openai:gpt-5.5"
+            for item in recorded
+        )
 
     def test_inherits_sdk_coverage_retry_sync(self) -> None:
         # The SDK's coverage retry still fires when the grader under-reports its

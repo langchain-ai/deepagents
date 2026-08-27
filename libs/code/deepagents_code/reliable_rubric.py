@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import replace
-from typing import TYPE_CHECKING, Annotated, Any, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
 
 from deepagents.middleware.rubric import (
     RUBRIC_GRADER_MESSAGE_SOURCE,
@@ -27,12 +29,13 @@ from deepagents_code.resume_state import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Iterator, Sequence
 
     from deepagents.middleware.rubric import RubricEvaluation
     from langchain_core.language_models import BaseChatModel
     from langchain_core.messages import AnyMessage
     from langchain_core.tools import BaseTool
+    from langgraph.runtime import Runtime
 
 
 logger = logging.getLogger(__name__)
@@ -174,6 +177,44 @@ class ReliableRubricMiddleware(RubricMiddleware):
         self._grader_middleware = list(grader_middleware or ())
         self._grader_context_schema = grader_context_schema
         self._inherit_main_model = inherit_main_model
+        self._runtime_grader_model: ContextVar[str | None] = ContextVar(
+            "runtime_grader_model",
+            default=None,
+        )
+
+    @contextmanager
+    def _runtime_grader_trace(self, model: str | None) -> Iterator[None]:
+        """Scope trace diagnostics to one request's selected grader model."""
+        token = self._runtime_grader_model.set(model)
+        try:
+            yield
+        finally:
+            self._runtime_grader_model.reset(token)
+
+    def _grader_trace_metadata(
+        self,
+        *,
+        effective_strategy: Literal["ProviderStrategy", "ToolStrategy"] | None = None,
+    ) -> dict[str, str]:
+        """Build diagnostics for the request-local grader selection.
+
+        Returns:
+            The configured model label and effective structured-output strategy.
+        """
+        runtime_model = self._runtime_grader_model.get()
+        if runtime_model is None:
+            return super()._grader_trace_metadata(
+                effective_strategy=effective_strategy,
+            )
+        metadata = super()._grader_trace_metadata(
+            effective_strategy=effective_strategy,
+        )
+        metadata["rubric_grader_configured_model"] = runtime_model
+        if effective_strategy is None:
+            # A runtime string is resolved inside the nested graph, so the
+            # construction-time model cannot predict its output strategy.
+            metadata["rubric_grader_effective_strategy"] = "unknown"
+        return metadata
 
     @staticmethod
     def _context(context: object | None) -> CLIContextSchema:
@@ -285,12 +326,14 @@ class ReliableRubricMiddleware(RubricMiddleware):
             Parsed grader response.
         """
         reliable_state = cast("ReliableRubricState", state)
-        return super()._invoke_grader(
-            state,
-            iteration,
-            correction,
-            context=self._grader_context(reliable_state, context),
-        )
+        grader_context = self._grader_context(reliable_state, context)
+        with self._runtime_grader_trace(grader_context.model):
+            return super()._invoke_grader(
+                state,
+                iteration,
+                correction,
+                context=grader_context,
+            )
 
     async def _ainvoke_grader(
         self,
@@ -306,12 +349,36 @@ class ReliableRubricMiddleware(RubricMiddleware):
             Parsed grader response.
         """
         reliable_state = cast("ReliableRubricState", state)
-        return await super()._ainvoke_grader(
-            state,
-            iteration,
-            correction,
-            context=self._grader_context(reliable_state, context),
+        grader_context = self._grader_context(reliable_state, context)
+        with self._runtime_grader_trace(grader_context.model):
+            return await super()._ainvoke_grader(
+                state,
+                iteration,
+                correction,
+                context=grader_context,
+            )
+
+    def _handle_grader_exception(
+        self,
+        runtime: Runtime[Any],
+        state: RubricState,
+        grading_run_id: str,
+        iteration: int,
+        exc: Exception,
+    ) -> dict[str, Any]:
+        reliable_state = cast("ReliableRubricState", state)
+        context = self._grader_context(
+            reliable_state,
+            getattr(runtime, "context", None),
         )
+        with self._runtime_grader_trace(context.model):
+            return super()._handle_grader_exception(
+                runtime,
+                state,
+                grading_run_id,
+                iteration,
+                exc,
+            )
 
     def _grader_input(
         self,

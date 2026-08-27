@@ -59,6 +59,7 @@ def run_uninstall_request(*, name: str) -> int:
         is_valid_extra_name,
         perform_uninstall_extra,
         uninstall_extra_command,
+        uninstall_extra_method_error,
     )
 
     if not is_valid_extra_name(name):
@@ -73,6 +74,12 @@ def run_uninstall_request(*, name: str) -> int:
             "Removing extras is not supported on editable installs.\n"
             + escape(editable_extra_removal_hint(name)),
             highlight=False,
+        )
+        return 1
+    method_error = uninstall_extra_method_error(name)
+    if method_error is not None:
+        console.print(
+            f"[bold red]Error:[/bold red] {escape(method_error)}", highlight=False
         )
         return 1
 

@@ -320,6 +320,13 @@ class TestPerformUninstallExtra:
 class TestUninstallCli:
     """CLI command and compatibility flag share the same request handler."""
 
+    @pytest.fixture(autouse=True)
+    def _uv_install_method(self) -> Iterator[None]:
+        with patch(
+            "deepagents_code.update_check.detect_install_method", return_value="uv"
+        ):
+            yield
+
     def test_subcommand_dispatches_name(self) -> None:
         args = argparse.Namespace(uninstall_target="ollama")
         with patch(
@@ -378,6 +385,38 @@ class TestUninstallCli:
             str(arg) for call in console.print.call_args_list for arg in call.args
         )
         assert "cannot be removed" in text
+
+    @pytest.mark.parametrize(
+        ("method", "message"),
+        [
+            ("brew", "Homebrew install detected"),
+            ("other", "Unsupported install method detected"),
+        ],
+    )
+    def test_non_uv_install_is_refused_before_receipt_read(
+        self, method: str, message: str
+    ) -> None:
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value=method,
+            ),
+            patch("deepagents_code.update_check.uninstall_extra_command") as command,
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        command.assert_not_called()
+        perform.assert_not_awaited()
+        text = " ".join(
+            str(arg) for call in console.print.call_args_list for arg in call.args
+        )
+        assert message in text
 
     def test_success_reports_restart_guidance(self) -> None:
         console = MagicMock()
@@ -507,6 +546,9 @@ async def test_uninstall_slash_absent_extra_is_noop() -> None:
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch(
+                "deepagents_code.update_check.detect_install_method", return_value="uv"
+            ),
+            patch(
                 "deepagents_code.update_check.uninstall_extra_command",
                 side_effect=ExtraNotInstalledError("Extra 'ollama' is not installed."),
             ),
@@ -524,11 +566,36 @@ async def test_uninstall_slash_absent_extra_is_noop() -> None:
         assert any("not installed" in str(message._content) for message in messages)
 
 
+async def test_uninstall_slash_non_uv_install_skips_receipt_read() -> None:
+    app = DeepAgentsApp()
+    app._mount_message = AsyncMock()
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch(
+            "deepagents_code.update_check.detect_install_method", return_value="brew"
+        ),
+        patch("deepagents_code.update_check.uninstall_extra_command") as command,
+        patch(
+            "deepagents_code.update_check.perform_uninstall_extra",
+            new_callable=AsyncMock,
+        ) as perform,
+    ):
+        await app._uninstall_extra_unlocked("ollama")
+
+    command.assert_not_called()
+    perform.assert_not_awaited()
+    text = " ".join(
+        str(call.args[0]._content) for call in app._mount_message.await_args_list
+    )
+    assert "Homebrew install detected" in text
+
+
 async def test_uninstall_slash_serializes_environment_mutation() -> None:
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()
     with (
         patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
         patch(
             "deepagents_code.update_check.uninstall_extra_command",
             return_value="uv tool install safe-command",

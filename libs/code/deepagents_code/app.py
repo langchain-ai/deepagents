@@ -7576,6 +7576,7 @@ class DeepAgentsApp(App):
             is_valid_extra_name,
             perform_uninstall_extra,
             uninstall_extra_command,
+            uninstall_extra_method_error,
         )
 
         if not is_valid_extra_name(extra):
@@ -7588,6 +7589,10 @@ class DeepAgentsApp(App):
                     + editable_extra_removal_hint(extra)
                 )
             )
+            return
+        method_error = await asyncio.to_thread(uninstall_extra_method_error, extra)
+        if method_error is not None:
+            await self._mount_message(ErrorMessage(method_error))
             return
         try:
             manual_cmd = await asyncio.to_thread(uninstall_extra_command, extra)

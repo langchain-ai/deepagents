@@ -3688,6 +3688,28 @@ def editable_extra_removal_hint(extra: str) -> str:
     )
 
 
+def uninstall_extra_method_error(
+    extra: str,
+    *,
+    method: InstallMethod | None = None,
+) -> str | None:
+    """Return why the install method cannot remove `extra`, if applicable."""
+    method = method or detect_install_method()
+    if method == "unknown":
+        return (
+            "Editable install detected — cannot remove extras automatically.\n"
+            + editable_extra_removal_hint(extra)
+        )
+    if method == "brew":
+        return "Homebrew install detected — extras cannot be removed in place."
+    if method == "other":
+        return (
+            "Unsupported install method detected — cannot remove extras without "
+            "knowing which environment provides `dcode`."
+        )
+    return None
+
+
 def editable_extra_hint(extra: str) -> str:
     """Return the canonical action hint for editable installs missing an extra.
 
@@ -3806,19 +3828,9 @@ async def perform_uninstall_extra(
         return False, (
             f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}"
         )
-    method = detect_install_method()
-    if method == "unknown":
-        return False, (
-            "Editable install detected — cannot remove extras automatically.\n"
-            + editable_extra_removal_hint(extra)
-        )
-    if method == "brew":
-        return False, "Homebrew install detected — extras cannot be removed in place."
-    if method == "other":
-        return False, (
-            "Unsupported install method detected — cannot remove extras without "
-            "knowing which environment provides `dcode`."
-        )
+    method_error = uninstall_extra_method_error(extra)
+    if method_error is not None:
+        return False, method_error
     if not shutil.which("uv"):
         return False, "`uv` not found on PATH; extras cannot be removed."
 

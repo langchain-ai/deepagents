@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import sys
 from contextlib import contextmanager, nullcontext
+from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,6 +15,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
 import pytest
+from rich.console import Console
 
 from deepagents_code._version import __version__
 from deepagents_code.app import DeepAgentsApp
@@ -826,6 +828,45 @@ class TestUninstallCli:
         text = self._console_text(console)
         assert "no space left on device" in text
         assert "Run manually" not in text
+
+    @pytest.mark.parametrize(
+        ("outcome", "expected_code"),
+        [
+            (ExtraRemovalOutcome(False, "resolver failed"), 1),
+            (
+                ExtraRemovalOutcome(
+                    False,
+                    "Uninstall interrupted.",
+                    manual_recovery_command="uv tool install safe-command",
+                    interrupted=True,
+                ),
+                130,
+            ),
+        ],
+    )
+    def test_markup_like_log_path_is_safe_in_error_output(
+        self, outcome: ExtraRemovalOutcome, expected_code: int
+    ) -> None:
+        """Failure and interruption paths render bracketed paths literally."""
+        output = StringIO()
+        console = Console(file=output, color_system=None)
+        log_path = Path("/tmp/[/red]/uninstall.log")
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=log_path,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+                return_value=outcome,
+            ),
+        ):
+            assert run_uninstall_request(name="ollama") == expected_code
+
+        assert str(log_path) in output.getvalue()
 
     @pytest.mark.parametrize(
         ("argv", "command", "target"),

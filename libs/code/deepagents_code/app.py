@@ -7629,6 +7629,7 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
+                CompositeExtraConflictError,
                 ExtraNotInstalledError,
                 ProtectedExtraError,
                 ToolRequirementIntrospectionError,
@@ -7667,6 +7668,9 @@ class DeepAgentsApp(App):
             return
         try:
             manual_cmd = await asyncio.to_thread(uninstall_extra_command, extra)
+        except CompositeExtraConflictError as exc:
+            await self._mount_message(ErrorMessage(str(exc)))
+            return
         except ProtectedExtraError as exc:
             await self._mount_message(ErrorMessage(str(exc)))
             return

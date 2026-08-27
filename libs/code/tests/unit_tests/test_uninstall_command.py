@@ -23,6 +23,7 @@ from deepagents_code.client.commands.extras import (
 )
 from deepagents_code.tui.widgets.messages import AppMessage
 from deepagents_code.update_check import (
+    CompositeExtraConflictError,
     ExtraNotInstalledError,
     ExtraRemovalOutcome,
     ProtectedExtraError,
@@ -166,7 +167,22 @@ class TestUninstallExtraCommand:
         _write_receipt(tmp_path, ("all-providers",))
         monkeypatch.setattr(sys, "prefix", str(tmp_path))
 
-        with pytest.raises(ExtraNotInstalledError, match="provided by all-providers"):
+        with pytest.raises(
+            CompositeExtraConflictError, match="provided by all-providers"
+        ):
+            uninstall_extra_command("ollama", version=__version__)
+
+    def test_direct_selection_cannot_be_removed_while_composite_provides_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A direct selector cannot remove packages its composite still supplies."""
+        _write_receipt(tmp_path, ("all-providers", "ollama"))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        with pytest.raises(
+            CompositeExtraConflictError,
+            match=r"also provided by all-providers.*cannot be removed independently",
+        ):
             uninstall_extra_command("ollama", version=__version__)
 
     def test_absent_extra_lists_what_is_selected(
@@ -478,6 +494,26 @@ class TestUninstallCli:
         assert "not installed" in " ".join(
             str(arg) for call in console.print.call_args_list for arg in call.args
         )
+
+    def test_composite_conflict_is_a_refusal(self) -> None:
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                side_effect=CompositeExtraConflictError(
+                    "Extra 'ollama' is also provided by all-providers."
+                ),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+            ) as perform,
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+        perform.assert_not_awaited()
+        assert "all-providers" in self._console_text(console)
 
     @pytest.mark.parametrize("extra", ["openai", "anthropic", "google-genai"])
     def test_protected_extra_is_failure(self, extra: str) -> None:

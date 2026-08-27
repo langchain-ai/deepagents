@@ -64,6 +64,7 @@ def run_uninstall_request(*, name: str) -> int:
     from deepagents_code._invocation import invoked_name
     from deepagents_code.config import _is_editable_install, console
     from deepagents_code.update_check import (
+        CompositeExtraConflictError,
         ExtraNotInstalledError,
         ProtectedExtraError,
         ToolRequirementIntrospectionError,
@@ -99,6 +100,11 @@ def run_uninstall_request(*, name: str) -> int:
 
     try:
         manual_cmd = uninstall_extra_command(name)
+    except CompositeExtraConflictError as exc:
+        console.print(
+            f"[bold red]Error:[/bold red] {escape(str(exc))}", highlight=False
+        )
+        return 1
     except ProtectedExtraError as exc:
         console.print(
             f"[bold red]Error:[/bold red] {escape(str(exc))}", highlight=False

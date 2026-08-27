@@ -3642,10 +3642,10 @@ def _install_extra_uv_tool_command(
 class ExtraNotInstalledError(RuntimeError):
     """Raised when an extra cannot be removed from this install.
 
-    Covers both "not selected on the tool requirement" and the
-    `ProtectedExtraError` subclass below. Callers distinguish them because only
-    the former is an idempotent no-op: re-running a removal for an extra that is
-    already gone is a success, while refusing a base dependency is not.
+    Covers both "not selected on the tool requirement" and refusal subclasses.
+    Callers distinguish them because only the base class is an idempotent no-op:
+    re-running a removal for an extra that is already gone is a success, while
+    refusing a protected or composite-supplied extra is not.
     """
 
 
@@ -3656,6 +3656,10 @@ class ProtectedExtraError(ExtraNotInstalledError):
     base class, while the CLI and TUI can report a refusal separately from a
     no-op.
     """
+
+
+class CompositeExtraConflictError(ExtraNotInstalledError):
+    """Raised when a selected composite still supplies the requested extra."""
 
 
 _BASE_PROVIDER_EXTRAS = frozenset({"anthropic", "google-genai", "openai"})
@@ -3677,6 +3681,7 @@ def uninstall_extra_command(
     Raises:
         ValueError: If `extra` is not a valid PEP 508 extra name.
         ProtectedExtraError: If `extra` is a required base provider.
+        CompositeExtraConflictError: If a selected composite supplies `extra`.
         ExtraNotInstalledError: If `extra` is not selected in this install.
 
     Propagates `ToolRequirementIntrospectionError` if the uv tool receipt cannot
@@ -3695,10 +3700,13 @@ def uninstall_extra_command(
         raise ProtectedExtraError(msg)
 
     extras = _uv_tool_selected_extras(distribution_name=distribution_name)
+    conflict = _composite_extra_conflict_message(extra, selected=extras)
+    if conflict is not None:
+        raise CompositeExtraConflictError(conflict)
     if selected_extra not in extras:
-        raise ExtraNotInstalledError(
-            _extra_not_selected_message(extra, selected=extras)
-        )
+        listed = ", ".join(sorted(extras)) or "(none)"
+        msg = f"Extra {extra!r} is not installed. Selected extras: {listed}"
+        raise ExtraNotInstalledError(msg)
     return _uv_tool_install_command(
         version=version,
         include_prereleases=_resolve_include_prereleases(
@@ -3710,12 +3718,12 @@ def uninstall_extra_command(
     )
 
 
-def _extra_not_selected_message(
+def _composite_extra_conflict_message(
     extra: str,
     *,
     selected: Collection[str],
-) -> str:
-    """Return the message explaining why `extra` cannot be removed.
+) -> str | None:
+    """Return why a selected composite prevents removing `extra`, if any.
 
     A bare "not installed" is misleading when a selected composite extra
     provides the target: the packages *are* installed, just not through a
@@ -3727,7 +3735,8 @@ def _extra_not_selected_message(
         selected: Canonicalized extras selected on the uv tool requirement.
 
     Returns:
-        The failure message, with the selected extras listed for context.
+        The conflict message, or `None` when no selected composite provides the
+        target.
     """
     from deepagents_code.extras_info import composite_extras_providing
 
@@ -3735,13 +3744,18 @@ def _extra_not_selected_message(
         composite_extras_providing(canonicalize_name(extra)) & set(selected)
     )
     if providers:
+        if canonicalize_name(extra) in selected:
+            return (
+                f"Extra {extra!r} is also provided by {', '.join(providers)} and "
+                "cannot be removed independently. Remove that extra instead, then "
+                "reinstall the extras you want individually."
+            )
         return (
             f"Extra {extra!r} is not selected directly — it is provided by "
             f"{', '.join(providers)}. Remove that extra instead, then reinstall "
-            f"the extras you want individually."
+            "the extras you want individually."
         )
-    listed = ", ".join(sorted(selected)) or "(none)"
-    return f"Extra {extra!r} is not installed. Selected extras: {listed}"
+    return None
 
 
 def editable_extra_removal_hint(extra: str) -> str:

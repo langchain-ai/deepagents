@@ -123,8 +123,8 @@ def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
 
     _process_ai_message(message, state, console)
 
-    assert stdout.getvalue() == "answer\n"
-    assert stderr.getvalue() == "Reasoning:\nfirst second\n\nReasoning:\nthird\n"
+    assert stdout.getvalue() == "answer"
+    assert stderr.getvalue() == "Reasoning:\nfirst second\n\n\nReasoning:\nthird\n"
     assert state.reasoning_active is False
     assert state.full_response == ["answer"]
 
@@ -149,6 +149,31 @@ def test_reasoning_after_streamed_text_starts_on_a_new_terminal_line(
     )
 
     assert terminal.getvalue() == "answer\nReasoning:\nfollow-up"
+
+
+def test_reasoning_separator_stays_out_of_streamed_stdout(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    state = StreamState(show_reasoning=True)
+
+    _process_ai_message(
+        AIMessage(
+            content=[
+                {"type": "text", "text": "first"},
+                {"type": "reasoning", "reasoning": "thinking"},
+                {"type": "text", "text": "second"},
+            ]
+        ),
+        state,
+        console,
+    )
+
+    assert stdout.getvalue() == "firstsecond"
+    assert stderr.getvalue() == "\nReasoning:\nthinking\n"
 
 
 async def test_reasoning_only_stream_ends_with_newline(

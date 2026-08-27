@@ -633,7 +633,7 @@ def _write_reasoning(text: str, state: StreamState) -> None:
         return
     if not state.reasoning_active:
         if state.text_line_open:
-            _write_newline()
+            sys.stderr.write("\n")
             state.text_line_open = False
         sys.stderr.write("Reasoning:\n")
         state.reasoning_active = True

@@ -36629,9 +36629,11 @@ class TestRespawnServer:
                 AsyncMock(return_value=False),
             )
             handled: list[str] = []
+            message_handled = asyncio.Event()
 
             async def record(text: str) -> None:  # noqa: RUF029
                 handled.append(text)
+                message_handled.set()
 
             monkeypatch.setattr(app, "_handle_user_message", record)
 
@@ -36645,10 +36647,7 @@ class TestRespawnServer:
 
             gate.set()
             await app._reload_task
-            # The preserved message drains via call_after_refresh; run the
-            # scheduled callback before asserting on it.
-            await pilot.pause()
-            await asyncio.sleep(0)
+            await asyncio.wait_for(message_handled.wait(), timeout=5)
 
             assert not app._pending_messages
             assert handled == ["typed during reload"]

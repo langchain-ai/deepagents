@@ -25,6 +25,7 @@ import logging
 import sys
 import threading
 import time
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
@@ -44,6 +45,7 @@ from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
 from deepagents_code._session_stats import (
     RecordedRequest,
     SessionStats,
+    UsageLedgerKey,
     classify_usage_kind,
     finalize_recorded_requests,
     print_usage_table,
@@ -93,7 +95,6 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
-    from collections.abc import Mapping
     from pathlib import Path
     from uuid import UUID
 
@@ -145,6 +146,30 @@ _MESSAGE_DATA_LENGTH = 2
 _MAX_HITL_ITERATIONS = 50
 """Safety cap on the number of HITL interrupt round-trips to prevent infinite
 loops (e.g. when the agent keeps retrying rejected commands)."""
+
+_INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
+"""Synthetic tool-result output settling `tool.use` hooks whose attempt failed.
+
+A retried model call reruns from the last committed graph state, so a tool call
+the failed attempt streamed never executed; its already-fired `tool.use` is
+closed with this text as a synthetic `tool.error`/`tool.result`."""
+
+_RETRY_BOUNDARY = (
+    "--- connection dropped; the output above is incomplete — retrying ---"
+)
+"""Safe retry boundary printed between failed partial output and the replay."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptLifecycleScope:
+    """Client-side identity of one active model attempt."""
+
+    namespace: tuple[str, ...]
+    call_id: str
+    attempt: int
+    agent_id: str | None
+    """Transcript staging scope resolved at start (`None` for the root agent);
+    nested events from an unknown agent stage under their namespace label."""
 
 
 def _write_text(text: str) -> None:
@@ -478,7 +503,9 @@ class StreamState:
     stats: SessionStats = field(default_factory=SessionStats)
     """Accumulated model usage stats for this stream."""
 
-    recorded_usage_requests: dict[str, RecordedRequest] = field(default_factory=dict)
+    recorded_usage_requests: dict[UsageLedgerKey, RecordedRequest] = field(
+        default_factory=dict
+    )
     """Requests already counted in this headless run, keyed by message ID.
 
     Monotonic across HITL resume passes so a replayed message does not add its
@@ -493,6 +520,34 @@ class StreamState:
 
     show_rubric_iterations: bool = False
     """Whether rubric lifecycle messages should include iteration numbers."""
+
+    active_attempts: dict[tuple[str, ...], _AttemptLifecycleScope] = field(
+        default_factory=dict
+    )
+    """Open model-attempt lifecycle scopes, keyed by stream namespace.
+
+    Populated by `model_attempt` start events and resolved by complete/retry
+    events. While the current namespace holds one, its
+    `(namespace, call_id, attempt)` triple scopes usage accounting so a retry
+    reusing the provider's message ID cannot revise the failed request; a
+    namespace without one records legacy unscoped (`attempt_scope=None`)."""
+
+    attempt_buffer_offsets: dict[tuple[tuple[str, ...], str, int], int] = field(
+        default_factory=dict
+    )
+    """`full_response` length at each attempt start, keyed by the scope's
+    `(namespace, call_id, attempt)`. In `--no-stream` mode a failed attempt's
+    text is truncated back to this offset, since none of it reached stdout."""
+
+    pending_tool_status_lines: list[str] = field(default_factory=list)
+    """Tool-call status lines staged in `--no-stream` mode until the attempt
+    that produced them completes, so failed attempts leave stdout clean."""
+
+    transcript_agent_ids: dict[tuple[str, ...], str] = field(default_factory=dict)
+    """Transcript agent IDs observed in nested message metadata, keyed by
+    stream namespace. A namespace carries exactly one subagent, so the first
+    observed ID resolves its lifecycle staging scope; a nested lifecycle from
+    an agent that never streamed a message stages under the namespace label."""
 
 
 @dataclass
@@ -588,8 +643,18 @@ def _record_usage_from_message(
     *,
     is_main_agent: bool = True,
     metadata: Mapping[str, Any] | None = None,
+    attempt_scope: object = None,
 ) -> None:
-    """Record model usage and estimated cost from a streamed AI message."""
+    """Record model usage and estimated cost from a streamed AI message.
+
+    Args:
+        message_obj: The `AIMessage` received from the stream.
+        state: Shared stream state holding the usage ledger.
+        is_main_agent: Whether the message belongs to the root graph.
+        metadata: Stream metadata carrying optional subagent identity.
+        attempt_scope: Identity of the attempt that produced this message, or
+            `None` for legacy unscoped recording (no active lifecycle scope).
+    """
     usage_kind = classify_usage_kind(
         is_main_agent=is_main_agent,
         metadata=metadata,
@@ -602,6 +667,7 @@ def _record_usage_from_message(
         request_metadata=metadata,
         kind=usage_kind,
         recorded_requests=state.recorded_usage_requests,
+        attempt_scope=attempt_scope if isinstance(attempt_scope, Hashable) else None,
     )
 
 
@@ -660,14 +726,24 @@ def _process_ai_message(
                 and not buffer.displayed
                 and not already_displayed
             ):
-                if state.spinner:
-                    state.spinner.stop()
-                if not state.quiet:
-                    if state.full_response:
-                        _write_newline()
-                    console.print(
-                        f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
-                        highlight=False,
+                if state.stream:
+                    if state.spinner:
+                        state.spinner.stop()
+                    if not state.quiet:
+                        if state.full_response:
+                            _write_newline()
+                        console.print(
+                            f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
+                            highlight=False,
+                        )
+                elif not state.quiet:
+                    # `--no-stream` holds text client-side until the run ends,
+                    # so the attempt lifecycle can retract a failed attempt's
+                    # text — but only if its tool status is retractable too.
+                    # Stage the line and flush it on attempt completion; the
+                    # terminal flush prints whatever survives reconciliation.
+                    state.pending_tool_status_lines.append(
+                        f"🔧 Calling tool: {buffer_name}"
                     )
                 buffer.displayed = True
                 if isinstance(buffer_id, str):
@@ -748,6 +824,7 @@ def _process_message_chunk(
             state,
             is_main_agent=True,
             metadata=stream_metadata,
+            attempt_scope=_root_attempt_scope(state),
         )
 
     # The summarization middleware injects synthetic messages to compress
@@ -957,6 +1034,272 @@ def _process_rubric_event(
         state.spinner.start()
 
 
+def _attempt_key(
+    namespace: tuple[str, ...], scope: _AttemptLifecycleScope
+) -> tuple[tuple[str, ...], str, int]:
+    """Identity of a lifecycle scope for usage scoping and buffer offsets.
+
+    Returns:
+        The `(namespace, call_id, attempt)` triple identifying the scope.
+    """
+    return (namespace, scope.call_id, scope.attempt)
+
+
+def _root_attempt_scope(state: StreamState) -> tuple[tuple[str, ...], str, int] | None:
+    """The usage scope of the root namespace's active attempt, if one is open.
+
+    Returns:
+        The active attempt's identity triple, or `None` when the root has no
+        open lifecycle scope (legacy unscoped recording).
+    """
+    scope = state.active_attempts.get(())
+    return None if scope is None else _attempt_key((), scope)
+
+
+def _lifecycle_agent_id(state: StreamState, namespace: tuple[str, ...]) -> str | None:
+    """Resolve the transcript staging scope for a lifecycle namespace.
+
+    The root namespace stages under `None`. A nested namespace stages under the
+    transcript agent ID its messages carried; a namespace with no observed
+    messages (e.g. a hidden grader) stages under its namespace label.
+
+    Returns:
+        The transcript agent ID to stage under, or `None` for the root agent.
+    """
+    if not namespace:
+        return None
+    return state.transcript_agent_ids.get(namespace) or "/".join(namespace)
+
+
+def _retarget_transcript_scope(
+    state: StreamState, namespace: tuple[str, ...], agent_id: str
+) -> None:
+    """Point a namespace's open attempt at its observed transcript agent.
+
+    A nested `model_attempt(start)` can arrive before the agent's first
+    message, when its transcript identity is still unknown; staging then falls
+    back to the namespace label. Once a message supplies the real agent ID,
+    re-resolve: open the staging scope under the real ID so completed messages
+    land in the agent transcript, and clean up any fallback-labeled staging
+    (which holds at most partial chunks no final-marked message reached).
+    """
+    scope = state.active_attempts.get(namespace)
+    if scope is None or scope.agent_id == agent_id or state.transcript is None:
+        return
+    state.transcript.discard_attempt(
+        agent_id=scope.agent_id,
+        call_id=scope.call_id,
+        attempt=scope.attempt,
+    )
+    state.active_attempts[namespace] = _AttemptLifecycleScope(
+        namespace=scope.namespace,
+        call_id=scope.call_id,
+        attempt=scope.attempt,
+        agent_id=agent_id,
+    )
+    state.transcript.start_attempt(
+        agent_id=agent_id,
+        call_id=scope.call_id,
+        attempt=scope.attempt,
+    )
+
+
+def _process_attempt_lifecycle(
+    namespace: tuple[str, ...],
+    data: dict[str, Any],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Open or commit one model-attempt lifecycle scope.
+
+    `model_attempt` events carry no visible output by themselves; they open a
+    transcript staging scope, record the buffer offset a retry truncates to in
+    `--no-stream` mode, and on completion commit the staged transcript and
+    flush the attempt's staged tool status. Out-of-phase and duplicate events
+    are dropped by key match, making the lifecycle idempotent.
+
+    Args:
+        namespace: Stream namespace the event arrived on (`()` for the root).
+        data: The validated `model_attempt` payload.
+        state: Shared stream state.
+        console: Rich console for flushing staged tool status on completion.
+    """
+    call_id = cast("str", data["call_id"])
+    attempt = cast("int", data["attempt"])
+    if data["phase"] == "start":
+        scope = _AttemptLifecycleScope(
+            namespace=namespace,
+            call_id=call_id,
+            attempt=attempt,
+            agent_id=_lifecycle_agent_id(state, namespace),
+        )
+        existing = state.active_attempts.get(namespace)
+        if existing is not None and (
+            existing.call_id != call_id or existing.attempt != attempt
+        ):
+            # A new attempt for a scope the previous attempt never closed —
+            # either a mismatched start or a lost `model_retry`. Drop the
+            # superseded attempt's staged transcript before replacing it.
+            if state.transcript is not None:
+                state.transcript.discard_attempt(
+                    agent_id=existing.agent_id,
+                    call_id=existing.call_id,
+                    attempt=existing.attempt,
+                )
+            state.attempt_buffer_offsets.pop(_attempt_key(namespace, existing), None)
+        state.active_attempts[namespace] = scope
+        state.attempt_buffer_offsets.setdefault(
+            _attempt_key(namespace, scope), len(state.full_response)
+        )
+        if state.transcript is not None and existing != scope:
+            state.transcript.start_attempt(
+                agent_id=scope.agent_id,
+                call_id=call_id,
+                attempt=attempt,
+            )
+        return
+
+    scope = state.active_attempts.get(namespace)
+    if scope is None or scope.call_id != call_id or scope.attempt != attempt:
+        return
+    del state.active_attempts[namespace]
+    state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
+    if state.transcript is not None:
+        state.transcript.complete_attempt(
+            agent_id=scope.agent_id,
+            call_id=call_id,
+            attempt=attempt,
+        )
+    if not namespace and state.pending_tool_status_lines:
+        # Flush the completed attempt's staged tool status (`--no-stream`
+        # mode); only successful attempts ever reach stdout this way.
+        lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
+        if state.spinner:
+            state.spinner.stop()
+        for line in lines:
+            console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
+
+
+def _settle_interrupted_tool_hooks(state: StreamState) -> None:
+    """Close in-flight `tool.use` hooks superseded by a failed model attempt.
+
+    A retried model call reruns from the last committed graph state, so none
+    of these tools executed; each gets a synthetic `tool.error`/`tool.result`
+    pair so every emitted `tool.use` still sees exactly one terminal event.
+    `emitted_tool_use_ids` is deliberately untouched — it is monotonic for the
+    run so a provider that reuses an ID cannot re-fire `tool.use`.
+
+    Args:
+        state: Shared stream state.
+    """
+    _dispatch_orphaned_tool_result_hooks(state, _INTERRUPTED_TOOL_OUTPUT)
+
+
+def _process_retry_lifecycle(
+    namespace: tuple[str, ...],
+    data: dict[str, Any],
+    correlation: dict[str, object],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Reconcile the superseded attempt a correlated `model_retry` names.
+
+    Nested lifetimes only re-scope transcript staging and usage accounting —
+    they never mutate root presentation. A root retry correlated to the active
+    attempt additionally discards the failed attempt's staged transcript,
+    settles its fired `tool.use` hooks as synthetic errors, clears its
+    attempt-local tool buffers, and reconciles output: streaming mode prints a
+    safe retry boundary when output may have escaped, while `--no-stream`
+    truncates buffered text to the attempt's recorded offset and drops its
+    staged tool status. An uncorrelated retry (no known active attempt)
+    degrades to append-only output with the status line printed by the caller.
+
+    Args:
+        namespace: Stream namespace the event arrived on (`()` for the root).
+        data: The full `model_retry` payload (for the status line).
+        correlation: The validated `call_id`/`failed_attempt`/
+            `output_may_have_started` triple.
+        state: Shared stream state.
+        console: Rich console for status output (stderr in `--quiet` mode).
+    """
+    from deepagents_code.model_retry import retry_status_from_event
+
+    call_id = correlation["call_id"]
+    failed_attempt = correlation["failed_attempt"]
+    output_may_have_started = correlation["output_may_have_started"]
+
+    if namespace:
+        # Nested: reconcile transcript/usage scope only; the retry is visible
+        # solely through the existing Task/subagent status surface.
+        scope = state.active_attempts.get(namespace)
+        if (
+            scope is not None
+            and scope.call_id == call_id
+            and scope.attempt == failed_attempt
+        ):
+            del state.active_attempts[namespace]
+            state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
+            if state.transcript is not None:
+                state.transcript.discard_attempt(
+                    agent_id=scope.agent_id,
+                    call_id=cast("str", call_id),
+                    attempt=cast("int", failed_attempt),
+                )
+        return
+
+    scope = state.active_attempts.get(())
+    correlated = (
+        scope is not None
+        and scope.call_id == call_id
+        and scope.attempt == failed_attempt
+    )
+
+    if state.spinner:
+        state.spinner.stop()
+    # A `Retry-After` backoff can hold the turn for a minute, so this line is
+    # the only explanation for the stall; stop the spinner first so it cannot
+    # overwrite it. `highlight=False` keeps Rich from bolding the "1/5", which
+    # would cancel the `dim`.
+    status = retry_status_from_event(data)
+    console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+
+    if correlated and scope is not None:
+        del state.active_attempts[()]
+        offset = state.attempt_buffer_offsets.pop(_attempt_key((), scope), None)
+        if state.transcript is not None:
+            state.transcript.discard_attempt(
+                agent_id=scope.agent_id,
+                call_id=cast("str", call_id),
+                attempt=cast("int", failed_attempt),
+            )
+        # The failed attempt's tool calls never executed: close any fired
+        # tool.use hooks as interrupted and drop every buffer the attempt
+        # opened. Buffers from earlier model steps are unaffected — indices
+        # restart per message and a completed call's buffer is already popped.
+        _settle_interrupted_tool_hooks(state)
+        state.tool_call_buffers.clear()
+        if state.stream and output_may_have_started:
+            # Already-written text cannot be recalled, so mark where the
+            # incomplete attempt ended before the replay begins. In
+            # `--quiet` mode `console` writes to stderr, keeping stdout
+            # text-only.
+            console.print(
+                f"[dim]{escape_markup(_RETRY_BOUNDARY)}[/dim]",
+                highlight=False,
+            )
+        elif not state.stream:
+            # Buffered output never escaped, so always discard the failed
+            # attempt regardless of the conservative visibility flag.
+            if offset is not None:
+                del state.full_response[offset:]
+            state.pending_tool_status_lines.clear()
+    # Restart the spinner: the backoff is the longest stall of the turn, and
+    # leaving it stopped reads as a hang until some unrelated later event
+    # happens to restart it.
+    if state.spinner:
+        state.spinner.start()
+
+
 def _process_stream_chunk(
     chunk: object,
     state: StreamState,
@@ -984,7 +1327,12 @@ def _process_stream_chunk(
         return
 
     namespace, stream_mode, data = chunk
-    is_main_agent = not namespace
+    ns_key = (
+        tuple(str(part) for part in cast("tuple[object, ...]", namespace))
+        if namespace
+        else ()
+    )
+    is_main_agent = not ns_key
 
     if (
         stream_mode == "messages"
@@ -998,6 +1346,11 @@ def _process_stream_chunk(
             if isinstance(metadata, dict)
             else None
         )
+        if ns_key and isinstance(transcript_metadata, dict):
+            agent_id = transcript_metadata.get("dcode_subagent_id")
+            if isinstance(agent_id, str) and agent_id:
+                known = state.transcript_agent_ids.setdefault(ns_key, agent_id)
+                _retarget_transcript_scope(state, ns_key, known)
         state.transcript.record(
             message,
             transcript_metadata,
@@ -1007,14 +1360,40 @@ def _process_stream_chunk(
     # Nested agent spend still counts even when chat rendering is skipped.
     if not is_main_agent:
         if stream_mode == "custom":
-            record_model_usage_event(
-                state.stats,
-                data,
-                active_thread_id=state.thread_id,
-                fallback_model=settings.model_name or "",
-                fallback_provider=settings.model_provider or "",
-                recorded_requests=state.recorded_usage_requests,
+            from deepagents_code.model_retry import (
+                model_attempt_from_event,
+                model_retry_from_event,
             )
+
+            if isinstance(data, dict) and data.get("type") == "model_attempt":
+                parsed = model_attempt_from_event(data)
+                if parsed is not None:
+                    _process_attempt_lifecycle(ns_key, parsed, state, console)
+            elif isinstance(data, dict) and data.get("type") == "model_retry":
+                correlation = model_retry_from_event(data)
+                if correlation is not None:
+                    _process_retry_lifecycle(
+                        ns_key,
+                        cast("dict[str, Any]", data),
+                        correlation,
+                        state,
+                        console,
+                    )
+                # A nested retry without valid correlation has no visible
+                # surface here; nested output is filtered before rendering.
+            else:
+                scope = state.active_attempts.get(ns_key)
+                record_model_usage_event(
+                    state.stats,
+                    data,
+                    active_thread_id=state.thread_id,
+                    fallback_model=settings.model_name or "",
+                    fallback_provider=settings.model_provider or "",
+                    recorded_requests=state.recorded_usage_requests,
+                    attempt_scope=(
+                        None if scope is None else _attempt_key(ns_key, scope)
+                    ),
+                )
         elif (
             stream_mode == "messages"
             and isinstance(data, tuple)
@@ -1022,6 +1401,7 @@ def _process_stream_chunk(
         ):
             message_obj, nested_metadata = data
             if isinstance(message_obj, AIMessage):
+                scope = state.active_attempts.get(ns_key)
                 _record_usage_from_message(
                     message_obj,
                     state,
@@ -1030,6 +1410,9 @@ def _process_stream_chunk(
                         "Mapping[str, Any] | None",
                         nested_metadata if isinstance(nested_metadata, dict) else None,
                     ),
+                    attempt_scope=(
+                        None if scope is None else _attempt_key(ns_key, scope)
+                    ),
                 )
         return
 
@@ -1037,21 +1420,31 @@ def _process_stream_chunk(
         _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
     elif stream_mode == "custom" and isinstance(data, dict):
         if data.get("type") == "model_retry":
-            from deepagents_code.model_retry import retry_status_from_event
+            from deepagents_code.model_retry import (
+                model_retry_from_event,
+                retry_status_from_event,
+            )
 
-            # A `Retry-After` backoff can hold the turn for a minute, so this
-            # line is the only explanation for the stall; stop the spinner first
-            # so it cannot overwrite it. `highlight=False` keeps Rich from
-            # bolding the "1/5", which would cancel the `dim`.
-            if state.spinner:
-                state.spinner.stop()
-            status = retry_status_from_event(data)
-            console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
-            # Restart it: the backoff is the longest stall of the turn, and
-            # leaving the spinner stopped reads as a hang until some unrelated
-            # later event happens to restart it.
-            if state.spinner:
-                state.spinner.start()
+            correlation = model_retry_from_event(data)
+            if correlation is not None:
+                _process_retry_lifecycle(
+                    ns_key, cast("dict[str, Any]", data), correlation, state, console
+                )
+            else:
+                # Unknown or malformed correlation: degrade to the pre-lifecycle
+                # behavior — the status line only, output stays append-only.
+                if state.spinner:
+                    state.spinner.stop()
+                status = retry_status_from_event(data)
+                console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+                if state.spinner:
+                    state.spinner.start()
+        elif data.get("type") == "model_attempt":
+            from deepagents_code.model_retry import model_attempt_from_event
+
+            parsed = model_attempt_from_event(data)
+            if parsed is not None:
+                _process_attempt_lifecycle(ns_key, parsed, state, console)
         else:
             _process_rubric_event(cast("dict[str, Any]", data), state, console)
     elif stream_mode == "messages":
@@ -1711,8 +2104,26 @@ async def _run_agent_loop(
                 "Unparsed tool-call buffer check failed unexpectedly",
                 exc_info=True,
             )
+        # Terminal teardown: staged transcript messages belong to attempts
+        # that never completed (abort, exhaustion, cancellation), so drop them
+        # rather than committing output the model node never returned.
+        try:
+            if state.transcript is not None:
+                state.transcript.drop_uncommitted()
+        except Exception:
+            logger.warning("Transcript uncommitted-scope drop failed", exc_info=True)
+        state.active_attempts.clear()
+        state.attempt_buffer_offsets.clear()
 
     wall_time = time.monotonic() - start_time
+
+    # Flush `--no-stream` tool status staged by completed attempts before the
+    # buffered response text (a failed attempt's staging was already dropped
+    # at its retry boundary; anything left here never saw a lifecycle).
+    if state.pending_tool_status_lines and not quiet:
+        lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
+        for line in lines:
+            console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
 
     if state.full_response:
         if not state.stream:

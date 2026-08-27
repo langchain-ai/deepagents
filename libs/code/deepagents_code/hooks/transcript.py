@@ -325,6 +325,15 @@ class TranscriptStore:
 
 
 @dataclass(slots=True)
+class _AttemptScope:
+    """Staged records for one (agent_id, call_id, attempt) lifecycle."""
+
+    call_id: str
+    attempt: int
+    staged: list[BaseMessage] = field(default_factory=list)
+
+
+@dataclass(slots=True)
 class TranscriptRecorder:
     """Collect completed stream messages into a Hooks transcript runtime."""
 
@@ -333,6 +342,7 @@ class TranscriptRecorder:
     _chunks: dict[tuple[str | None, str], BaseMessageChunk] = field(
         default_factory=dict
     )
+    _attempts: dict[str | None, _AttemptScope] = field(default_factory=dict)
 
     def record(
         self,
@@ -369,13 +379,104 @@ class TranscriptRecorder:
         if isinstance(message, BaseMessage):
             self._append(message, agent_id=agent_id)
 
-    def append(self, messages: Sequence[BaseMessage]) -> None:
-        """Append checkpoint or input messages to the root transcript."""
-        append_messages = getattr(self.runtime, "append_messages", None)
-        if callable(append_messages):
-            append_messages(self.thread_id, messages)
+    def start_attempt(
+        self,
+        *,
+        agent_id: str | None,
+        call_id: str,
+        attempt: int,
+    ) -> None:
+        """Open (or replace) the active staging scope for an agent.
+
+        Staged messages buffer in memory until `complete_attempt` commits
+        them, so retried attempts do not duplicate transcript records.
+
+        Args:
+            agent_id: Subagent scope, or `None` for the main agent.
+            call_id: LLM call identifier for this attempt.
+            attempt: Zero-based attempt number within the call.
+        """
+        existing = self._attempts.get(agent_id)
+        if existing is not None and (
+            existing.call_id == call_id and existing.attempt == attempt
+        ):
+            return
+        for key in [key for key in self._chunks if key[0] == agent_id]:
+            self._chunks.pop(key, None)
+        self._attempts[agent_id] = _AttemptScope(call_id=call_id, attempt=attempt)
+
+    def complete_attempt(
+        self,
+        *,
+        agent_id: str | None,
+        call_id: str,
+        attempt: int,
+    ) -> None:
+        """Commit staged messages for a matching attempt, then clear it.
+
+        Duplicate or mismatched calls are ignored idempotently.
+
+        Args:
+            agent_id: Subagent scope, or `None` for the main agent.
+            call_id: LLM call identifier for this attempt.
+            attempt: Zero-based attempt number within the call.
+        """
+        scope = self._active_scope(agent_id, call_id=call_id, attempt=attempt)
+        if scope is None:
+            return
+        staged, scope.staged = scope.staged, []
+        self._attempts.pop(agent_id, None)
+        for key in [key for key in self._chunks if key[0] == agent_id]:
+            self._chunks.pop(key, None)
+        for message in staged:
+            self._append(message, agent_id=agent_id)
+
+    def discard_attempt(
+        self,
+        *,
+        agent_id: str | None,
+        call_id: str,
+        attempt: int,
+    ) -> None:
+        """Drop staged messages and pending chunks for a matching attempt.
+
+        Duplicate or mismatched calls are ignored idempotently.
+
+        Args:
+            agent_id: Subagent scope, or `None` for the main agent.
+            call_id: LLM call identifier for this attempt.
+            attempt: Zero-based attempt number within the call.
+        """
+        scope = self._active_scope(agent_id, call_id=call_id, attempt=attempt)
+        if scope is None:
+            return
+        scope.staged.clear()
+        self._attempts.pop(agent_id, None)
+        for key in [key for key in self._chunks if key[0] == agent_id]:
+            self._chunks.pop(key, None)
+
+    def drop_uncommitted(self) -> None:
+        """Clear all attempt scopes and chunk accumulators without appending."""
+        self._attempts.clear()
+        self._chunks.clear()
+
+    def _active_scope(
+        self,
+        agent_id: str | None,
+        *,
+        call_id: str,
+        attempt: int,
+    ) -> _AttemptScope | None:
+        scope = self._attempts.get(agent_id)
+        if scope is None or scope.call_id != call_id or scope.attempt != attempt:
+            return None
+        return scope
 
     def _append(self, message: BaseMessage, *, agent_id: str | None) -> None:
+        scope = self._attempts.get(agent_id)
+        if scope is not None:
+            scope.staged.append(message)
+            return
         append_messages = getattr(self.runtime, "append_messages", None)
         if not callable(append_messages):
             return
@@ -386,6 +487,12 @@ class TranscriptRecorder:
                 "Skipping invalid streamed transcript message",
                 exc_info=True,
             )
+
+    def append(self, messages: Sequence[BaseMessage]) -> None:
+        """Append checkpoint or input messages to the root transcript."""
+        append_messages = getattr(self.runtime, "append_messages", None)
+        if callable(append_messages):
+            append_messages(self.thread_id, messages)
 
 
 def _stream_agent_id(metadata: Mapping[str, object] | None) -> str | None:

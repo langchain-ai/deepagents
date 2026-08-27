@@ -115,8 +115,14 @@ from deepagents_code.hooks import (
 )
 from deepagents_code.hooks.manager import PromptOutcome
 from deepagents_code.hooks.permissions import merge_permission_decisions
+from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
+from deepagents_code.model_retry import (
+    model_attempt_from_event,
+    model_retry_from_event,
+    retry_status_from_event,
+)
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
@@ -442,6 +448,104 @@ def _reject_tracked_rows(
             tool_msg.set_rejected(reason=reason)
             adapter._sync_tool_widget(tool_msg)
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
+
+
+class _ModelAttemptScope(NamedTuple):
+    """Active model-attempt correlation, per stream namespace.
+
+    `attempt` is the zero-based value the lifecycle events carry; it is passed
+    straight into the transcript recorder, which treats it as an opaque
+    per-`call_id` index. The same triple doubles as the usage-accounting
+    `attempt_scope`, so a retried attempt's replayed token chunks never
+    double-count under the provider's reused message id.
+    """
+
+    namespace: tuple
+    call_id: str
+    attempt: int
+
+
+_RETRY_INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
+
+
+def _retry_marker_text(data: Mapping[Any, object]) -> str | None:
+    """Build the retry marker from validated numeric fields only.
+
+    The event's own `message` field is untrusted render text, so the marker is
+    re-derived from `attempt`/`max_retries` and never parses markup out of it.
+
+    Returns:
+        The exact marker line, or `None` when the numbers are unusable.
+    """
+    attempt = data.get("attempt")
+    max_retries = data.get("max_retries")
+    if (
+        not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or not isinstance(max_retries, int)
+        or isinstance(max_retries, bool)
+        or max_retries < 1
+        or not 1 <= attempt <= max_retries
+    ):
+        return None
+    return (
+        "Connection dropped; the partial response above is incomplete. "
+        f"Retrying {attempt}/{max_retries}."
+    )
+
+
+async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
+    adapter: TextualUIAdapter,
+    *,
+    preserve_partial: bool,
+    pending_text_by_namespace: dict[tuple, str],
+    assistant_message_by_namespace: dict[tuple, Any],
+    completed_tool_result_ids: set[str],
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer],
+) -> None:
+    """Finalize visible root output from a superseded attempt.
+
+    The retried attempt may have streamed text and tool calls before the
+    connection dropped. The partial reply stays in the chat (finalized, not
+    streaming), its tool rows are settled hooks-only exactly like the
+    clean-end orphan sweep, and the per-turn parse maps are cleared so the
+    replay starts a fresh `AssistantMessage` and cannot re-dispatch hooks for
+    ids this sweep already closed.
+    """
+    root_ns: tuple = ()
+    current_msg = (
+        assistant_message_by_namespace.pop(root_ns, None) if preserve_partial else None
+    )
+    if current_msg is not None:
+        try:
+            await current_msg.stop_stream()
+        except Exception:
+            logger.warning(
+                "Failed to stop interrupted assistant stream on retry",
+                exc_info=True,
+            )
+        else:
+            if adapter._sync_message_content and current_msg.id:
+                adapter._sync_message_content(current_msg.id, current_msg._content)
+    if preserve_partial:
+        pending_text_by_namespace.pop(root_ns, None)
+        # Clears the per-turn refs only; the widget itself stays mounted and now
+        # belongs to the message store, so the replay mounts its own bubble.
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
+    settled = dict(adapter._current_tool_messages)
+    if settled:
+        completed_tool_result_ids.update(
+            _dispatch_terminal_tool_result_hooks(
+                settled, _RETRY_INTERRUPTED_TOOL_OUTPUT
+            )
+        )
+        adapter._current_tool_messages.clear()
+    # Buffers hold unparsed fragments of the interrupted attempt's tool calls;
+    # they never mounted and never fired `tool.use`, so they are dropped
+    # outright rather than counted by the end-of-stream diagnostic.
+    tool_call_buffers.clear()
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -1361,7 +1465,9 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
 
 async def _finalize_usage_round(
     stream: AsyncIterator[Any],
-    recorded_requests: dict[str, _session_stats.RecordedRequest],
+    recorded_requests: dict[
+        _session_stats.UsageLedgerKey, _session_stats.RecordedRequest
+    ],
 ) -> AsyncIterator[Any]:
     """Close streamed usage records when one graph stream pass ends.
 
@@ -1576,7 +1682,9 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    recorded_usage_requests: dict[str, _session_stats.RecordedRequest] = {}
+    recorded_usage_requests: dict[
+        _session_stats.UsageLedgerKey, _session_stats.RecordedRequest
+    ] = {}
     if turn_stats is None:
         turn_stats = _session_stats.SessionStats()
     start_time = time.monotonic()
@@ -1658,6 +1766,21 @@ async def execute_task_textual(
     # when multiple subagents stream in parallel
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
+    # Active model-attempt scope per stream namespace, opened/closed by the
+    # `model_attempt` lifecycle events on the custom stream. It scopes usage
+    # accounting so a retried attempt's replayed chunks don't double-count, and
+    # a valid `model_retry` matches its failed attempt against the root scope.
+    active_attempt_by_namespace: dict[tuple, _ModelAttemptScope] = {}
+    transcript_agent_by_namespace: dict[tuple, str] = {}
+
+    def _attempt_scope_for(ns_key: tuple) -> _ModelAttemptScope | None:
+        scope = active_attempt_by_namespace.get(ns_key)
+        if scope is not None:
+            return scope
+        # A legacy producer emits no lifecycle events, so usage falls back to
+        # provider message-id dedupe with a `None` scope.
+        return None
+
     hooks = session_state.hooks
     transcript = hooks.recorder(thread_id)
 
@@ -1837,7 +1960,7 @@ async def execute_task_textual(
                 namespace, current_stream_mode, data = chunk
 
                 # Convert namespace to hashable tuple for dict keys
-                ns_key = tuple(namespace) if namespace else ()
+                ns_key = tuple(str(part) for part in namespace) if namespace else ()
 
                 # Filter out subagent outputs - only show main agent (empty
                 # namespace). Subagents run via Task tool and should only
@@ -1866,6 +1989,7 @@ async def execute_task_textual(
                                 fallback_model=settings.model_name or "",
                                 fallback_provider=settings.model_provider or "",
                                 recorded_requests=recorded_usage_requests,
+                                attempt_scope=_attempt_scope_for(ns_key),
                             )
                         except Exception:
                             logger.warning(
@@ -1897,13 +2021,109 @@ async def execute_task_textual(
                                 )
                         continue
 
-                    if isinstance(data, dict) and data.get("type") == "model_retry":
-                        if is_main_agent and adapter._set_spinner is not None:
-                            from deepagents_code.model_retry import (
-                                retry_status_from_event,
+                    if isinstance(data, dict) and data.get("type") == "model_attempt":
+                        attempt_event = model_attempt_from_event(data)
+                        if attempt_event is not None:
+                            attempt_scope = _ModelAttemptScope(
+                                ns_key,
+                                cast("str", attempt_event["call_id"]),
+                                cast("int", attempt_event["attempt"]),
                             )
+                            transcript_agent_id = (
+                                None
+                                if is_main_agent
+                                else transcript_agent_by_namespace.get(ns_key)
+                            )
+                            if attempt_event["phase"] == "start":
+                                # A duplicate start for the same scope is
+                                # idempotent; a different scope replaces the stale
+                                # one (its complete was lost with the connection
+                                # drop that triggered the retry).
+                                existing_scope = active_attempt_by_namespace.get(ns_key)
+                                active_attempt_by_namespace[ns_key] = attempt_scope
+                                if (
+                                    is_main_agent or transcript_agent_id is not None
+                                ) and existing_scope != attempt_scope:
+                                    transcript.start_attempt(
+                                        agent_id=transcript_agent_id,
+                                        call_id=attempt_scope.call_id,
+                                        attempt=attempt_scope.attempt,
+                                    )
+                            else:
+                                if active_attempt_by_namespace.get(ns_key) == (
+                                    attempt_scope
+                                ):
+                                    del active_attempt_by_namespace[ns_key]
+                                if is_main_agent or transcript_agent_id is not None:
+                                    transcript.complete_attempt(
+                                        agent_id=transcript_agent_id,
+                                        call_id=attempt_scope.call_id,
+                                        attempt=attempt_scope.attempt,
+                                    )
+                        continue
 
+                    if isinstance(data, dict) and data.get("type") == "model_retry":
+                        retry_correlation = model_retry_from_event(data)
+                        if is_main_agent and adapter._set_spinner is not None:
+                            # Runs for valid, malformed, and legacy (uncorrelated)
+                            # retries alike: the spinner status predates attempt
+                            # reconciliation and stays the fallback surface.
                             await adapter._set_spinner(retry_status_from_event(data))
+                        retry_scope = (
+                            _ModelAttemptScope(
+                                ns_key,
+                                cast("str", retry_correlation["call_id"]),
+                                cast("int", retry_correlation["failed_attempt"]),
+                            )
+                            if retry_correlation is not None
+                            else None
+                        )
+                        scope_matches = (
+                            retry_scope is not None
+                            and active_attempt_by_namespace.get(ns_key) == retry_scope
+                        )
+                        if scope_matches and retry_scope is not None:
+                            # Discard whatever the superseded attempt staged. A
+                            # duplicate retry or a scope the recorder never opened
+                            # is ignored idempotently.
+                            transcript_agent_id = (
+                                None
+                                if is_main_agent
+                                else transcript_agent_by_namespace.get(ns_key)
+                            )
+                            if is_main_agent or transcript_agent_id is not None:
+                                transcript.discard_attempt(
+                                    agent_id=transcript_agent_id,
+                                    call_id=retry_scope.call_id,
+                                    attempt=retry_scope.attempt,
+                                )
+                            del active_attempt_by_namespace[ns_key]
+                        if scope_matches and is_main_agent:
+                            # Tool-call presentation and hooks are attempt-local
+                            # even when no text escaped. A pre-output retry still
+                            # drops incomplete arguments and closes any fired use.
+                            output_may_have_started = bool(
+                                retry_correlation
+                                and retry_correlation["output_may_have_started"]
+                            )
+                            await _settle_attempt_for_retry(
+                                adapter,
+                                preserve_partial=output_may_have_started,
+                                pending_text_by_namespace=pending_text_by_namespace,
+                                assistant_message_by_namespace=assistant_message_by_namespace,
+                                completed_tool_result_ids=completed_tool_result_ids,
+                                tool_call_buffers=tool_call_buffers,
+                            )
+                            if output_may_have_started:
+                                marker = _retry_marker_text(data)
+                                if marker is not None:
+                                    try:
+                                        await adapter._mount_message(AppMessage(marker))
+                                    except Exception:
+                                        logger.warning(
+                                            "Failed to mount retry marker",
+                                            exc_info=True,
+                                        )
                         continue
 
                     auto_review_event = _parse_auto_mode_review_event(
@@ -2139,6 +2359,21 @@ async def execute_task_textual(
                         continue
 
                     message, metadata = data
+                    if not is_main_agent and isinstance(metadata, dict):
+                        transcript_agent_id = metadata.get(
+                            SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
+                        )
+                        if isinstance(transcript_agent_id, str) and transcript_agent_id:
+                            known_agent_id = transcript_agent_by_namespace.setdefault(
+                                ns_key, transcript_agent_id
+                            )
+                            active_scope = active_attempt_by_namespace.get(ns_key)
+                            if active_scope is not None:
+                                transcript.start_attempt(
+                                    agent_id=known_agent_id,
+                                    call_id=active_scope.call_id,
+                                    attempt=active_scope.attempt,
+                                )
                     if transcript is not None:
                         transcript.record(
                             message,
@@ -2174,6 +2409,7 @@ async def execute_task_textual(
                                 ),
                             ),
                             recorded_requests=recorded_usage_requests,
+                            attempt_scope=_attempt_scope_for(ns_key),
                         )
                     _apply_recorded_usage(adapter, recorded_usage)
 
@@ -3575,6 +3811,16 @@ async def execute_task_textual(
         )
         return turn_stats
     finally:
+        # Any attempt scope still open at teardown never completed, so its
+        # staged transcript records must not leak into a later turn. Guarded so
+        # cleanup never masks the exception propagating from the stream.
+        try:
+            transcript.drop_uncommitted()
+        except Exception:
+            logger.warning(
+                "Failed to drop uncommitted transcript attempts", exc_info=True
+            )
+
         # Streamed text is coalesced in each AssistantMessage's `_pending_append`
         # buffer and flushed on a throttled timer, so up to one flush interval of
         # tokens can be in flight at any moment. Normal completion (the flush loop

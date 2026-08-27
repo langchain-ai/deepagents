@@ -15,7 +15,7 @@ from __future__ import annotations
 import logging
 import math
 import sys
-from collections.abc import Mapping
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field, replace
 from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -149,6 +149,17 @@ class RecordedUsage:
     request_tokens: int
     """Running token total for the request after applying this message."""
 
+
+UsageLedgerKey = str | tuple[Hashable, str]
+"""Key of the recorded-request ledger: a message ID, optionally scoped.
+
+A bare message-ID string keys requests recorded without an attempt scope
+(the legacy behavior). When a caller passes `attempt_scope` to
+`record_message_usage`/`record_model_usage_event`, the key is
+`(attempt_scope, message_id)` instead, so a retry that reuses the provider's
+message ID is a separate request while chunks of one attempt still merge.
+Callers that retain this ledger across retries should use this widened key type.
+"""
 
 ModelStatsKey = tuple[str, str]
 """Per-model dict key: the `(provider, model_name)` pair.
@@ -412,7 +423,7 @@ class RecordedRequest:
 
 
 def finalize_recorded_requests(
-    recorded_requests: dict[str, RecordedRequest],
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
 ) -> None:
     """Close every request in a ledger that outlives its stream round.
 
@@ -631,8 +642,8 @@ def _move_request_to_named_model(
     message: object,
     previous: RecordedRequest,
     *,
-    recorded_requests: dict[str, RecordedRequest],
-    request_id: str,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
+    request_id: UsageLedgerKey,
     fallback_model: str,
     fallback_provider: str,
     request_metadata: Mapping[str, Any] | None,
@@ -712,7 +723,8 @@ def record_message_usage(
     fallback_provider: str = "",
     request_metadata: Mapping[str, Any] | None = None,
     kind: UsageKind = "assistant",
-    recorded_requests: dict[str, RecordedRequest] | None = None,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest] | None = None,
+    attempt_scope: Hashable | None = None,
 ) -> RecordedUsage | None:
     """Record usage attached to one streamed model message.
 
@@ -747,7 +759,13 @@ def record_message_usage(
             this specific request, when available.
         kind: Request class used by the type breakdown.
         recorded_requests: Ledger of requests this stream consumer has already
-            recorded, keyed by message ID. Mutated in place.
+            recorded, keyed by message ID -- or by `(attempt_scope, message_id)`
+            when `attempt_scope` is set. Mutated in place.
+        attempt_scope: Identity of the attempt that produced this message, or
+            `None` for legacy unscoped recording. Retries of one logical request
+            can reuse the provider's message ID; scoping keeps each attempt's
+            usage separate, while chunks and corrections of one attempt (same
+            scope, same ID) still merge into a single request.
 
     Returns:
         The tokens and cost *this message* contributed, or `None` when it has no
@@ -767,7 +785,11 @@ def record_message_usage(
     if recorded_requests is None:
         recorded_requests = {}
     message_id = getattr(message, "id", None)
-    request_id = message_id if isinstance(message_id, str) and message_id else None
+    request_id: UsageLedgerKey | None = (
+        message_id if isinstance(message_id, str) and message_id else None
+    )
+    if request_id is not None and attempt_scope is not None:
+        request_id = (attempt_scope, request_id)
     is_chunk = isinstance(message, AIMessageChunk)
     if request_id is not None and request_id in recorded_requests and not is_chunk:
         # A completed message repeats the whole request. Whether the request was
@@ -789,13 +811,13 @@ def record_message_usage(
         # Google's model-naming chunk can carry a zero-token delta, so a
         # request whose earlier chunks fell back to the configured model
         # would otherwise be stranded on the wrong per-model row.
-        if previous is not None and _names_a_model(message):
+        if previous is not None and request_id is not None and _names_a_model(message):
             reprice_delta = _move_request_to_named_model(
                 stats,
                 message,
                 previous,
                 recorded_requests=recorded_requests,
-                request_id=str(request_id),
+                request_id=request_id,
                 fallback_model=fallback_model,
                 fallback_provider=fallback_provider,
                 request_metadata=request_metadata,
@@ -913,7 +935,8 @@ def record_model_usage_event(
     active_thread_id: str = "",
     fallback_model: str = "",
     fallback_provider: str = "",
-    recorded_requests: dict[str, RecordedRequest] | None = None,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest] | None = None,
+    attempt_scope: Hashable | None = None,
 ) -> RecordedUsage | None:
     """Record a validated provisional usage event from a nested model call.
 
@@ -987,6 +1010,7 @@ def record_model_usage_event(
         fallback_provider=fallback_provider,
         kind="subagent",
         recorded_requests=recorded_requests,
+        attempt_scope=attempt_scope,
     )
 
 

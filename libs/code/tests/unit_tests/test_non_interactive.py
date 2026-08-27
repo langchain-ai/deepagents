@@ -4249,3 +4249,665 @@ class TestHeadlessUsageStats:
         )
         assert count == 0
         assert "Task completed" in printed
+
+
+def _attempt_event(call_id: str, attempt: int, *, phase: str) -> dict[str, Any]:
+    """Build a model_attempt custom-stream payload."""
+    return {
+        "type": "model_attempt",
+        "phase": phase,
+        "call_id": call_id,
+        "attempt": attempt,
+    }
+
+
+def _retry_event(
+    call_id: str | None,
+    failed_attempt: int | None,
+    *,
+    output_may_have_started: bool = False,
+) -> dict[str, Any]:
+    """Build a model_retry custom-stream payload."""
+    from deepagents_code.model_retry import build_retry_event
+
+    if call_id is None:
+        return build_retry_event(1, 5)
+    return build_retry_event(
+        1,
+        5,
+        call_id=call_id,
+        failed_attempt=failed_attempt,
+        output_may_have_started=output_may_have_started,
+    )
+
+
+class TestAttemptLifecycle:
+    """Headless reconciliation of model_attempt/model_retry lifecycle events."""
+
+    def _lifecycle_state(self, tmp_path: Path, **kwargs: Any) -> StreamState:
+        transcripts = TranscriptStore(tmp_path / "transcripts")
+        return StreamState(
+            thread_id="thread-1",
+            transcript=TranscriptRecorder(transcripts, "thread-1"),
+            **kwargs,
+        )
+
+    def test_attempt_lifecycle_stages_and_commits_root_transcript(
+        self, tmp_path: Path
+    ) -> None:
+        """Messages inside a start/complete pair append once, on completion."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path)
+        tracker = FileOpTracker(assistant_id="assistant")
+        store = state.transcript.runtime  # type: ignore[union-attr]
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            ((), "messages", (AIMessage(id="m-1", content="hi"), {})),
+            state,
+            console,
+            tracker,
+        )
+        # Still staged: nothing materialized before the attempt completes.
+        assert store.materialize("thread-1").path.read_text(encoding="utf-8") == ""
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="complete")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="complete")),
+            state,
+            console,
+            tracker,
+        )
+
+        assert state.active_attempts == {}
+        materialized = store.materialize("thread-1")
+        records = [
+            line
+            for line in materialized.path.read_text(encoding="utf-8").splitlines()
+            if line
+        ]
+        assert len(records) == 1
+        assert "hi" in records[0]
+
+    def test_correlated_root_retry_settles_tools_and_truncates_no_stream(
+        self, tmp_path: Path
+    ) -> None:
+        """A known failed attempt discards staged transcript/tool data."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+        store = state.transcript.runtime  # type: ignore[union-attr]
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "text", "text": "partial "},
+            {
+                "type": "tool_call",
+                "name": "execute",
+                "id": "call-x",
+                "index": 0,
+                "args": {"command": "ls"},
+            },
+        ]
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_stream_chunk(
+                ((), "messages", (ai_msg, {})), state, console, tracker
+            )
+            # tool.use fired; the status line is staged, not printed.
+            assert any(c[0][0] == "tool.use" for c in mock_dispatch.call_args_list)
+            assert state.pending_tool_status_lines == ["🔧 Calling tool: execute"]
+            assert state.tool_call_buffers == {}  # parsed buffer popped
+            assert "call-x" in state.in_flight_tool_calls
+
+            _process_stream_chunk(
+                (
+                    (),
+                    "custom",
+                    _retry_event("call-1", 0, output_may_have_started=True),
+                ),
+                state,
+                console,
+                tracker,
+            )
+
+            events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+            assert ("tool.error", {"tool_names": ["execute"]}) in events
+            assert (
+                "tool.result",
+                {
+                    "tool_name": "execute",
+                    "tool_id": "call-x",
+                    "tool_args": {"command": "ls"},
+                    "tool_status": "error",
+                    "tool_output": "Model response interrupted before tool execution",
+                },
+            ) in events
+
+        # Buffered text truncated to the attempt offset; staged status dropped.
+        assert state.full_response == []
+        assert state.pending_tool_status_lines == []
+        assert state.in_flight_tool_calls == {}
+        assert state.emitted_tool_use_ids == {"call-x"}  # monotonic
+        assert state.active_attempts == {}
+        # No retry boundary in --no-stream; the retry status still printed.
+        printed = output.getvalue()
+        assert "Retrying model request 1/5" in printed
+        assert "incomplete" not in printed
+        # The staged failed message never reached the transcript.
+        assert store.materialize("thread-1").path.read_text(encoding="utf-8") == ""
+
+    def test_retry_boundary_printed_when_streaming(self, tmp_path: Path) -> None:
+        """Streaming mode marks the supersession instead of truncating."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        stdout_buf = io.StringIO()
+        state = self._lifecycle_state(tmp_path, stream=True)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        with patch.object(sys, "stdout", stdout_buf):
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 0, phase="start")),
+                state,
+                console,
+                tracker,
+            )
+            ai_msg = MagicMock(spec=AIMessage)
+            ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+            _process_stream_chunk(
+                ((), "messages", (ai_msg, {})), state, console, tracker
+            )
+            _process_stream_chunk(
+                (
+                    (),
+                    "custom",
+                    _retry_event("call-1", 0, output_may_have_started=True),
+                ),
+                state,
+                console,
+                tracker,
+            )
+
+        # Streaming output is irreversible, so the text stays and an explicit
+        # boundary separates it from the replay.
+        assert stdout_buf.getvalue() == "partial"
+        assert state.full_response == ["partial"]
+        printed = output.getvalue()
+        assert "Retrying model request 1/5" in printed
+        assert "the output above is incomplete" in printed
+
+    def test_retry_without_output_discards_buffered_text(self, tmp_path: Path) -> None:
+        """Buffered mode discards failed text even when no output escaped."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+        _process_stream_chunk(((), "messages", (ai_msg, {})), state, console, tracker)
+        _process_stream_chunk(
+            ((), "custom", _retry_event("call-1", 0, output_may_have_started=False)),
+            state,
+            console,
+            tracker,
+        )
+
+        # No output escaped, so the failed attempt is silently discarded.
+        assert state.full_response == []
+        assert "incomplete" not in output.getvalue()
+
+    def test_uncorrelated_retry_degrades_to_append_only(self, tmp_path: Path) -> None:
+        """An unknown failed attempt prints the status but mutates nothing."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+        _process_stream_chunk(((), "messages", (ai_msg, {})), state, console, tracker)
+        # A retry naming a different failed attempt than the active one.
+        _process_stream_chunk(
+            ((), "custom", _retry_event("call-1", 7, output_may_have_started=True)),
+            state,
+            console,
+            tracker,
+        )
+
+        assert state.full_response == ["partial"]
+        assert "incomplete" not in output.getvalue()
+        assert "Retrying model request 1/5" in output.getvalue()
+        assert () in state.active_attempts  # scope untouched
+
+    def test_legacy_retry_without_lifecycle_is_status_only(self) -> None:
+        """A retry event with no correlation fields keeps the old behavior."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = StreamState(thread_id="thread-1", stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+        _process_stream_chunk(((), "messages", (ai_msg, {})), state, console, tracker)
+        _process_stream_chunk(
+            ((), "custom", _retry_event(None, None)), state, console, tracker
+        )
+
+        assert state.full_response == ["partial"]
+        printed = output.getvalue()
+        assert "Retrying model request 1/5" in printed
+        assert "incomplete" not in printed
+
+    def test_malformed_attempt_event_is_ignored(self, tmp_path: Path) -> None:
+        """A malformed model_attempt opens no scope; usage stays unscoped."""
+        console = Console(quiet=True)
+        state = self._lifecycle_state(tmp_path)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        _process_stream_chunk(
+            ((), "custom", {"type": "model_attempt", "phase": "bogus"}),
+            state,
+            console,
+            tracker,
+        )
+
+        assert state.active_attempts == {}
+        assert state.attempt_buffer_offsets == {}
+
+    def test_duplicate_lifecycle_events_are_idempotent(self, tmp_path: Path) -> None:
+        """Duplicate start/complete events neither restage nor double-commit."""
+        console = Console(quiet=True)
+        state = self._lifecycle_state(tmp_path)
+        tracker = FileOpTracker(assistant_id="assistant")
+        store = state.transcript.runtime  # type: ignore[union-attr]
+
+        start = ((), "custom", _attempt_event("call-1", 0, phase="start"))
+        _process_stream_chunk(start, state, console, tracker)
+        _process_stream_chunk(start, state, console, tracker)
+        scope = state.active_attempts[()]
+        assert (scope.call_id, scope.attempt) == ("call-1", 0)
+
+        _process_stream_chunk(
+            ((), "messages", (AIMessage(id="m-1", content="hi"), {})),
+            state,
+            console,
+            tracker,
+        )
+        complete = ((), "custom", _attempt_event("call-1", 0, phase="complete"))
+        _process_stream_chunk(complete, state, console, tracker)
+        _process_stream_chunk(complete, state, console, tracker)
+
+        records = (
+            store.materialize("thread-1").path.read_text(encoding="utf-8").splitlines()
+        )
+        assert len([line for line in records if line]) == 1
+
+    def test_nested_lifecycle_stages_without_root_mutation(
+        self, tmp_path: Path
+    ) -> None:
+        """A nested retry reconciles only the nested transcript scope."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path)
+        tracker = FileOpTracker(assistant_id="assistant")
+        store = state.transcript.runtime  # type: ignore[union-attr]
+        ns = ("tools:task",)
+
+        _process_stream_chunk(
+            (ns, "custom", _attempt_event("call-n", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            (
+                ns,
+                "messages",
+                (
+                    AIMessage(id="n-1", content="nested partial"),
+                    {"dcode_subagent_id": "agent-1"},
+                ),
+            ),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            (
+                ns,
+                "custom",
+                _retry_event("call-n", 0, output_may_have_started=True),
+            ),
+            state,
+            console,
+            tracker,
+        )
+
+        # Nested retry printed no root status/boundary and kept root buffers.
+        assert output.getvalue() == ""
+        assert state.full_response == []
+        assert state.pending_tool_status_lines == []
+        assert () not in state.active_attempts
+        assert ns not in state.active_attempts
+        # The failed nested attempt's staged message was discarded.
+        assert (
+            store.materialize("thread-1", agent_id="agent-1").path.read_text(
+                encoding="utf-8"
+            )
+            == ""
+        )
+
+        # A fresh attempt of the same call stages and commits cleanly.
+        _process_stream_chunk(
+            (ns, "custom", _attempt_event("call-n", 1, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            (
+                ns,
+                "messages",
+                (
+                    AIMessage(id="n-2", content="nested final"),
+                    {"dcode_subagent_id": "agent-1"},
+                ),
+            ),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            (ns, "custom", _attempt_event("call-n", 1, phase="complete")),
+            state,
+            console,
+            tracker,
+        )
+        nested_records = store.materialize("thread-1", agent_id="agent-1").path
+        assert "nested final" in nested_records.read_text(encoding="utf-8")
+
+    def test_usage_is_scoped_per_attempt(self) -> None:
+        """A retry reusing the provider message ID records both attempts."""
+        console = Console(quiet=True)
+        state = StreamState(thread_id="thread-1")
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        def usage_message(msg_id: str, tokens: int) -> AIMessage:
+            return AIMessage(
+                id=msg_id,
+                content="",
+                usage_metadata={
+                    "input_tokens": tokens,
+                    "output_tokens": 1,
+                    "total_tokens": tokens + 1,
+                },
+                response_metadata={
+                    "model_name": "test-model",
+                    "model_provider": "test",
+                },
+            )
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            ((), "messages", (usage_message("msg-1", 10), {})), state, console, tracker
+        )
+        _process_stream_chunk(
+            ((), "custom", _retry_event("call-1", 0)), state, console, tracker
+        )
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 1, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        _process_stream_chunk(
+            ((), "messages", (usage_message("msg-1", 20), {})), state, console, tracker
+        )
+
+        # The same provider message ID under a new attempt scope counts again
+        # rather than being deduped as a replay.
+        assert state.stats.request_count == 2
+        assert len(state.recorded_usage_requests) == 2
+        assert all(isinstance(key, tuple) for key in state.recorded_usage_requests)
+
+    def test_unscoped_usage_remains_legacy(self) -> None:
+        """Without a lifecycle scope, message usage keys stay bare IDs."""
+        console = Console(quiet=True)
+        state = StreamState(thread_id="thread-1")
+        tracker = FileOpTracker(assistant_id="assistant")
+        msg = AIMessage(
+            id="msg-1",
+            content="",
+            usage_metadata={"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            response_metadata={"model_name": "m", "model_provider": "p"},
+        )
+
+        _process_stream_chunk(((), "messages", (msg, {})), state, console, tracker)
+
+        assert list(state.recorded_usage_requests) == ["msg-1"]
+
+    def test_no_stream_tool_status_flushes_on_attempt_complete(
+        self, tmp_path: Path
+    ) -> None:
+        """Buffered mode prints tool status only after its attempt completes."""
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "id": "call-9",
+                "index": 0,
+                "args": {"path": "a.py"},
+            }
+        ]
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+        ):
+            _process_stream_chunk(
+                ((), "messages", (ai_msg, {})), state, console, tracker
+            )
+        assert "Calling tool" not in output.getvalue()
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="complete")),
+            state,
+            console,
+            tracker,
+        )
+        assert "🔧 Calling tool: read_file" in output.getvalue()
+        assert state.pending_tool_status_lines == []
+
+
+class TestRunAgentLoopRetryTeardown:
+    """End-to-end reconciliation through `_run_agent_loop`."""
+
+    async def test_terminal_teardown_drops_uncommitted_transcript_scopes(
+        self, tmp_path: Path
+    ) -> None:
+        """An attempt that never completes leaves no transcript records."""
+        transcripts = TranscriptStore(tmp_path / "transcripts")
+        recorder = TranscriptRecorder(transcripts, "thread-1")
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            console: Console,
+            file_op_tracker: FileOpTracker,
+            _context: object,
+        ) -> None:
+            state.transcript = recorder
+            # An attempt opens, streams one message, then the stream aborts
+            # (a terminal provider error after the retry budget is spent).
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 0, phase="start")),
+                state,
+                console,
+                file_op_tracker,
+            )
+            ai_msg = MagicMock(spec=AIMessage)
+            ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+            _process_stream_chunk(
+                ((), "messages", (ai_msg, {})), state, console, file_op_tracker
+            )
+            abort = "stream aborted"
+            raise RuntimeError(abort)
+
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive._stream_agent",
+                new=staged_stream,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ),
+            pytest.raises(RuntimeError, match="stream aborted"),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "task",
+                {"configurable": {"thread_id": "thread-1"}},
+                Console(quiet=True),
+                file_op_tracker,
+                quiet=True,
+            )
+
+        # drop_uncommitted ran: the aborted attempt's staged message is gone.
+        assert recorder._attempts == {}
+        assert recorder._chunks == {}
+        assert (
+            transcripts.materialize("thread-1").path.read_text(encoding="utf-8") == ""
+        )
+
+    async def test_no_stream_run_flushes_completed_tool_status_before_text(
+        self,
+    ) -> None:
+        """A full no-stream run prints staged tool status ahead of the text."""
+        stdout_buf = io.StringIO()
+        console_output = io.StringIO()
+        console = Console(file=console_output, force_terminal=False, color_system=None)
+
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "text", "text": "done"},
+            {
+                "type": "tool_call",
+                "name": "read_file",
+                "id": "call-1",
+                "index": 0,
+                "args": {"path": "a.py"},
+            },
+        ]
+
+        async def staged_stream(  # noqa: RUF029  # replaces the async _stream_agent seam
+            _agent: object,
+            _stream_input: object,
+            _config: object,
+            state: StreamState,
+            stream_console: Console,
+            _file_op_tracker: FileOpTracker,
+            _context: object,
+        ) -> None:
+            tracker = FileOpTracker(assistant_id="assistant")
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 0, phase="start")),
+                state,
+                stream_console,
+                tracker,
+            )
+            with patch(
+                "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+            ):
+                _process_stream_chunk(
+                    ((), "messages", (ai_msg, {})), state, stream_console, tracker
+                )
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 0, phase="complete")),
+                state,
+                stream_console,
+                tracker,
+            )
+
+        file_op_tracker = MagicMock()
+        file_op_tracker.complete_with_message.return_value = None
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive._stream_agent",
+                new=staged_stream,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.dispatch_hook",
+                new_callable=AsyncMock,
+            ),
+            patch.object(sys, "stdout", stdout_buf),
+        ):
+            await _run_agent_loop(
+                MagicMock(),
+                "task",
+                {"configurable": {"thread_id": "t"}},
+                console,
+                file_op_tracker,
+                quiet=False,
+                stream=False,
+            )
+
+        # The completed attempt's status flushed at completion; the buffered
+        # text flushed at end of run on stdout.
+        assert "🔧 Calling tool: read_file" in console_output.getvalue()
+        assert "done" in stdout_buf.getvalue()

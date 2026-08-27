@@ -62,3 +62,4 @@ async def test_dynamic_copy_renders_literally_and_marks_approximation() -> None:
         assert "approximately 124.0K" in rendered
         assert "anthropic:claude[old]" in rendered
         assert "openai:gpt[new]" in rendered
+        assert "/offload" in rendered

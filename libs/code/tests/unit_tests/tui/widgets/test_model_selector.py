@@ -11,9 +11,11 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.geometry import Offset
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code import clipboard as clipboard_module
 from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
@@ -250,6 +252,60 @@ class TestModelSelectorEscapeKey:
 
 class TestModelSelectorChrome:
     """Tests for model selector title and description chrome."""
+
+    async def test_current_model_title_copies_spec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clicking the current model in the title copies its canonical spec."""
+        copied: list[str] = []
+
+        def fake_copy(
+            _app: App[None],
+            text: str,
+            *,
+            failure_noun: str,
+            success_message: str | None = None,
+        ) -> bool:
+            copied.append(text)
+            assert failure_noun == "selection"
+            assert success_message == "Model copied"
+            _app.notify(success_message)
+            return True
+
+        monkeypatch.setattr(clipboard_module, "copy_text_with_feedback", fake_copy)
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                current_model="claude-sonnet-4-5",
+                current_provider="anthropic",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+            title = screen.query_one("#model-selector-title", Static)
+            x = title.content_region.x - title.region.x
+            model_offset = None
+            plain_offset = None
+            for segment in title.render_line(0):
+                if segment.text.startswith("Select Model"):
+                    plain_offset = Offset(x, 0)
+                if segment.style and segment.style.meta.get("copy_text"):
+                    model_offset = Offset(x, 0)
+                    break
+                x += segment.cell_length
+            assert model_offset is not None
+            assert plain_offset is not None
+
+            await pilot.hover(title, offset=model_offset)
+            assert title.styles.pointer == "pointer"
+            await pilot.hover(title, offset=plain_offset)
+            assert title.styles.pointer == "default"
+            await pilot.click(title, offset=model_offset)
+            await pilot.pause()
+
+            assert copied == ["anthropic:claude-sonnet-4-5"]
+            assert list(app._notifications)[-1].message == "Model copied"
 
     async def test_optional_title_and_description_render(self) -> None:
         """A custom title and description should render above the filter."""

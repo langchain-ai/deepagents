@@ -132,6 +132,7 @@ class TestLoginWithoutStdio:
 
         from deepagents_code.mcp_auth import login
 
+        monkeypatch.delenv(DEBUG, raising=False)
         monkeypatch.setattr("webbrowser.open", lambda _url: False)
 
         captured: list[str] = []

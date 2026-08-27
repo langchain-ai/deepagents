@@ -443,6 +443,37 @@ async def test_local_shell_backend_async_cancellation_preserves_cancelled_error(
     assert task.cancelled()
 
 
+async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers() -> None:
+    """Test that cancellation is not exposed to wrappers as command output."""
+    communication_started = threading.Event()
+    observed_results: list[ExecuteResponse] = []
+    process = MagicMock(pid=1234)
+
+    def block_communication(*, timeout: float) -> tuple[str, str]:
+        communication_started.set()
+        raise subprocess.TimeoutExpired(process.args, timeout)
+
+    class ObservingLocalShellBackend(LocalShellBackend):
+        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            result = super().execute(command, timeout=timeout)
+            observed_results.append(result)
+            return result
+
+    process.communicate.side_effect = block_communication
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch("subprocess.Popen", return_value=process),
+        patch("os.killpg"),
+    ):
+        task = asyncio.create_task(ObservingLocalShellBackend(root_dir=tmpdir).aexecute("sleep 10"))
+        assert await asyncio.to_thread(communication_started.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert observed_results == []
+
+
 def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
     """Test that cancellation does not wait for or run queued executor work."""
 

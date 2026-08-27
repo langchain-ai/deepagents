@@ -39,6 +39,10 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
 )
 
 
+class _CommandCancelled(BaseException):
+    """Signal async cancellation through synchronous execution wrappers."""
+
+
 def _kill_and_reap(process: subprocess.Popen[str]) -> None:
     """Kill a command's process group and reap its shell."""
     kill_succeeded = False
@@ -89,7 +93,7 @@ def _communicate(
             _kill_and_reap(process)
             raise
     _kill_and_reap(process)
-    return "", ""
+    raise _CommandCancelled
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -299,6 +303,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             if timeout is not None and execute_accepts_timeout(type(self)):
                 return self.execute(command, timeout=timeout)
             return self.execute(command)
+        except _CommandCancelled:
+            raise asyncio.CancelledError from None
         finally:
             _ASYNC_EXECUTION_CONTEXT.reset(token)
 

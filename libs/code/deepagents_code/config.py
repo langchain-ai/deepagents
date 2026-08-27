@@ -3140,8 +3140,6 @@ class Credentials:
     view can retain `active` while ordinary field reads remain source compatible.
     """
 
-    __slots__ = ("_active",)
-
     openai_api_key: str | None
     anthropic_api_key: str | None
     google_api_key: str | None

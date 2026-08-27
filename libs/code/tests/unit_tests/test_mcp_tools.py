@@ -94,17 +94,6 @@ def _make_mcp_tool(
     return tool
 
 
-def _make_tool_page(
-    tools: list[MagicMock],
-    next_cursor: str | None = None,
-) -> MagicMock:
-    """Build a mock `list_tools` page result."""
-    page = MagicMock(spec=["tools", "nextCursor"])
-    page.tools = tools
-    page.nextCursor = next_cursor
-    return page
-
-
 def _sole_mcp_failure_warning(
     caplog: pytest.LogCaptureFixture,
     detail: str,
@@ -174,6 +163,32 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return fake
 
 
+
+
+@pytest.fixture
+def fake_create_session() -> Generator[tuple[AsyncMock, list[Any]]]:
+    """Patch `FastMCPClient` and record the transport each server was given.
+
+    The loader now builds one FastMCP client per server instead of opening a
+    session per connection dict, so what a test can inspect is the transport:
+    `recorded[0].url`, `.headers`, `.auth`, `.env`. The stand-in client is
+    reentrant like the real one, so a tool may open it during a call even
+    though discovery already did.
+    """
+    client = AsyncMock()
+    client.list_tools = AsyncMock(return_value=[])
+    client.close = AsyncMock()
+    client.__aenter__ = AsyncMock(return_value=client)
+    client.__aexit__ = AsyncMock(return_value=None)
+
+    recorded: list[Any] = []
+
+    def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+        recorded.append(transport)
+        return client
+
+    with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
+        yield client, recorded
 
 
 @pytest.fixture
@@ -581,8 +596,8 @@ class TestGetMCPTools:
         )
         session, recorded = fake_create_session
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [
+            return_value=(
+[
                     _make_mcp_tool("read_file", "Read a file"),
                     _make_mcp_tool("write_file", "Write a file"),
                 ]
@@ -593,13 +608,8 @@ class TestGetMCPTools:
 
         assert isinstance(manager, MCPSessionManager)
         assert [tool.name for tool in tools] == ["srv_read_file", "srv_write_file"]
-        assert recorded == [
-            {
-                "command": "node",
-                "args": ["server.js"],
-                "env": None,
-                "transport": "stdio",
-            }
+        assert [(t.command, t.args, t.env) for t in recorded] == [
+            ("node", ["server.js"], None)
         ]
         empty_schema: dict[str, Any] = {"type": "object", "properties": {}}
         assert server_infos == [
@@ -645,7 +655,7 @@ class TestGetMCPTools:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, server_infos = await get_mcp_tools(path)
 
         assert tools == []
@@ -701,8 +711,40 @@ class TestGetMCPTools:
         }
 
         await _load_tools_from_config(config)
-        assert recorded[0]["url"] == "https://mcp.linear.app/mcp"
-        assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
+        assert recorded[0].url == "https://mcp.linear.app/mcp"
+        assert recorded[0].headers == {"Authorization": "Bearer tok-123"}
+
+    async def test_stdio_fields_resolve_before_preflight_and_connection(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Stdio preflight and connection creation use resolved values."""
+        monkeypatch.setenv("DA_MCP_HOME", "/opt/mcp")
+        monkeypatch.setenv("DA_MCP_TOKEN", "token")
+        _session, recorded = fake_create_session
+        checked: list[dict[str, Any]] = []
+        config = {
+            "mcpServers": {
+                "srv": {
+                    "command": "${DA_MCP_HOME}/server",
+                    "args": ["--root", "${DA_MCP_HOME}"],
+                    "env": {"TOKEN": "${DA_MCP_TOKEN}"},
+                }
+            }
+        }
+
+        with patch(
+            "deepagents_code.mcp_tools._check_stdio_server",
+            side_effect=lambda _name, server: checked.append(server),
+        ):
+            await _load_tools_from_config(config)
+
+        assert checked[0]["command"] == "/opt/mcp/server"
+        assert checked[0]["args"] == ["--root", "/opt/mcp"]
+        assert recorded[0].command == "/opt/mcp/server"
+        assert recorded[0].args == ["--root", "/opt/mcp"]
+        assert recorded[0].env == {"TOKEN": "token"}
 
     async def test_unset_variable_skips_only_affected_server(
         self,
@@ -728,7 +770,7 @@ class TestGetMCPTools:
         assert infos[0].status == "error"
         assert "mcpServers.broken.args[0]" in (infos[0].error or "")
         assert infos[1].status == "ok"
-        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert [connection.args for connection in recorded] == [["server.js"]]
         assert manager is not None
         await manager.cleanup()
 
@@ -753,9 +795,28 @@ class TestGetMCPTools:
         assert infos[0].status == "error"
         assert "mcpServers.broken.env.PORT" in (infos[0].error or "")
         assert infos[1].status == "ok"
-        assert [connection["args"] for connection in recorded] == [["server.js"]]
+        assert [connection.args for connection in recorded] == [["server.js"]]
         assert manager is not None
         await manager.cleanup()
+
+    async def test_empty_env_is_coerced_to_none(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+    ) -> None:
+        """Empty stdio env dicts are normalized to `None`."""
+        _session, recorded = fake_create_session
+        config = {
+            "mcpServers": {
+                "srv": {
+                    "command": "node",
+                    "args": ["server.js"],
+                    "env": {},
+                }
+            }
+        }
+
+        await _load_tools_from_config(config)
+        assert recorded[0].env is None
 
     async def test_input_schema_is_carried_into_mcp_tool_info(
         self,
@@ -776,8 +837,8 @@ class TestGetMCPTools:
             "required": ["path"],
         }
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [
+            return_value=(
+[
                     _make_mcp_tool(
                         "read_file", "Read a file", input_schema=rich_schema
                     ),
@@ -823,8 +884,8 @@ class TestGetMCPTools:
                 raise AttributeError(msg)
 
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_ExplodingSchemaTool()]  # ty: ignore
+            return_value=(
+[_ExplodingSchemaTool()]  # ty: ignore
             )
         )
 
@@ -851,8 +912,8 @@ class TestGetMCPTools:
         session, _recorded = fake_create_session
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_make_mcp_tool("srv_read", "Read", input_schema=schema)]
+            return_value=(
+[_make_mcp_tool("srv_read", "Read", input_schema=schema)]
             )
         )
 
@@ -884,8 +945,8 @@ class TestGetMCPTools:
         read_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
         write_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [
+            return_value=(
+[
                     _make_mcp_tool("read_file", "Read", input_schema=read_schema),
                     _make_mcp_tool("write_file", "Write", input_schema=write_schema),
                 ]
@@ -1012,19 +1073,16 @@ class TestLoadToolsFromConfigOAuth:
         recorded: list[dict[str, Any]] = []
         session = AsyncMock()
         session.initialize = AsyncMock()
-        session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.list_tools = AsyncMock(return_value=(
+[]))
 
-        @asynccontextmanager
-        async def _fake(
-            connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            recorded.append(connection)
-            yield session
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1038,7 +1096,7 @@ class TestLoadToolsFromConfigOAuth:
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
-        assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
+        assert isinstance(recorded[0].auth, OAuthClientProvider)
         await manager.cleanup()
 
     async def test_discovery_reauth_marks_server_unauthenticated(
@@ -1067,7 +1125,7 @@ class TestLoadToolsFromConfigOAuth:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1135,19 +1193,16 @@ class TestLoadToolsFromConfigOAuth:
         recorded: list[dict[str, Any]] = []
         session = AsyncMock()
         session.initialize = AsyncMock()
-        session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.list_tools = AsyncMock(return_value=(
+[]))
 
-        @asynccontextmanager
-        async def _fake(
-            connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            recorded.append(connection)
-            yield session
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1160,7 +1215,7 @@ class TestLoadToolsFromConfigOAuth:
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
-        assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
+        assert isinstance(recorded[0].auth, OAuthClientProvider)
         # The TUI's re-auth affordance keys off this flag, so it must track
         # provider attachment rather than being inferred from transport alone.
         assert infos[0].uses_oauth is True
@@ -1180,19 +1235,16 @@ class TestLoadToolsFromConfigOAuth:
         recorded: list[dict[str, Any]] = []
         session = AsyncMock()
         session.initialize = AsyncMock()
-        session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
+        session.list_tools = AsyncMock(return_value=(
+[]))
 
-        @asynccontextmanager
-        async def _fake(
-            connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            recorded.append(connection)
-            yield session
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1206,8 +1258,8 @@ class TestLoadToolsFromConfigOAuth:
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
-        assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
-        assert "auth" not in recorded[0]
+        assert recorded[0].headers == {"Authorization": "Bearer tok-123"}
+        assert recorded[0].auth is None
         # No provider attached, so the TUI must not offer re-authentication:
         # the static header would override anything OAuth stored.
         assert infos[0].uses_oauth is False
@@ -1243,7 +1295,7 @@ class TestLoadToolsFromConfigOAuth:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1292,7 +1344,7 @@ class TestLoadToolsFromConfigOAuth:
             raise error
             yield
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1328,7 +1380,7 @@ class TestLoadToolsFromConfigOAuth:
             raise error
             yield
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1369,7 +1421,7 @@ class TestLoadToolsFromConfigOAuth:
             raise challenge
             yield
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1869,7 +1921,7 @@ class TestHealthChecks:
                 new_callable=AsyncMock,
             ),
             patch(
-                "deepagents_code.mcp_tools._create_mcp_session",
+                "deepagents_code.mcp_tools.FastMCPClient",
                 _fail_discovery,
             ),
         ):
@@ -1989,9 +2041,11 @@ class TestToolOrdering:
 
         session = AsyncMock()
         session.initialize = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [
+            return_value=(
+[
                     _make_mcp_tool("zeta", "z"),
                     _make_mcp_tool("alpha", "a"),
                     _make_mcp_tool("mu", "m"),
@@ -1999,16 +2053,12 @@ class TestToolOrdering:
             )
         )
 
-        @asynccontextmanager
-        async def _fake(
-            _connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            yield session
+        recorded: list[Any] = []
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [tool.name for tool in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
@@ -2072,8 +2122,8 @@ class TestLoadToolsConcurrency:
                 session = AsyncMock()
                 session.initialize = AsyncMock()
                 session.list_tools = AsyncMock(
-                    return_value=_make_tool_page(
-                        [_make_mcp_tool(tool_by_server[server])]
+                    return_value=(
+[_make_mcp_tool(tool_by_server[server])]
                     )
                 )
                 if hold is not None:
@@ -2102,7 +2152,7 @@ class TestLoadToolsConcurrency:
                 await asyncio.sleep(0.005)
             hold.set()
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", fake):
             releaser = asyncio.create_task(_release_when_all_open())
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
             await releaser
@@ -2131,7 +2181,7 @@ class TestLoadToolsConcurrency:
             tool_by_server=tool_by_server, sleep_s=0.03
         )
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", fake):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
         assert stats["max_inflight"] == 2
@@ -2162,7 +2212,8 @@ class TestLoadToolsConcurrency:
             session = AsyncMock()
             session.initialize = AsyncMock()
             session.list_tools = AsyncMock(
-                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+                return_value=(
+[_make_mcp_tool(f"tool_{server}")])
             )
             if server in next_server:
                 await finished[next_server[server]].wait()
@@ -2170,7 +2221,7 @@ class TestLoadToolsConcurrency:
             finished[server].set()
             yield session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
         assert finish_order == ["third", "second", "first"]
@@ -2201,11 +2252,12 @@ class TestLoadToolsConcurrency:
             session = AsyncMock()
             session.initialize = AsyncMock()
             session.list_tools = AsyncMock(
-                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+                return_value=(
+[_make_mcp_tool(f"tool_{server}")])
             )
             yield session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
         by_name = {i.name: i for i in infos}
@@ -2245,14 +2297,15 @@ class TestLoadToolsConcurrency:
             session = AsyncMock()
             session.initialize = AsyncMock()
             session.list_tools = AsyncMock(
-                return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
+                return_value=(
+[_make_mcp_tool(f"tool_{server}")])
             )
             await asyncio.sleep(delays[server])
             yield session
 
         with (
             patch("deepagents_code.mcp_tools._check_stdio_server", _check),
-            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
+            patch("deepagents_code.mcp_tools.FastMCPClient", _fake),
         ):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
@@ -2311,7 +2364,7 @@ class TestLoadToolsConcurrency:
             return server_tools
 
         with (
-            patch("deepagents_code.mcp_tools._create_mcp_session", fake),
+            patch("deepagents_code.mcp_tools.FastMCPClient", fake),
             patch("deepagents_code.mcp_tools._apply_tool_filter", _filter),
         ):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
@@ -2348,7 +2401,7 @@ class TestLoadToolsConcurrency:
             yield AsyncMock()  # pragma: no cover - never reached
 
         with (
-            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
+            patch("deepagents_code.mcp_tools.FastMCPClient", _fake),
             pytest.raises(asyncio.CancelledError),
         ):
             await _load_tools_from_config(self._config(*names))
@@ -2390,7 +2443,7 @@ class TestLoadToolsConcurrency:
         )
         with (
             patch("deepagents_code.mcp_tools._check_stdio_server", _slow_check),
-            patch("deepagents_code.mcp_tools._create_mcp_session", fake),
+            patch("deepagents_code.mcp_tools.FastMCPClient", fake),
         ):
             releaser = asyncio.create_task(_release())
             _tools, manager, infos = await _load_tools_from_config(self._config(*names))
@@ -2490,12 +2543,13 @@ class TestLoadToolsConcurrency:
             events.append(("discover", threading.get_ident()))
             session = AsyncMock()
             session.initialize = AsyncMock()
-            session.list_tools = AsyncMock(return_value=_make_tool_page([]))
+            session.list_tools = AsyncMock(return_value=(
+[]))
             yield session
 
         with (
             patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm),
-            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
+            patch("deepagents_code.mcp_tools.FastMCPClient", _fake),
         ):
             _tools, manager, _infos = await _load_tools_from_config(
                 self._config("only")
@@ -2628,22 +2682,20 @@ class TestToolFilterEndToEnd:
 
         session = AsyncMock()
         session.initialize = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
+            return_value=(
+[_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
             )
         )
 
-        @asynccontextmanager
-        async def _fake(
-            _connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            yield session
+        recorded: list[Any] = []
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, server_infos = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
@@ -2670,22 +2722,20 @@ class TestToolFilterEndToEnd:
 
         session = AsyncMock()
         session.initialize = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
+            return_value=(
+[_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
             )
         )
 
-        @asynccontextmanager
-        async def _fake(
-            _connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            yield session
+        recorded: list[Any] = []
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
@@ -2711,22 +2761,20 @@ class TestToolFilterEndToEnd:
 
         session = AsyncMock()
         session.initialize = AsyncMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=None)
         session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
+            return_value=(
+[_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
             )
         )
 
-        @asynccontextmanager
-        async def _fake(
-            _connection: dict[str, Any],
-            *,
-            server_name: str,
-        ) -> AsyncIterator[AsyncMock]:
-            await asyncio.sleep(0)
-            yield session
+        recorded: list[Any] = []
+        def _fake(transport: Any, **_kwargs: Any) -> AsyncMock:
+            recorded.append(transport)
+            return session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["api_search"]
@@ -2758,15 +2806,15 @@ class TestToolFilterEndToEnd:
         fs_session = AsyncMock()
         fs_session.initialize = AsyncMock()
         fs_session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
+            return_value=(
+[_make_mcp_tool("read_file", "r"), _make_mcp_tool("write_file", "w")]
             )
         )
         api_session = AsyncMock()
         api_session.initialize = AsyncMock()
         api_session.list_tools = AsyncMock(
-            return_value=_make_tool_page(
-                [_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
+            return_value=(
+[_make_mcp_tool("search", "s"), _make_mcp_tool("delete", "d")]
             )
         )
 
@@ -2788,7 +2836,7 @@ class TestToolFilterEndToEnd:
             else:
                 yield fs_session
 
-        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
+        with patch("deepagents_code.mcp_tools.FastMCPClient", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         names = sorted(t.name for t in tools)

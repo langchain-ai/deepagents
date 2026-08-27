@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     import argparse
@@ -76,7 +76,7 @@ class ConfigProvider(Protocol):
         """Whether the source survives the process."""
         ...
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
         """Read and coerce one manifest option."""
         ...
 
@@ -118,7 +118,7 @@ class CliProvider:
         """Never durable: CLI state dies with this process."""
         return False
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
         """Read and coerce one option from the parsed namespace.
 
         Args:
@@ -172,7 +172,7 @@ class CliProvider:
 
     @staticmethod
     def _coerce(
-        option: ConfigOption, raw: object, *, flag: str
+        option: ConfigOption[Any], raw: object, *, flag: str
     ) -> ProviderResult[object]:
         """Coerce one already-parsed CLI value to its manifest type.
 

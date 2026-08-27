@@ -148,7 +148,7 @@ class ConfigResolver:
         self._providers = ordered
         self._lock = threading.RLock()
 
-    def get(self, option: ConfigOption) -> ResolvedValue[object]:
+    def get[T](self, option: ConfigOption[T]) -> ResolvedValue[T]:
         """Resolve one option through every provider.
 
         Args:
@@ -158,11 +158,11 @@ class ConfigResolver:
             Resolved value with rank-keyed provenance and health.
         """
         with self._lock:
-            return self._resolve(option, self._providers)
+            return cast("ResolvedValue[T]", self._resolve(option, self._providers))
 
-    def get_without_ranks(
-        self, option: ConfigOption, ranks: Collection[int]
-    ) -> ResolvedValue[object]:
+    def get_without_ranks[T](
+        self, option: ConfigOption[T], ranks: Collection[int]
+    ) -> ResolvedValue[T]:
         """Resolve one option after excluding selected provider ranks.
 
         Args:
@@ -176,11 +176,11 @@ class ConfigResolver:
             providers = tuple(
                 provider for provider in self._providers if provider.rank not in ranks
             )
-            return self._resolve(option, providers)
+            return cast("ResolvedValue[T]", self._resolve(option, providers))
 
     @staticmethod
     def _resolve(
-        option: ConfigOption,
+        option: ConfigOption[Any],
         providers: Sequence[ConfigProvider],
     ) -> ResolvedValue[object]:
         """Resolve one option against a lock-held provider generation.

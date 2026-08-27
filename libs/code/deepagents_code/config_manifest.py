@@ -324,8 +324,8 @@ class CliSpec:
 
 
 @dataclass(frozen=True)
-class ConfigOption:
-    """One user-tunable configuration option and where it can be set."""
+class ConfigOption[T]:
+    """One user-tunable configuration option and its resolved value type."""
 
     key: str
     """Canonical dotted identifier used by `config get`.

@@ -100,7 +100,7 @@ the process is enforcing, and an edit the user just made is not in effect.
 
 
 def coerce_environment_value(
-    option: ConfigOption, raw: str, name: str
+    option: ConfigOption[Any], raw: str, name: str
 ) -> ProviderResult[object]:
     """Coerce one present environment value within the env provider domain.
 
@@ -209,7 +209,7 @@ def coerce_environment_value(
 
 
 def coerce_toml_value(
-    option: ConfigOption, raw: object, *, source: str
+    option: ConfigOption[Any], raw: object, *, source: str
 ) -> ProviderResult[object]:
     """Coerce one present TOML value within the file-provider domain.
 
@@ -315,7 +315,7 @@ def coerce_toml_value(
 
 
 def ranked_toml_value(
-    option: ConfigOption,
+    option: ConfigOption[Any],
     data: Mapping[str, Any],
     *,
     rank: int,
@@ -358,7 +358,7 @@ def ranked_toml_value(
 
 
 def ranked_environment_value(
-    option: ConfigOption,
+    option: ConfigOption[Any],
     environ: Mapping[str, str],
     *,
     rank: int,
@@ -519,7 +519,7 @@ def ranked_theme_environment_value(
 
 
 def ranked_default_value(
-    option: ConfigOption, *, rank: int
+    option: ConfigOption[Any], *, rank: int
 ) -> RankedProviderValue[object]:
     """Produce an option's typed or mode-dependent default provider result.
 
@@ -1370,7 +1370,7 @@ class TomlFileProvider:
             ProviderStatus(self.name, self.path, ProviderHealth.OK),
         )
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
         """Read one option from the current file snapshot.
 
         Args:
@@ -1539,7 +1539,7 @@ class EnvProvider:
         """
         return False
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
         """Read one option from the live environment.
 
         Args:
@@ -1579,7 +1579,7 @@ class DefaultProvider:
         """
         return True
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
         """Return one option's manifest default.
 
         Args:

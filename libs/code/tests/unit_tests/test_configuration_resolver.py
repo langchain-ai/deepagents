@@ -4,7 +4,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Any, Self
+from typing import Any, Self, assert_type
 
 import pytest
 
@@ -255,7 +255,7 @@ class _TrackingProvider:
         self.calls = calls if calls is not None else []
         self.reloads = 0
 
-    def get(self, option: ConfigOption) -> RankedProviderValue[object]:
+    def get(self, option: ConfigOption[Any]) -> RankedProviderValue[object]:
         """Return the fixed result and record provider order."""
         del option
         self.calls.append(self.rank)
@@ -275,7 +275,7 @@ class _TrackingProvider:
         self.reloads += 1
 
 
-def _bool_option(key: str, toml_key: str) -> ConfigOption:
+def _bool_option(key: str, toml_key: str) -> ConfigOption[bool]:
     """Build a synthetic boolean manifest option."""
     return ConfigOption(
         key=key,
@@ -299,6 +299,24 @@ def test_concrete_providers_implement_protocol(tmp_path: Path) -> None:
     assert all(callable(provider.get) for provider in providers)
     assert all(callable(provider.status) for provider in providers)
     assert all(callable(provider.reload) for provider in providers)
+
+
+def test_config_resolver_preserves_option_type() -> None:
+    """A resolved value retains its option's static and runtime value type."""
+    resolver = ConfigResolver((DefaultProvider(),))
+    option: ConfigOption[int] = ConfigOption(
+        key="test.count",
+        group="Test",
+        summary="test option",
+        kind=OptionKind.INT,
+        default=1,
+    )
+
+    resolved = resolver.get(option)
+    assert_type(resolved, ResolvedValue[int])
+    assert_type(resolved.value, int)
+    assert_type(resolver.get_without_ranks(option, set()).value, int)
+    assert resolved.value == 1
 
 
 def test_config_resolver_sorts_providers_by_rank() -> None:

@@ -2956,6 +2956,25 @@ class TestCreateCliAgentProjectContext:
         assert mock_shell.call_args.kwargs["root_dir"] == user_cwd
         assert "LANGSMITH_PROJECT" not in mock_shell.call_args.kwargs["env"]
 
+    @pytest.mark.parametrize("user_value", [None, "1"])
+    def test_local_shell_disables_git_terminal_prompts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        user_value: str | None,
+    ) -> None:
+        """Git prompts are disabled even when the caller requests them."""
+        if user_value is None:
+            monkeypatch.delenv("GIT_TERMINAL_PROMPT", raising=False)
+        else:
+            monkeypatch.setenv("GIT_TERMINAL_PROMPT", user_value)
+
+        mock_shell, _ = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project=None
+        )
+
+        assert mock_shell.call_args.kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
+
     @pytest.mark.parametrize("user_project", ["user-project", ""])
     def test_project_context_restores_user_shell_langchain_project(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, user_project: str

@@ -8,6 +8,7 @@ run directly on the host machine with full system access.
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 import subprocess
@@ -26,10 +27,15 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
+logger = logging.getLogger(__name__)
+
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
 
 _CANCELLATION_POLL_INTERVAL = 0.1
+_ASYNC_CANCELLATION_GRACE_PERIOD = 1
+"""Maximum seconds to wait for cooperative cleanup after async cancellation."""
+
 _PROCESS_REAP_TIMEOUT = 5
 """Maximum seconds to wait for a killed shell process to exit."""
 
@@ -37,10 +43,35 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
     "_ASYNC_EXECUTION_CONTEXT",
     default=None,
 )
+_BACKGROUND_WORKERS: set[asyncio.Task[ExecuteResponse]] = set()
+"""Workers retained until an uncooperative `execute` override finishes."""
 
 
 class _CommandCancelled(BaseException):
     """Signal async cancellation through synchronous execution wrappers."""
+
+
+def _release_background_worker(worker: asyncio.Task[ExecuteResponse]) -> None:
+    """Consume the result of an execution worker retained after cancellation."""
+    _BACKGROUND_WORKERS.discard(worker)
+    if worker.cancelled():
+        return
+    try:
+        worker.result()
+    except BaseException:  # noqa: BLE001  # Done callbacks cannot propagate worker control-flow exceptions.
+        logger.warning("Local shell execution failed after its caller was cancelled", exc_info=True)
+
+
+async def _wait_for_worker_shutdown(worker: asyncio.Task[ExecuteResponse]) -> bool:
+    """Wait through repeated cancellation up to the cleanup grace period."""
+    deadline = asyncio.get_running_loop().time() + _ASYNC_CANCELLATION_GRACE_PERIOD
+    while not worker.done():
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            return False
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait({worker}, timeout=remaining)
+    return True
 
 
 def _kill_and_reap(process: subprocess.Popen[str]) -> None:
@@ -325,6 +356,11 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         Raises:
             asyncio.CancelledError: If the caller cancels command execution.
+
+        Note:
+            Cancellation allows synchronous execution one second for cleanup.
+            An overridden `execute` method that does not cooperate may continue
+            running in a background thread after cancellation is raised.
         """
         cancellation_event = threading.Event()
         execution_started = threading.Event()
@@ -344,9 +380,16 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             cancellation_event.set()
             if not execution_started.is_set():
                 worker.cancel()
-            while not worker.done():
-                with suppress(asyncio.CancelledError):
-                    await asyncio.wait({worker})
+            if not await _wait_for_worker_shutdown(worker):
+                logger.warning(
+                    "Cancellation of local shell backend %s (%s) exceeded %s second; its overridden execute method may still be running",
+                    self.id,
+                    type(self).__name__,
+                    _ASYNC_CANCELLATION_GRACE_PERIOD,
+                )
+                _BACKGROUND_WORKERS.add(worker)
+                worker.add_done_callback(_release_background_worker)
+                raise
             if not worker.cancelled():
                 worker.exception()
             raise

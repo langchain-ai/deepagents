@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import deepagents.backends.local_shell as local_shell_module
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
@@ -472,6 +473,42 @@ async def test_local_shell_backend_async_cancellation_bypasses_execute_wrappers(
             await task
 
     assert observed_results == []
+
+
+async def test_local_shell_backend_async_cancellation_bounds_override_wait(caplog: pytest.LogCaptureFixture) -> None:
+    """Test that an uncooperative override cannot block cancellation."""
+    execution_started = threading.Event()
+    release_execution = threading.Event()
+    execution_finished = threading.Event()
+
+    class SlowLocalShellBackend(LocalShellBackend):
+        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            execution_started.set()
+            release_execution.wait()
+            execution_finished.set()
+            return ExecuteResponse(output="done", exit_code=0, truncated=False)
+
+    with (
+        tempfile.TemporaryDirectory() as tmpdir,
+        patch.object(local_shell_module, "_ASYNC_CANCELLATION_GRACE_PERIOD", 0.01),
+        caplog.at_level("WARNING", logger="deepagents.backends.local_shell"),
+    ):
+        task = asyncio.create_task(SlowLocalShellBackend(root_dir=tmpdir).aexecute("slow override"))
+        assert await asyncio.to_thread(execution_started.wait, 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=0.5)
+
+        release_execution.set()
+        assert await asyncio.to_thread(execution_finished.wait, 1)
+        for _ in range(100):
+            if not local_shell_module._BACKGROUND_WORKERS:
+                break
+            await asyncio.sleep(0)
+
+    assert task.cancelled()
+    assert not local_shell_module._BACKGROUND_WORKERS
+    assert "overridden execute method may still be running" in caplog.text
 
 
 def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:

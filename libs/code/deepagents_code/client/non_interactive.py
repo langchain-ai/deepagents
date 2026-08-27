@@ -407,10 +407,18 @@ class StreamState:
     """
 
     show_reasoning: bool = False
-    """Whether provider-visible reasoning is rendered to stderr."""
+    """Whether provider-visible reasoning is rendered to stderr.
+
+    Immutable configuration. Reasoning is written as it arrives even when
+    `stream` is `False`, and is never accumulated into `full_response`.
+    """
 
     reasoning_active: bool = False
-    """Whether the current output phase has emitted its reasoning heading."""
+    """Whether the `Reasoning:` heading is already written for the current run.
+
+    Cleared by `_end_reasoning` at the next text block, tool call, or round
+    boundary, so each unbroken run of reasoning blocks gets one heading.
+    """
 
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
@@ -612,7 +620,14 @@ def _record_usage_from_message(
 
 
 def _write_reasoning(text: str, state: StreamState) -> None:
-    """Write provider-visible reasoning to a phase-framed stderr stream."""
+    """Write reasoning to stderr under a one-time `Reasoning:` heading.
+
+    Sets `state.reasoning_active` so the heading is not repeated until
+    `_end_reasoning` closes the phase. Gated on `state.show_reasoning` so the
+    invariant holds for every call site, not just the current one.
+    """
+    if not state.show_reasoning:
+        return
     if not state.reasoning_active:
         sys.stderr.write("Reasoning:\n")
         state.reasoning_active = True
@@ -1515,7 +1530,8 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
-        show_reasoning: Write provider-visible reasoning to stderr.
+        show_reasoning: Write provider-visible reasoning to stderr as it
+            arrives, independent of `stream`.
         message_kwargs: Extra fields merged into the initial HumanMessage
             dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
@@ -2016,10 +2032,14 @@ async def run_non_interactive(
             stderr so that only the agent's response text appears on stdout.
         stream: When `True` (default), text chunks are written to stdout
             as they arrive.
-        show_reasoning: Write provider-visible reasoning to stderr.
 
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
+        show_reasoning: Write provider-visible reasoning to stderr as it
+            arrives, under a one-time `Reasoning:` heading per phase.
+
+            Independent of `stream`: reasoning is never buffered into the final
+            response, so it streams even when `stream` is `False`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.

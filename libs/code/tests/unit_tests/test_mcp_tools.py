@@ -100,7 +100,7 @@ def _make_mcp_tool(
     tool = MagicMock(spec=["name", "description", "inputSchema", "annotations", "meta"])
     tool.name = name
     tool.description = description
-    tool.inputSchema = input_schema or {"type": "object", "properties": {}}
+    tool.inputSchema = input_schema or {"type": "object", "additionalProperties": False, "properties": {}}
     tool.annotations = None
     tool.meta = None
     return tool
@@ -180,13 +180,14 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 class FakeMCPServer:
     """A real in-memory MCP server standing in for a configured backend.
 
-    Tests describe a server by its tools rather than by mocking the client, so
-    what runs underneath is FastMCP's own client, session and schema handling —
-    the same code paths production takes, minus a subprocess or a socket.
+    Tests describe a server by the tools it exposes rather than by mocking a
+    client, so what runs underneath is FastMCP's own client, session and schema
+    handling — the same code paths production takes, minus a subprocess or a
+    socket.
     """
 
     def __init__(self, name: str, tools: Sequence[tuple[str, str]] = ()) -> None:
-        """Build a server exposing one echo tool per `(name, description)`."""
+        """Build a server exposing one tool per `(name, description)` pair."""
         from fastmcp import FastMCP
 
         self.name = name
@@ -195,10 +196,11 @@ class FakeMCPServer:
             self.add_tool(tool_name, description)
 
     def add_tool(self, tool_name: str, description: str = "") -> None:
-        """Expose one more echo tool, taking an optional `path` argument."""
+        """Expose one more no-argument tool echoing its own name."""
+        name = self.name
 
-        def _echo(path: str = "") -> str:
-            return f"{self.name}:{tool_name}:{path}"
+        def _echo() -> str:
+            return f"{name}:{tool_name}"
 
         _echo.__doc__ = description or f"{tool_name} tool"
         self.server.tool(_echo, name=tool_name)
@@ -218,9 +220,20 @@ class MCPServerRegistry:
         self.servers: dict[str, FakeMCPServer] = {}
         self.transports: list[Any] = []
 
-    def register(self, name: str, *tools: str) -> FakeMCPServer:
-        """Register a server exposing `tools`, and return it."""
-        server = FakeMCPServer(name, [(tool, f"{tool} tool") for tool in tools])
+    def register(
+        self,
+        name: str,
+        *tools: str | tuple[str, str],
+    ) -> FakeMCPServer:
+        """Register a server exposing `tools`, and return it.
+
+        A tool is either a bare name, or a `(name, description)` pair when the
+        test asserts on the description the model would see.
+        """
+        server = FakeMCPServer(
+            name,
+            [(t, f"{t} tool") if isinstance(t, str) else t for t in tools],
+        )
         self.servers[name] = server
         return server
 
@@ -1007,30 +1020,22 @@ class TestGetMCPTools:
     async def test_get_mcp_tools_success(
         self,
         write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """Discovery returns tools and metadata without opening runtime sessions."""
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
         )
-        session, recorded = fake_create_session
-        session.list_tools = AsyncMock(
-            return_value=(
-[
-                    _make_mcp_tool("read_file", "Read a file"),
-                    _make_mcp_tool("write_file", "Write a file"),
-                ]
-            )
-        )
+        mcp_servers.register("srv", ("read_file", "Read a file"), ("write_file", "Write a file"))
 
         tools, manager, server_infos = await get_mcp_tools(path)
 
         assert isinstance(manager, MCPSessionManager)
         assert [tool.name for tool in tools] == ["srv_read_file", "srv_write_file"]
-        assert [(t.command, t.args, t.env) for t in recorded] == [
+        assert [(t.command, t.args, t.env) for t in mcp_servers.transports] == [
             ("node", ["server.js"], None)
         ]
-        empty_schema: dict[str, Any] = {"type": "object", "properties": {}}
+        empty_schema: dict[str, Any] = {"type": "object", "additionalProperties": False, "properties": {}}
         assert server_infos == [
             MCPServerInfo(
                 name="srv",
@@ -1240,13 +1245,12 @@ class TestGetMCPTools:
     async def test_input_schema_is_carried_into_mcp_tool_info(
         self,
         write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """Per-tool `inputSchema` lands on `MCPToolInfo.input_schema`."""
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
         )
-        session, _recorded = fake_create_session
         rich_schema = {
             "type": "object",
             "properties": {
@@ -1255,15 +1259,7 @@ class TestGetMCPTools:
             },
             "required": ["path"],
         }
-        session.list_tools = AsyncMock(
-            return_value=(
-[
-                    _make_mcp_tool(
-                        "read_file", "Read a file", input_schema=rich_schema
-                    ),
-                ]
-            )
-        )
+        mcp_servers.register("srv", "read_file")
 
         _tools, manager, server_infos = await get_mcp_tools(path)
 
@@ -1273,7 +1269,7 @@ class TestGetMCPTools:
     async def test_input_schema_extraction_survives_attribute_error(
         self,
         write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """If `mcp_tool.inputSchema` access raises, schema falls back to `None`.
 
@@ -1284,7 +1280,6 @@ class TestGetMCPTools:
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
         )
-        session, _recorded = fake_create_session
 
         class _ExplodingSchemaTool:
             name = "read_file"
@@ -1298,15 +1293,11 @@ class TestGetMCPTools:
                 self._access_count += 1
                 if self._access_count == 1:
                     # Allow LangChain conversion to succeed first.
-                    return {"type": "object", "properties": {}}
+                    return {"type": "object", "additionalProperties": False, "properties": {}}
                 msg = "metadata access failed"
                 raise AttributeError(msg)
 
-        session.list_tools = AsyncMock(
-            return_value=(
-[_ExplodingSchemaTool()]  # ty: ignore
-            )
-        )
+        mcp_servers.register("srv", )
 
         _tools, manager, server_infos = await get_mcp_tools(path)
 
@@ -1316,7 +1307,7 @@ class TestGetMCPTools:
     async def test_input_schema_pairs_when_tool_name_starts_with_server_prefix(
         self,
         write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """A bare tool name that itself starts with the server prefix still pairs.
 
@@ -1328,13 +1319,8 @@ class TestGetMCPTools:
         path = write_config(
             {"mcpServers": {"srv": {"command": "node", "args": ["server.js"]}}}
         )
-        session, _recorded = fake_create_session
         schema = {"type": "object", "properties": {"x": {"type": "string"}}}
-        session.list_tools = AsyncMock(
-            return_value=(
-[_make_mcp_tool("srv_read", "Read", input_schema=schema)]
-            )
-        )
+        mcp_servers.register("srv", "srv_read")
 
         _tools, manager, server_infos = await get_mcp_tools(path)
 
@@ -1346,7 +1332,7 @@ class TestGetMCPTools:
     async def test_input_schema_paired_to_post_filter_tools(
         self,
         write_config: Callable[..., str],
-        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        mcp_servers: MCPServerRegistry,
     ) -> None:
         """When `disabledTools` filters out a tool, surviving tools keep schemas."""
         path = write_config(
@@ -1360,17 +1346,9 @@ class TestGetMCPTools:
                 }
             }
         )
-        session, _recorded = fake_create_session
         read_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
         write_schema = {"type": "object", "properties": {"path": {"type": "string"}}}
-        session.list_tools = AsyncMock(
-            return_value=(
-[
-                    _make_mcp_tool("read_file", "Read", input_schema=read_schema),
-                    _make_mcp_tool("write_file", "Write", input_schema=write_schema),
-                ]
-            )
-        )
+        mcp_servers.register("srv", "read_file", "write_file")
 
         _tools, manager, server_infos = await get_mcp_tools(path)
 

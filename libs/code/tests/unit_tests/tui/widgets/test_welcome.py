@@ -867,6 +867,19 @@ class _BannerApp(App[None]):
         yield self._banner
 
 
+class TestBorder:
+    """Tests for the charset-aware banner border."""
+
+    async def test_ascii_mode_uses_ascii_border(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ASCII mode replaces the default rounded border."""
+        monkeypatch.setattr(welcome_module, "is_ascii_mode", lambda: True)
+        banner = _make_banner(show_model=False)
+        async with _BannerApp(banner).run_test(size=(80, 24)):
+            assert banner.styles.border_top[0] == "ascii"
+
+
 def _click_offset(banner: WelcomeBanner, needle: str) -> tuple[int, int]:
     """Return a click offset inside the rendered span containing `needle`.
 

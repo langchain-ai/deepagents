@@ -35,6 +35,7 @@ from deepagents_code.config import (
     get_glyphs,
     get_langsmith_project_name,
     get_langsmith_replica_project,
+    is_ascii_mode,
 )
 from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
@@ -263,6 +264,8 @@ class WelcomeBanner(Static):
     def on_mount(self) -> None:
         """Watch for theme changes and start the LangSmith project-URL fetch."""
         self.watch(self.app, "theme", self._on_theme_change, init=False)
+        if is_ascii_mode():
+            self.styles.border = ("ascii", theme.get_theme_colors(self).primary)
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
 

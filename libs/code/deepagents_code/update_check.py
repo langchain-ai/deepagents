@@ -3970,10 +3970,6 @@ async def perform_uninstall_extra(
     method_error = uninstall_extra_method_error(extra)
     if method_error is not None:
         return ExtraRemovalOutcome(False, method_error)
-    if not shutil.which("uv"):
-        return ExtraRemovalOutcome(
-            False, "`uv` not found on PATH; extras cannot be removed."
-        )
 
     with update_install_lock() as holding_update_lock:
         if not holding_update_lock:
@@ -3998,6 +3994,10 @@ async def perform_uninstall_extra(
             return ExtraRemovalOutcome(False, str(exc), extra_was_absent=True)
         except (ToolRequirementIntrospectionError, ValueError) as exc:
             return ExtraRemovalOutcome(False, f"{type(exc).__name__}: {exc}")
+        if not shutil.which("uv"):
+            return ExtraRemovalOutcome(
+                False, "`uv` not found on PATH; extras cannot be removed."
+            )
         try:
             success, output = await _run_install_subprocess(
                 cmd, progress=progress, log_path=log_path

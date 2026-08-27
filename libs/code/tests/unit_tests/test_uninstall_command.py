@@ -303,14 +303,13 @@ class TestPerformUninstallExtra:
         assert message in outcome.output
         run.assert_not_awaited()
 
-    async def test_absent_extra_never_spawns(self) -> None:
+    async def test_absent_extra_is_noop_without_uv(self) -> None:
+        """An already-completed removal does not require an executable."""
         with (
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
             ),
-            patch(
-                "deepagents_code.update_check.shutil.which", return_value="/usr/bin/uv"
-            ),
+            patch("deepagents_code.update_check.shutil.which", return_value=None),
             patch(
                 "deepagents_code.update_check.uninstall_extra_command",
                 side_effect=ExtraNotInstalledError("Extra 'ollama' is not installed."),
@@ -324,6 +323,31 @@ class TestPerformUninstallExtra:
         assert outcome.success is False
         assert "not installed" in outcome.output
         assert outcome.extra_was_absent is True
+        run.assert_not_awaited()
+
+    async def test_selected_extra_requires_uv_before_spawning(self) -> None:
+        """A removal that needs a rebuild still fails cleanly without uv."""
+        run = AsyncMock()
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method", return_value="uv"
+            ),
+            patch("deepagents_code.update_check.shutil.which", return_value=None),
+            patch(
+                "deepagents_code.update_check.read_installed_distribution_version",
+                return_value="9.8.7",
+            ),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                return_value="uv tool install safe-command",
+            ),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            outcome = await perform_uninstall_extra("ollama")
+
+        assert outcome.success is False
+        assert "`uv` not found" in outcome.output
+        assert outcome.extra_was_absent is False
         run.assert_not_awaited()
 
     async def test_lock_wraps_command_generation_and_subprocess(self) -> None:

@@ -2139,6 +2139,9 @@ async def run_non_interactive(
     result.apply_to_runtime_state()
 
     thread_id = generate_thread_id()
+    from deepagents_code._debug import bind_debug_logging_to_thread
+
+    bind_debug_logging_to_thread(thread_id)
 
     thread_url_lookup: ThreadUrlLookupState | None = None
     if not quiet:

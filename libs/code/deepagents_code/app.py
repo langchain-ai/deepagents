@@ -2680,6 +2680,9 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+        from deepagents_code._debug import bind_debug_logging_to_thread
+
+        bind_debug_logging_to_thread(self._thread_id)
 
         from deepagents_code.hooks.manager import HooksManager
 
@@ -2733,6 +2736,9 @@ class TextualSessionState:
             self.turn_number = 0
             self.turn_id = None
         self._thread_id = value
+        from deepagents_code._debug import bind_debug_logging_to_thread
+
+        bind_debug_logging_to_thread(value)
 
     def advance_turn(self) -> tuple[str, int]:
         """Begin a new user turn, advancing the per-thread turn markers.

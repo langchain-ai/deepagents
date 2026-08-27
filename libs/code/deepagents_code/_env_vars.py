@@ -180,11 +180,11 @@ unset.
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
-DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+DEBUG_DIRECTORY = "DEEPAGENTS_CODE_DEBUG_DIRECTORY"
+"""Directory for per-thread debug logs (default: `DEFAULT_DEBUG_DIRECTORY`)."""
 
-DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
-"""Default path for the debug log when `DEBUG_FILE` is unset."""
+DEFAULT_DEBUG_DIRECTORY = "/tmp/deepagents_debug"  # noqa: S108  # opt-in debug logs
+"""Default directory for debug logs when `DEBUG_DIRECTORY` is unset."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.

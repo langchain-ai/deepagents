@@ -102,14 +102,14 @@ uv run deepagents-code
 | Variable | Effect |
 | --- | --- |
 | `DEEPAGENTS_CODE_DEBUG` | Master switch. Preserves the server subprocess log on exit (printing its path to stderr) and attaches the client `DEBUG` file handler. Truthy: `1`/`true`/`yes`/`on` (case-insensitive). Falsy: `0`/`false`/`no`/`off`/empty/unset. |
-| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Overrides the client log path (default `/tmp/deepagents_debug.log`). **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy**; does **not** affect the server subprocess log. |
+| `DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>` | Overrides the client log directory (default `/tmp/deepagents_debug`). Each thread writes to `<thread-id>.log`. **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy**; does **not** affect the server subprocess log. |
 
 Then pick the log you need by symptom:
 
 | Symptom | Log you want | Default location |
 | --- | --- | --- |
 | App crashes on launch (one-line failure banner) | **Server subprocess log** — the real traceback | `$TMPDIR/deepagents_server_log_*.txt` |
-| App starts, then misbehaves (UI, model calls, slash commands) | **Client app log** — `deepagents_code` at `DEBUG` | `/tmp/deepagents_debug.log` |
+| App starts, then misbehaves (UI, model calls, slash commands) | **Client app log** — `deepagents_code` at `DEBUG` | `/tmp/deepagents_debug/<thread-id>.log` |
 
 ### Startup crash -> server subprocess log
 
@@ -133,12 +133,12 @@ The TUI only surfaces a one-line banner; the actual exception lives in the subpr
 For problems that appear after the app is up, tail the client log in another terminal while reproducing:
 
 ```bash
-tail -f /tmp/deepagents_debug.log
+tail -f /tmp/deepagents_debug/<thread-id>.log
 ```
 
-To send it elsewhere, also `export DEEPAGENTS_CODE_DEBUG_FILE=<path>`. The handler appends across runs, so a single file accumulates every session.
+To send logs elsewhere, also `export DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>`. Each thread gets its own append-only file, and changing threads in the app switches the active log file.
 
-The file is created or tightened to user-only access. A symlink at the path is refused. If the file cannot be secured, no file handler is attached and a warning goes to stderr. Use the in-app Debug Console in that case.
+The directory is created or tightened to owner-only access, and each file is created or tightened to user-only access. Symlinks are refused. If either cannot be secured, no file handler is attached and a warning goes to stderr. Use the in-app Debug Console in that case.
 
 Stdio MCP server stderr is captured here at `DEBUG`. This keeps server-side failures visible when the TUI cannot show process stderr. Each record is one line, capped at 4096 characters. Characters in the Unicode `C` categories are removed, which includes control and format characters. The ESC byte of an ANSI sequence is removed but the rest stays as literal text, so the log is not free of escape-sequence residue. The text comes from the server. It can contain credentials or other sensitive values. Enable `DEBUG` logging only if you accept that risk, and do not share the log file.
 

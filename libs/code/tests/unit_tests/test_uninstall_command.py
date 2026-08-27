@@ -68,8 +68,7 @@ class TestUninstallExtraCommand:
 
         assert command == (
             "uv tool install --reinstall -U --python '/opt/Python 3.13/bin/python' "
-            f"'deepagents-code[nvidia]=={__version__}' --with langchain-custom "
-            "--prerelease allow"
+            f"'deepagents-code[nvidia]=={__version__}' --with langchain-custom"
         )
 
     def test_last_extra_reinstalls_plain_pinned_package(
@@ -79,8 +78,19 @@ class TestUninstallExtraCommand:
         monkeypatch.setattr(sys, "prefix", str(tmp_path))
 
         assert uninstall_extra_command("ollama") == (
+            f"uv tool install --reinstall -U deepagents-code=={__version__}"
+        )
+
+    def test_prerelease_install_keeps_prerelease_resolution_enabled(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_receipt(tmp_path, ("ollama",))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+        monkeypatch.setattr("deepagents_code.update_check.__version__", "1.2.0rc1")
+
+        assert uninstall_extra_command("ollama") == (
             "uv tool install --reinstall -U "
-            f"deepagents-code=={__version__} --prerelease allow"
+            "deepagents-code==1.2.0rc1 --prerelease allow"
         )
 
     def test_absent_extra_raises_without_building_a_command(

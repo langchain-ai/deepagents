@@ -3659,7 +3659,7 @@ def uninstall_extra_command(
     extras.remove(selected_extra)
     return _uv_tool_install_command(
         version=__version__,
-        include_prereleases=True,
+        include_prereleases=None,
         distribution_name=distribution_name,
         extras=extras,
         reinstall=True,

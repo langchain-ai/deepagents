@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from deepagents_code.extensions.registry import ExtensionRegistry, SourceInfo
 
 
-def _module_name(path: Path) -> str:
+def _extension_module_name(path: Path) -> str:
     digest = hashlib.sha256(str(path.resolve()).encode()).hexdigest()[:16]
     return f"deepagents_code_extension_{digest}"
 
@@ -27,7 +27,7 @@ def _module_name(path: Path) -> str:
 def _import_factory(
     source: SourceInfo,
 ) -> tuple[str, Callable[[ExtensionAPI], Awaitable[None]]]:
-    name = _module_name(source.path)
+    name = _extension_module_name(source.path)
     spec = importlib.util.spec_from_file_location(
         name,
         source.path,

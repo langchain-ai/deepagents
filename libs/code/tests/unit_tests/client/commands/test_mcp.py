@@ -118,6 +118,31 @@ class TestRunMCPLoginList:
         assert exit_code == 0
         assert capsys.readouterr().out.strip() == "No MCP servers need login."
 
+    async def test_unreadable_token_state_returns_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A server whose token file cannot be read must not get an all-clear."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://notion.test/mcp","auth":"oauth"}}}'
+        )
+        with (
+            patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path),
+            patch.object(
+                FileTokenStorage, "get_tokens", side_effect=ValueError("corrupt")
+            ),
+        ):
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "Could not read login state for 'notion'" in captured.err
+        assert "No MCP servers need login." not in captured.out
+
 
 class TestRunMCPLogin:
     """Behavior of the `mcp login` command handler."""

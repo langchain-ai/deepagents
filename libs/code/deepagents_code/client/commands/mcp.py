@@ -92,8 +92,8 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
     """List configured OAuth servers without stored tokens.
 
     Returns:
-        Process exit code: 0 on success, 1 on config failure, or 2 when no
-            config file was found.
+        Process exit code: 0 on success, 1 on config failure or unreadable
+            token state, or 2 when no config file was found.
     """
     from deepagents_code._invocation import invoked_name
     from deepagents_code.mcp_login_service import (
@@ -127,6 +127,7 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
         )
 
     needs_login: list[str] = []
+    unreadable = 0
     for server_name, server_config in valid_config["mcpServers"].items():
         if server_config.get("auth") != "oauth":
             continue
@@ -139,11 +140,16 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
                 f"{format_login_failure(exc)}",
                 file=sys.stderr,
             )
+            unreadable += 1
             continue
         if tokens is None:
             needs_login.append(server_name)
 
     if not needs_login:
+        # Unreadable token state is not an all-clear: the server's login state
+        # is unknown, so reporting "no servers need login" would be false.
+        if unreadable:
+            return 1
         console.print("No MCP servers need login.")
         return 0
     console.print("MCP servers needing login:")
@@ -154,7 +160,7 @@ async def run_mcp_login_list(*, config_path: str | None) -> int:
         f"Run `{invoked_name()} mcp login <server>` to authenticate.",
         markup=False,
     )
-    return 0
+    return 1 if unreadable else 0
 
 
 # Maintainer note: `deepagents-talon` dynamically imports `run_mcp_login` from

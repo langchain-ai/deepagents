@@ -751,6 +751,33 @@ class TestServerSession:
         mock_mcp.cleanup.assert_awaited_once()
         mock_server.stop.assert_called_once()
 
+    async def test_forwards_summarization_model(self) -> None:
+        """The context manager forwards the dedicated summary model.
+
+        `start_server_and_get_agent` accepts `summarization_model`; a wrapper
+        that drops it makes the option unreachable for `server_session`
+        callers, and server startup is the only channel that configures
+        server-owned `/offload` summaries.
+        """
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), mock_server, None),
+        ) as start:
+            async with server_session(
+                assistant_id="agent",
+                summarization_model="openai:summary-model",
+            ):
+                pass
+
+        start.assert_awaited_once()
+        await_args = start.await_args
+        assert await_args is not None
+        assert await_args.kwargs["summarization_model"] == "openai:summary-model"
+
 
 class TestPreflightValidateMCPConfig:
     """Pre-flight validation of `--mcp-config` raises an actionable error."""

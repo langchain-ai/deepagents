@@ -123,39 +123,106 @@ class _RetryingModelInvoker(Runnable[LanguageModelInput, AIMessage]):
         )
 
 
+def _require_helper_slot(helper: object, name: str, purpose: str) -> None:
+    """Fail loudly when an SDK summarization slot dcode overwrites is gone.
+
+    Every write dcode makes into `_lc_helper` replaces behavior the SDK would
+    otherwise supply. Assigning to a renamed slot would create a new attribute
+    nothing reads, leaving the SDK's own behavior in place -- a silent no-op
+    that reports nothing. Checking first turns that into a loud failure.
+
+    Args:
+        helper: The SDK summarization helper being patched.
+        name: Attribute dcode is about to overwrite.
+        purpose: What dcode loses if the slot is gone, phrased to follow
+            "so dcode cannot ...".
+
+    Raises:
+        AttributeError: If the SDK no longer exposes the named slot.
+    """
+    if hasattr(helper, name):
+        return
+    msg = (
+        f"{type(helper).__name__} exposes no {name!r} slot, so dcode cannot "
+        f"{purpose}. The SDK's summarization internals have changed."
+    )
+    raise AttributeError(msg)
+
+
 def _install_summary_model_retries(
     summarization: SummarizationMiddleware,
     model: BaseChatModel | None = None,
 ) -> None:
     """Replace LangChain's generic summary retries with dcode's exact policy.
 
-    Raises:
-        AttributeError: If the SDK no longer exposes the summary-model slot.
+    Also selects the model summaries are generated with, which is the only
+    place a `--summarization-model` override takes effect.
+
+    Args:
+        summarization: Middleware whose summary-model slot is replaced.
+        model: Model to generate summaries with. `None` reuses
+            `summarization.model`, the model driving thresholds and counting.
     """
     helper = summarization._lc_helper
-    # Assigning to a renamed slot would create a new attribute nothing reads,
-    # leaving LangChain's unconditional three-attempt `with_retry` in place --
-    # a silent no-op that defeats `--max-retries 0` and reports nothing.
-    if not hasattr(helper, "_summary_model"):
-        msg = (
-            f"{type(helper).__name__} exposes no '_summary_model' slot, so dcode "
-            "cannot own compaction summarization retries. The SDK's "
-            "summarization internals have changed."
-        )
-        raise AttributeError(msg)
-    helper._summary_model = _RetryingModelInvoker(model or summarization.model)
+    # A renamed slot would leave LangChain's unconditional three-attempt
+    # `with_retry` in place, silently defeating `--max-retries 0`.
+    _require_helper_slot(
+        helper, "_summary_model", "own compaction summarization retries"
+    )
+    helper._summary_model = _RetryingModelInvoker(
+        model if model is not None else summarization.model
+    )
+
+
+def _install_summary_trim_limit(
+    summarization: SummarizationMiddleware, model: BaseChatModel
+) -> None:
+    """Bound the history sent to a dedicated summary model.
+
+    Set after construction rather than through the
+    `create_summarization_middleware` kwarg because the summary model is built
+    lazily, long after the middleware exists. Raises `AttributeError` through
+    `_require_helper_slot` if the slot is gone.
+
+    Args:
+        summarization: Middleware whose trim budget is replaced.
+        model: The model summaries are generated with.
+    """
+    helper = summarization._lc_helper
+    # dcode leaves trimming off by default: `create_summarization_middleware`
+    # passes `trim_tokens_to_summarize=None`, overriding LangChain's 4000, and
+    # the helper then skips trimming entirely. So a renamed slot would send the
+    # whole conversation to a model picked for being smaller than the main one.
+    _require_helper_slot(
+        helper,
+        "trim_tokens_to_summarize",
+        "bound the history sent to a dedicated summary model",
+    )
+    helper.trim_tokens_to_summarize = _summary_trim_limit(model)
 
 
 def _summary_trim_limit(model: BaseChatModel) -> int:
-    """Reserve summary-model input space for the summary prompt and serialization.
+    """Return the token budget for history sent to the summary model.
+
+    Reserves a fifth of the model's input window for the summary prompt,
+    message serialization overhead, and the imprecision of the approximate
+    token counter that measures against this budget -- the provider limit is
+    hard, the measurement is not.
+
+    Args:
+        model: The model summaries are generated with.
 
     Returns:
-        The summary-history budget.
+        The summary-history budget, falling back to
+            `_SUMMARY_TRIM_FALLBACK` when the model exposes no usable positive
+            `max_input_tokens`.
     """
     profile = getattr(model, "profile", None)
     if not isinstance(profile, dict):
         return _SUMMARY_TRIM_FALLBACK
     context_limit = profile.get("max_input_tokens")
+    # `bool` is an `int` subclass: `max_input_tokens=True` would otherwise
+    # reserve its way down to a one-token summary budget.
     if (
         not isinstance(context_limit, int)
         or isinstance(context_limit, bool)
@@ -168,8 +235,21 @@ def _summary_trim_limit(model: BaseChatModel) -> int:
 def _install_summary_token_counter(
     summarization: SummarizationMiddleware, model: BaseChatModel
 ) -> None:
-    """Count dedicated-summary input with that model's provider tuning."""
+    """Count dedicated-summary input with that model's provider tuning.
+
+    Raises `AttributeError` through `_require_helper_slot` if a slot is gone.
+
+    Args:
+        summarization: Middleware whose summary token counters are replaced.
+        model: The model summaries are generated with.
+    """
     helper = summarization._lc_helper
+    # A renamed slot would measure the summary budget with the main model's
+    # tuning while spending it against the summary model's window.
+    for slot in ("token_counter", "_partial_token_counter"):
+        _require_helper_slot(
+            helper, slot, "count dedicated-summary input for the right provider"
+        )
     counter = _get_approximate_token_counter(model)
     helper.token_counter = counter
     helper._partial_token_counter = partial(
@@ -192,25 +272,49 @@ class _LazySummaryModel:
         self._cli_max_retries = cli_max_retries
         self._lock = Lock()
         self._configured = False
+        self._warned = False
         self._create_summary = summarization._lc_helper._create_summary
         self._acreate_summary = summarization._lc_helper._acreate_summary
 
     def _configure(self) -> None:
-        """Construct and install the model once, retrying after failures."""
+        """Install the model once, degrading to the main model on failure.
+
+        A summary model that cannot be built is a broken optimization, not a
+        broken session: raising here would fail the turn that triggered
+        compaction and would also break `/compact`, the tool the user reaches
+        for when the context is full. So the summary runs on the main model
+        instead and the next compaction retries the override.
+        """
         with self._lock:
             if self._configured:
                 return
             from deepagents_code.config import create_model
 
-            model = create_model(
-                self._model_spec,
-                cli_max_retries=self._cli_max_retries,
-            ).model
+            try:
+                model = create_model(
+                    self._model_spec,
+                    cli_max_retries=self._cli_max_retries,
+                ).model
+            except Exception as exc:
+                # BlockingError means this ran on the server event loop; that is
+                # a defect in the caller, not a bad model spec, so let it out.
+                if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
+                    raise
+                if not self._warned:
+                    # Warned once per summarizer: compaction is rare, but a
+                    # broken spec would otherwise log on every attempt.
+                    self._warned = True
+                    logger.warning(
+                        "Could not build the summarization model %r; compaction "
+                        "summaries use the main agent model instead. Run "
+                        "`/summarization-model clear` to stop trying it.",
+                        self._model_spec,
+                        exc_info=True,
+                    )
+                return
             _install_summary_model_retries(self._summarization, model)
             _install_summary_token_counter(self._summarization, model)
-            self._summarization._lc_helper.trim_tokens_to_summarize = (
-                _summary_trim_limit(model)
-            )
+            _install_summary_trim_limit(self._summarization, model)
             self._configured = True
 
     def create_summary(self, messages: list[AnyMessage]) -> str:
@@ -237,7 +341,19 @@ def _install_lazy_summary_model(
     model_spec: str,
     cli_max_retries: int | None,
 ) -> None:
-    """Defer dedicated model construction until a summary is requested."""
+    """Defer dedicated model construction until a summary is requested.
+
+    Raises `AttributeError` through `_require_helper_slot` if a hook is gone.
+
+    Args:
+        summarization: Middleware whose summary hooks are wrapped.
+        model_spec: Spec to resolve when a summary is first requested.
+        cli_max_retries: Explicit `--max-retries` value, or `None`.
+    """
+    for slot in ("_create_summary", "_acreate_summary"):
+        _require_helper_slot(
+            summarization._lc_helper, slot, "defer summary-model construction"
+        )
     lazy = _LazySummaryModel(summarization, model_spec, cli_max_retries)
     # LangChain annotates these private attributes as unbound method shapes;
     # instance-local bound wrappers are intentional so only this summarizer is lazy.
@@ -560,12 +676,13 @@ class _AutoCompactionBlockedError(Exception):
 class RuntimeModelConfig(NamedTuple):
     """Active model configuration read from a tool runtime.
 
-    A named tuple rather than a bare 4-tuple so the two structurally identical
-    `dict` slots (`model_params`, `profile_overrides`) are addressed by name at
-    both the construction sites (keyword args) and the read site (attribute
-    access) — a silent positional transposition the type checker would not catch
-    is thereby avoided. Positional construction/unpacking is still possible and
-    would defeat this, so call sites must keep using names.
+    A named tuple rather than a bare tuple so the structurally identical slots
+    — the two `str | None` model specs and the two `dict` overrides — are
+    addressed by name at both the construction sites (keyword args) and the
+    read site (attribute access) — a silent positional transposition the type
+    checker would not catch is thereby avoided. Positional
+    construction/unpacking is still possible and would defeat this, so call
+    sites must keep using names.
     """
 
     model_spec: str | None
@@ -865,7 +982,19 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         request: ModelRequest,
         summarization: SummarizationMiddleware,
     ) -> ModelRequest | None:
-        """Return the prepared request when threshold compaction will run."""
+        """Return the prepared request when threshold compaction will run.
+
+        Args:
+            request: The pending model request.
+            summarization: Request-local summarizer for this runtime. Passed in
+                rather than read from `self._summarization` so a summarization
+                override cannot be bypassed; `@staticmethod` makes that
+                structural rather than a convention.
+
+        Returns:
+            The prepared request, or `None` when threshold compaction will not
+                run.
+        """
         messages = summarization._get_effective_messages(request)
         tokens = summarization._count_tokens(
             messages, request.system_message, request.tools
@@ -889,6 +1018,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         summarization: SummarizationMiddleware,
     ) -> None:
         """Gate a provider-overflow fallback before it compacts.
+
+        Args:
+            request: The request that overflowed.
+            overflow: The provider overflow being recovered from.
+            summarization: Request-local summarizer for this runtime, passed in
+                so an override cannot be bypassed.
 
         Raises:
             _AutoCompactionBlockedError: If the hook blocks compaction.
@@ -941,6 +1076,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     ) -> ModelResponse | ExtendedModelResponse:
         """Serialize an automatic archive append with other compactions.
 
+        Args:
+            request: The pending model request.
+            handler: The downstream model handler.
+            summarization: Request-local summarizer for this runtime. Passed in
+                rather than read from `self._summarization` so a summarization
+                override cannot be bypassed; `@staticmethod` makes that
+                structural rather than a convention.
+
         Returns:
             The wrapped model response.
         """
@@ -992,9 +1135,20 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     def _run_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
         """Run model-initiated compaction with a request-local summarizer.
 
+        Takes no archive lock, unlike `_arun_compact`: `_archive_lock` is an
+        asyncio lock, so only the async path can serialize. This matches the
+        SDK's sync behavior.
+
+        Args:
+            runtime: The tool runtime for this compaction.
+
         Returns:
             The compact tool's state command.
         """
+        # A throwaway host for the SDK's compact implementation, which reads
+        # `self._summarization`; handing it the request-local summarizer is the
+        # only way to redirect that. `system_prompt` is `None` because only
+        # `wrap_model_call` reads it and this instance never wraps a call.
         tool = SummarizationToolMiddleware(
             self._summarization_for_runtime(runtime), system_prompt=None
         )
@@ -1003,6 +1157,9 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     async def _arun_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
         """Serialize model-initiated compaction with a request-local summarizer.
 
+        Args:
+            runtime: The tool runtime for this compaction.
+
         Returns:
             The compact tool's state command.
         """
@@ -1010,6 +1167,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             self._summarization_for_runtime, runtime
         )
         session_id = summarization._get_session_id(runtime.state)
+        # See `_run_compact` for why this throwaway host takes no prompt.
         tool = SummarizationToolMiddleware(summarization, system_prompt=None)
         async with _archive_lock(session_id):
             return await tool._arun_compact(runtime)
@@ -1042,14 +1200,18 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
     def _summarization_for_runtime(
         self, runtime: _HasRunContext
     ) -> SummarizationMiddleware:
-        """Build a summarizer for the active runtime model when overridden.
+        """Build a summarizer when the runtime overrides either model.
 
         Args:
             runtime: Runtime carrying the current `CLIContext`.
 
         Returns:
-            The startup summarizer when no runtime model is selected, otherwise
-                a model-aware summarizer using the same configured backend.
+            The startup summarizer when neither a runtime model nor a
+                summarization model is selected. Otherwise a summarizer over
+                the same configured backend whose thresholds and token counting
+                track the main model, while summary generation uses the
+                summarization override when one is set -- so the two can be
+                different models.
         """
         config = _runtime_model_config(runtime)
         summary_model_spec = config.summarization_model_spec
@@ -1069,6 +1231,11 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             ).model
         else:
             model = self._summarization.model
+        # Only a freshly built model may have its profile mutated. On the
+        # `else` branch above, `model` is the shared startup summarizer's own
+        # instance, so applying a per-request limit here would leak into every
+        # later turn. The limit is also derived from that same profile, so
+        # applying it there would be a no-op anyway.
         context_limit = config.context_limit if config.model_spec else None
         if context_limit is not None:
             profile = getattr(model, "profile", None)

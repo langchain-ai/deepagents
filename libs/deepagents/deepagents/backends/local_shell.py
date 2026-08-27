@@ -329,16 +329,17 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             )
         )
         try:
-            return await asyncio.shield(worker)
+            await asyncio.wait({worker})
+            return worker.result()
         except asyncio.CancelledError:
             cancellation_event.set()
             if not execution_started.is_set():
                 worker.cancel()
             while not worker.done():
                 with suppress(asyncio.CancelledError):
-                    await asyncio.shield(worker)
-            with suppress(asyncio.CancelledError):
-                worker.result()
+                    await asyncio.wait({worker})
+            if not worker.cancelled():
+                worker.exception()
             raise
 
     def execute(

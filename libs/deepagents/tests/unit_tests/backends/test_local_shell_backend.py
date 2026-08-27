@@ -404,6 +404,29 @@ async def test_local_shell_backend_async_cancellation_kills_process_group() -> N
     process.wait.assert_called_once_with()
 
 
+async def test_local_shell_backend_async_cancellation_preserves_cancelled_error() -> None:
+    """Test that a worker failure cannot replace async cancellation."""
+    execution_started = threading.Event()
+    release_execution = threading.Event()
+
+    class FailingLocalShellBackend(LocalShellBackend):
+        def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+            execution_started.set()
+            release_execution.wait()
+            msg = "backend exploded"
+            raise RuntimeError(msg)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        task = asyncio.create_task(FailingLocalShellBackend(root_dir=tmpdir).aexecute("explode"))
+        assert await asyncio.to_thread(execution_started.wait, 1)
+        task.cancel()
+        release_execution.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert task.cancelled()
+
+
 def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
     """Test that cancellation does not wait for or run queued executor work."""
 

@@ -49,6 +49,7 @@ def run_uninstall_request(*, name: str) -> int:
     """
     from rich.markup import escape
 
+    from deepagents_code._invocation import invoked_name
     from deepagents_code.config import _is_editable_install, console
     from deepagents_code.update_check import (
         ExtraNotInstalledError,
@@ -124,7 +125,8 @@ def run_uninstall_request(*, name: str) -> int:
         return 1
     if success:
         console.print(
-            f"[green]Uninstalled extra '{name}'.[/green] Relaunch dcode to apply."
+            f"[green]Uninstalled extra '{name}'.[/green] "
+            f"Relaunch {escape(invoked_name())} to apply."
         )
         return 0
     detail = f": {output[-200:]}" if output else ""

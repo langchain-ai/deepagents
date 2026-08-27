@@ -436,6 +436,10 @@ class TestUninstallCli:
                 new_callable=AsyncMock,
                 return_value=(True, ""),
             ) as perform,
+            patch(
+                "deepagents_code._invocation.invoked_name",
+                return_value="deepagents-code",
+            ),
         ):
             assert run_uninstall_request(name="ollama") == 0
         perform.assert_awaited_once()
@@ -443,7 +447,7 @@ class TestUninstallCli:
             str(arg) for call in console.print.call_args_list for arg in call.args
         )
         assert "Uninstalled extra 'ollama'" in text
-        assert "Relaunch" in text
+        assert "Relaunch deepagents-code" in text
 
     @pytest.mark.parametrize(
         ("argv", "command", "target"),
@@ -605,6 +609,7 @@ async def test_uninstall_slash_serializes_environment_mutation() -> None:
             new_callable=AsyncMock,
             return_value=(True, ""),
         ) as perform,
+        patch("deepagents_code.app.invoked_name", return_value="dcode-worktree"),
     ):
         await app._handle_uninstall_command("/uninstall ollama")
     perform.assert_awaited_once()
@@ -612,3 +617,4 @@ async def test_uninstall_slash_serializes_environment_mutation() -> None:
         str(call.args[0]._content) for call in app._mount_message.await_args_list
     )
     assert "Uninstalled extra 'ollama'" in text
+    assert "relaunch dcode-worktree" in text

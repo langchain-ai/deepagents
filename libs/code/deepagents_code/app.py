@@ -7634,7 +7634,8 @@ class DeepAgentsApp(App):
             return
         await self._mount_message(
             AppMessage(
-                f"Uninstalled extra '{extra}'. Exit and relaunch dcode to apply."
+                f"Uninstalled extra '{extra}'. Exit and relaunch "
+                f"{invoked_name()} to apply."
             )
         )
 

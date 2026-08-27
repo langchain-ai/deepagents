@@ -36,10 +36,11 @@
 # - The PR is created with the Org Membership App installation token rather
 #   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent per package: if a PR is already open for the selected package (or
-#   no bound needs raising), the workflow exits without creating a duplicate. A
-#   cron `all` run and a manual single-package run use different branches, so
-#   they are not serialized against each other.
+# - Idempotent per run identity: if a PR is already open for the selected
+#   package and dependency set (or no bound needs raising), the workflow exits
+#   without creating a duplicate. A cron `all` run, a manual broad run, and
+#   narrowed runs over different dependency sets each use their own branch, so
+#   they are not serialized against one another.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -77,9 +78,19 @@ on:
 permissions:
   contents: read
 
-# Cron runs have no `inputs.package`, so they fall back to `all`.
+# Cron runs have no `inputs.package`, so they fall back to `all`. Narrowed
+# dispatches also key on the dependency set (normalized: trimmed, lowercase,
+# `.`/`_` → `-`, sorted) so two runs narrowing the same package to different
+# sets do not serialize against each other — each publishes its own PR. The
+# `raise` step derives the branch slug with the same normalization, so the
+# group and the branch always identify the same run.
 concurrency:
-  group: raise-dependency-minimums-${{ inputs.package || 'all' }}
+  group: >-
+    raise-dependency-minimums-${{ inputs.package || 'all' }}${{
+      inputs.dependencies && format('-{0}', join(sort(split(
+        replace(replace(replace(toLower(inputs.dependencies), '_', '-'), '.', '-'), ' ', '')
+      ), '-')) || ''
+    }}
   cancel-in-progress: false
 
 jobs:
@@ -136,7 +147,19 @@ jobs:
           uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/checks/raise_langchain_minimums.py \
             "${args[@]}"
-          echo "branch=chore/raise-dependency-minimums-${PACKAGE}" >> "$GITHUB_OUTPUT"
+          # A narrowed run publishes to its own branch, keyed on the
+          # dependency set: the package-only branch would otherwise collide
+          # with a broad (or differently-narrowed) open PR and the
+          # duplicate-PR guard would skip this run, silently dropping the
+          # requested bumps. The slug mirrors the concurrency-group
+          # normalization above (lowercase, `.`/`_` → `-`, sorted, joined by
+          # `-`) so both identify the same run; the validation regex above
+          # already guarantees the charset is branch-safe.
+          slug=""
+          if [ -n "$DEPENDENCIES" ]; then
+            slug="-$(printf '%s' "$DEPENDENCIES" | tr 'A-Z._' 'a-z--' | tr ',' '\n' | sed 's/^ *//; s/ *$//' | LC_ALL=C sort | paste -sd- -)"
+          fi
+          echo "branch=chore/raise-dependency-minimums-${PACKAGE}${slug}" >> "$GITHUB_OUTPUT"
 
       - name: Regenerate lockfiles for affected packages
         # Raising a floor makes a package's uv.lock stale (it embeds the direct

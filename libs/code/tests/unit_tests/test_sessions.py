@@ -617,6 +617,31 @@ class TestFormatTimestamp:
         result = sessions.format_timestamp("not a timestamp")
         assert result == ""
 
+    def test_renders_where_strftime_rejects_glibc_flags(self):
+        """Stays populated where the platform strftime has no `-` flag.
+
+        MSVC's CRT documents `#` as its only strftime flag and treats any
+        other flag as an invalid formatting code; CPython surfaces that as
+        `ValueError`. The stand-in reproduces that on any host, so the
+        regression is caught without a Windows runner.
+        """
+
+        class _NoDashFlagDatetime(datetime):
+            def strftime(self, format: str) -> str:  # noqa: A002  # matches `date.strftime`
+                if "%-" in format:
+                    msg = "Invalid format string"
+                    raise ValueError(msg)
+                return super().strftime(format)
+
+            def __format__(self, spec: str) -> str:
+                return self.strftime(spec) if spec else str(self)
+
+        with patch.object(sessions, "datetime", _NoDashFlagDatetime):
+            result = sessions.format_timestamp("2024-12-30T21:18:00+00:00")
+
+        assert result
+        assert "dec" in result.lower()
+
 
 class TestFormatRelativeTimestamp:
     """Tests for format_relative_timestamp helper."""

@@ -182,6 +182,34 @@ def test_local_shell_backend_cleanup_without_process_group_kills_process() -> No
     process.wait.assert_called_once_with(timeout=5)
 
 
+def test_local_shell_backend_cleanup_accepts_missing_pipes() -> None:
+    """Test cleanup accepts processes without captured output pipes."""
+    local_shell_module._close_pipe(None, "stdout", 1234)
+
+
+def test_local_shell_backend_cancelled_background_worker_is_released() -> None:
+    """Test a cancelled background worker is dropped without reading its result."""
+    worker = MagicMock()
+    worker.cancelled.return_value = True
+    local_shell_module._BACKGROUND_WORKERS.add(worker)
+    local_shell_module._release_background_worker(worker)
+    assert worker not in local_shell_module._BACKGROUND_WORKERS
+    worker.result.assert_not_called()
+
+
+def test_local_shell_backend_failed_background_worker_is_logged(caplog: pytest.LogCaptureFixture) -> None:
+    """Test a late background worker failure is consumed and diagnosed."""
+    worker = MagicMock()
+    worker.cancelled.return_value = False
+    worker.result.side_effect = RuntimeError("backend exploded")
+    local_shell_module._BACKGROUND_WORKERS.add(worker)
+    with caplog.at_level("WARNING", logger="deepagents.backends.local_shell"):
+        local_shell_module._release_background_worker(worker)
+
+    assert worker not in local_shell_module._BACKGROUND_WORKERS
+    assert "failed after its caller was cancelled" in caplog.text
+
+
 def test_local_shell_backend_cleanup_errors_preserve_interrupt(caplog: pytest.LogCaptureFixture) -> None:
     """Test that cleanup failures cannot replace an active interrupt."""
     process = MagicMock(pid=1234)

@@ -747,6 +747,34 @@ class TestModelSwap:
         assert resolved.model_context_limit is None
         assert resolved.hooks_server_events == ["PreToolUse"]
 
+    def test_context_payload_conversion_tolerates_malformed_containers(self) -> None:
+        """Non-dict/non-list containers fall back to empty instead of raising.
+
+        `dict(...)` on a scalar raises `TypeError`/`ValueError`, and iterating
+        an int raises `TypeError` — either would abort an otherwise valid remote
+        request over a field the caller may not care about.
+        """
+        resolved = CLIContextSchema.from_payload(
+            {
+                "model_params": "x",
+                "profile_overrides": 7,
+                "hooks_server_events": 7,
+            }
+        )
+
+        assert resolved is not None
+        assert resolved.model_params == {}
+        assert resolved.profile_overrides == {}
+        assert resolved.hooks_server_events == []
+
+        string_events = CLIContextSchema.from_payload(
+            {"hooks_server_events": "PreToolUse"}
+        )
+
+        assert string_events is not None
+        # A bare string is not exploded into per-character events.
+        assert string_events.hooks_server_events == []
+
     async def test_async_strict_model_resolution_propagates_config_error(self) -> None:
         """The TUI streams, so the async path is the one the grader runs on."""
         from deepagents_code.model_config import ModelConfigError

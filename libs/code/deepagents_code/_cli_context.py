@@ -104,6 +104,14 @@ class CLIContextSchema:
             value = data.get(key)
             return value if isinstance(value, str) else None
 
+        def _mapping(key: str) -> dict[str, Any]:
+            # `dict(...)` on a non-mapping (`"x"`, `7`, ...) raises
+            # `TypeError`/`ValueError`, which would abort the request before the
+            # model handler runs — even when the malformed field is unrelated to
+            # model selection. Fall back to empty instead.
+            value = data.get(key)
+            return dict(value) if isinstance(value, dict) else {}
+
         # `bool` is an `int` subclass, so exclude it explicitly.
         raw_limit = data.get("model_context_limit")
         limit = (
@@ -112,10 +120,18 @@ class CLIContextSchema:
             else None
         )
         approval_mode = _str("approval_mode")
+        # Only a real list is safe to iterate: `7` raises `TypeError`, and a
+        # bare string (`"PreToolUse"`) would explode into per-character events.
+        raw_events = data.get("hooks_server_events")
+        events = (
+            [event for event in raw_events if isinstance(event, str)]
+            if isinstance(raw_events, list)
+            else []
+        )
         return cls(
             model=_str("model"),
-            model_params=dict(data.get("model_params") or {}),
-            profile_overrides=dict(data.get("profile_overrides") or {}),
+            model_params=_mapping("model_params"),
+            profile_overrides=_mapping("profile_overrides"),
             model_context_limit=limit,
             classifier_model=_str("classifier_model"),
             approval_mode=approval_mode or "manual",
@@ -124,11 +140,7 @@ class CLIContextSchema:
             thread_id=_str("thread_id"),
             turn_id=_str("turn_id"),
             hooks_snapshot_id=_str("hooks_snapshot_id"),
-            hooks_server_events=[
-                event
-                for event in (data.get("hooks_server_events") or [])
-                if isinstance(event, str)
-            ],
+            hooks_server_events=events,
             prompt_id=_str("prompt_id"),
         )
 

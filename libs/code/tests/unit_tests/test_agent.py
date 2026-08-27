@@ -25,6 +25,7 @@ if TYPE_CHECKING:
     from langgraph.prebuilt.tool_node import ToolCallRequest
     from langgraph.runtime import Runtime
 
+from deepagents_code import _env_vars
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
 from deepagents_code._paths import PATHS, get_built_in_skills_dir
 from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
@@ -1977,16 +1978,64 @@ class TestCreateCliAgentInteractiveForwarding:
             is CLIContextSchema
         )
         assert call_order == ["register_profile", "create_agent"]
-        mock_agent.with_config.assert_not_called()
 
-    def test_explicit_recursion_limit_is_applied(self, tmp_path: Path) -> None:
-        """An explicit recursion limit remains configurable."""
+    def test_unconfigured_recursion_limit_binds_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """With no configured limit, the LangGraph server budget is left alone.
+
+        Both the env var and `config.toml` are neutralized: `create_cli_agent`
+        consults the real resolver, so a developer with an exported
+        `DEEPAGENTS_CODE_RECURSION_LIMIT` would otherwise redden this test.
+        """
+        from deepagents_code import model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+
         model = _make_fake_chat_model()
         mock_agent = Mock()
-        mock_agent.with_config.return_value = mock_agent
+
+        try:
+            with patch(
+                "deepagents_code.agent.create_deep_agent", return_value=mock_agent
+            ):
+                agent, _ = create_cli_agent(
+                    model=model,
+                    assistant_id="test",
+                    enable_memory=False,
+                    enable_skills=False,
+                    enable_shell=False,
+                    system_prompt="test prompt",
+                    cwd=tmp_path,
+                )
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        mock_agent.with_config.assert_not_called()
+        assert agent is mock_agent
+
+    def test_explicit_recursion_limit_is_applied(self, tmp_path: Path) -> None:
+        """An explicit recursion limit is bound onto the returned agent.
+
+        `with_config` returns a distinct object so the assertion fails if the
+        production code drops the `agent = ` rebind and discards the binding.
+        """
+        model = _make_fake_chat_model()
+        mock_agent = Mock()
+        configured = Mock()
+        mock_agent.with_config.return_value = configured
 
         with patch("deepagents_code.agent.create_deep_agent", return_value=mock_agent):
-            create_cli_agent(
+            agent, _ = create_cli_agent(
                 model=model,
                 assistant_id="test",
                 enable_memory=False,
@@ -1998,6 +2047,7 @@ class TestCreateCliAgentInteractiveForwarding:
             )
 
         assert mock_agent.with_config.call_args.args == ({"recursion_limit": 3000},)
+        assert agent is configured
 
     def test_explicit_system_prompt_ignores_interactive(self, tmp_path: Path) -> None:
         """Explicit system_prompt should be used verbatim, ignoring interactive."""

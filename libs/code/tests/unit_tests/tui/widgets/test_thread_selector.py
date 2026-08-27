@@ -3564,16 +3564,16 @@ class TestResumeThread:
 
     @pytest.mark.parametrize(
         "output_type",
-        ["ASSISTANT", "TOOL", "SKILL"],
+        ["ASSISTANT", "REASONING", "TOOL", "SKILL"],
     )
     async def test_switch_hints_for_any_server_output_type(
         self, output_type: str
     ) -> None:
         """Every `_SERVER_OUTPUT_MESSAGE_TYPES` member counts as work done.
 
-        A turn can leave behind tool calls or a skill invocation without any
-        assistant text, so narrowing the constant to `ASSISTANT` would strand
-        those threads.
+        A turn can leave behind reasoning, tool calls, or a skill invocation
+        without any assistant text, so narrowing the constant to `ASSISTANT`
+        would strand those threads.
         """
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 

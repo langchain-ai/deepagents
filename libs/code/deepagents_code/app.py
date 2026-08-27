@@ -335,7 +335,7 @@ above it would only add noise.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.ASSISTANT, MessageType.TOOL, MessageType.SKILL}
+    {MessageType.ASSISTANT, MessageType.REASONING, MessageType.TOOL, MessageType.SKILL}
 )
 """Message types marking a thread the user did conversational work in.
 
@@ -359,6 +359,7 @@ brand-new thread as resumable. Threads holding only that state are
 intentionally treated as "nothing happened here" — `/rubric set` with no
 conversation is a config tweak, not work left behind.
 
+`REASONING` covers turns cut off before assistant text or a tool call arrives.
 `SKILL` is the loosest member: `SkillMessage` mounts just *before*
 `_send_to_agent`, which can bail out without reaching the server, so a
 `SKILL` row means a turn was attempted rather than completed. That

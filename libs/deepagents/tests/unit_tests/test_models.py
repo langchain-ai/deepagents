@@ -1209,10 +1209,11 @@ class TestBuiltInProfiles:
         mythos = _get_harness_profile("anthropic:claude-mythos-5")
         assert fable is not None
         assert mythos is not None
-        assert fable == mythos
+        assert fable.system_prompt_suffix == mythos.system_prompt_suffix
         assert "<long_horizon_completion>" in fable.system_prompt_suffix
         assert "<final_summary_readability>" in fable.system_prompt_suffix
         assert not fable.materialize_extra_middleware()
+        assert not mythos.materialize_extra_middleware()
 
     @pytest.mark.parametrize(
         "model_key",

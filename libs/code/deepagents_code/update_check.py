@@ -3837,6 +3837,8 @@ async def perform_install_extra(
 
     Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]==<current>'
     --prerelease allow`, preserving any extras that are already installed.
+    Command construction and execution hold the shared update/install lock so a
+    concurrent install, removal, or upgrade cannot rebuild from a stale receipt.
     Editable installs are refused — the caller should rerun their
     `uv tool install --editable` command with `--with 'deepagents-code[<extra>]'`
     added so the extra is resolved against the editable source.
@@ -3885,17 +3887,23 @@ async def perform_install_extra(
             "install uv (https://docs.astral.sh/uv/) so extras can be added."
         )
 
-    from deepagents_code.extras_info import ExtrasIntrospectionError
+    with update_install_lock() as holding_update_lock:
+        if not holding_update_lock:
+            return False, (
+                "Another dcode update or install is already running. "
+                "Wait for it to finish, then try again."
+            )
+        from deepagents_code.extras_info import ExtrasIntrospectionError
 
-    try:
-        cmd = _install_extra_uv_tool_command(extra)
-    except (
-        ExtrasIntrospectionError,
-        ToolRequirementIntrospectionError,
-        ValueError,
-    ) as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        try:
+            cmd = _install_extra_uv_tool_command(extra)
+        except (
+            ExtrasIntrospectionError,
+            ToolRequirementIntrospectionError,
+            ValueError,
+        ) as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
 class ExtraRemovalOutcome(NamedTuple):
@@ -3935,12 +3943,9 @@ async def perform_uninstall_extra(
     """Remove `extra` by rebuilding the current uv-managed tool environment.
 
     The install lock covers both receipt inspection and uv execution, so a
-    concurrent self-upgrade cannot rebuild from a receipt this call is midway
-    through replacing. Note that `perform_install_extra` does not contend for
-    this lock, so a concurrent extra *install* can still re-add what this call
-    removed; the lock excludes upgrades and other removals only. It also
-    fail-opens when the lock file is unusable (see `update_install_lock`), so
-    exclusion is best-effort.
+    concurrent upgrade, install, or removal cannot rebuild from a receipt this
+    call is midway through replacing. It fail-opens when the lock file is unusable
+    (see `update_install_lock`), so exclusion is best-effort.
 
     Args:
         extra: Extra name to remove. Must satisfy `is_valid_extra_name`; invalid

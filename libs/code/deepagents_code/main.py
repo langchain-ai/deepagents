@@ -4991,8 +4991,16 @@ def cli_main() -> None:
     # blocks run when dcode's process group is stopped.
     _install_termination_signal_handlers()
 
+    machine_run_json = False
+    json_result_written = False
+    json_preflight_error: BaseException | None = None
     try:
         args = parse_args()
+        machine_run_json = (
+            getattr(args, "output_format", "text") == "json"
+            and getattr(args, "command", None) is None
+            and bool(getattr(args, "non_interactive_message", None))
+        )
         _install_cli_provider(args)
         explicit_approval_flag = (
             "--yolo"
@@ -5246,6 +5254,11 @@ def cli_main() -> None:
             sys.exit(exit_code)
 
         apply_stdin_pipe(args)
+        machine_run_json = machine_run_json or (
+            getattr(args, "output_format", "text") == "json"
+            and getattr(args, "command", None) is None
+            and bool(args.non_interactive_message)
+        )
 
         # Gate on stale editable-install dependencies. Choose the channel from
         # the launch mode, not from `sys.stdout.isatty()`: a TTY does not imply
@@ -5956,9 +5969,17 @@ def cli_main() -> None:
                 try:
                     verify_sandbox_deps(args.sandbox)
                 except ImportError as exc:
+                    from rich.console import Console as _Console
                     from rich.markup import escape
 
-                    console.print(f"[bold red]Error:[/bold red] {escape(str(exc))}")
+                    error_console = (
+                        console if output_format != "json" else _Console(stderr=True)
+                    )
+                    error_console.print(
+                        f"[bold red]Error:[/bold red] {escape(str(exc))}"
+                    )
+                    if output_format == "json":
+                        json_preflight_error = exc
                     sys.exit(1)
 
             enable_interpreter = _resolve_interpreter_enabled(args)
@@ -5982,6 +6003,8 @@ def cli_main() -> None:
                 from rich.console import Console as _Console
 
                 _Console(stderr=True).print(f"[bold red]Error:[/bold red] {exc}")
+                if output_format == "json":
+                    json_preflight_error = exc
                 sys.exit(2)
 
             timeout = getattr(args, "timeout", None)
@@ -6024,6 +6047,8 @@ def cli_main() -> None:
                 # `asyncio.run` may re-raise the signal after coroutine cleanup;
                 # keep Ctrl-C a quiet exit instead of showing a traceback.
                 sys.exit(130)
+            if output_format == "json":
+                json_result_written = True
             sys.exit(exit_code)
         else:
             _print_configured_profile_notice()
@@ -6261,6 +6286,16 @@ def cli_main() -> None:
         except NameError:
             sys.stderr.write("\n\nInterrupted\n")
         sys.exit(130)
+    except SystemExit as exc:
+        if machine_run_json and not json_result_written:
+            from deepagents_code.client.non_interactive import (
+                write_run_configuration_error,
+            )
+
+            exit_code = exc.code if isinstance(exc.code, int) else 1
+            error = json_preflight_error or RuntimeError("Headless launch failed")
+            write_run_configuration_error(error, exit_code=exit_code)
+        raise
 
 
 if __name__ == "__main__":

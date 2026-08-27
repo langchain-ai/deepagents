@@ -1102,6 +1102,43 @@ class TestJsonOutput:
             "message": "agent timed out after 0.01s",
         }
 
+    async def test_timeout_covers_server_startup_and_cleanup(self) -> None:
+        """The wall limit must include startup and await its cancellation cleanup."""
+        startup_cancelled = asyncio.Event()
+        stdout_buf = io.StringIO()
+
+        async def blocked_startup(*_args: Any, **_kwargs: Any) -> None:
+            try:
+                await asyncio.Future()
+            finally:
+                startup_cancelled.set()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new=blocked_startup,
+            ),
+            patch.object(sys, "stdout", stdout_buf),
+        ):
+            exit_code = await run_non_interactive(
+                message="task",
+                output_format="json",
+                time_limit=0.01,
+            )
+
+        payload = json.loads(stdout_buf.getvalue())
+        assert exit_code == 124
+        assert startup_cancelled.is_set()
+        assert payload["data"]["termination_reason"] == "timeout"
+
     async def test_agent_timeout_error_is_not_wall_timeout(self) -> None:
         exit_code, payload, _stderr = await self._run(TimeoutError("provider timeout"))
 

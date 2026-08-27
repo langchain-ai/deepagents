@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import io
+import json
 import os
 import sys
 from collections.abc import Callable
@@ -1461,6 +1462,56 @@ class TestTimeoutArgument:
         await_args = mock_run.await_args
         assert await_args is not None
         assert await_args.kwargs["time_limit"] == 45
+
+    @pytest.mark.parametrize(
+        ("argv", "error_type", "exit_code"),
+        [
+            (["-n", "task", "--json", "--rubric", "@missing-rubric"], "ValueError", 2),
+            (["-n", "task", "--json", "--sandbox", "daytona"], "ImportError", 1),
+            (
+                ["-n", "task", "--json", "--no-mcp", "--mcp-config", "x"],
+                "RuntimeError",
+                2,
+            ),
+        ],
+    )
+    def test_json_preflight_errors_emit_one_run_document(
+        self,
+        argv: list[str],
+        error_type: str,
+        exit_code: int,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Parsed JSON launches keep one stdout document on preflight failures."""
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        sandbox_error = ImportError("missing sandbox dependency")
+        with (
+            patch.object(sys, "argv", ["deepagents", *argv]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.integrations.sandbox_factory.verify_sandbox_deps",
+                side_effect=sandbox_error,
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        captured = capsys.readouterr()
+        payload = json.loads(captured.out)
+        assert exc_info.value.code == exit_code
+        assert payload["command"] == "run"
+        assert payload["data"]["exit_code"] == exit_code
+        assert payload["data"]["termination_reason"] == "configuration_error"
+        assert payload["data"]["error"]["type"] == error_type
+        assert "Error:" in captured.err
 
     def test_no_timeout_when_omitted(self) -> None:
         """When --timeout is omitted, the runner receives no time limit."""

@@ -1827,6 +1827,17 @@ def _write_run_result(
     write_json("run", data)
 
 
+def write_run_configuration_error(error: BaseException, *, exit_code: int = 1) -> None:
+    """Write a structured headless configuration failure."""
+    _write_run_result(
+        status="error",
+        response="",
+        exit_code=exit_code,
+        termination_reason="configuration_error",
+        error=error,
+    )
+
+
 def _return_configuration_error(
     console: Console,
     error: BaseException,
@@ -1840,13 +1851,7 @@ def _return_configuration_error(
     """
     console.print(f"[bold red]Error:[/bold red] {escape_markup(str(error))}")
     if json_output:
-        _write_run_result(
-            status="error",
-            response="",
-            exit_code=1,
-            termination_reason="configuration_error",
-            error=error,
-        )
+        write_run_configuration_error(error)
     return 1
 
 
@@ -2021,7 +2026,7 @@ async def run_non_interactive(
     assistant_id: str = DEFAULT_AGENT_NAME,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
-    sandbox_type: str = "none",  # str (not None) to match argparse choices
+    sandbox_type: str = "none",
     sandbox_id: str | None = None,
     sandbox_snapshot_name: str | None = None,
     sandbox_setup: str | None = None,
@@ -2047,6 +2052,92 @@ async def run_non_interactive(
     trust_project_hooks: bool = False,
     output_format: OutputFormat = "text",
     time_limit: float | None = None,
+) -> int:
+    """Run one task within an optional wall-clock limit.
+
+    Returns:
+        The process exit code.
+    """
+    run = _run_non_interactive(
+        message,
+        assistant_id,
+        model_name,
+        model_params,
+        sandbox_type,
+        sandbox_id,
+        sandbox_snapshot_name,
+        sandbox_setup,
+        cli_max_retries=cli_max_retries,
+        initial_skill=initial_skill,
+        startup_cmd=startup_cmd,
+        profile_override=profile_override,
+        quiet=quiet,
+        stream=stream,
+        mcp_config_path=mcp_config_path,
+        no_mcp=no_mcp,
+        trust_project_mcp=trust_project_mcp,
+        enable_interpreter=enable_interpreter,
+        interpreter_ptc=interpreter_ptc,
+        interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+        allow_fs_tools=allow_fs_tools,
+        max_turns=max_turns,
+        rubric=rubric,
+        rubric_model=rubric_model,
+        rubric_max_iterations=rubric_max_iterations,
+        recursion_limit=recursion_limit,
+        trust_project_hooks=trust_project_hooks,
+        output_format=output_format,
+    )
+    try:
+        return await _await_with_time_limit(run, time_limit)
+    except HeadlessTimeoutError as error:
+        console = Console(stderr=quiet or output_format == "json")
+        console.print(
+            f"\n[red]Error: {escape_markup(str(error))}[/red] Retry with a larger "
+            "--timeout, or use --max-turns for a turn-count limit."
+        )
+        if output_format == "json":
+            _write_run_result(
+                status="error",
+                response="",
+                exit_code=124,
+                termination_reason="timeout",
+                error=error,
+                timeout_seconds=time_limit,
+            )
+        return 124
+
+
+async def _run_non_interactive(
+    message: str,
+    assistant_id: str = DEFAULT_AGENT_NAME,
+    model_name: str | None = None,
+    model_params: dict[str, Any] | None = None,
+    sandbox_type: str = "none",  # str (not None) to match argparse choices
+    sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
+    sandbox_setup: str | None = None,
+    *,
+    cli_max_retries: int | None = None,
+    initial_skill: str | None = None,
+    startup_cmd: str | None = None,
+    profile_override: dict[str, Any] | None = None,
+    quiet: bool = False,
+    stream: bool = True,
+    mcp_config_path: str | None = None,
+    no_mcp: bool = False,
+    trust_project_mcp: bool = False,
+    enable_interpreter: bool | None = None,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
+    max_turns: int | None = None,
+    rubric: str | None = None,
+    rubric_model: str | None = None,
+    rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
+    trust_project_hooks: bool = False,
+    output_format: OutputFormat = "text",
 ) -> int:
     """Run a single task non-interactively and exit.
 
@@ -2130,7 +2221,6 @@ async def run_non_interactive(
             commands without an explicit `--trust-project-hooks` opt-in.
         output_format: Output mode. JSON mode emits exactly one result document
             on stdout and routes human-readable diagnostics to stderr.
-        time_limit: Optional wall-clock limit for the agent execution.
 
     Returns:
         Exit code: 0 for success or an intentional hook stop, 1 for error, 124
@@ -2396,44 +2486,26 @@ async def run_non_interactive(
                 else contextlib.nullcontext()
             )
             with output_context:
-                response = await _await_with_time_limit(
-                    _run_agent_loop(
-                        agent,
-                        message,
-                        config,
-                        console,
-                        file_op_tracker,
-                        quiet=effective_quiet,
-                        stream=False if json_output else stream,
-                        write_response=not json_output,
-                        message_kwargs=message_kwargs,
-                        thread_url_lookup=thread_url_lookup,
-                        max_turns=max_turns,
-                        rubric=rubric,
-                        show_rubric_iterations=rubric_max_iterations is not None,
-                        trust_project_hooks=trust_project_hooks,
-                        hooks=hooks,
-                        approval_mode=approval_mode,
-                        prompt_id=turn_id,
-                    ),
-                    time_limit,
+                response = await _run_agent_loop(
+                    agent,
+                    message,
+                    config,
+                    console,
+                    file_op_tracker,
+                    quiet=effective_quiet,
+                    stream=False if json_output else stream,
+                    write_response=not json_output,
+                    message_kwargs=message_kwargs,
+                    thread_url_lookup=thread_url_lookup,
+                    max_turns=max_turns,
+                    rubric=rubric,
+                    show_rubric_iterations=rubric_max_iterations is not None,
+                    trust_project_hooks=trust_project_hooks,
+                    hooks=hooks,
+                    approval_mode=approval_mode,
+                    prompt_id=turn_id,
                 )
 
-    except HeadlessTimeoutError as e:
-        console.print(
-            f"\n[red]Error: {escape_markup(str(e))}[/red] Retry with a larger "
-            "--timeout, or use --max-turns for a turn-count limit."
-        )
-        if json_output:
-            _write_run_result(
-                status="error",
-                response="",
-                exit_code=124,
-                termination_reason="timeout",
-                error=e,
-                timeout_seconds=time_limit,
-            )
-        return 124
     except KeyboardInterrupt as e:
         console.print("\n[yellow]Interrupted[/yellow]")
         if json_output:

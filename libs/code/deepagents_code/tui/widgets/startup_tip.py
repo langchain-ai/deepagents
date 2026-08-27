@@ -34,6 +34,7 @@ _TIPS: dict[str, int] = {
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
     "Use /effort to change the current model's reasoning effort": 1,
+    "Start with --show-reasoning to display provider-visible reasoning": 1,
     _TIP_EXTERNAL_EDITOR: 1,
     "Use /skill:<name> to invoke a skill directly": 1,
     "Use /theme to customize the TUI's colors": 1,

@@ -43,6 +43,7 @@ DEFAULT_PATTERNS = (
     "build/",
 )
 _EXCLUDED_ERROR = "Path is excluded by .deepagentsignore"
+_GREP_SCAN_LIMIT = 10_000
 
 
 @dataclass(frozen=True, slots=True)
@@ -281,8 +282,20 @@ class IgnoringBackend(BackendProtocol):
                 return GrepResult(matches=[])
         except ValueError as exc:
             return GrepResult(error=str(exc))
-        result = self._backend.grep(pattern, path, glob, max_count=None)
-        return self._filter_grep(result, max_count=max_count)
+        if max_count is None:
+            return self._filter_grep(self._backend.grep(pattern, path, glob))
+        scan_count = max(max_count, 1)
+        while True:
+            result = self._backend.grep(
+                pattern,
+                path,
+                glob,
+                max_count=min(scan_count, max(max_count, _GREP_SCAN_LIMIT)),
+            )
+            filtered = self._filter_grep(result, max_count=max_count)
+            if self._grep_scan_complete(result, filtered, scan_count, max_count):
+                return filtered
+            scan_count *= 2
 
     async def agrep(
         self,
@@ -302,8 +315,35 @@ class IgnoringBackend(BackendProtocol):
                 return GrepResult(matches=[])
         except ValueError as exc:
             return GrepResult(error=str(exc))
-        result = await self._backend.agrep(pattern, path, glob, max_count=None)
-        return self._filter_grep(result, max_count=max_count)
+        if max_count is None:
+            return self._filter_grep(await self._backend.agrep(pattern, path, glob))
+        scan_count = max(max_count, 1)
+        while True:
+            result = await self._backend.agrep(
+                pattern,
+                path,
+                glob,
+                max_count=min(scan_count, max(max_count, _GREP_SCAN_LIMIT)),
+            )
+            filtered = self._filter_grep(result, max_count=max_count)
+            if self._grep_scan_complete(result, filtered, scan_count, max_count):
+                return filtered
+            scan_count *= 2
+
+    @staticmethod
+    def _grep_scan_complete(
+        result: GrepResult,
+        filtered: GrepResult,
+        scan_count: int,
+        max_count: int,
+    ) -> bool:
+        scan_limit = max(max_count, _GREP_SCAN_LIMIT)
+        return (
+            result.matches is None
+            or not result.truncated
+            or len(filtered.matches or []) >= max_count
+            or scan_count >= scan_limit
+        )
 
     def _filter_grep(
         self, result: GrepResult, *, max_count: int | None = None

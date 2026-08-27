@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from deepagents.backends import LocalShellBackend
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import PERMISSION_DENIED
+from deepagents.backends.protocol import PERMISSION_DENIED, BackendProtocol, GrepResult
 
 from deepagents_code.deepagentsignore import (
     DeepagentsIgnore,
@@ -172,21 +173,76 @@ def test_backend_filters_all_file_operations(tmp_path: Path) -> None:
 def test_grep_applies_max_count_after_filtering(tmp_path: Path) -> None:
     profile = tmp_path / "profile"
     profile.mkdir()
-    (tmp_path / ".deepagentsignore").write_text("a-secret.txt\n")
-    (tmp_path / "a-secret.txt").write_text("needle\n")
-    (tmp_path / "visible.txt").write_text("needle\nneedle\n")
-    raw = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+    (tmp_path / ".deepagentsignore").write_text("secret.txt\n")
+    raw = MagicMock(spec=BackendProtocol)
+    raw.grep.side_effect = [
+        GrepResult(
+            matches=[{"path": "/secret.txt", "line": 1, "text": "needle"}],
+            truncated=True,
+        ),
+        GrepResult(
+            matches=[
+                {"path": "/secret.txt", "line": 1, "text": "needle"},
+                {"path": "/visible.txt", "line": 1, "text": "needle"},
+            ],
+            truncated=True,
+        ),
+    ]
     backend = IgnoringBackend(
         raw,
         _ignore(tmp_path, profile),
-        backend_root=raw.cwd,
-        virtual_mode=raw.virtual_mode,
+        backend_root=tmp_path,
+        virtual_mode=True,
     )
 
     result = backend.grep("needle", "/", max_count=1)
 
     assert [match["path"] for match in result.matches or []] == ["/visible.txt"]
     assert result.truncated
+    assert [call.kwargs["max_count"] for call in raw.grep.call_args_list] == [1, 2]
+
+
+async def test_async_grep_overfetch_is_bounded(tmp_path: Path) -> None:
+    profile = tmp_path / "profile"
+    profile.mkdir()
+    (tmp_path / ".deepagentsignore").write_text("secret.txt\n")
+    raw = MagicMock(spec=BackendProtocol)
+    raw.agrep = AsyncMock(
+        return_value=GrepResult(
+            matches=[{"path": "/secret.txt", "line": 1, "text": "needle"}],
+            truncated=True,
+        )
+    )
+    backend = IgnoringBackend(
+        raw,
+        _ignore(tmp_path, profile),
+        backend_root=tmp_path,
+        virtual_mode=True,
+    )
+
+    result = await backend.agrep("needle", "/", max_count=1)
+
+    assert result.matches == []
+    assert result.truncated
+    counts = [call.kwargs["max_count"] for call in raw.agrep.call_args_list]
+    assert counts[-1] == 10_000
+    assert counts == [
+        1,
+        2,
+        4,
+        8,
+        16,
+        32,
+        64,
+        128,
+        256,
+        512,
+        1024,
+        2048,
+        4096,
+        8192,
+        10_000,
+    ]
 
 
 async def test_backend_async_methods_filter_and_preserve_metadata(

@@ -24689,17 +24689,16 @@ class TestDispatchModelSwitch:
             DeferredAction(kind="thread_switch", execute=thread_switch)
         )
 
-        async with app.run_test():
-            drain = asyncio.create_task(app._drain_deferred_actions())
-            # Let the drain reach the confirmation prompt, then yield several
-            # times: a drain that resumes early has ample opportunity to run
-            # the thread switch while the modal is still unanswered.
-            await asyncio.wait_for(prompt_open.wait(), timeout=5)
-            for _ in range(10):
-                await asyncio.sleep(0)
-            assert order == []
-            answer_prompt.set()
-            await asyncio.wait_for(drain, timeout=5)
+        drain = asyncio.create_task(app._drain_deferred_actions())
+        # Let the drain reach the confirmation prompt, then yield several
+        # times: a drain that resumes early has ample opportunity to run
+        # the thread switch while the modal is still unanswered.
+        await asyncio.wait_for(prompt_open.wait(), timeout=5)
+        for _ in range(10):
+            await asyncio.sleep(0)
+        assert order == []
+        answer_prompt.set()
+        await asyncio.wait_for(drain, timeout=5)
 
         assert order == ["thread_switch"]
         app._switch_model.assert_awaited_once()  # ty: ignore

@@ -1032,8 +1032,8 @@ class TestGetMCPTools:
 
         assert isinstance(manager, MCPSessionManager)
         assert [tool.name for tool in tools] == ["srv_read_file", "srv_write_file"]
-        assert [(t.command, t.args, t.env) for t in mcp_servers.transports] == [
-            ("node", ["server.js"], None)
+        assert [(t.command, t.args) for t in mcp_servers.transports] == [
+            ("node", ["server.js"])
         ]
         empty_schema: dict[str, Any] = {"type": "object", "additionalProperties": False, "properties": {}}
         assert server_infos == [
@@ -1240,7 +1240,9 @@ class TestGetMCPTools:
         }
 
         await _load_tools_from_config(config)
-        assert recorded[0].env is None
+        # An empty `env` block adds nothing; the SDK merges the default
+        # environment either way, so `{}` and `None` are equivalent here.
+        assert not recorded[0].env
 
     async def test_input_schema_is_carried_into_mcp_tool_info(
         self,

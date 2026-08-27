@@ -34,9 +34,6 @@ from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 from fastmcp.client import Client as FastMCPClient
 from fastmcp.client.transports import (
     ClientTransport,
-    SSETransport,
-    StdioTransport,
-    StreamableHttpTransport,
 )
 
 from deepagents_code import _env_vars
@@ -1712,6 +1709,15 @@ def _build_transport(
 ) -> ClientTransport:
     """Build the FastMCP transport for one configured server.
 
+    The config entry is handed to FastMCP's own server models, so their
+    validation is what rejects a malformed entry and their `to_transport` is
+    what picks the transport class — including resolving a bare `url` to
+    streamable-HTTP or SSE.
+
+    The one thing the models do not carry is `log_file`, so a stdio server's is
+    attached afterwards: FastMCP writes a server's stderr to `sys.stderr`
+    otherwise, and the TUI owns that terminal.
+
     Args:
         server_name: MCP server name, used for the stderr log file.
         server_type: Resolved transport type (`stdio`, `http`, or `sse`).
@@ -1723,19 +1729,24 @@ def _build_transport(
     Returns:
         A transport ready to mount on the router.
     """
+    from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
+
     if server_type in _SUPPORTED_REMOTE_TYPES:
-        headers = dict(server_config.get("headers") or {})
-        url = server_config["url"]
-        if server_type == "http":
-            return StreamableHttpTransport(url, headers=headers, auth=auth)
-        return SSETransport(url, headers=headers, auth=auth)
-    return StdioTransport(
+        return RemoteMCPServer(
+            url=server_config["url"],
+            transport="sse" if server_type == "sse" else "http",
+            headers=dict(server_config.get("headers") or {}),
+            auth=auth,
+        ).to_transport()
+
+    transport = StdioMCPServer(
         command=server_config["command"],
         args=list(server_config.get("args", [])),
-        env=server_config.get("env") or None,
+        env=dict(server_config.get("env") or {}),
         keep_alive=keep_alive,
-        log_file=_server_stderr_log(server_name),
-    )
+    ).to_transport()
+    transport.log_file = _server_stderr_log(server_name)
+    return transport
 
 
 async def _mount_backends(

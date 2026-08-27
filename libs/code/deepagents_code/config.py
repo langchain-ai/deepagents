@@ -2256,7 +2256,11 @@ def build_stream_config(
     # `langgraph_api`'s `CONFIG_KEYS`, so a client-supplied value replaces the
     # server default; sending it here is what makes the setting real.
     #
-    # Omitted when nothing is configured so the server default still stands.
+    # The upstream environment default must be resolved too: LangGraph treats
+    # that value as its merge sentinel and would otherwise discard the API's
+    # incoming value in favor of `create_deep_agent`'s bound limit. Resolving it
+    # here also resolves it while building the agent, so both sides agree.
+    # Omitted only when neither Deep Agents nor LangGraph has an env override.
     from deepagents_code.config_manifest import resolve_recursion_limit
 
     resolved_recursion_limit = resolve_recursion_limit()

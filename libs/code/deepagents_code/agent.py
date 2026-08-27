@@ -2524,9 +2524,10 @@ def create_cli_agent(
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var and
-            `[runtime].recursion_limit` in `config.toml`. When neither is set,
-            no `recursion_limit` is bound and the LangGraph server budget
-            (`10_011`) stands.
+            `[runtime].recursion_limit` in `config.toml`, then from
+            `LANGGRAPH_DEFAULT_RECURSION_LIMIT`. When none is set, no
+            `recursion_limit` is bound and the LangGraph server budget (`10_011`)
+            stands.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         store: Optional LangGraph Store for runtime approval state.
@@ -3336,5 +3337,15 @@ def create_cli_agent(
         name=_sanitize_agent_message_name(assistant_id),
     )
     if effective_recursion_limit is not None:
-        agent = agent.with_config({"recursion_limit": effective_recursion_limit})
+        # `Pregel.with_config` uses `merge_configs`, which discards a value equal
+        # to LangGraph's environment-derived default. Replace the copied graph's
+        # config directly so that inherited default can override the SDK's 9,999.
+        agent = agent.copy(
+            {
+                "config": {
+                    **(agent.config or {}),
+                    "recursion_limit": effective_recursion_limit,
+                }
+            }
+        )
     return agent, composite_backend

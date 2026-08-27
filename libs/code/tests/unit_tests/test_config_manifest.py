@@ -3978,11 +3978,23 @@ def test_recursion_limit_option_metadata() -> None:
     assert "runtime.recursion_limit" in option_keys()
 
 
-def test_resolve_recursion_limit_default() -> None:
+def test_resolve_recursion_limit_default(monkeypatch: pytest.MonkeyPatch) -> None:
     """With no override, the resolver leaves the limit to LangGraph."""
     from deepagents_code.config_manifest import resolve_recursion_limit
 
+    monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
     assert resolve_recursion_limit(toml_data={}) is None
+
+
+def test_resolve_recursion_limit_inherits_langgraph_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The upstream environment default becomes the effective agent limit."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+    assert resolve_recursion_limit(toml_data={}) == 12_000
 
 
 def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
@@ -3990,6 +4002,7 @@ def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
     from deepagents_code.config_manifest import resolve_recursion_limit
 
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "3000")
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
     assert (
         resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
         == 3000
@@ -4012,6 +4025,7 @@ def test_resolve_recursion_limit_out_of_range_falls_back(monkeypatch, raw) -> No
     """Invalid values fall through to LangGraph's default."""
     from deepagents_code.config_manifest import resolve_recursion_limit
 
+    monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, raw)
     assert resolve_recursion_limit(toml_data={}) is None
 

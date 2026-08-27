@@ -124,6 +124,9 @@ effectively unbounded traversal. A resolved value above the ceiling is rejected
 and falls through to the next layer / default.
 """
 
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+"""Upstream recursion default inherited when no Deep Agents override wins."""
+
 COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 """Context size above which a resumed thread is offered compaction.
 
@@ -1770,18 +1773,25 @@ def _is_valid_cli_recursion_limit(value: object) -> TypeIs[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
+def _inherited_langgraph_recursion_limit() -> int | None:
+    """Return LangGraph's environment default when one is configured."""
+    raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
+    return int(raw) if raw is not None else None
+
+
 def resolve_recursion_limit(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
 ) -> int | None:
-    """Resolve an explicit main-agent `recursion_limit`.
+    """Resolve the effective main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
-    `config.toml` precedence. Explicit CLI values retain the documented `>= 1`
-    contract. Other out-of-range values (below `RECURSION_LIMIT_FLOOR` or above
-    `RECURSION_LIMIT_CEILING`) are discarded with a logged warning and the next
-    lower-precedence layer is tried.
+    `config.toml` precedence, then inherits LangGraph's environment default when
+    no Deep Agents override wins. Explicit CLI values retain the documented
+    `>= 1` contract. Other out-of-range values (below `RECURSION_LIMIT_FLOOR` or
+    above `RECURSION_LIMIT_CEILING`) are discarded with a logged warning and the
+    next lower-precedence layer is tried.
 
     Managed values remain subject to the launch-time managed-health gate.
 
@@ -1792,10 +1802,11 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The explicit recursion limit, or `None` when nothing valid is
-            configured and the LangGraph server default should stand. CLI values
-            are `>= 1`; values from all other tiers are within
-            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+        The explicit or inherited recursion limit, or `None` when nothing valid
+            is configured and LangGraph's built-in server default should stand.
+            CLI values are `>= 1`; Deep Agents managed, env, and TOML values are
+            within `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`; the
+            inherited value follows LangGraph's integer contract.
     """
     data = toml_data
     option = get_option("runtime.recursion_limit")
@@ -1851,7 +1862,9 @@ def resolve_recursion_limit(
         and CLI_RANK in first_resolved.masked_ranks
     ):
         _emit_ranked_diagnostics(option, first_resolved)
-    return settled
+    if settled is not None:
+        return settled
+    return _inherited_langgraph_recursion_limit()
 
 
 # --- Option definitions -----------------------------------------------------

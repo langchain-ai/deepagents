@@ -8363,6 +8363,7 @@ class TestBuildStreamConfigRecursionLimit:
         from deepagents_code.configuration import service
 
         monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
         empty = tmp_path / "config.toml"
         empty.write_text("", encoding="utf-8")
         monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
@@ -8405,3 +8406,28 @@ class TestBuildStreamConfigRecursionLimit:
             model_config.clear_caches()
 
         assert config["recursion_limit"] == 3000
+
+    def test_inherited_langgraph_limit_reaches_the_run_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The upstream environment fallback is sent with each run."""
+        import deepagents_code.config as config_mod
+        from deepagents_code import _env_vars, model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            config = config_mod.build_stream_config("thread-123", assistant_id=None)
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        assert config["recursion_limit"] == 12_000

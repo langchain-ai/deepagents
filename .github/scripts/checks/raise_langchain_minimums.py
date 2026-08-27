@@ -735,14 +735,32 @@ def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
             )
             return 1
         if narrow_to:
-            # Every requested name is present (checked above) but none had a
-            # floor to move. Saying "already at or above the latest" would be a
-            # wrong answer to a direct question: an exact `==` pin or a bare
-            # upper bound is unraiseable, not current.
+            # Every requested name is present (checked above) but none produced
+            # an edit. Distinguish why: a name whose requirements only ever
+            # appear as exact `==` pins or with no lower bound has no floor to
+            # raise, so it can never be bumped — answering green tells the
+            # operator the bump happened when it never could. A name that does
+            # declare a raiseable floor and is already at the latest compatible
+            # release is genuinely current, which stays a no-op success.
+            raiseable_names = {
+                canonicalize_name(requirement.name)
+                for scope in scopes
+                for _, requirement in scope.requirements
+                if _raiseable_specifier(requirement.specifier) is not None
+            }
+            unraiseable = narrow_to - raiseable_names
+            if unraiseable:
+                _error(
+                    f"Requested dependencies of {package} have no raiseable "
+                    "floor — each is an exact `==` pin or declares no lower "
+                    f"bound, so there is nothing to raise: "
+                    f"{', '.join(sorted(unraiseable))}. Not reporting this as "
+                    "up to date."
+                )
+                return 1
             _notice(
-                f"No requested dependency of {package} had a raiseable floor: "
-                "each is an exact `==` pin, declares no lower bound, or is "
-                "already at the latest compatible stable release. Nothing to do."
+                f"All requested dependencies of {package} are already at the "
+                "latest compatible stable release; nothing to do."
             )
             return 0
         _notice(

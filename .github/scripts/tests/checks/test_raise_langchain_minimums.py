@@ -480,6 +480,48 @@ class TestRunNarrowing:
 
         assert _run("pkg", None) == 1
 
+    @pytest.mark.parametrize(
+        "requirement",
+        [
+            # Exact pin: no floor to raise, ever.
+            "deepagents==0.7.0",
+            # Upper bound only: likewise no floor.
+            "deepagents<2.0",
+        ],
+    )
+    def test_requested_name_without_a_raiseable_floor_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requirement: str
+    ) -> None:
+        """An unraiseable request is not "up to date": it could never be bumped."""
+        self._package(
+            tmp_path,
+            monkeypatch,
+            f'[project]\nname = "pkg"\ndependencies = ["{requirement}"]\n',
+        )
+
+        assert _run("pkg", frozenset({"deepagents"})) == 1
+
+    def test_requested_name_with_current_floor_is_a_no_op_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A raiseable floor already at the latest release is genuinely current.
+
+        The floor is ahead of anything PyPI could offer, so no version satisfies
+        "later than the floor but within the range" and no edit is produced —
+        but the run did answer the question it was asked, so it stays green.
+        """
+        self._package(
+            tmp_path,
+            monkeypatch,
+            '[project]\nname = "pkg"\ndependencies = ["deepagents>=999.0"]\n',
+        )
+
+        assert _run("pkg", frozenset({"deepagents"})) == 0
+        assert "already at the latest" in capsys.readouterr().out
+
 
 def test_load_scope_applies_the_narrowing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch

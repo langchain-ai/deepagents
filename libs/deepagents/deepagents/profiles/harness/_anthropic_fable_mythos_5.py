@@ -39,7 +39,7 @@ After receiving tool results, carefully reflect on their quality and determine o
 </tool_result_reflection>
 
 <long_horizon_completion>
-Do not stop, propose a new session, or hand work off merely because the conversation has become long or you perceive context pressure. Continue making concrete progress until complete or blocked on required user input.
+Do not stop, propose a new session, or hand work off merely because the conversation has become long or you perceive context pressure. Continue making concrete progress until the task is complete or blocked on required user input.
 </long_horizon_completion>
 
 <final_summary_readability>

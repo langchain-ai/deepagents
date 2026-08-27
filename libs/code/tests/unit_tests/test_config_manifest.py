@@ -2756,6 +2756,30 @@ def test_run_get_exact_key_json_stays_single_object(capsys) -> None:
     assert "group" not in data
 
 
+def test_run_get_recursion_limit_reports_langgraph_default(monkeypatch, capsys) -> None:
+    """Text and JSON expose the inherited server value instead of unset."""
+    monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
+
+    data = _get_json_object("runtime.recursion_limit", capsys)
+    assert data["value"] == 10_011
+    assert data["source"] == "default"
+    assert data["set"] is False
+
+    assert run_config_command(_get_args("runtime.recursion_limit")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered == "runtime.recursion_limit = 10011 (default)"
+
+
+def test_run_get_recursion_limit_reports_upstream_env(monkeypatch, capsys) -> None:
+    """A trusted upstream override remains visible with its actual source."""
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+
+    data = _get_json_object("runtime.recursion_limit", capsys)
+    assert data["value"] == 12_000
+    assert data["source"] == "env (LANGGRAPH_DEFAULT_RECURSION_LIMIT)"
+    assert data["set"] is True
+
+
 def test_run_get_credentials_section_lists_every_credential(
     capsys, monkeypatch
 ) -> None:

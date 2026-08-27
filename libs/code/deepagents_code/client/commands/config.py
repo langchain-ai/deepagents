@@ -41,6 +41,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+_LANGGRAPH_API_DEFAULT_RECURSION_LIMIT = 10_011
+"""Upstream in-memory server default, mirrored for configuration display only."""
+
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
     """Return a callable that lazily imports and invokes a `ui` help function."""
@@ -220,6 +224,15 @@ def _load_stored_credentials() -> _StoredCredentialView:
     return _StoredCredentialView(keys=keys)
 
 
+def _langgraph_default_recursion_limit() -> tuple[bool, str, int]:
+    """Return the graph step budget inherited by the local API server."""
+    raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
+    if raw is not None:
+        source = f"env ({_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV})"
+        return True, source, int(raw)
+    return False, "default", _LANGGRAPH_API_DEFAULT_RECURSION_LIMIT
+
+
 def _resolve(
     option: ConfigOption[object],
     toml_data: dict[str, Any],
@@ -334,6 +347,8 @@ def _resolve(
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)
     source = _ranked_source(resolved)
+    if option.key == "runtime.recursion_limit" and source == "default":
+        return _langgraph_default_recursion_limit()
     return source != "default", source, resolved.value
 
 

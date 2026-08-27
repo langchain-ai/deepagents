@@ -138,6 +138,7 @@ from deepagents_code.tui.widgets.messages import (
     ErrorMessage,
     LazyToolGroupSummary,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -8626,6 +8627,49 @@ class TestRunAgentTaskMediaTracker:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
             assert mock_execute.await_args.kwargs["sandbox_type"] is app._sandbox_type
+
+    async def test_run_agent_task_forwards_the_reasoning_preference(self) -> None:
+        """`_run_agent_task` must forward the resolved reasoning preference.
+
+        The preference resolving correctly proves nothing on its own: dropping
+        this kwarg leaves the flag, the env var, and `config.toml` all working
+        and the TUI silently never rendering reasoning.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._show_reasoning = True
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["show_reasoning"] is True
+
+    async def test_reasoning_expansion_syncs_to_message_store(self) -> None:
+        """Collapsing reasoning must survive transcript virtualization.
+
+        `update_message` rejects any field missing from `_UPDATABLE_FIELDS`, so
+        this also pins the registration the handler depends on.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = ReasoningMessage("thinking", id="reason-1")
+            await app._mount_message(widget)
+            await pilot.pause()
+            assert app._message_store.get_message("reason-1") is not None
+
+            widget.toggle_expanded()
+            await pilot.pause()
+
+            stored = app._message_store.get_message("reason-1")
+            assert stored is not None
+            assert stored.reasoning_expanded is False
 
     async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
         """Unexpected agent errors should stop/clear in-flight tool widgets."""

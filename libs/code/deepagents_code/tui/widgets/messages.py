@@ -7,7 +7,6 @@ import json
 import logging
 import re
 import textwrap
-from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
@@ -1622,8 +1621,12 @@ class ReasoningMessage(Vertical):
         self._render_pending = False
         self._flush_timer: Timer | None = None
         self._streaming = not content
-        self._deferred_expanded: bool | None = None
-        self._published_expanded: bool | None = None
+        self._deferred_expanded = True
+        # Last expansion value published to the message store. Deduping against
+        # it keeps the reactive's initialization watcher and the deferred restore
+        # from re-emitting a value the store already holds. Seeded to the
+        # `_expanded` default so a fresh mount publishes nothing.
+        self._published_expanded = True
 
     @property
     def _content(self) -> str:
@@ -1644,21 +1647,42 @@ class ReasoningMessage(Vertical):
         """
         yield _ReasoningToggle(Content.styled("Reasoning", "bold"))
         yield Static(Content(self._content), id="reasoning-body")
-        yield Static(id="reasoning-hint")
+        # A toggle, not a plain Static: the hint says "click", so clicking the
+        # hint itself has to work as well as clicking the header.
+        yield _ReasoningToggle(id="reasoning-hint")
+
+    @property
+    def has_content(self) -> bool:
+        """Whether there is reasoning text worth revealing."""
+        return bool(self._content.strip())
 
     def on_mount(self) -> None:
         """Restore deferred expansion state and render content."""
-        if self._deferred_expanded is not None:
-            self._expanded = self._deferred_expanded
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        self._expanded = self._deferred_expanded
         self._render_reasoning()
 
     def _render_reasoning(self) -> None:
-        with suppress(NoMatches):
-            self.query_one("#reasoning-body", Static).update(Content(self._content))
-            action = "hide" if self._expanded else "show"
-            self.query_one("#reasoning-hint", Static).update(
-                Content.styled(f"click or Ctrl+O to {action} reasoning", "dim italic")
-            )
+        """Repaint the body and hint.
+
+        No-ops while detached, where the composed content is already correct and
+        `on_mount` renders again. A failed query past that point is a real bug,
+        so it raises into `_flush_pending_render` and the hydration handlers
+        rather than being suppressed here.
+        """
+        if not self.is_attached:
+            return
+        self.query_one("#reasoning-body", Static).update(Content(self._content))
+        hint = self.query_one("#reasoning-hint", Static)
+        hint.display = self.has_content
+        if not self.has_content:
+            return
+        action = "hide" if self._expanded else "show"
+        hint.update(
+            Content.styled(f"click or Ctrl+O to {action} reasoning", "dim italic")
+        )
 
     async def append_content(self, text: str) -> None:
         """Append reasoning text and coalesce later renders on a timer."""
@@ -1707,12 +1731,23 @@ class ReasoningMessage(Vertical):
 
     def toggle_expanded(self) -> None:
         """Toggle the reasoning body visibility."""
+        if not self.has_content:
+            return
         self._expanded = not self._expanded
         self._render_reasoning()
 
     def watch__expanded(self, expanded: bool) -> None:
-        """Publish expansion changes for transcript persistence."""
-        if self.is_attached and expanded != self._published_expanded:
+        """Publish user-driven expansion changes for transcript persistence.
+
+        Gated on `is_mounted`, which stays `False` until after `on_mount`
+        returns. That drops both writes the store already knows about -- the
+        reactive's initialization watcher and the deferred restore -- without
+        depending on which of the two Textual runs first, and it keeps
+        `_expanded` set in pre-mount test setup from posting on a detached
+        widget (`NoActiveAppError`). `_published_expanded` then dedupes a
+        re-publish of a value already sent.
+        """
+        if self.is_mounted and expanded != self._published_expanded:
             self._published_expanded = expanded
             self.post_message(self.ExpansionChanged(self, expanded))
 

@@ -322,14 +322,16 @@ _MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
 """DOM id for the spacer representing source messages below the mounted window."""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.APP, MessageType.SUMMARIZATION}
+    {MessageType.APP, MessageType.SUMMARIZATION, MessageType.REASONING}
 )
 """Message types that never receive a timestamp footer.
 
 App-status notes (e.g. "Resumed thread: ...", version/update notices, command
 feedback) are not conversation turns, so they do not get timestamp footers.
 `SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
-reason.
+reason. `REASONING` is part of the assistant turn that follows it rather than a
+turn of its own, so the answer's footer times the whole turn and a second footer
+above it would only add noise.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
@@ -22072,7 +22074,7 @@ class DeepAgentsApp(App):
             if isinstance(child, RubricResultMessage) and child._details:
                 child.toggle_details()
                 return
-            if isinstance(child, ReasoningMessage):
+            if isinstance(child, ReasoningMessage) and child.has_content:
                 child.toggle_expanded()
                 return
             if isinstance(child, LazyToolGroupSummary | ToolGroupSummary):

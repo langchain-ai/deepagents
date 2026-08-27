@@ -7631,7 +7631,7 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
-                create_update_log_path,
+                create_update_log_file,
                 editable_extra_removal_hint,
                 is_valid_extra_name,
                 perform_uninstall_extra,
@@ -7663,24 +7663,21 @@ class DeepAgentsApp(App):
         if method_error is not None:
             await self._mount_message(ErrorMessage(method_error))
             return
-        log_path = create_update_log_path()
+        log_path = create_update_log_file()
+        log_line = f"\nLog: {log_path}" if log_path is not None else ""
         await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
         try:
             outcome = await perform_uninstall_extra(extra, log_path=log_path)
         except asyncio.CancelledError as exc:
             logger.warning("/uninstall command cancelled", exc_info=True)
             await self._mount_message(
-                ErrorMessage(
-                    f"Uninstall interrupted: {type(exc).__name__}\nLog: {log_path}"
-                )
+                ErrorMessage(f"Uninstall interrupted: {type(exc).__name__}{log_line}")
             )
             raise
         except OSError as exc:
             logger.warning("/uninstall command failed", exc_info=True)
             await self._mount_message(
-                ErrorMessage(
-                    f"Uninstall failed: {type(exc).__name__}: {exc}\nLog: {log_path}"
-                )
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}{log_line}")
             )
             return
         if outcome.interrupted:
@@ -7692,7 +7689,7 @@ class DeepAgentsApp(App):
             await self._mount_message(
                 ErrorMessage(
                     "Uninstall interrupted. The tool environment may be partially "
-                    f"rebuilt.\nLog: {log_path}{recovery}"
+                    f"rebuilt.{log_line}{recovery}"
                 )
             )
             raise asyncio.CancelledError
@@ -7708,7 +7705,7 @@ class DeepAgentsApp(App):
                 else ""
             )
             await self._mount_message(
-                ErrorMessage(f"Uninstall failed{detail}\nLog: {log_path}{recovery}")
+                ErrorMessage(f"Uninstall failed{detail}{log_line}{recovery}")
             )
             return
         # The rebuild already replaced the env this process imports from, so the

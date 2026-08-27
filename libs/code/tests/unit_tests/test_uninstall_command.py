@@ -558,11 +558,16 @@ class TestUninstallCli:
             assert run_uninstall_command(args) == 2
         show_help.assert_called_once()
 
-    def test_absent_extra_is_successful_noop(self) -> None:
+    def test_absent_extra_is_successful_noop(self, tmp_path: Path) -> None:
         console = MagicMock()
+        log_path = tmp_path / "uninstall.log"
         with (
             patch("deepagents_code.config._is_editable_install", return_value=False),
             patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value=log_path,
+            ),
             patch(
                 "deepagents_code.update_check.perform_uninstall_extra",
                 new_callable=AsyncMock,
@@ -575,6 +580,7 @@ class TestUninstallCli:
         ):
             assert run_uninstall_request(name="ollama") == 0
         perform.assert_awaited_once()
+        assert log_path.is_file()
         assert "not installed" in " ".join(
             str(arg) for call in console.print.call_args_list for arg in call.args
         )
@@ -842,6 +848,29 @@ class TestUninstallCli:
         assert "already running" in text
         assert "safe-command" not in text
         assert "Run manually" not in text
+
+    def test_log_creation_failure_omits_log_hint(self) -> None:
+        """A failed log create never advertises a path that does not exist."""
+        console = MagicMock()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch("deepagents_code.config.console", console, create=True),
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_uninstall_extra",
+                new_callable=AsyncMock,
+                return_value=ExtraRemovalOutcome(False, "receipt not found"),
+            ),
+        ):
+            assert run_uninstall_request(name="ollama") == 1
+
+        text = self._console_text(console)
+        assert "receipt not found" in text
+        assert "Uninstall log:" not in text
+        assert "Log:" not in text
 
     def test_interruption_exits_130_with_locked_repair_hint(self) -> None:
         """`Ctrl+C` mid-rebuild reports the partial-rebuild risk."""
@@ -1161,13 +1190,18 @@ async def test_uninstall_slash_refuses_unsupported_install_methods(
     assert expected in text
 
 
-async def test_uninstall_slash_protected_extra_is_refused() -> None:
+async def test_uninstall_slash_protected_extra_is_refused(tmp_path: Path) -> None:
     """A base-provider extra is refused, not reported as an ordinary no-op."""
     app = DeepAgentsApp()
     app._mount_message = AsyncMock()
+    log_path = tmp_path / "uninstall.log"
     with (
         patch("deepagents_code.config._is_editable_install", return_value=False),
         patch("deepagents_code.update_check.detect_install_method", return_value="uv"),
+        patch(
+            "deepagents_code.update_check.create_update_log_path",
+            return_value=log_path,
+        ),
         patch(
             "deepagents_code.update_check.perform_uninstall_extra",
             new_callable=AsyncMock,
@@ -1179,6 +1213,7 @@ async def test_uninstall_slash_protected_extra_is_refused() -> None:
         await app._handle_uninstall_command("/uninstall openai")
 
     perform.assert_awaited_once()
+    assert log_path.is_file()
     text = " ".join(
         str(call.args[0]._content) for call in app._mount_message.await_args_list
     )

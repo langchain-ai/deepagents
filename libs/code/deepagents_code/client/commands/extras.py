@@ -64,7 +64,7 @@ def run_uninstall_request(*, name: str) -> int:
     from deepagents_code._invocation import invoked_name
     from deepagents_code.config import _is_editable_install, console
     from deepagents_code.update_check import (
-        create_update_log_path,
+        create_update_log_file,
         editable_extra_removal_hint,
         format_log_follow_command,
         is_valid_extra_name,
@@ -93,25 +93,26 @@ def run_uninstall_request(*, name: str) -> int:
         )
         return 1
 
-    log_path = create_update_log_path()
-    safe_log_path = escape(str(log_path))
+    log_path = create_update_log_file()
+    log_line = f"\nLog: {escape(str(log_path))}" if log_path is not None else ""
     console.print(f"Uninstalling extra '{name}'...")
-    console.print(
-        f"Uninstall log: {format_log_follow_command(log_path)}",
-        style="dim",
-        highlight=False,
-        markup=False,
-    )
+    if log_path is not None:
+        console.print(
+            f"Uninstall log: {format_log_follow_command(log_path)}",
+            style="dim",
+            highlight=False,
+            markup=False,
+        )
     try:
         outcome = asyncio.run(perform_uninstall_extra(name, log_path=log_path))
     except KeyboardInterrupt:
-        console.print(f"\nAborted.\nLog: {safe_log_path}", highlight=False)
+        console.print(f"\nAborted.{log_line}", highlight=False)
         return 130
     except OSError as exc:
         logger.warning("uninstall failed", exc_info=True)
         console.print(
             f"[bold red]Error:[/bold red] {type(exc).__name__}: "
-            f"{escape(str(exc))}\nLog: {safe_log_path}",
+            f"{escape(str(exc))}{log_line}",
             highlight=False,
         )
         return 1
@@ -123,8 +124,8 @@ def run_uninstall_request(*, name: str) -> int:
             else ""
         )
         console.print(
-            "\nAborted. The tool environment may be partially rebuilt.\n"
-            f"Log: {safe_log_path}{recovery}",
+            "\nAborted. The tool environment may be partially rebuilt."
+            f"{log_line}{recovery}",
             highlight=False,
         )
         return 130
@@ -145,8 +146,7 @@ def run_uninstall_request(*, name: str) -> int:
         else ""
     )
     console.print(
-        f"[bold red]Uninstall failed[/bold red]{escape(detail)}\n"
-        f"Log: {safe_log_path}{recovery}",
+        f"[bold red]Uninstall failed[/bold red]{escape(detail)}{log_line}{recovery}",
         highlight=False,
     )
     return 1

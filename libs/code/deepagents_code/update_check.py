@@ -3783,6 +3783,9 @@ async def perform_uninstall_extra(
 ) -> tuple[bool, str]:
     """Remove `extra` by rebuilding the current uv-managed tool environment.
 
+    The cross-process install lock covers both receipt inspection and uv execution,
+    preventing concurrent updates from restoring an extra removed by another session.
+
     Returns:
         `(success, output)` with subprocess output or an explanatory error.
     """
@@ -3806,13 +3809,16 @@ async def perform_uninstall_extra(
     if not shutil.which("uv"):
         return False, "`uv` not found on PATH; extras cannot be removed."
 
-    try:
-        cmd = uninstall_extra_command(extra)
-    except ExtraNotInstalledError as exc:
-        return False, str(exc)
-    except (ToolRequirementIntrospectionError, ValueError) as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+    with update_install_lock() as holding_update_lock:
+        if not holding_update_lock:
+            return False, "Another dcode session is modifying the tool environment."
+        try:
+            cmd = uninstall_extra_command(extra)
+        except ExtraNotInstalledError as exc:
+            return False, str(exc)
+        except (ToolRequirementIntrospectionError, ValueError) as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
 async def perform_install_package(

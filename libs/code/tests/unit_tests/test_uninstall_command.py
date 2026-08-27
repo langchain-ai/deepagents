@@ -4,8 +4,13 @@ from __future__ import annotations
 
 import argparse
 import sys
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 import pytest
 
@@ -200,8 +205,52 @@ class TestPerformUninstallExtra:
         assert "not installed" in output
         run.assert_not_awaited()
 
-    async def test_uv_command_runs_through_bounded_subprocess_helper(self) -> None:
-        run = AsyncMock(return_value=(True, "done"))
+    async def test_lock_wraps_command_generation_and_subprocess(self) -> None:
+        events: list[str] = []
+
+        def run_subprocess(*_args: object, **_kwargs: object) -> tuple[bool, str]:
+            events.append("run")
+            return True, "done"
+
+        run = AsyncMock(side_effect=run_subprocess)
+
+        @contextmanager
+        def lock() -> Iterator[bool]:
+            events.append("acquire")
+            try:
+                yield True
+            finally:
+                events.append("release")
+
+        def command(_extra: str) -> str:
+            events.append("command")
+            return "uv tool install safe-command"
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method", return_value="uv"
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which", return_value="/usr/bin/uv"
+            ),
+            patch("deepagents_code.update_check.update_install_lock", lock),
+            patch(
+                "deepagents_code.update_check.uninstall_extra_command",
+                side_effect=command,
+            ),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            result = await perform_uninstall_extra("ollama", log_path=Path("/tmp/log"))
+
+        assert result == (True, "done")
+        assert events == ["acquire", "command", "run", "release"]
+        run.assert_awaited_once_with(
+            "uv tool install safe-command", progress=None, log_path=Path("/tmp/log")
+        )
+
+    async def test_contended_lock_skips_receipt_read_and_subprocess(self) -> None:
+        command = MagicMock()
+        run = AsyncMock()
         with (
             patch(
                 "deepagents_code.update_check.detect_install_method", return_value="uv"
@@ -210,16 +259,18 @@ class TestPerformUninstallExtra:
                 "deepagents_code.update_check.shutil.which", return_value="/usr/bin/uv"
             ),
             patch(
-                "deepagents_code.update_check.uninstall_extra_command",
-                return_value="uv tool install safe-command",
+                "deepagents_code.update_check.update_install_lock",
+                return_value=nullcontext(False),
             ),
+            patch("deepagents_code.update_check.uninstall_extra_command", command),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            result = await perform_uninstall_extra("ollama", log_path=Path("/tmp/log"))
-        assert result == (True, "done")
-        run.assert_awaited_once_with(
-            "uv tool install safe-command", progress=None, log_path=Path("/tmp/log")
-        )
+            success, output = await perform_uninstall_extra("ollama")
+
+        assert success is False
+        assert "Another dcode session" in output
+        command.assert_not_called()
+        run.assert_not_awaited()
 
 
 class TestUninstallCli:

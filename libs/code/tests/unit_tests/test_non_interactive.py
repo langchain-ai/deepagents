@@ -123,7 +123,7 @@ def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
 
     _process_ai_message(message, state, console)
 
-    assert stdout.getvalue() == "answer"
+    assert stdout.getvalue() == "answer\n"
     assert stderr.getvalue() == "Reasoning:\nfirst second\n\n\nReasoning:\nthird\n"
     assert state.reasoning_active is False
     assert state.full_response == ["answer"]
@@ -884,6 +884,61 @@ class TestQuietMode:
         assert "read_file" not in stderr
         assert "Task completed" not in stderr
         assert "Running task" not in stderr
+
+    async def test_post_answer_reasoning_preserves_stdout_newline(self) -> None:
+        """A stderr separator must not mark stdout's text line as closed."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "text", "text": "answer"},
+            {"type": "reasoning", "reasoning": "thinking"},
+        ]
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(
+            return_value=_async_iter([("", "messages", (ai_msg, {}))])
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, MagicMock(), None),
+            ),
+            patch.object(sys, "stdout", stdout),
+            patch.object(sys, "stderr", stderr),
+        ):
+            mock_settings.return_value = None
+            mock_settings.has_tavily = False
+            runtime_state.model_name = None
+
+            await run_non_interactive(
+                message="test",
+                quiet=True,
+                show_reasoning=True,
+            )
+
+        assert stdout.getvalue() == "answer\n"
+        assert stderr.getvalue() == "\nReasoning:\nthinking\n"
 
 
 class TestQuietFileOpNotification:

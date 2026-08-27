@@ -64,6 +64,60 @@ class TestSetupMCPParsers:
         assert ns.mcp_command == "login"
         assert ns.server == "notion"
 
+    def test_mcp_login_allows_omitted_server(self) -> None:
+        """Bare `dcode mcp login` selects discovery mode."""
+        ns = _build_parser().parse_args(["mcp", "login"])
+        assert ns.mcp_command == "login"
+        assert ns.server is None
+
+
+class TestRunMCPLoginList:
+    """Behavior of bare `dcode mcp login`."""
+
+    async def test_lists_oauth_servers_without_tokens(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{'
+            '"notion":{"transport":"http","url":"https://notion.test/mcp",'
+            '"auth":"oauth"},'
+            '"public":{"transport":"http","url":"https://public.test/mcp"}}}'
+        )
+
+        exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        assert exit_code == 0
+        output = capsys.readouterr().out
+        assert "MCP servers needing login:" in output
+        assert "notion" in output
+        assert "public" not in output
+
+    async def test_omits_oauth_servers_with_tokens(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://notion.test/mcp","auth":"oauth"}}}'
+        )
+        with patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path):
+            storage = FileTokenStorage("notion", server_url="https://notion.test/mcp")
+            await storage.set_tokens(
+                OAuthToken(access_token="secret", token_type="Bearer")
+            )
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        assert exit_code == 0
+        assert capsys.readouterr().out.strip() == "No MCP servers need login."
+
 
 class TestRunMCPLogin:
     """Behavior of the `mcp login` command handler."""

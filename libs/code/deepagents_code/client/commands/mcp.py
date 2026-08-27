@@ -9,7 +9,10 @@ if TYPE_CHECKING:
     import argparse
     from collections.abc import Callable
 
-    from deepagents_code.mcp_login_service import ConfigResolutionError
+    from deepagents_code.mcp_login_service import (
+        ConfigResolution,
+        ConfigResolutionError,
+    )
 
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
@@ -52,10 +55,14 @@ def setup_mcp_parsers(
 
     login_parser = mcp_sub.add_parser(
         "login",
-        help="Run the OAuth login flow for an MCP server",
+        help="List servers needing login or run an OAuth login flow",
         add_help=False,
     )
-    login_parser.add_argument("server", help="Server name from mcpServers config")
+    login_parser.add_argument(
+        "server",
+        nargs="?",
+        help="Server name from mcpServers config; omit to list servers needing login",
+    )
     login_parser.add_argument(
         "--mcp-config",
         dest="config_path",
@@ -79,6 +86,75 @@ def setup_mcp_parsers(
         "--help",
         action=make_help_action(_lazy_ui_help("show_mcp_config_help")),
     )
+
+
+async def run_mcp_login_list(*, config_path: str | None) -> int:
+    """List configured OAuth servers without stored tokens.
+
+    Returns:
+        Process exit code: 0 on success, 1 on config failure, or 2 when no
+            config file was found.
+    """
+    from deepagents_code._invocation import invoked_name
+    from deepagents_code.mcp_login_service import (
+        ConfigErrorKind,
+        ConfigResolution,
+        ConfigResolutionError,
+        resolve_mcp_config,
+    )
+    from deepagents_code.ui import console
+
+    resolution = resolve_mcp_config(config_path)
+    if isinstance(resolution, ConfigResolutionError):
+        _print_resolution_error(resolution)
+        return 2 if resolution.kind is ConfigErrorKind.NO_CONFIG_FOUND else 1
+    if not isinstance(resolution, ConfigResolution):  # pragma: no cover - safety
+        print(  # noqa: T201
+            "Internal error: unexpected result from resolve_mcp_config. "
+            "Please report this bug.",
+            file=sys.stderr,
+        )
+        return 1
+
+    _print_resolution_notices(resolution)
+    from deepagents_code.mcp_auth import FileTokenStorage, format_login_failure
+    from deepagents_code.mcp_tools import _drop_invalid_mcp_config_servers
+
+    valid_config, errors = _drop_invalid_mcp_config_servers(resolution.config)
+    for server_name, error in errors.items():
+        print(  # noqa: T201
+            f"Invalid MCP server config for {server_name!r}: {error}", file=sys.stderr
+        )
+
+    needs_login: list[str] = []
+    for server_name, server_config in valid_config["mcpServers"].items():
+        if server_config.get("auth") != "oauth":
+            continue
+        storage = FileTokenStorage(server_name, server_url=server_config["url"])
+        try:
+            tokens = await storage.get_tokens()
+        except (OSError, RuntimeError, ValueError) as exc:
+            print(  # noqa: T201
+                f"Could not read login state for {server_name!r}: "
+                f"{format_login_failure(exc)}",
+                file=sys.stderr,
+            )
+            continue
+        if tokens is None:
+            needs_login.append(server_name)
+
+    if not needs_login:
+        console.print("No MCP servers need login.")
+        return 0
+    console.print("MCP servers needing login:")
+    for server_name in needs_login:
+        console.print(f"  {server_name}", markup=False)
+    console.print()
+    console.print(
+        f"Run `{invoked_name()} mcp login <server>` to authenticate.",
+        markup=False,
+    )
+    return 0
 
 
 # Maintainer note: `deepagents-talon` dynamically imports `run_mcp_login` from
@@ -112,12 +188,6 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         ConfigErrorKind,
         ConfigResolution,
         ConfigResolutionError,
-        format_legacy_env_ignored_notice,
-        format_legacy_ignored_notice,
-        format_load_errors_notice,
-        format_malformed_approvals_notice,
-        format_policy_error_notice,
-        format_untrusted_project_notice,
         resolve_mcp_config,
         select_server,
     )
@@ -136,31 +206,7 @@ async def run_mcp_login(*, server: str, config_path: str | None) -> int:
         )
         return 1
 
-    # A policy read failure and an "untrusted project" skip are mutually
-    # exclusive reasons for the same dropped servers; surface the policy error
-    # (the real, actionable cause) instead of nudging the user to re-approve.
-    policy_notice = format_policy_error_notice(resolution.policy_error)
-    if policy_notice:
-        print(policy_notice, file=sys.stderr)  # noqa: T201
-    else:
-        notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
-        if notice:
-            print(notice, file=sys.stderr)  # noqa: T201
-    legacy_notice = format_legacy_ignored_notice(resolution.legacy_ignored)
-    if legacy_notice:
-        print(legacy_notice, file=sys.stderr)  # noqa: T201
-    legacy_env_notice = format_legacy_env_ignored_notice(resolution.legacy_env_ignored)
-    if legacy_env_notice:
-        print(legacy_env_notice, file=sys.stderr)  # noqa: T201
-    malformed_notice = format_malformed_approvals_notice(resolution.malformed_approvals)
-    if malformed_notice:
-        print(malformed_notice, file=sys.stderr)  # noqa: T201
-    # Report configs that failed to parse/validate but were dropped while
-    # another config still loaded — otherwise a broken .mcp.json is invisible on
-    # this surface (the runtime loader reports the same failures as error rows).
-    load_errors_notice = format_load_errors_notice(resolution.load_errors)
-    if load_errors_notice:
-        print(load_errors_notice, file=sys.stderr)  # noqa: T201
+    _print_resolution_notices(resolution)
 
     selection = select_server(resolution, server)
     if isinstance(selection, ConfigResolutionError):
@@ -265,6 +311,35 @@ def run_mcp_config() -> int:
         highlight=False,
     )
     return 0
+
+
+def _print_resolution_notices(resolution: ConfigResolution) -> None:
+    """Print notices attached to a successful config resolution."""
+    from deepagents_code.mcp_login_service import (
+        format_legacy_env_ignored_notice,
+        format_legacy_ignored_notice,
+        format_load_errors_notice,
+        format_malformed_approvals_notice,
+        format_policy_error_notice,
+        format_untrusted_project_notice,
+    )
+
+    policy_notice = format_policy_error_notice(resolution.policy_error)
+    if policy_notice:
+        print(policy_notice, file=sys.stderr)  # noqa: T201
+    else:
+        notice = format_untrusted_project_notice(resolution.untrusted_project_paths)
+        if notice:
+            print(notice, file=sys.stderr)  # noqa: T201
+    notices = (
+        format_legacy_ignored_notice(resolution.legacy_ignored),
+        format_legacy_env_ignored_notice(resolution.legacy_env_ignored),
+        format_malformed_approvals_notice(resolution.malformed_approvals),
+        format_load_errors_notice(resolution.load_errors),
+    )
+    for notice in notices:
+        if notice:
+            print(notice, file=sys.stderr)  # noqa: T201
 
 
 def _print_resolution_error(error: ConfigResolutionError) -> None:

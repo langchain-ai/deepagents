@@ -89,6 +89,35 @@ class TestUninstallExtraCommand:
             f"uv tool install --reinstall -U deepagents-code=={__version__}"
         )
 
+    @pytest.mark.parametrize(
+        "source",
+        [
+            'path = "/tmp/deepagents-code.whl"',
+            'url = "https://example.com/deepagents-code.whl"',
+            'git = "https://example.com/deepagents-code.git"',
+        ],
+    )
+    def test_non_registry_tool_source_refuses_rebuild(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        source: str,
+    ) -> None:
+        """Removing an extra must not replace a custom build with PyPI's."""
+        tmp_path.joinpath("uv-receipt.toml").write_text(
+            "[tool]\nrequirements = ["
+            f'{{ name = "deepagents-code", extras = ["ollama"], {source} }}'
+            "]\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        with pytest.raises(
+            ToolRequirementIntrospectionError,
+            match="source fields that cannot be preserved automatically",
+        ):
+            uninstall_extra_command("ollama")
+
     def test_prerelease_install_keeps_prerelease_resolution_enabled(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

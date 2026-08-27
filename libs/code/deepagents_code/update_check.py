@@ -2981,6 +2981,18 @@ def _uv_tool_selected_extras(
             raise ToolRequirementIntrospectionError(msg)
         if canonicalize_name(name) != main:
             continue
+        unsupported_keys = sorted(
+            str(key)
+            for key in entry
+            if not isinstance(key, str) or key not in {"name", "extras", "specifier"}
+        )
+        if unsupported_keys:
+            fields = ", ".join(unsupported_keys)
+            msg = (
+                f"uv tool receipt requirement {name!r} uses source fields "
+                f"that cannot be preserved automatically: {fields}"
+            )
+            raise ToolRequirementIntrospectionError(msg)
         extras = entry.get("extras", [])
         if not isinstance(extras, list) or any(
             not isinstance(extra, str) or not is_valid_extra_name(extra)

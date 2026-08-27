@@ -13,6 +13,7 @@ from packaging.version import Version
 from raise_langchain_minimums import (
     ManifestScope,
     _apply_replacements,
+    _branch_name,
     _compatible_release_version,
     _in_scope,
     _latest_compatible_version,
@@ -397,6 +398,16 @@ class TestParseDependencyCsv:
         assert _parse_dependency_csv("LangChain-Core, langsmith ,langchain_core") == (
             frozenset({"langchain-core", "langsmith"})
         )
+
+
+def test_branch_name_uses_canonical_dependency_set() -> None:
+    dependencies = _parse_dependency_csv(
+        "langsmith, LangChain-Core,langchain__core,langsmith"
+    )
+
+    assert _branch_name("deepagents-code", dependencies) == (
+        "chore/raise-dependency-minimums-deepagents-code-langchain-core-langsmith"
+    )
 
 
 def test_workflow_options_match_release_labels() -> None:

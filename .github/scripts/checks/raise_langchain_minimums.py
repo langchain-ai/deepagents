@@ -720,6 +720,15 @@ def _parse_dependency_csv(value: str) -> frozenset[str] | None:
     return names or None
 
 
+def _branch_name(package: str, dependencies: Collection[str] | None) -> str:
+    """Return the canonical branch identity for a package and dependency set."""
+    suffix = ""
+    if dependencies:
+        names = sorted({canonicalize_name(name) for name in dependencies})
+        suffix = "-" + "-".join(names)
+    return f"chore/raise-dependency-minimums-{package}{suffix}"
+
+
 def main() -> int:
     """Entry point: raise in-scope lower bounds for the selected package(s)."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -742,7 +751,9 @@ def main() -> int:
     )
     args = parser.parse_args()
     try:
-        return _run(args.package, _parse_dependency_csv(args.dependencies))
+        dependencies = _parse_dependency_csv(args.dependencies)
+        _write_output("branch", _branch_name(args.package, dependencies))
+        return _run(args.package, dependencies)
     except Exception as err:  # noqa: BLE001  # fail closed on script defects
         _error(f"Raising dependency minimums failed unexpectedly: {err}")
         return 2

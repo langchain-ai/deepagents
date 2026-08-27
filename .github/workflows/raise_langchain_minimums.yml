@@ -139,19 +139,6 @@ jobs:
           uv run --no-project --with "packaging>=26.2" \
             python .github/scripts/checks/raise_langchain_minimums.py \
             "${args[@]}"
-          # A narrowed run publishes to its own branch, keyed on the
-          # dependency set: the package-only branch would otherwise collide
-          # with a broad (or differently-narrowed) open PR and the
-          # duplicate-PR guard would skip this run, silently dropping the
-          # requested bumps. The slug mirrors the concurrency-group
-          # normalization above (lowercase, `.`/`_` → `-`, sorted, joined by
-          # `-`) so both identify the same run; the validation regex above
-          # already guarantees the charset is branch-safe.
-          slug=""
-          if [ -n "$DEPENDENCIES" ]; then
-            slug="-$(printf '%s' "$DEPENDENCIES" | tr 'A-Z._' 'a-z--' | tr ',' '\n' | sed 's/^ *//; s/ *$//' | LC_ALL=C sort | paste -sd- -)"
-          fi
-          echo "branch=chore/raise-dependency-minimums-${PACKAGE}${slug}" >> "$GITHUB_OUTPUT"
 
       - name: Regenerate lockfiles for affected packages
         # Raising a floor makes a package's uv.lock stale (it embeds the direct

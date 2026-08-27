@@ -16,7 +16,7 @@ from deepagents_code.resume_state import (
     _extract_context_tokens,
     coerce_goal_proposal_kind,
     coerce_goal_status,
-    coerce_rubric_model_spec,
+    coerce_model_spec,
 )
 
 
@@ -109,11 +109,11 @@ class TestCoerceRubricModelSpec:
     """Tests for checkpointed grader model coercion."""
 
     def test_accepts_nonblank_string(self) -> None:
-        assert coerce_rubric_model_spec(" openai:gpt-5.5 ") == "openai:gpt-5.5"
+        assert coerce_model_spec(" openai:gpt-5.5 ") == "openai:gpt-5.5"
 
     @pytest.mark.parametrize("value", [None, "", "   ", 1, {}])
     def test_rejects_malformed_values(self, value: object) -> None:
-        assert coerce_rubric_model_spec(value) is None
+        assert coerce_model_spec(value) is None
 
 
 class TestCoerceGoalStatus:

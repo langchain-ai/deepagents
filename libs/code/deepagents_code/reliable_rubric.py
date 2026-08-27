@@ -25,7 +25,7 @@ from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.goal_state_notice import is_conversation_control_message
 from deepagents_code.resume_state import (
     INHERIT_RUBRIC_MODEL,
-    coerce_rubric_model_spec,
+    coerce_model_spec,
 )
 
 if TYPE_CHECKING:
@@ -39,18 +39,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-def _coerce_main_model_spec(value: object) -> str | None:
-    """Narrow checkpoint model metadata to a nonblank spec.
-
-    Args:
-        value: Raw checkpoint value.
-
-    Returns:
-        The stripped model spec, or `None` for malformed metadata.
-    """
-    return value.strip() if isinstance(value, str) and value.strip() else None
 
 
 def _coerce_main_model_params(value: object) -> dict[str, Any]:
@@ -73,11 +61,12 @@ def _model_specs_match(actual: str, requested: str) -> bool:
     Returns:
         Whether both values select the same model.
     """
-    if actual == requested:
-        return True
-    if ":" in actual and ":" in requested:
-        return False
-    return actual.rsplit(":", 1)[-1] == requested.rsplit(":", 1)[-1]
+    if (":" in actual) == (":" in requested):
+        # Both canonical or both bare: only a literal match selects one model.
+        return actual == requested
+    # A mixed pair compares bare names. `split` mirrors `ModelSpec.parse`, so a
+    # model id that itself contains a colon stays intact.
+    return actual.split(":", 1)[-1] == requested.split(":", 1)[-1]
 
 
 def _without_internal_control_messages(state: RubricState) -> RubricState:
@@ -205,18 +194,19 @@ class ReliableRubricMiddleware(RubricMiddleware):
             The configured model label and effective structured-output strategy.
         """
         runtime_model = self._runtime_grader_model.get()
-        if runtime_model is None:
-            return super()._grader_trace_metadata(
-                effective_strategy=effective_strategy,
-            )
+        if runtime_model is not None and effective_strategy is None:
+            # A runtime string is resolved inside the nested graph, so the
+            # construction-time model cannot predict its output strategy;
+            # deriving one from `self._model` would only be discarded.
+            return {
+                "rubric_grader_configured_model": runtime_model,
+                "rubric_grader_effective_strategy": "unknown",
+            }
         metadata = super()._grader_trace_metadata(
             effective_strategy=effective_strategy,
         )
-        metadata["rubric_grader_configured_model"] = runtime_model
-        if effective_strategy is None:
-            # A runtime string is resolved inside the nested graph, so the
-            # construction-time model cannot predict its output strategy.
-            metadata["rubric_grader_effective_strategy"] = "unknown"
+        if runtime_model is not None:
+            metadata["rubric_grader_configured_model"] = runtime_model
         return metadata
 
     @staticmethod
@@ -263,7 +253,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
             Request-local grader context carrying the selected model and params.
         """
         grader_context = self._context(context)
-        selected = coerce_rubric_model_spec(state.get("_rubric_model_spec"))
+        selected = coerce_model_spec(state.get("_rubric_model_spec"))
         inherit = selected == INHERIT_RUBRIC_MODEL or (
             selected is None and self._inherit_main_model
         )
@@ -272,9 +262,9 @@ class ReliableRubricMiddleware(RubricMiddleware):
             # only after a main-model call, so on a thread's first grading pass
             # the channel is absent and the parent context still holds the live
             # `/model` override -- along with the params that belong to it.
-            main_model = _coerce_main_model_spec(state.get("_model_spec"))
+            main_model = coerce_model_spec(state.get("_model_spec"))
             if main_model is not None:
-                requested_model = _coerce_main_model_spec(grader_context.model)
+                requested_model = coerce_model_spec(grader_context.model)
                 grader_context.model = main_model
                 grader_context.model_params = (
                     _coerce_main_model_params(state.get("_model_params"))
@@ -282,13 +272,11 @@ class ReliableRubricMiddleware(RubricMiddleware):
                     or _model_specs_match(main_model, requested_model)
                     else {}
                 )
-        elif selected:
-            grader_context.model = selected
-            grader_context.model_params = {}
         else:
-            # `None` means "no runtime override", which selects the model the
-            # grader was built with. Clearing the parent's model is deliberate.
-            grader_context.model = None
+            # `selected` is either a recorded spec or `None`; `None` means "no
+            # runtime override", which selects the model the grader was built
+            # with. Clearing the parent's model is deliberate.
+            grader_context.model = selected
             grader_context.model_params = {}
         return grader_context
 

@@ -136,13 +136,13 @@ mishandling it.
 """
 
 
-def coerce_rubric_model_spec(value: object) -> str | None:
-    """Narrow a persisted rubric-model channel to a usable value.
+def coerce_model_spec(value: object) -> str | None:
+    """Narrow a persisted model-spec channel to a usable value.
 
-    `INHERIT_RUBRIC_MODEL` passes through unchanged; callers compare the result
-    against it themselves. Every reader of `_rubric_model_spec` must go through
-    this, so the TUI display and the grader cannot disagree about a malformed
-    checkpoint value.
+    Shared by `_rubric_model_spec` and `_model_spec`. `INHERIT_RUBRIC_MODEL`
+    passes through unchanged; callers compare the result against it themselves.
+    Every reader of these channels must go through this, so the TUI display and
+    the grader cannot disagree about a malformed checkpoint value.
 
     Args:
         value: Raw value read from checkpoint state.

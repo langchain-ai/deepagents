@@ -13002,11 +13002,7 @@ class DeepAgentsApp(App):
             # the sentinel rather than `None`, which would be indistinguishable
             # from absence on read.
             **(
-                {
-                    "_rubric_model_spec": self._rubric_model
-                    if self._rubric_model is not None
-                    else INHERIT_RUBRIC_MODEL
-                }
+                {"_rubric_model_spec": self._rubric_model or INHERIT_RUBRIC_MODEL}
                 if self._rubric_model_recorded
                 else {}
             ),
@@ -13397,7 +13393,7 @@ class DeepAgentsApp(App):
             INHERIT_RUBRIC_MODEL,
             coerce_goal_proposal_kind,
             coerce_goal_status,
-            coerce_rubric_model_spec,
+            coerce_model_spec,
         )
 
         def _as_str(value: object) -> str | None:
@@ -13409,9 +13405,7 @@ class DeepAgentsApp(App):
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
         )
-        raw_rubric_model = coerce_rubric_model_spec(
-            state_values.get("_rubric_model_spec")
-        )
+        raw_rubric_model = coerce_model_spec(state_values.get("_rubric_model_spec"))
         rubric_model = (
             None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
         )

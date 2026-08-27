@@ -443,6 +443,46 @@ def test_start_attempt_replaces_scope_and_drop_uncommitted_clears_all(
     assert '"content":"later"' in _read_main(runtime)
 
 
+def test_destructive_scope_replace_and_drop_are_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Losing staged records must never be silent.
+
+    Both paths make the on-screen conversation and the persisted transcript
+    diverge, and neither raises. A count in the log is the only way an operator
+    can tell that a lifecycle event went missing.
+    """
+    _runtime, recorder = _recorder_runtime(tmp_path)
+    recorder.start_attempt(agent_id=None, call_id="call-1", attempt=0)
+    recorder.record(AIMessage(id="a", content="staged"), {}, main_agent=True)
+
+    with caplog.at_level("WARNING"):
+        # A start for a different attempt, with no discard first.
+        recorder.start_attempt(agent_id=None, call_id="call-1", attempt=1)
+    assert "1 staged record(s)" in caplog.text
+
+    recorder.record(AIMessage(id="b", content="staged too"), {}, main_agent=True)
+    caplog.clear()
+    with caplog.at_level("WARNING"):
+        recorder.drop_uncommitted()
+    assert "Dropping 1 staged transcript record(s)" in caplog.text
+
+
+def test_drop_uncommitted_is_quiet_when_nothing_was_staged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Teardown on a clean run is a no-op, so it must not warn."""
+    _runtime, recorder = _recorder_runtime(tmp_path)
+    recorder.start_attempt(agent_id=None, call_id="call-1", attempt=0)
+    recorder.record(AIMessage(id="a", content="committed"), {}, main_agent=True)
+    recorder.complete_attempt(agent_id=None, call_id="call-1", attempt=0)
+
+    with caplog.at_level("WARNING"):
+        recorder.drop_uncommitted()
+
+    assert "Dropping" not in caplog.text
+
+
 def test_attempt_last_chunk_not_materialized_until_complete(tmp_path: Path) -> None:
     runtime, recorder = _recorder_runtime(tmp_path)
     recorder.start_attempt(agent_id=None, call_id="call-1", attempt=1)

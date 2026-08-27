@@ -159,6 +159,12 @@ A bare message-ID string keys requests recorded without an attempt scope
 `(attempt_scope, message_id)` instead, so a retry that reuses the provider's
 message ID is a separate request while chunks of one attempt still merge.
 Callers that retain this ledger across retries should use this widened key type.
+
+The two shapes coexist in one ledger, so de-duplication cannot rely on the
+key alone: an attempt scope lives for one model call, while a HITL resume pass
+replays messages with no scope open. `finalize_recorded_requests` closes that
+gap by projecting every scoped key down to its bare message ID at each round
+boundary -- see its docstring.
 """
 
 ModelStatsKey = tuple[str, str]
@@ -434,12 +440,24 @@ def finalize_recorded_requests(
     Closing the ledger at each round boundary makes the replay indistinguishable
     from the stray-chunk case `record_message_usage` already rejects.
 
+    Attempt-scoped keys need one extra step. A scope identifies one model
+    attempt and is closed when that attempt ends, so the replay on the next
+    resume pass arrives with no scope and keys by the bare message ID -- which
+    would miss the `(attempt_scope, message_id)` entry entirely and count the
+    whole request a second time. Project each scoped entry down to its bare
+    message ID as well, so the replay finds a finalized row whichever shape it
+    keys by. Later attempts overwrite earlier ones, leaving the values from the
+    attempt that actually succeeded; the projected row exists only to reject
+    replays, so its counts are never added to `stats` again.
+
     Args:
         recorded_requests: Ledger to close. Mutated in place.
     """
-    for request_id, recorded in recorded_requests.items():
-        if not recorded.finalized:
-            recorded_requests[request_id] = replace(recorded, finalized=True)
+    for request_id, recorded in list(recorded_requests.items()):
+        closed = recorded if recorded.finalized else replace(recorded, finalized=True)
+        recorded_requests[request_id] = closed
+        if isinstance(request_id, tuple):
+            recorded_requests[request_id[1]] = closed
 
 
 def _names_a_model(message: object) -> bool:

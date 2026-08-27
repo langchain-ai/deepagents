@@ -2,10 +2,14 @@
 
 ## Status
 
-Proposed design for retrying transient model failures after a response has already
-streamed visible output. This document covers the main agent model node in both
-interactive and non-interactive clients. It does not change auxiliary model calls,
-which do not expose their output directly.
+Implemented. This document records the design that shipped, so the sections below
+describe current behavior in the present tense; anything still open is under
+[Future work](#future-work).
+
+It covers retrying transient model failures after a response has already streamed
+visible output, for the main agent model node in both the interactive and the
+non-interactive client. Auxiliary model calls are unchanged, because they do not
+expose their output directly.
 
 ## Motivation
 
@@ -64,17 +68,20 @@ that chunk beyond server control. At the end of an attempt, `merge_seen()` copie
 LangGraph's de-duplication IDs back to the original handlers so the graph does not
 re-emit a completed message.
 
-`_allow_retry_after_stream` currently refuses a retry when both of these are
-true:
+`_allow_retry_after_stream` used to refuse a retry when both of these were true:
 
 - the tracker observed a message chunk; and
-- `stream_output_is_visible` is true for that middleware instance.
+- `stream_output_is_visible` was true for that middleware instance.
 
-The main rubric grader explicitly uses `stream_output_is_visible=False` because
-both clients filter its nested output, so that instance already retries
-interrupted streams. Other hidden criteria and fallback agents currently use the
-default `True`; implementation must audit those call sites and set `False` only
-where both local and remote clients provably filter the stream.
+That check is gone. `stream_output_is_visible` remains, but now it only decides
+the `output_may_have_started` flag on the retry event: every instance retries,
+and the flag tells the client whether to mark a seam.
+
+Call-site audit outcome: only the main rubric grader sets
+`stream_output_is_visible=False`, because both clients provably filter its nested
+output. The criteria agent and the fallback agents keep the default `True`. A
+`True` value is always safe -- it can only add a supersession marker that was not
+needed -- so they were left alone rather than audited surface by surface.
 
 Before a retry, the server emits this ephemeral custom-stream payload:
 
@@ -130,7 +137,7 @@ Disadvantages:
 - append-only consumers may concatenate two independent generations unless they
   understand the boundary.
 
-Codex and OpenCode choose variants of this availability-first tradeoff.
+Codex and OpenCode make the same tradeoff: finish the turn, and show the seam.
 
 ### Roll back and replay
 
@@ -156,11 +163,11 @@ Disadvantages:
 Crush and Kimi choose variants of this policy where their active render state is
 replaceable.
 
-### Recommendation
+### Decision
 
-Use **preserve, annotate, and replay** for the first release. It is the smallest
-safe policy shared by the TUI, streaming headless output, and remote clients. In
-buffered headless mode, discard failed attempt output because it has not escaped;
+**Preserve, annotate, and replay.** It is the one policy every surface can
+honour: the TUI, streaming headless output, and remote clients. In buffered
+headless mode, discard the failed attempt's output, because it has not escaped;
 that is commit-or-discard staging, not user-visible rollback.
 
 A transient failure remains retryable after output may have started. The retry
@@ -308,51 +315,56 @@ Those must be settled as described below.
 
 ### Interactive TUI
 
-When `model_retry.output_may_have_started` is true for the root namespace, the
-Textual adapter:
+On a root-namespace `model_retry`, the Textual adapter always:
 
-1. Stops the active `MarkdownStream` and syncs its current content to
+1. Settles the failed attempt's streamed tool-call rows as
+   `Model response interrupted before tool execution`, giving each row a terminal
+   error state and one terminal hook. Rows awaiting a deferred `ask_user` result
+   are left tracked, because the turn resumed and their authoritative
+   `ToolMessage` is still coming.
+2. Retires those tool-call ids from the mounted-row set, so a replay that reuses
+   an id mounts a fresh row instead of having its real result swallowed.
+3. Clears the failed attempt's incomplete tool argument buffers.
+4. Keeps the retry spinner active during backoff.
+
+Tool presentation and hooks are attempt-local even when no text escaped, which is
+why those steps are unconditional. When `output_may_have_started` is true it also:
+
+5. Stops the active `MarkdownStream` and syncs its current content to
    `MessageStore`.
-2. Clears the active assistant widget and pending-text references for that
-   namespace so the retry creates a new assistant response.
-3. Settles any streamed tool-call rows from the failed attempt as
-   `Model response interrupted before tool execution`.
-4. Clears incomplete tool argument buffers from the failed attempt.
-5. Mounts a persistent, subdued status row:
+6. Clears the active assistant widget and pending-text references for that
+   namespace, so the retry creates a new assistant response.
+7. Mounts a persistent, subdued status row:
    `Connection dropped; the partial response above is incomplete. Retrying 1/5.`
-6. Keeps the existing retry spinner active during backoff.
+   Unusable counts in the payload cost the `1/5` suffix, not the row.
 
 The partial response remains visible. It is not represented as a successful
 assistant turn when the thread is resumed because it never entered graph state.
 The persistent marker explains that difference within the live session.
 
-The first implementation deliberately does not remove rows from `MessageStore`.
-Deletion must coordinate the DOM widget, timestamp footer, virtualization index,
-active-message protection, tool grouping, and hook audit trail. Preserving and
-marking the fragment is more reliable and matches surfaces that cannot retract
-output.
-
-A later TUI-only preference may collapse or hide superseded attempts, but the
-protocol semantics remain supersession rather than deletion.
+Rows are not removed from `MessageStore`. Deletion must coordinate the DOM
+widget, timestamp footer, virtualization index, active-message protection, tool
+grouping, and hook audit trail atomically. Marking the fragment is more reliable,
+and it matches the surfaces that cannot retract output at all.
 
 ### Non-interactive, streaming
 
 Text can reach stdout before the retry event that identifies its attempt as
 failed, and once written it cannot be recalled. On a post-output retry:
 
-- terminate the current line if necessary;
-- print a retry boundary before regenerated output;
+- terminate the current line, because response text is written to raw stdout with
+  no trailing newline and Rich cannot see it;
+- print a retry boundary before regenerated output, and the retry status line
+  after it, so "the output above is incomplete" points at the model's text;
 - reset attempt-local tool-call buffers; and
 - close any emitted `tool.use` hook as an error before accepting the retry's tool
-  calls.
+  calls, then retire those ids so a reused tool-call id is not terminated twice.
 
-In normal verbose mode, the boundary is visible in the same terminal stream. In
-`--quiet` mode, diagnostics remain on stderr so stdout stays text-only. This means
-a consumer that ignores stderr can see both the partial and regenerated text.
-Callers requiring exactly one clean response must use `--no-stream` or a future
+In normal verbose mode the boundary is visible in the same terminal stream. In
+`--quiet` mode diagnostics stay on stderr so stdout stays text-only, which means a
+consumer that ignores stderr sees both the partial and the regenerated text.
+Callers that need exactly one clean response must use `--no-stream` or a future
 structured streaming format.
-
-This limitation is explicit rather than a reason to disable recovery globally.
 
 ### Non-interactive, buffered
 
@@ -424,42 +436,49 @@ leave only an in-memory partial chunk, but a provider can emit a final-marked ch
 and then fail while closing the transport. That message would be materialized even
 though the model node never committed it.
 
-The stream consumer, which sees both `messages` and `custom` modes, must coordinate
-attempt lifecycle with the recorder. The recorder gains attempt-scoped methods and
-stages even final-marked messages until completion:
+The stream consumer, which sees both `messages` and `custom` modes, coordinates
+the attempt lifecycle with the recorder. The recorder has attempt-scoped methods
+and stages even final-marked messages until completion:
 
-- `start_attempt(namespace, call_id, attempt)` opens a staging scope;
+- `start_attempt(agent_id, call_id, attempt)` opens a staging scope;
 - `record(...)` combines chunks inside that scope without appending them;
-- `complete_attempt(...)` appends completed staged messages;
-- `discard_attempt(...)` drops the failed scope on `model_retry`; and
-- terminal stream cleanup drops every uncommitted scope.
+- `complete_attempt(agent_id, call_id, attempt)` appends the staged messages;
+- `discard_attempt(agent_id, call_id, attempt)` drops the failed scope; and
+- `drop_uncommitted()` drops every open scope at terminal stream cleanup.
 
-The non-interactive stream loop calls these methods directly. The TUI either calls
-the same API where it already processes custom events or moves transcript routing
-to a small shared stream coordinator; `TranscriptRecorder` does not consume custom
-events by itself.
+The scope key is `agent_id`, not the stream namespace. They are different things:
+a nested `model_attempt(start)` can arrive before the subagent's first message,
+while its transcript identity is still unknown, so the headless client stages
+under a namespace label and re-targets the scope once a message supplies the real
+id.
+
+Both clients call these methods directly where they already process custom
+events; `TranscriptRecorder` does not consume custom events by itself.
 
 Checkpoint-derived messages remain authoritative when a thread is resumed.
 Lifecycle events themselves are not written to the hook transcript.
 
 ## Usage and cost accounting
 
-A failed request may be billable. Superseding its text must not roll back usage.
-Usage attached to streamed chunks is already recorded before render filtering; the
-new attempt identity must prevent a retry that reuses a provider message ID from
-revising the failed request in place.
+A failed request may be billable, so superseding its text must not roll back its
+usage. Usage on streamed chunks is recorded before render filtering. The attempt
+identity therefore has one job here: stop a retry that reuses a provider message
+ID from revising the failed request in place.
 
 - Key provisional request accounting by `(namespace, call_id, attempt,
   provider_message_id)` rather than the provider message ID alone.
-- At `model_retry`, finalize known usage for the failed attempt and start a new
-  accounting scope. Do not retract it when presentation is discarded.
+- Do not retract a failed attempt's usage when its presentation is discarded.
+  There is no separate "finalize at the retry boundary" step: the attempt-scoped
+  key already makes cross-attempt merging impossible, which is what that step
+  existed to prevent.
+- Project each scoped key down to its bare message ID when the ledger closes at a
+  round boundary. An attempt scope lives for one model call, but a HITL resume
+  pass replays messages with no scope open, so a scope-only ledger would miss the
+  earlier entry and count the whole request again.
 - Record every usage report the provider actually supplies, including reports
   attached to chunks from a failed attempt.
-- If a dropped stream supplied no usage metadata, exact provider spend is unknown.
-  Count it only in an explicit estimated-request metric if one is added; do not
-  invent tokens or cost, and surface that session totals may be incomplete.
-- Session totals include known usage from successful and failed attempts because
-  they represent spend, not accepted transcript content.
+- Session totals include known usage from successful and failed attempts, because
+  they represent spend rather than accepted transcript content.
 
 This requires changing `recorded_usage_requests` from a message-ID-only map to an
 attempt-scoped ledger. It is not solved merely by clearing the current map: doing
@@ -523,7 +542,7 @@ Crush and Kimi take this approach for active UI state. Dcode can add it later, b
 making deletion the correctness mechanism is fragile: terminal scrollback may
 already contain the text, remote consumers cannot be recalled, and Textual
 removal must update virtualization, timestamps, grouping, and hooks atomically.
-A persistent supersession marker is a safer first contract.
+The marker leaves the fragment in place and labels it instead.
 
 ### Append the retry to the same assistant widget
 
@@ -564,55 +583,29 @@ The common pattern is that transport resilience and presentation reconciliation
 are separate decisions. Most peers accept retry after emission; there is no
 single cross-surface way to retract output.
 
-## Implementation plan
+## Future work
 
-### Phase 1: protocol and server retry
+None of these is required for the behavior above to be correct.
 
-1. Add `model_attempt` start/complete builders and parsers beside the existing
-   retry helpers.
-2. Generate one bounded opaque `call_id` in the retry-loop closure per middleware
-   invocation.
-3. Emit start and complete events around each handler attempt.
-4. Add retry correlation fields and `output_may_have_started` to `model_retry`.
-5. Replace `_allow_retry_after_stream` with presentation metadata; retain
-   `stream_output_is_visible` for intentionally filtered nested streams and audit
-   every hidden criteria/grader middleware call site for the correct value.
-6. Preserve `merge_seen()` and all existing error, delay, cancellation, and
-   retry-budget behavior.
+- When a dropped stream supplies no usage metadata, exact provider spend is
+  unknown. Nothing surfaces that today; session totals simply omit it. Counting
+  it needs an explicit estimated-request metric, not invented tokens or cost.
+- Removing superseded rows from `MessageStore` in the TUI, as a display
+  preference. The protocol semantics stay supersession rather than deletion.
+- Continuation instead of replay, as a bounded text-only optimization.
 
-### Phase 2: client reconciliation
-
-1. Add attempt-local state to the Textual adapter and `StreamState`.
-2. Finalize the interrupted assistant widget and start the retry in a new widget.
-3. Add the persistent TUI and headless retry boundaries.
-4. Truncate only the failed segment and discard staged tool status in buffered
-   headless mode.
-5. Reset tool-call buffers and settle emitted tool hooks on retry.
-6. Make lifecycle handling idempotent and namespace-aware.
-
-### Phase 3: transcript and accounting
-
-1. Add attempt-scoped staging APIs to `TranscriptRecorder` and route custom events
-   to them from the stream consumers.
-2. Include attempt identity in provisional usage keys and finalize known usage at
-   retry boundaries without subtracting spend.
-3. Verify local and remote execution produce equivalent lifecycle ordering.
-
-These phases may land in one pull request, but each phase should be a reviewable
-commit with focused tests.
-
-## Test plan
+## Behavior covered by tests
 
 ### Middleware
 
-- A transient error before output preserves the existing retry sequence.
+- A transient error before output preserves the earlier retry sequence.
 - A transient error after text output retries and emits correlated lifecycle
   events in the documented order.
 - Sync and async paths behave identically.
 - Permanent errors, cancellation, `GraphBubbleUp`, and exhausted budgets do not
   start another attempt.
-- Every audited hidden criteria/grader call retries without visible supersession
-  metadata; visible or uncertain calls use the ordinary boundary.
+- The main rubric grader retries without visible supersession metadata; every
+  other call site uses the ordinary boundary.
 - LangGraph v1 and v2 stream-handler de-duplication IDs survive every attempt.
 - A failed custom-stream writer does not stop retry.
 
@@ -629,7 +622,8 @@ commit with focused tests.
 
 ### Non-interactive client
 
-- Streaming output contains a visible boundary between partial and replayed text.
+- Streaming output contains a visible boundary on its own line between partial and
+  replayed text, with the status line after it.
 - `--quiet` keeps diagnostics on stderr and text on stdout.
 - `--no-stream` removes failed text and staged tool status while preserving
   earlier successful model steps.

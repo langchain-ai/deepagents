@@ -3207,6 +3207,157 @@ class TestModelRetryLifecycleReconciliation:
         markers = [w for w in mounted if isinstance(w, AppMessage)]
         assert len(markers) == 1
 
+    async def test_lost_retry_event_still_reconciles_the_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A start for a new attempt with no retry event in between.
+
+        `_emit_stream_event` logs and swallows writer faults, so the retry event
+        can be lost. Reconciling only on a scope match would then let the replay
+        stream into the same bubble with no seam.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(tmp_path, "thread-lost")
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            # No `model_retry` — attempt 1 simply starts.
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        assert "partial" not in str(assistant_widgets[1]._content)
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        main = runtime.transcripts.materialize("thread-lost").path.read_text()
+        assert "partial" not in main
+
+    async def test_unusable_retry_counts_still_mark_the_partial_reply(
+        self, tmp_path: Path
+    ) -> None:
+        """A marker with no counts beats no marker at all.
+
+        By the time the marker is mounted the partial reply is already detached
+        and finalized, so returning nothing would leave a truncated answer in the
+        chat that reads as a complete one.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-nocounts"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            (
+                (),
+                "custom",
+                {
+                    "type": "model_retry",
+                    # Structurally valid correlation, unusable counters.
+                    "attempt": 0,
+                    "max_retries": 0,
+                    "call_id": "call-1",
+                    "failed_attempt": 0,
+                    "output_may_have_started": True,
+                },
+            ),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "Connection dropped; the partial response above is incomplete. Retrying."
+        )
+
+    async def test_retry_spares_a_row_awaiting_a_deferred_result(self) -> None:
+        """An answered `ask_user` still expects its authoritative ToolMessage.
+
+        The turn resumed, so consuming the row here would strand its deferred
+        hook and mark the id as already-settled — which then swallows the real
+        result and trips the contradiction check in the ToolMessage handler.
+        Every other sweep spares these rows for the same reason.
+        """
+        from deepagents_code.tui.textual_adapter import _settle_attempt_for_retry
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        adapter = TextualUIAdapter(
+            mount_message=_collect_mounts()[0],
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        deferred = ToolCallMessage("ask_user", {"question": "which?"})
+        deferred.defer_success("User answered")
+        plain = ToolCallMessage("read_file", {"file_path": "a.py"})
+        adapter._current_tool_messages = {
+            "call-ask": deferred,
+            "call-read": plain,
+        }
+
+        completed: set[str] = set()
+        displayed = {"call-ask", "call-read"}
+        with (
+            patch("deepagents_code.tui.textual_adapter._dispatch_tool_result_hook"),
+            patch("deepagents_code.tui.textual_adapter._dispatch_tool_error_hook"),
+        ):
+            await _settle_attempt_for_retry(
+                adapter,
+                preserve_partial=True,
+                pending_text_by_namespace={},
+                assistant_message_by_namespace={},
+                completed_tool_result_ids=completed,
+                displayed_tool_ids=displayed,
+                tool_call_buffers={},
+            )
+
+        # The deferred row survives; only the ordinary row is settled.
+        assert list(adapter._current_tool_messages) == ["call-ask"]
+        assert "call-ask" not in completed
+        assert displayed == {"call-ask"}
+
     async def test_teardown_drops_uncommitted_attempt(self, tmp_path: Path) -> None:
         """A stream error mid-attempt stages nothing into the transcript."""
         from langchain_core.messages import AIMessageChunk

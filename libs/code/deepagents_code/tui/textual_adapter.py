@@ -119,6 +119,7 @@ from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.model_retry import (
+    legacy_retry_index,
     model_attempt_from_event,
     model_retry_from_event,
     retry_status_from_event,
@@ -460,22 +461,31 @@ class _ModelAttemptScope(NamedTuple):
     double-count under the provider's reused message id.
     """
 
-    namespace: tuple
+    namespace: tuple[str, ...]
     call_id: str
     attempt: int
 
 
-_RETRY_INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
+_RETRY_MARKER_FALLBACK = (
+    "Connection dropped; the partial response above is incomplete. Retrying."
+)
 
 
-def _retry_marker_text(data: Mapping[Any, object]) -> str | None:
+def _retry_marker_text(data: Mapping[Any, object]) -> str:
     """Build the retry marker from validated numeric fields only.
 
     The event's own `message` field is untrusted render text, so the marker is
     re-derived from `attempt`/`max_retries` and never parses markup out of it.
 
+    Always returns a marker. By the time this is called the partial reply has
+    already been finalized and detached from the stream, so returning nothing
+    would leave a truncated answer in the chat that reads as a complete one,
+    followed by a second full answer, with nothing saying the first was cut off.
+    Unusable numbers cost the "1/5" suffix, not the marker -- the same way
+    `retry_status_from_event` degrades to a cause-free status line.
+
     Returns:
-        The exact marker line, or `None` when the numbers are unusable.
+        The marker line, counted when the numbers allow it.
     """
     attempt = data.get("attempt")
     max_retries = data.get("max_retries")
@@ -484,10 +494,13 @@ def _retry_marker_text(data: Mapping[Any, object]) -> str | None:
         or isinstance(attempt, bool)
         or not isinstance(max_retries, int)
         or isinstance(max_retries, bool)
-        or max_retries < 1
         or not 1 <= attempt <= max_retries
     ):
-        return None
+        logger.warning(
+            "Unusable retry counts in model_retry payload; marking the "
+            "superseded reply without them"
+        )
+        return _RETRY_MARKER_FALLBACK
     return (
         "Connection dropped; the partial response above is incomplete. "
         f"Retrying {attempt}/{max_retries}."
@@ -501,16 +514,37 @@ async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
     pending_text_by_namespace: dict[tuple, str],
     assistant_message_by_namespace: dict[tuple, Any],
     completed_tool_result_ids: set[str],
+    displayed_tool_ids: set[str],
     tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer],
 ) -> None:
     """Finalize visible root output from a superseded attempt.
 
     The retried attempt may have streamed text and tool calls before the
-    connection dropped. The partial reply stays in the chat (finalized, not
-    streaming), its tool rows are settled hooks-only exactly like the
-    clean-end orphan sweep, and the per-turn parse maps are cleared so the
-    replay starts a fresh `AssistantMessage` and cannot re-dispatch hooks for
-    ids this sweep already closed.
+    connection dropped. Its tool rows are given a terminal error state and
+    settled with terminal hooks, and its tool buffers are dropped.
+
+    Args:
+        adapter: Adapter owning the tracked rows and stream widgets.
+        preserve_partial: Whether output escaped to the user. When true the
+            partial reply is detached from the stream and finalized in place, and
+            the per-turn parse maps are cleared so the replay starts a fresh
+            `AssistantMessage` -- the caller then marks the seam. When false
+            nothing escaped, so the replay keeps streaming into the same bubble
+            and only the tool state is settled.
+        pending_text_by_namespace: Per-namespace streamed-text accumulator.
+        assistant_message_by_namespace: Per-namespace live reply widget.
+        completed_tool_result_ids: Ids whose terminal hooks have fired, so a
+            middleware synthetic `ToolMessage` cannot re-dispatch them.
+        displayed_tool_ids: Monotonic mounted-row ids, from which the settled
+            ids are retired. Everywhere else this set is append-only, and
+            deliberately so: a provider redelivering a *completed* call's chunks
+            must not mount a second row. An attempt boundary inverts that -- the
+            replay is a genuinely new call, and a provider that reuses the
+            tool-call id would otherwise have its row suppressed while the tool
+            really runs, so the real `ToolMessage` would be swallowed as an
+            already-settled id and the successful tool would be recorded to
+            hooks as interrupted.
+        tool_call_buffers: Per-turn tool-argument fragment buffers.
     """
     root_ns: tuple = ()
     current_msg = (
@@ -534,23 +568,27 @@ async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
         if adapter._set_active_message:
             adapter._set_active_message(None)
 
-    settled = dict(adapter._current_tool_messages)
+    from deepagents_code.model_retry import INTERRUPTED_TOOL_OUTPUT
+
+    # Rows awaiting a deferred result are left tracked: an answered `ask_user`
+    # made the turn resume, so it still expects its authoritative `ToolMessage`
+    # — consuming it here would strand that hook and trip the contradiction
+    # check in the `ToolMessage` handler. Same rule as `_reject_tracked_rows`.
+    settled = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
     if settled:
         completed_tool_result_ids.update(
-            _dispatch_terminal_tool_result_hooks(
-                settled, _RETRY_INTERRUPTED_TOOL_OUTPUT
-            )
+            _dispatch_terminal_tool_result_hooks(settled, INTERRUPTED_TOOL_OUTPUT)
         )
         for tool_msg in settled.values():
             try:
-                tool_msg.set_error(_RETRY_INTERRUPTED_TOOL_OUTPUT)
+                tool_msg.set_error(INTERRUPTED_TOOL_OUTPUT)
             except Exception:
                 logger.exception(
                     "Failed to mark interrupted %s row as an error",
                     tool_msg.tool_name,
                 )
             adapter._sync_tool_widget(tool_msg)
-        adapter._current_tool_messages.clear()
+        displayed_tool_ids.difference_update(settled)
     # Buffers hold unparsed fragments of the interrupted attempt's tool calls;
     # they never mounted and never fired `tool.use`, so they are dropped
     # outright rather than counted by the end-of-stream diagnostic.
@@ -1780,15 +1818,19 @@ async def execute_task_textual(
     # accounting so a retried attempt's replayed chunks don't double-count, and
     # a valid `model_retry` matches its failed attempt against the root scope.
     active_attempt_by_namespace: dict[tuple, _ModelAttemptScope] = {}
+    # Attempts already reconciled as superseded, by `(call_id, failed_attempt)`.
+    # Reconciliation runs even when no scope matches, because a lifecycle event
+    # lost to a writer fault must not leave half the state rolled back — which
+    # makes a *repeated* `model_retry` indistinguishable from a first one by
+    # scope alone. Identity is tracked here so a duplicate is a no-op instead of
+    # a second marker row and a second settle of the same tool rows.
+    settled_attempts: set[tuple[str, int]] = set()
     transcript_agent_by_namespace: dict[tuple, str] = {}
 
     def _attempt_scope_for(ns_key: tuple) -> _ModelAttemptScope | None:
-        scope = active_attempt_by_namespace.get(ns_key)
-        if scope is not None:
-            return scope
         # A legacy producer emits no lifecycle events, so usage falls back to
         # provider message-id dedupe with a `None` scope.
-        return None
+        return active_attempt_by_namespace.get(ns_key)
 
     hooks = session_state.hooks
     transcript = hooks.recorder(thread_id)
@@ -2045,10 +2087,58 @@ async def execute_task_textual(
                             )
                             if attempt_event["phase"] == "start":
                                 # A duplicate start for the same scope is
-                                # idempotent; a different scope replaces the stale
-                                # one (its complete was lost with the connection
-                                # drop that triggered the retry).
+                                # idempotent. A *different* scope means the
+                                # previous attempt never closed — its
+                                # `model_retry` was lost to a writer fault — so
+                                # reconcile it as the retry path would rather
+                                # than replacing the scope and leaving its text,
+                                # tool rows and staged transcript behind.
                                 existing_scope = active_attempt_by_namespace.get(ns_key)
+                                stale = (
+                                    existing_scope is not None
+                                    and existing_scope != attempt_scope
+                                )
+                                stale_id = (
+                                    (existing_scope.call_id, existing_scope.attempt)
+                                    if existing_scope is not None
+                                    else None
+                                )
+                                if stale_id is not None:
+                                    stale = stale and stale_id not in settled_attempts
+                                if stale and existing_scope is not None:
+                                    settled_attempts.add(
+                                        (existing_scope.call_id, existing_scope.attempt)
+                                    )
+                                    logger.warning(
+                                        "Model attempt %s/%d superseded without "
+                                        "a model_retry event; reconciling as a "
+                                        "lost retry",
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                    )
+                                    if is_main_agent or transcript_agent_id is not None:
+                                        transcript.discard_attempt(
+                                            agent_id=transcript_agent_id,
+                                            call_id=existing_scope.call_id,
+                                            attempt=existing_scope.attempt,
+                                        )
+                                    if is_main_agent:
+                                        # Whether output escaped is unknowable
+                                        # here, so assume it did: a redundant
+                                        # seam beats an unmarked one.
+                                        await _settle_attempt_for_retry(
+                                            adapter,
+                                            preserve_partial=True,
+                                            pending_text_by_namespace=pending_text_by_namespace,
+                                            assistant_message_by_namespace=assistant_message_by_namespace,
+                                            completed_tool_result_ids=completed_tool_result_ids,
+                                            displayed_tool_ids=displayed_tool_ids,
+                                            tool_call_buffers=tool_call_buffers,
+                                        )
+                                        with contextlib.suppress(Exception):
+                                            await adapter._mount_message(
+                                                AppMessage(_RETRY_MARKER_FALLBACK)
+                                            )
                                 active_attempt_by_namespace[ns_key] = attempt_scope
                                 if (
                                     is_main_agent or transcript_agent_id is not None
@@ -2107,10 +2197,37 @@ async def execute_task_textual(
                                     attempt=retry_scope.attempt,
                                 )
                             del active_attempt_by_namespace[ns_key]
-                        if scope_matches and is_main_agent:
-                            # Tool-call presentation and hooks are attempt-local
-                            # even when no text escaped. A pre-output retry still
-                            # drops incomplete arguments and closes any fired use.
+                        retry_attempt_id = (
+                            (
+                                cast("str", retry_correlation["call_id"]),
+                                cast("int", retry_correlation["failed_attempt"]),
+                            )
+                            if retry_correlation is not None
+                            # A legacy payload names no attempt, so identity
+                            # falls back to the retry counter it does carry.
+                            else ("", legacy_retry_index(data))
+                        )
+                        first_settle = retry_attempt_id not in settled_attempts
+                        if is_main_agent and first_settle:
+                            settled_attempts.add(retry_attempt_id)
+                            # Deliberately not gated on `scope_matches`.
+                            # `_emit_stream_event` logs and swallows writer
+                            # faults, so a `model_attempt` start can be lost in
+                            # flight; reconciling only on a match would then let
+                            # the replay stream into the same bubble with stale
+                            # tool rows and no seam — exactly the corruption
+                            # this path exists to prevent. Tool presentation and
+                            # hooks are attempt-local even when no text escaped,
+                            # so a pre-output retry still drops incomplete
+                            # arguments and closes any fired use.
+                            if retry_correlation is not None and not scope_matches:
+                                logger.warning(
+                                    "Model retry names attempt %s/%s which is "
+                                    "not the open root scope; reconciling "
+                                    "without it",
+                                    retry_correlation["call_id"],
+                                    retry_correlation["failed_attempt"],
+                                )
                             output_may_have_started = bool(
                                 retry_correlation
                                 and retry_correlation["output_may_have_started"]
@@ -2121,18 +2238,23 @@ async def execute_task_textual(
                                 pending_text_by_namespace=pending_text_by_namespace,
                                 assistant_message_by_namespace=assistant_message_by_namespace,
                                 completed_tool_result_ids=completed_tool_result_ids,
+                                displayed_tool_ids=displayed_tool_ids,
                                 tool_call_buffers=tool_call_buffers,
                             )
                             if output_may_have_started:
+                                # The partial reply is already detached and
+                                # finalized, so the marker is the only thing
+                                # left that can say it was cut off. Falling back
+                                # to the spinner keeps that visible when the
+                                # mount fails.
                                 marker = _retry_marker_text(data)
-                                if marker is not None:
-                                    try:
-                                        await adapter._mount_message(AppMessage(marker))
-                                    except Exception:
-                                        logger.warning(
-                                            "Failed to mount retry marker",
-                                            exc_info=True,
-                                        )
+                                try:
+                                    await adapter._mount_message(AppMessage(marker))
+                                except Exception:
+                                    logger.exception("Failed to mount retry marker")
+                                    if adapter._set_spinner is not None:
+                                        with contextlib.suppress(Exception):
+                                            await adapter._set_spinner(marker)
                         continue
 
                     auto_review_event = _parse_auto_mode_review_event(

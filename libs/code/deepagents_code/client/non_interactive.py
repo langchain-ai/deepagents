@@ -25,7 +25,6 @@ import logging
 import sys
 import threading
 import time
-from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, NoReturn, cast
 
@@ -95,6 +94,7 @@ from deepagents_code.unicode_security import (
 
 if TYPE_CHECKING:
     from asyncio.subprocess import Process
+    from collections.abc import Hashable, Mapping
     from pathlib import Path
     from uuid import UUID
 
@@ -146,13 +146,6 @@ _MESSAGE_DATA_LENGTH = 2
 _MAX_HITL_ITERATIONS = 50
 """Safety cap on the number of HITL interrupt round-trips to prevent infinite
 loops (e.g. when the agent keeps retrying rejected commands)."""
-
-_INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
-"""Synthetic tool-result output settling `tool.use` hooks whose attempt failed.
-
-A retried model call reruns from the last committed graph state, so a tool call
-the failed attempt streamed never executed; its already-fired `tool.use` is
-closed with this text as a synthetic `tool.error`/`tool.result`."""
 
 _RETRY_BOUNDARY = (
     "--- connection dropped; the output above is incomplete — retrying ---"
@@ -506,13 +499,17 @@ class StreamState:
     recorded_usage_requests: dict[UsageLedgerKey, RecordedRequest] = field(
         default_factory=dict
     )
-    """Requests already counted in this headless run, keyed by message ID.
+    """Requests already counted in this headless run.
 
-    Monotonic across HITL resume passes so a replayed message does not add its
-    request, tokens, or cost to `stats` again. Each pass closes its entries via
+    Keyed by message ID, or by `(attempt_scope, message_id)` while a model
+    attempt lifecycle scope is open (see `UsageLedgerKey`). Monotonic across
+    HITL resume passes so a replayed message does not add its request, tokens,
+    or cost to `stats` again. Each pass closes its entries via
     `finalize_recorded_requests`, which is what extends that guarantee to
     replayed *chunks* -- an open chunked request accepts revisions, so without
-    the round boundary a replayed chunk would merge into it a second time.
+    the round boundary a replayed chunk would merge into it a second time -- and
+    which also projects each scoped key down to its bare message ID, since a
+    resume pass replays with no attempt scope open.
     """
 
     spinner: _ConsoleSpinner | None = None
@@ -542,6 +539,16 @@ class StreamState:
     pending_tool_status_lines: list[str] = field(default_factory=list)
     """Tool-call status lines staged in `--no-stream` mode until the attempt
     that produced them completes, so failed attempts leave stdout clean."""
+
+    settled_attempts: set[tuple[tuple[str, ...], str, int]] = field(default_factory=set)
+    """Attempts already reconciled as superseded, keyed by
+    `(namespace, call_id, failed_attempt)`.
+
+    Reconciliation runs even when no scope matches, because a lost lifecycle
+    event must not leave half the state rolled back. That makes a *repeated*
+    `model_retry` for the same attempt indistinguishable from a first one by
+    scope alone, so identity is tracked here instead: a duplicate is a no-op
+    rather than a second boundary and a second set of settled tool rows."""
 
     transcript_agent_ids: dict[tuple[str, ...], str] = field(default_factory=dict)
     """Transcript agent IDs observed in nested message metadata, keyed by
@@ -643,7 +650,7 @@ def _record_usage_from_message(
     *,
     is_main_agent: bool = True,
     metadata: Mapping[str, Any] | None = None,
-    attempt_scope: object = None,
+    attempt_scope: Hashable | None = None,
 ) -> None:
     """Record model usage and estimated cost from a streamed AI message.
 
@@ -667,7 +674,7 @@ def _record_usage_from_message(
         request_metadata=metadata,
         kind=usage_kind,
         recorded_requests=state.recorded_usage_requests,
-        attempt_scope=attempt_scope if isinstance(attempt_scope, Hashable) else None,
+        attempt_scope=attempt_scope,
     )
 
 
@@ -1104,6 +1111,101 @@ def _retarget_transcript_scope(
     )
 
 
+def _reconcile_superseded_attempt(
+    namespace: tuple[str, ...],
+    scope: _AttemptLifecycleScope | None,
+    state: StreamState,
+    console: Console,
+    *,
+    attempt_id: tuple[tuple[str, ...], str, int],
+    output_may_have_started: bool,
+) -> None:
+    """Retract everything one superseded model attempt left behind.
+
+    Called from both paths that supersede an attempt: a correlated
+    `model_retry`, and a `model_attempt(start)` for a namespace whose previous
+    attempt never closed. The second path is reachable because
+    `_emit_stream_event` logs and swallows writer faults, so a `model_retry`
+    can be lost in flight; handling the two identically is what stops a lost
+    event from leaving half the state rolled back.
+
+    Nested namespaces reconcile transcript staging and usage scope only -- a
+    nested retry is visible solely through the Task/subagent status surface.
+    For the root, this also settles the attempt's fired `tool.use` hooks,
+    clears its tool buffers, and reconciles output: streaming mode marks the
+    seam when output may have escaped, while `--no-stream` truncates buffered
+    text back to the attempt's recorded offset.
+
+    Args:
+        namespace: Stream namespace the superseded attempt ran on.
+        scope: The superseded attempt, or `None` when the client never opened
+            one (a valid but uncorrelated retry). Output still reconciles: the
+            tools did not run either way.
+        state: Shared stream state.
+        console: Rich console for the boundary (stderr in `--quiet` mode).
+        attempt_id: `(namespace, call_id, failed_attempt)` identity of the
+            superseded attempt, so a repeated event is a no-op. See
+            `StreamState.settled_attempts`.
+        output_may_have_started: Whether the attempt may have put message
+            output beyond server control.
+    """
+    if attempt_id in state.settled_attempts:
+        return
+    state.settled_attempts.add(attempt_id)
+
+    offset: int | None = None
+    if scope is not None:
+        state.active_attempts.pop(namespace, None)
+        offset = state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
+        if state.transcript is not None:
+            state.transcript.discard_attempt(
+                agent_id=scope.agent_id,
+                call_id=scope.call_id,
+                attempt=scope.attempt,
+            )
+    if namespace:
+        return
+
+    # The failed attempt's tool calls never executed. Guarded so a dispatch
+    # fault cannot turn a recoverable transient failure into a hard abort
+    # mid-retry -- the teardown drain is guarded for the same reason.
+    try:
+        _settle_interrupted_tool_hooks(state)
+    except Exception:
+        logger.warning(
+            "Interrupted tool.result drain failed unexpectedly", exc_info=True
+        )
+    # Buffers from earlier model steps are unaffected: indices restart per
+    # message and a completed call's buffer is already popped.
+    state.tool_call_buffers.clear()
+
+    if not state.stream:
+        # Buffered output never reached stdout, so discard the failed attempt
+        # regardless of the conservative visibility flag.
+        state.pending_tool_status_lines.clear()
+        if offset is not None:
+            del state.full_response[offset:]
+        elif state.full_response:
+            # No recorded offset (uncorrelated retry), so the failed text
+            # cannot be found and removed. Carry the boundary into the buffer
+            # instead: a consumer reading only stdout would otherwise see
+            # partial and regenerated text spliced with no marker at all.
+            state.full_response.append(f"\n{_RETRY_BOUNDARY}\n")
+        return
+
+    if not output_may_have_started:
+        return
+    # Already-written text cannot be recalled, so mark where the incomplete
+    # attempt ended before the replay begins. Response text goes to raw stdout
+    # with no trailing newline and Rich cannot see it, so terminate the line
+    # first -- otherwise the boundary is welded onto the tail of a half-finished
+    # sentence. In `--quiet` mode `console` writes to stderr, keeping stdout
+    # text-only.
+    if state.full_response:
+        _write_newline()
+    console.print(f"[dim]{escape_markup(_RETRY_BOUNDARY)}[/dim]", highlight=False)
+
+
 def _process_attempt_lifecycle(
     namespace: tuple[str, ...],
     data: dict[str, Any],
@@ -1137,16 +1239,26 @@ def _process_attempt_lifecycle(
         if existing is not None and (
             existing.call_id != call_id or existing.attempt != attempt
         ):
-            # A new attempt for a scope the previous attempt never closed —
-            # either a mismatched start or a lost `model_retry`. Drop the
-            # superseded attempt's staged transcript before replacing it.
-            if state.transcript is not None:
-                state.transcript.discard_attempt(
-                    agent_id=existing.agent_id,
-                    call_id=existing.call_id,
-                    attempt=existing.attempt,
-                )
-            state.attempt_buffer_offsets.pop(_attempt_key(namespace, existing), None)
+            # A new attempt for a scope the previous one never closed — either a
+            # mismatched start or, far more likely, a `model_retry` lost to a
+            # writer fault. Reconcile it exactly as the retry path would, or the
+            # failed attempt's text, tool hooks, and staged status all survive
+            # into the replay. `output_may_have_started` is unknowable here, so
+            # assume the worst: an unmarked seam is worse than a redundant one.
+            logger.warning(
+                "Model attempt %s/%d superseded without a model_retry event; "
+                "reconciling as a lost retry",
+                existing.call_id,
+                existing.attempt,
+            )
+            _reconcile_superseded_attempt(
+                namespace,
+                existing,
+                state,
+                console,
+                attempt_id=(namespace, existing.call_id, existing.attempt),
+                output_may_have_started=True,
+            )
         state.active_attempts[namespace] = scope
         state.attempt_buffer_offsets.setdefault(
             _attempt_key(namespace, scope), len(state.full_response)
@@ -1183,16 +1295,35 @@ def _process_attempt_lifecycle(
 def _settle_interrupted_tool_hooks(state: StreamState) -> None:
     """Close in-flight `tool.use` hooks superseded by a failed model attempt.
 
-    A retried model call reruns from the last committed graph state, so none
-    of these tools executed; each gets a synthetic `tool.error`/`tool.result`
-    pair so every emitted `tool.use` still sees exactly one terminal event.
-    `emitted_tool_use_ids` is deliberately untouched — it is monotonic for the
-    run so a provider that reuses an ID cannot re-fire `tool.use`.
+    A retried model call reruns from the last committed graph state, so none of
+    these tools executed; each gets a synthetic `tool.error`/`tool.result` pair
+    so every emitted `tool.use` sees exactly one terminal event.
+
+    The settled ids are then dropped from `emitted_tool_use_ids` and
+    `displayed_tool_call_ids`. Those sets are monotonic for the run everywhere
+    else, and deliberately so — a provider redelivering a *completed* call's
+    chunks must not re-fire `tool.use`. An attempt boundary is the one place
+    that reasoning inverts: the replay is a genuinely new call, and a provider
+    that reuses the tool-call id would otherwise have its `tool.use` suppressed
+    while the tool really runs, so the real `ToolMessage` would arrive with no
+    open in-flight entry and dispatch a *second* terminal event for the id — one
+    `tool.use`, three terminals, and no "Calling tool" line. Retiring just the
+    ids this call settles keeps the guarantee intact in both directions.
 
     Args:
         state: Shared stream state.
     """
-    _dispatch_orphaned_tool_result_hooks(state, _INTERRUPTED_TOOL_OUTPUT)
+    from deepagents_code.model_retry import INTERRUPTED_TOOL_OUTPUT
+
+    settled_ids = list(state.in_flight_tool_calls)
+    _dispatch_orphaned_tool_result_hooks(
+        state,
+        INTERRUPTED_TOOL_OUTPUT,
+        reason="Model attempt superseded by a retry",
+    )
+    for tool_id in settled_ids:
+        state.emitted_tool_use_ids.discard(tool_id)
+        state.displayed_tool_call_ids.discard(tool_id)
 
 
 def _process_retry_lifecycle(
@@ -1204,15 +1335,16 @@ def _process_retry_lifecycle(
 ) -> None:
     """Reconcile the superseded attempt a correlated `model_retry` names.
 
-    Nested lifetimes only re-scope transcript staging and usage accounting —
-    they never mutate root presentation. A root retry correlated to the active
-    attempt additionally discards the failed attempt's staged transcript,
-    settles its fired `tool.use` hooks as synthetic errors, clears its
-    attempt-local tool buffers, and reconciles output: streaming mode prints a
-    safe retry boundary when output may have escaped, while `--no-stream`
-    truncates buffered text to the attempt's recorded offset and drops its
-    staged tool status. An uncorrelated retry (no known active attempt)
-    degrades to append-only output with the status line printed by the caller.
+    Nested retries only re-scope transcript staging and usage accounting — they
+    never mutate root presentation. A root retry hands the superseded attempt to
+    `_reconcile_superseded_attempt`, then prints the status line last so the
+    "output above is incomplete" boundary points at the model's text rather than
+    at the status line itself.
+
+    An uncorrelated retry — a structurally valid payload naming an attempt this
+    client never opened — still reconciles output and settles tool hooks (the
+    tools did not run either way); only the transcript and offset steps are
+    skipped, since there is no scope to key them by.
 
     Args:
         namespace: Stream namespace the event arrived on (`()` for the root).
@@ -1226,73 +1358,49 @@ def _process_retry_lifecycle(
 
     call_id = correlation["call_id"]
     failed_attempt = correlation["failed_attempt"]
-    output_may_have_started = correlation["output_may_have_started"]
+    output_may_have_started = cast("bool", correlation["output_may_have_started"])
 
+    scope = state.active_attempts.get(namespace)
+    if scope is not None and (
+        scope.call_id != call_id or scope.attempt != failed_attempt
+    ):
+        # Names an attempt this client does not have open. Reconcile without it
+        # rather than against the wrong one.
+        logger.warning(
+            "Uncorrelated model_retry for %s/%s; reconciling without a scope",
+            call_id,
+            failed_attempt,
+        )
+        scope = None
+
+    attempt_id = (namespace, cast("str", call_id), cast("int", failed_attempt))
     if namespace:
-        # Nested: reconcile transcript/usage scope only; the retry is visible
-        # solely through the existing Task/subagent status surface.
-        scope = state.active_attempts.get(namespace)
-        if (
-            scope is not None
-            and scope.call_id == call_id
-            and scope.attempt == failed_attempt
-        ):
-            del state.active_attempts[namespace]
-            state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
-            if state.transcript is not None:
-                state.transcript.discard_attempt(
-                    agent_id=scope.agent_id,
-                    call_id=cast("str", call_id),
-                    attempt=cast("int", failed_attempt),
-                )
+        _reconcile_superseded_attempt(
+            namespace,
+            scope,
+            state,
+            console,
+            attempt_id=attempt_id,
+            output_may_have_started=output_may_have_started,
+        )
         return
-
-    scope = state.active_attempts.get(())
-    correlated = (
-        scope is not None
-        and scope.call_id == call_id
-        and scope.attempt == failed_attempt
-    )
 
     if state.spinner:
         state.spinner.stop()
+    _reconcile_superseded_attempt(
+        (),
+        scope,
+        state,
+        console,
+        attempt_id=attempt_id,
+        output_may_have_started=output_may_have_started,
+    )
     # A `Retry-After` backoff can hold the turn for a minute, so this line is
-    # the only explanation for the stall; stop the spinner first so it cannot
-    # overwrite it. `highlight=False` keeps Rich from bolding the "1/5", which
-    # would cancel the `dim`.
+    # the only explanation for the stall; the spinner is stopped first so it
+    # cannot overwrite it. `highlight=False` keeps Rich from bolding the "1/5",
+    # which would cancel the `dim`.
     status = retry_status_from_event(data)
     console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
-
-    if correlated and scope is not None:
-        del state.active_attempts[()]
-        offset = state.attempt_buffer_offsets.pop(_attempt_key((), scope), None)
-        if state.transcript is not None:
-            state.transcript.discard_attempt(
-                agent_id=scope.agent_id,
-                call_id=cast("str", call_id),
-                attempt=cast("int", failed_attempt),
-            )
-        # The failed attempt's tool calls never executed: close any fired
-        # tool.use hooks as interrupted and drop every buffer the attempt
-        # opened. Buffers from earlier model steps are unaffected — indices
-        # restart per message and a completed call's buffer is already popped.
-        _settle_interrupted_tool_hooks(state)
-        state.tool_call_buffers.clear()
-        if state.stream and output_may_have_started:
-            # Already-written text cannot be recalled, so mark where the
-            # incomplete attempt ended before the replay begins. In
-            # `--quiet` mode `console` writes to stderr, keeping stdout
-            # text-only.
-            console.print(
-                f"[dim]{escape_markup(_RETRY_BOUNDARY)}[/dim]",
-                highlight=False,
-            )
-        elif not state.stream:
-            # Buffered output never escaped, so always discard the failed
-            # attempt regardless of the conservative visibility flag.
-            if offset is not None:
-                del state.full_response[offset:]
-            state.pending_tool_status_lines.clear()
     # Restart the spinner: the backoff is the longest stall of the turn, and
     # leaving it stopped reads as a hang until some unrelated later event
     # happens to restart it.
@@ -1328,6 +1436,8 @@ def _process_stream_chunk(
 
     namespace, stream_mode, data = chunk
     ns_key = (
+        # `namespace` unpacks from an untyped 3-tuple, so the cast is what makes
+        # it iterable to the type checker.
         tuple(str(part) for part in cast("tuple[object, ...]", namespace))
         if namespace
         else ()
@@ -1347,7 +1457,11 @@ def _process_stream_chunk(
             else None
         )
         if ns_key and isinstance(transcript_metadata, dict):
-            agent_id = transcript_metadata.get("dcode_subagent_id")
+            from deepagents_code.hooks.transcript import (
+                SUBAGENT_TRANSCRIPT_ID_METADATA_KEY,
+            )
+
+            agent_id = transcript_metadata.get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY)
             if isinstance(agent_id, str) and agent_id:
                 known = state.transcript_agent_ids.setdefault(ns_key, agent_id)
                 _retarget_transcript_scope(state, ns_key, known)
@@ -1421,6 +1535,7 @@ def _process_stream_chunk(
     elif stream_mode == "custom" and isinstance(data, dict):
         if data.get("type") == "model_retry":
             from deepagents_code.model_retry import (
+                legacy_retry_index,
                 model_retry_from_event,
                 retry_status_from_event,
             )
@@ -1431,10 +1546,26 @@ def _process_stream_chunk(
                     ns_key, cast("dict[str, Any]", data), correlation, state, console
                 )
             else:
-                # Unknown or malformed correlation: degrade to the pre-lifecycle
-                # behavior — the status line only, output stays append-only.
+                # Unknown or malformed correlation: no scope to key transcript
+                # staging or a buffer offset by. Still reconcile what does not
+                # need one — the superseded attempt's tools never ran, and in
+                # `--no-stream` its text is in the buffer and unremovable, so it
+                # gets a boundary rather than being spliced silently into the
+                # replay. Presentation otherwise degrades to append-only.
                 if state.spinner:
                     state.spinner.stop()
+                _reconcile_superseded_attempt(
+                    ns_key,
+                    None,
+                    state,
+                    console,
+                    # A legacy payload names no attempt, so identity falls back
+                    # to the retry counter it does carry. Two retries of one
+                    # call always differ; a redelivery of the same event does
+                    # not, which is exactly the no-op case.
+                    attempt_id=(ns_key, "", legacy_retry_index(data)),
+                    output_may_have_started=False,
+                )
                 status = retry_status_from_event(data)
                 console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
                 if state.spinner:
@@ -1800,30 +1931,38 @@ async def _end_headless_session(
         )
 
 
-def _dispatch_orphaned_tool_result_hooks(state: StreamState, tool_output: str) -> None:
+def _dispatch_orphaned_tool_result_hooks(
+    state: StreamState, tool_output: str, *, reason: str = "Stream ended"
+) -> None:
     """Close out `tool.use` events that never received a `ToolMessage`.
 
     On a normally-completing run every `tool.use` is followed by a `ToolMessage`
-    that drains `in_flight_tool_calls`, so this is a no-op. When the stream is
-    aborted mid-flight (e.g. a provider error between the tool call and its
-    result), any id still present had its `tool.use` dispatched with no terminal
-    event; emit `tool.error` + a `tool_status="error"` `tool.result` for each so
-    the headless surface upholds the same "every `tool.use` is closed" guarantee
-    as the TUI's `_dispatch_terminal_tool_result_hooks`.
+    that drains `in_flight_tool_calls`, so this is a no-op. Three cases reach it
+    with work to do: a stream aborted mid-flight (a provider error between the
+    tool call and its result), terminal teardown, and a model retry, where the
+    superseded attempt's tools never ran even though the stream is still alive.
+    Each remaining id had its `tool.use` dispatched with no terminal event; emit
+    `tool.error` + a `tool_status="error"` `tool.result` for each so the headless
+    surface upholds the same "every `tool.use` is closed" guarantee as the TUI's
+    `_dispatch_terminal_tool_result_hooks`.
 
     Args:
         state: The stream state whose in-flight tool maps are drained.
         tool_output: Terminal output recorded on each synthesized `tool.result`.
+        reason: Sentence-leading subject naming why the calls were closed. The
+            retry caller passes its own, since the stream has not ended there
+            and an operator would otherwise chase a phantom abort.
     """
     if state.in_flight_tool_calls:
-        # A non-empty in-flight map here means real tool results were lost to a
-        # mid-stream abort (a clean run drains every id via its result). Surface
-        # it at warning — matching the TUI's backstop for the same class — so an
-        # operator can tell a clean run from one that synthesized error closes,
-        # rather than the drain being silent (degraded audit fidelity).
+        # A non-empty in-flight map here means real tool results were lost (a
+        # clean run drains every id via its result). Surface it at warning —
+        # matching the TUI's backstop for the same class — so an operator can
+        # tell a clean run from one that synthesized error closes, rather than
+        # the drain being silent (degraded audit fidelity).
         logger.warning(
-            "Stream ended with %d in-flight tool call(s) that never received a "
+            "%s with %d in-flight tool call(s) that never received a "
             "result; closing each with a synthetic tool.error/tool.result",
+            reason,
             len(state.in_flight_tool_calls),
         )
     for tool_id, in_flight in list(state.in_flight_tool_calls.items()):
@@ -2136,6 +2275,7 @@ async def _run_agent_loop(
             logger.warning("Transcript uncommitted-scope drop failed", exc_info=True)
         state.active_attempts.clear()
         state.attempt_buffer_offsets.clear()
+        state.settled_attempts.clear()
 
     wall_time = time.monotonic() - start_time
 

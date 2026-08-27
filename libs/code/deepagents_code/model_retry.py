@@ -57,11 +57,13 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_MODEL_RETRIES",
+    "INTERRUPTED_TOOL_OUTPUT",
     "CodeModelRetryMiddleware",
     "aretry_model_call",
     "build_attempt_event",
     "build_retry_event",
     "format_retry_status",
+    "legacy_retry_index",
     "model_attempt_from_event",
     "model_retry_from_event",
     "retry_model_call",
@@ -75,25 +77,45 @@ _MAX_DELAY_SECONDS = 10.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 _JITTER_FRACTION = 0.1
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+# Provider-SDK error classes that name a transient failure, keyed by the root
+# package that owns the name. The package is part of the key on purpose: these
+# are generic words, and matching a bare class name would classify any
+# dependency's identically-named error as transient -- the same rigor the
+# httpcore/aiohttp checks in `_is_http_transport_error` already apply.
 _TRANSIENT_SDK_EXC_NAMES = frozenset(
     {
-        "APITimeoutError",
-        "APIConnectionError",
-        "APIConnectionTimeoutError",
-        "Aborted",
-        "ConnectTimeoutError",
-        "ConnectionClosedError",
-        "DeadlineExceeded",
-        "EndpointConnectionError",
-        "ReadTimeoutError",
-        "ResourceExhausted",
-        "ServiceUnavailable",
+        ("anthropic", "APIConnectionError"),
+        ("anthropic", "APIConnectionTimeoutError"),
+        ("anthropic", "APITimeoutError"),
+        ("botocore", "ConnectTimeoutError"),
+        ("botocore", "EndpointConnectionError"),
+        ("botocore", "ReadTimeoutError"),
+        # `google.api_core` statuses are read by `_google_api_core_status_code`
+        # first; these cover the subclasses raised without a numeric code.
+        ("google", "Aborted"),
+        ("google", "DeadlineExceeded"),
+        ("google", "ResourceExhausted"),
+        ("google", "ServiceUnavailable"),
+        ("openai", "APIConnectionError"),
+        ("openai", "APITimeoutError"),
+        ("urllib3", "ConnectTimeoutError"),
+        ("urllib3", "ReadTimeoutError"),
+        ("websockets", "ConnectionClosedError"),
     }
 )
 
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
 _RETRY_STATUS_FALLBACK = "Retrying model request"
+# Total sleep the interactive model node may spend across one call's retries.
+# Per-delay caps bound nothing (see `_delay_budget_guard`): five honoured
+# `Retry-After` hints of `_MAX_RETRY_AFTER_SECONDS` each would stall a turn for
+# five minutes behind a spinner. One full honoured hint still fits.
+_MAX_INTERACTIVE_TOTAL_DELAY_SECONDS = 60.0
+# Synthetic tool output for a call whose attempt was superseded before the tool
+# ran. Both clients render it and both dispatch it to hooks, so it lives with
+# the event builders rather than being spelled twice.
+INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
 _ATTEMPT_PHASES = frozenset({"start", "complete"})
 _CALL_ID_MAX_LENGTH = 64
 _CALL_ID_CHARS = frozenset(
@@ -125,7 +147,8 @@ class _MessageStreamTracker:
 
         def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
             # Flag first: a writer that raises part-way through has still put
-            # the chunk beyond our control, so a replay would double-render it.
+            # the chunk beyond our control, so the client must be told output
+            # may have escaped even though the consumer never saw the chunk.
             self.has_streamed = True
             source.stream(chunk)
 
@@ -161,20 +184,41 @@ class _MessageStreamTracker:
 def _track_message_streams(
     tracker: _MessageStreamTracker,
 ) -> Iterator[_MessageStreamTracker]:
+    # Every early return below leaves `tracker.has_streamed` permanently
+    # `False`, which makes `output_may_have_started` permanently `False` and
+    # silently disables the supersession marking this module exists to provide:
+    # a retried attempt's partial output is then appended with no boundary. Say
+    # so, at a level matched to how expected the cause is.
     try:
         from langgraph.config import get_config
 
         config = get_config()
     except RuntimeError:
+        logger.debug(
+            "No runnable config in scope; model attempts cannot detect streamed "
+            "output, so a retry may append after unmarked partial output",
+            exc_info=True,
+        )
         yield tracker
         return
 
     callbacks = config.get("callbacks")
     if not isinstance(callbacks, BaseCallbackManager):
+        logger.warning(
+            "Runnable config carries %s under 'callbacks' rather than a "
+            "BaseCallbackManager; retry supersession cannot be detected",
+            type(callbacks).__name__,
+        )
         yield tracker
         return
     tracked_callbacks = tracker.callbacks_with_tracked_messages(callbacks)
     if tracked_callbacks is None:
+        # Routine when nothing consumes the `messages` stream mode; also what a
+        # renamed or restructured `StreamMessagesHandler` would look like.
+        logger.debug(
+            "No message-stream handler attached; retry supersession cannot be "
+            "detected for this model call"
+        )
         yield tracker
         return
 
@@ -227,10 +271,20 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     if headers is None:
         return None
     try:
+        # httpx/requests headers are case-insensitive; a plain dict is not, so
+        # fall back to the canonical casing rather than miss the hint.
         raw = headers.get("retry-after")
+        if raw is None:
+            raw = headers.get("Retry-After")
     except (AttributeError, TypeError):
+        logger.debug("Retry-After lookup failed on %s headers", type(exc).__name__)
+        return None
+    if raw is None:
         return None
     if not isinstance(raw, str) or not raw.strip():
+        # Ignoring a provider's pacing hint can escalate a rate limit into a
+        # ban, so an unusable value is worth a trace.
+        logger.debug("Ignoring unusable Retry-After value %r", raw)
         return None
 
     raw = raw.strip()
@@ -240,6 +294,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         try:
             retry_at = parsedate_to_datetime(raw)
         except (TypeError, ValueError):
+            logger.debug("Ignoring unparseable Retry-After value %r", raw)
             return None
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=UTC)
@@ -301,7 +356,11 @@ def _model_max_retries(model: object, fallback: int) -> int:
 
 
 def _is_transient_sdk_error(exc: Exception) -> bool:
-    return any(base.__name__ in _TRANSIENT_SDK_EXC_NAMES for base in type(exc).__mro__)
+    """Return whether any base class is a known transient provider-SDK error."""
+    return any(
+        (base.__module__.partition(".")[0], base.__name__) in _TRANSIENT_SDK_EXC_NAMES
+        for base in type(exc).__mro__
+    )
 
 
 def _is_http_transport_error(exc: BaseException) -> bool:
@@ -384,10 +443,19 @@ def _direct_model_error_retryability(
         return True
 
     # Stdlib transport faults raised directly (rare, but cheap to cover). This
-    # heuristic is deliberately confined to the raised exception: Python sets
-    # `__context__` on anything raised inside an `except` block, so honouring it
-    # here would make a permanent failure that merely surfaced while handling a
-    # timeout look transient and burn the whole budget on it.
+    # heuristic alone is deliberately confined to the raised exception: Python
+    # sets `__context__` on anything raised inside an `except` block, so
+    # honouring it here would make a permanent failure that merely surfaced
+    # while handling a timeout look transient and burn the whole budget on it.
+    #
+    # The checks above are not confined that way, and the asymmetry is chosen,
+    # not an oversight. `TimeoutError`/`ConnectionError` are broad -- every
+    # `asyncio.wait_for` deadline and every socket fault in the process is one
+    # -- whereas a package-qualified SDK class or an httpx transport error is
+    # narrow enough that finding one in the context chain really does mean the
+    # call died in transport and an SDK re-raised inside its `except`. That
+    # wrap-and-reraise shape is the common one, so those stay trusted through
+    # `__context__` (see `test_predicate_retries_transport_error_in_context_chain`).
     if raised and isinstance(exc, (TimeoutError, ConnectionError)):
         return True
     return None
@@ -446,7 +514,11 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
 def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
     """Log why the retry loop stopped before re-raising."""
     if not _is_retryable_model_error(exc):
-        logger.debug(
+        # `info`, not `debug`: a fault in this module's own instrumentation
+        # (a `StreamMessagesHandler` signature change, say) surfaces here
+        # classified as non-transient, and would otherwise reach the user as an
+        # unexplained provider error with no traceback at default log levels.
+        logger.info(
             "Model call failed with a non-transient %s; not retrying",
             type(exc).__name__,
             exc_info=exc,
@@ -490,10 +562,10 @@ def _retry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
-            # Settle eligibility before consulting the guard. A guard that
-            # ran first would blame the streaming scope or the caller deadline
-            # for an error that was never going to be retried, and would skip
-            # the exhausted-budget log entirely.
+            # Settle eligibility before consulting the guard. A guard that ran
+            # first would blame the delay budget for an error that was never
+            # going to be retried, and would skip the exhausted-budget log
+            # entirely.
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 # Re-raise, don't convert to an `AIMessage`: a dead provider
@@ -536,10 +608,10 @@ async def _aretry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
-            # Settle eligibility before consulting the guard. A guard that
-            # ran first would blame the streaming scope or the caller deadline
-            # for an error that was never going to be retried, and would skip
-            # the exhausted-budget log entirely.
+            # Settle eligibility before consulting the guard. A guard that ran
+            # first would blame the delay budget for an error that was never
+            # going to be retried, and would skip the exhausted-budget log
+            # entirely.
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 # Always re-raise (see `_retry_call`).
@@ -601,6 +673,8 @@ def _auxiliary_max_retries(model: object) -> int:
 
 def _delay_budget_guard(
     max_total_delay: float | None,
+    *,
+    label: str = "Auxiliary model",
 ) -> Callable[[Exception, int, float], bool]:
     """Build a guard that keeps total retry sleep within `max_total_delay`.
 
@@ -615,6 +689,12 @@ def _delay_budget_guard(
     which is exactly how a 20s classifier deadline was overrun by the retries
     meant to fit inside it.
 
+    Args:
+        max_total_delay: Cumulative sleep ceiling, or `None` to honour the full
+            policy.
+        label: Sentence-leading subject for the refusal log, so an interactive
+            stall reads differently from an auxiliary one.
+
     Returns:
         A `retry_guard` callable for the shared retry loops.
     """
@@ -628,8 +708,9 @@ def _delay_budget_guard(
             spent += delay
             return True
         logger.warning(
-            "Auxiliary model retries would wait %.1fs past the caller deadline "
-            "budget of %.1fs; surfacing %s instead",
+            "%s retries would wait %.1fs past the total delay budget of "
+            "%.1fs; surfacing %s instead",
+            label,
             spent + delay - max_total_delay,
             max_total_delay,
             type(exc).__name__,
@@ -694,9 +775,11 @@ async def aretry_model_call[ResultT](
 def retry_status_from_event(event: Mapping[Any, object]) -> str:
     """Return retry status text for an untrusted `model_retry` payload.
 
-    Both the TUI and the headless client render this event, so the validation
-    lives with the producer rather than being written twice with different
-    strictness.
+    Both the TUI and the headless client render this status line, so its
+    validation lives with the producer rather than being written twice with
+    different strictness. The TUI's in-chat marker is a separate string with its
+    own fallback, so it validates the same two fields again in
+    `_retry_marker_text`; keep the two ranges identical.
 
     Args:
         event: Custom-stream payload, not trusted to hold sane numbers.
@@ -716,6 +799,26 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str:
         return format_retry_status(attempt, max_retries)
     logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
     return _RETRY_STATUS_FALLBACK
+
+
+def legacy_retry_index(event: Mapping[Any, object]) -> int:
+    """Identity fallback for a `model_retry` payload that names no attempt.
+
+    A producer that predates attempt lifecycle events carries no `call_id`, so
+    a consumer cannot tell a second retry of one call from a redelivery of the
+    same event by correlation. The retry counter it does carry is enough: two
+    retries of one call always differ, while a redelivery does not.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The payload's retry counter when it is a usable int, else `-1`.
+    """
+    attempt = event.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool):
+        return attempt
+    return -1
 
 
 def build_retry_event(
@@ -1000,6 +1103,9 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             call,
             max_retries=max_retries,
             on_retry=on_retry,
+            retry_guard=_delay_budget_guard(
+                _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
+            ),
         )
 
     async def awrap_model_call(
@@ -1042,4 +1148,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             call,
             max_retries=max_retries,
             on_retry=on_retry,
+            retry_guard=_delay_budget_guard(
+                _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
+            ),
         )

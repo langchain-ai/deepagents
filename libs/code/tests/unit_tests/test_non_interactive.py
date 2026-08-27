@@ -29,6 +29,7 @@ from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.client.non_interactive import (
     _MAX_HITL_ITERATIONS,
+    _RETRY_BOUNDARY,
     HITLIterationLimitError,
     InFlightToolCall,
     StreamState,
@@ -4478,7 +4479,11 @@ class TestAttemptLifecycle:
         assert state.full_response == []
         assert state.pending_tool_status_lines == []
         assert state.in_flight_tool_calls == {}
-        assert state.emitted_tool_use_ids == {"call-x"}  # monotonic
+        # Retired, not monotonic: the replay is a new call, so a provider that
+        # reuses `call-x` must be able to fire a fresh `tool.use` for it rather
+        # than have it suppressed while the tool really runs.
+        assert state.emitted_tool_use_ids == set()
+        assert state.displayed_tool_call_ids == set()
         assert state.active_attempts == {}
         # No retry boundary in --no-stream; the retry status still printed.
         printed = output.getvalue()
@@ -4519,12 +4524,18 @@ class TestAttemptLifecycle:
             )
 
         # Streaming output is irreversible, so the text stays and an explicit
-        # boundary separates it from the replay.
-        assert stdout_buf.getvalue() == "partial"
+        # boundary separates it from the replay. The trailing newline terminates
+        # the partial line: response text goes to raw stdout with no newline of
+        # its own, so without it Rich welds the boundary onto the last sentence.
+        assert stdout_buf.getvalue() == "partial\n"
         assert state.full_response == ["partial"]
         printed = output.getvalue()
-        assert "Retrying model request 1/5" in printed
         assert "the output above is incomplete" in printed
+        # The status line comes after the boundary, so "the output above" refers
+        # to the model's text rather than to the status line itself.
+        assert printed.index("the output above is incomplete") < printed.index(
+            "Retrying model request 1/5"
+        )
 
     def test_retry_without_output_discards_buffered_text(self, tmp_path: Path) -> None:
         """Buffered mode discards failed text even when no output escaped."""
@@ -4553,8 +4564,10 @@ class TestAttemptLifecycle:
         assert state.full_response == []
         assert "incomplete" not in output.getvalue()
 
-    def test_uncorrelated_retry_degrades_to_append_only(self, tmp_path: Path) -> None:
-        """An unknown failed attempt prints the status but mutates nothing."""
+    def test_uncorrelated_retry_marks_the_buffer_it_cannot_truncate(
+        self, tmp_path: Path
+    ) -> None:
+        """An unknown failed attempt has no offset, so it marks the seam."""
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, color_system=None)
         state = self._lifecycle_state(tmp_path, stream=False)
@@ -4577,13 +4590,15 @@ class TestAttemptLifecycle:
             tracker,
         )
 
-        assert state.full_response == ["partial"]
-        assert "incomplete" not in output.getvalue()
+        # No scope match means no recorded offset, so the failed text cannot be
+        # found and removed. Carry the boundary into the buffer rather than
+        # splicing partial and replayed text together with no marker at all.
+        assert state.full_response == ["partial", f"\n{_RETRY_BOUNDARY}\n"]
         assert "Retrying model request 1/5" in output.getvalue()
         assert () in state.active_attempts  # scope untouched
 
-    def test_legacy_retry_without_lifecycle_is_status_only(self) -> None:
-        """A retry event with no correlation fields keeps the old behavior."""
+    def test_legacy_retry_without_lifecycle_still_marks_the_buffer(self) -> None:
+        """A retry with no correlation fields keeps append-only presentation."""
         output = io.StringIO()
         console = Console(file=output, force_terminal=False, color_system=None)
         state = StreamState(thread_id="thread-1", stream=False)
@@ -4596,10 +4611,220 @@ class TestAttemptLifecycle:
             ((), "custom", _retry_event(None, None)), state, console, tracker
         )
 
-        assert state.full_response == ["partial"]
-        printed = output.getvalue()
-        assert "Retrying model request 1/5" in printed
-        assert "incomplete" not in printed
+        # No lifecycle at all, so nothing can be truncated; buffered mode still
+        # gets a marker so stdout never splices two generations silently.
+        assert state.full_response == ["partial", f"\n{_RETRY_BOUNDARY}\n"]
+        assert "Retrying model request 1/5" in output.getvalue()
+
+    def test_no_stream_truncation_keeps_earlier_model_steps(
+        self, tmp_path: Path
+    ) -> None:
+        """Truncation cuts to the attempt offset, not to the whole buffer.
+
+        Every other buffered-mode test starts the attempt with an empty
+        `full_response`, so the recorded offset is always 0 and
+        `del full_response[offset:]` is indistinguishable from `clear()`. A
+        multi-step turn makes them differ: the first step's text must survive
+        the second step's retry.
+        """
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        # An earlier, already-completed model step.
+        first = MagicMock(spec=AIMessage)
+        first.content_blocks = [{"type": "text", "text": "KEEP-ME"}]
+        _process_stream_chunk(((), "messages", (first, {})), state, console, tracker)
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-2", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        assert state.attempt_buffer_offsets[(), "call-2", 0] == 1
+        second = MagicMock(spec=AIMessage)
+        second.content_blocks = [{"type": "text", "text": "DROP-ME"}]
+        _process_stream_chunk(((), "messages", (second, {})), state, console, tracker)
+        _process_stream_chunk(
+            ((), "custom", _retry_event("call-2", 0)), state, console, tracker
+        )
+
+        assert state.full_response == ["KEEP-ME"]
+
+    def test_lost_retry_event_still_reconciles_the_superseded_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A start for a new attempt with no retry event in between.
+
+        `_emit_stream_event` logs and swallows writer faults, so the retry event
+        can be lost in flight. The superseded attempt must still be rolled back
+        in full, not just have its transcript staging dropped.
+        """
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "text", "text": "partial"},
+            {
+                "type": "tool_call",
+                "name": "execute",
+                "id": "call-x",
+                "index": 0,
+                "args": '{"command": "ls"}',
+            },
+        ]
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_stream_chunk(
+                ((), "messages", (ai_msg, {})), state, console, tracker
+            )
+            assert state.pending_tool_status_lines
+            assert "call-x" in state.in_flight_tool_calls
+
+            # Attempt 1 starts with no `model_retry` for attempt 0.
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 1, phase="start")),
+                state,
+                console,
+                tracker,
+            )
+            events = [c[0][0] for c in mock_dispatch.call_args_list]
+
+        # Reconciled exactly as the retry path would: text truncated, staged
+        # status dropped, tool hooks closed.
+        assert state.full_response == []
+        assert state.pending_tool_status_lines == []
+        assert state.in_flight_tool_calls == {}
+        assert "tool.error" in events
+        assert state.active_attempts[()].attempt == 1
+
+    def test_reused_tool_id_after_retry_fires_one_terminal_each(
+        self, tmp_path: Path
+    ) -> None:
+        """A replay reusing the tool-call id gets its own use/result pair.
+
+        The settled ids are retired from the monotonic sets, so the replay is a
+        genuinely new call: one `tool.use` and one real `tool.result`, rather
+        than a suppressed `tool.use` and a second terminal event for the id
+        that was already closed as interrupted.
+        """
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        def _tool_call_message() -> MagicMock:
+            msg = MagicMock(spec=AIMessage)
+            msg.content_blocks = [
+                {
+                    "type": "tool_call",
+                    "name": "execute",
+                    "id": "call-x",
+                    "index": 0,
+                    "args": '{"command": "ls"}',
+                }
+            ]
+            return msg
+
+        with patch(
+            "deepagents_code.client.non_interactive.dispatch_hook_fire_and_forget"
+        ) as mock_dispatch:
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 0, phase="start")),
+                state,
+                console,
+                tracker,
+            )
+            _process_stream_chunk(
+                ((), "messages", (_tool_call_message(), {})), state, console, tracker
+            )
+            _process_stream_chunk(
+                ((), "custom", _retry_event("call-1", 0)), state, console, tracker
+            )
+            # The replay reuses the provider's tool-call id.
+            _process_stream_chunk(
+                ((), "custom", _attempt_event("call-1", 1, phase="start")),
+                state,
+                console,
+                tracker,
+            )
+            _process_stream_chunk(
+                ((), "messages", (_tool_call_message(), {})), state, console, tracker
+            )
+            _process_stream_chunk(
+                (
+                    (),
+                    "messages",
+                    (
+                        ToolMessage(
+                            content="listing", tool_call_id="call-x", name="execute"
+                        ),
+                        {},
+                    ),
+                ),
+                state,
+                console,
+                tracker,
+            )
+            calls = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
+
+        uses = [payload for name, payload in calls if name == "tool.use"]
+        results = [payload for name, payload in calls if name == "tool.result"]
+        # Two attempts, so two `tool.use` — not one suppressed by a stale id.
+        assert len(uses) == 2
+        assert len(results) == 2
+        assert results[0]["tool_status"] == "error"
+        # The replay's real result carries its parsed args, not `{}`.
+        assert results[1]["tool_status"] == "success"
+        assert results[1]["tool_args"] == {"command": "ls"}
+
+    def test_duplicate_retry_event_is_a_no_op(self, tmp_path: Path) -> None:
+        """Reconciling without a scope match must stay idempotent.
+
+        The first retry deletes the scope, so a redelivered copy no longer
+        matches one — and reconciliation is deliberately not gated on a match.
+        Identity is tracked instead, so the duplicate changes nothing.
+        """
+        output = io.StringIO()
+        console = Console(file=output, force_terminal=False, color_system=None)
+        state = self._lifecycle_state(tmp_path, stream=False)
+        tracker = FileOpTracker(assistant_id="assistant")
+
+        _process_stream_chunk(
+            ((), "custom", _attempt_event("call-1", 0, phase="start")),
+            state,
+            console,
+            tracker,
+        )
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [{"type": "text", "text": "partial"}]
+        _process_stream_chunk(((), "messages", (ai_msg, {})), state, console, tracker)
+        for _ in range(3):
+            _process_stream_chunk(
+                (
+                    (),
+                    "custom",
+                    _retry_event("call-1", 0, output_may_have_started=True),
+                ),
+                state,
+                console,
+                tracker,
+            )
+
+        assert state.full_response == []
+        assert state.settled_attempts == {((), "call-1", 0)}
 
     def test_malformed_attempt_event_is_ignored(self, tmp_path: Path) -> None:
         """A malformed model_attempt opens no scope; usage stays unscoped."""

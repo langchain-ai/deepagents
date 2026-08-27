@@ -996,6 +996,73 @@ class TestAttemptScopedUsage:
         assert scoped is not None
         assert stats.request_count == 2
 
+    def test_scoped_request_is_not_recounted_on_a_hitl_resume_replay(self) -> None:
+        """A turn that crosses a HITL pause must not count its spend twice.
+
+        The record pass keys by `(attempt_scope, message_id)`, but the attempt
+        scope closes when the attempt completes -- and `model_attempt(complete)`
+        always fires before the tool node interrupts. So the resume pass replays
+        with no scope open and keys by the bare message id. Closing the ledger at
+        the round boundary has to bridge the two shapes, or every turn containing
+        one tool approval reports double the tokens and cost.
+        """
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        scope = ((), "call-1", 0)
+
+        recorded = record_message_usage(
+            stats,
+            self._chunk(1_000, 100),
+            recorded_requests=ledger,
+            attempt_scope=scope,
+        )
+        assert recorded is not None
+        assert stats.request_count == 1
+
+        # End of the stream round: the tool node interrupts for approval.
+        finalize_recorded_requests(ledger)
+
+        # Resume pass. The scope is long closed, so this replays unscoped.
+        replay = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_resume_replay_credits_the_attempt_that_succeeded(self) -> None:
+        """After a retry, the projected row carries the surviving attempt."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 100),
+            recorded_requests=ledger,
+            attempt_scope=((), "call-1", 0),
+        )
+        record_message_usage(
+            stats,
+            self._chunk(2_000, 200),
+            recorded_requests=ledger,
+            attempt_scope=((), "call-1", 1),
+        )
+        # Both attempts are real spend and both counted.
+        assert stats.request_count == 2
+
+        finalize_recorded_requests(ledger)
+        replay = record_message_usage(
+            stats, self._chunk(2_000, 200), recorded_requests=ledger
+        )
+
+        assert replay is None
+        assert stats.request_count == 2
+        # The bare-id projection took the last attempt written, which is the one
+        # that actually succeeded.
+        assert ledger["run-1"].input_tokens == 2_000
+
     def test_model_usage_event_dedupes_per_attempt_scope(self) -> None:
         stats = SessionStats()
         ledger: dict[UsageLedgerKey, RecordedRequest] = {}

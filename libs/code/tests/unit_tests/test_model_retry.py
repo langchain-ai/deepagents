@@ -85,6 +85,19 @@ class APIConnectionError(Exception):
     pass
 
 
+# Classification is keyed by `(root package, class name)`, so a fixture standing
+# in for a provider SDK error has to claim that package.
+APIConnectionError.__module__ = "openai"
+
+
+class _UnrelatedAPIConnectionError(Exception):
+    """Same class name, different package: must not be classified transient."""
+
+
+_UnrelatedAPIConnectionError.__name__ = "APIConnectionError"
+_UnrelatedAPIConnectionError.__module__ = "some_unrelated_lib.errors"
+
+
 class AuthenticationError(Exception):
     def __init__(self) -> None:
         super().__init__("auth")
@@ -110,6 +123,9 @@ _GoogleAPICoreError.__module__ = "google.api_core.exceptions"
 
 class ResourceExhausted(Exception):  # noqa: N818  # mirrors the Google SDK name
     pass
+
+
+ResourceExhausted.__module__ = "google.api_core.exceptions"
 
 
 class _RetryingStreamingModel(BaseChatModel):
@@ -321,6 +337,16 @@ def test_predicate_retries_google_api_core_status_codes(code: int) -> None:
 
 def test_predicate_retries_google_api_core_transient_class_without_code() -> None:
     assert _is_retryable_model_error(ResourceExhausted("quota unavailable")) is True
+
+
+def test_predicate_ignores_a_transient_class_name_from_another_package() -> None:
+    """`Aborted`, `APIConnectionError` and friends are generic words.
+
+    Matching a bare class name would classify any dependency's identically named
+    error as a transient provider failure, burning the whole retry budget on a
+    permanent fault.
+    """
+    assert _is_retryable_model_error(_UnrelatedAPIConnectionError("x")) is False
 
 
 def test_predicate_rejects_google_api_core_permanent_status_code() -> None:
@@ -1339,13 +1365,16 @@ def test_tracked_dedup_ids_reach_the_original_handler(handler_name: str) -> None
 class APIConnectionError(Exception):
     """Name-matched transient SDK error that also carries a status code.
 
-    Named to collide with `_TRANSIENT_SDK_EXC_NAMES` on purpose: the status
-    check must win over the name heuristic.
+    Named and packaged to collide with `_TRANSIENT_SDK_EXC_NAMES` on purpose:
+    the status check must win over the name heuristic.
     """
 
     def __init__(self, status_code: int) -> None:
         super().__init__(f"status {status_code}")
         self.status_code = status_code
+
+
+APIConnectionError.__module__ = "openai"
 
 
 @pytest.mark.parametrize(

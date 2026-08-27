@@ -326,7 +326,14 @@ class TranscriptStore:
 
 @dataclass(slots=True)
 class _AttemptScope:
-    """Staged records for one (agent_id, call_id, attempt) lifecycle."""
+    """Staged records for one model attempt of one agent.
+
+    The owning `agent_id` is the `TranscriptRecorder._attempts` key rather than
+    a field here, so a scope cannot disagree with where it is stored. "Open" is
+    likewise dict membership, not a flag: `complete_attempt` and
+    `discard_attempt` both pop, which makes a committed-and-discarded scope
+    unrepresentable instead of merely invalid.
+    """
 
     call_id: str
     attempt: int
@@ -352,6 +359,10 @@ class TranscriptRecorder:
         main_agent: bool,
     ) -> None:
         """Record one streamed message when its transcript identity is stable.
+
+        While an attempt scope is open for the resolved `agent_id`, the record
+        is staged rather than appended, and only reaches the transcript when
+        `complete_attempt` commits it.
 
         Args:
             message: Streamed LangChain message or chunk.
@@ -401,8 +412,21 @@ class TranscriptRecorder:
             existing.call_id == call_id and existing.attempt == attempt
         ):
             return
-        for key in [key for key in self._chunks if key[0] == agent_id]:
-            self._chunks.pop(key, None)
+        if existing is not None and existing.staged:
+            # A start for a different attempt replaces the open scope outright,
+            # which drops whatever it staged. Callers are expected to discard
+            # the superseded scope first; reaching here with staged records
+            # means a lifecycle event went missing, so leave a trace rather
+            # than losing transcript records silently.
+            logger.warning(
+                "Replacing open transcript attempt %s/%d for agent %s while it "
+                "held %d staged record(s); they are dropped",
+                existing.call_id,
+                existing.attempt,
+                agent_id,
+                len(existing.staged),
+            )
+        self._drop_chunks(agent_id)
         self._attempts[agent_id] = _AttemptScope(call_id=call_id, attempt=attempt)
 
     def complete_attempt(
@@ -424,10 +448,9 @@ class TranscriptRecorder:
         scope = self._active_scope(agent_id, call_id=call_id, attempt=attempt)
         if scope is None:
             return
-        staged, scope.staged = scope.staged, []
+        staged = scope.staged
         self._attempts.pop(agent_id, None)
-        for key in [key for key in self._chunks if key[0] == agent_id]:
-            self._chunks.pop(key, None)
+        self._drop_chunks(agent_id)
         for message in staged:
             self._append(message, agent_id=agent_id)
 
@@ -450,15 +473,33 @@ class TranscriptRecorder:
         scope = self._active_scope(agent_id, call_id=call_id, attempt=attempt)
         if scope is None:
             return
-        scope.staged.clear()
         self._attempts.pop(agent_id, None)
-        for key in [key for key in self._chunks if key[0] == agent_id]:
-            self._chunks.pop(key, None)
+        self._drop_chunks(agent_id)
 
     def drop_uncommitted(self) -> None:
-        """Clear all attempt scopes and chunk accumulators without appending."""
+        """Clear all attempt scopes and chunk accumulators without appending.
+
+        Terminal teardown: these attempts never completed (abort, retry-budget
+        exhaustion, cancellation), so their records are not transcript history.
+        Dropping non-empty staging makes the on-screen conversation and the
+        persisted transcript diverge, so count it rather than clearing silently.
+        """
+        dropped = sum(len(scope.staged) for scope in self._attempts.values())
+        if dropped:
+            logger.warning(
+                "Dropping %d staged transcript record(s) from %d uncommitted "
+                "model attempt(s)",
+                dropped,
+                len(self._attempts),
+            )
         self._attempts.clear()
         self._chunks.clear()
+
+    def _drop_chunks(self, agent_id: str | None) -> None:
+        """Drop every partial chunk accumulator belonging to one agent."""
+        self._chunks = {
+            key: chunk for key, chunk in self._chunks.items() if key[0] != agent_id
+        }
 
     def _active_scope(
         self,
@@ -489,7 +530,14 @@ class TranscriptRecorder:
             )
 
     def append(self, messages: Sequence[BaseMessage]) -> None:
-        """Append checkpoint or input messages to the root transcript."""
+        """Append checkpoint or input messages to the root transcript.
+
+        Deliberately bypasses attempt staging: these messages are turn inputs
+        and checkpoint history, not model output, so no attempt owns them and
+        none should be able to discard them. Callers append them between turns,
+        never while a scope is open -- doing so would order them ahead of model
+        output that was staged earlier.
+        """
         append_messages = getattr(self.runtime, "append_messages", None)
         if callable(append_messages):
             append_messages(self.thread_id, messages)

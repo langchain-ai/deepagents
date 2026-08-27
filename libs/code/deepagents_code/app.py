@@ -4554,7 +4554,7 @@ class DeepAgentsApp(App):
             UI components for the main chat area and status bar.
         """
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         if is_env_truthy(SHOW_HEADER) or self._installation_stale:
             yield _StaticHeader(id="app-header")
@@ -4563,8 +4563,8 @@ class DeepAgentsApp(App):
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
         with _ChatScroll(id="chat"):
             yield WelcomeBanner(
-                model_provider=settings.model_provider or "",
-                model_name=settings.model_name or "",
+                model_provider=runtime_state.model_provider or "",
+                model_name=runtime_state.model_name or "",
                 cwd=self._cwd,
                 thread_id=self._lc_thread_id,
                 mcp_tool_count=self._mcp_tool_count,
@@ -5291,11 +5291,11 @@ class DeepAgentsApp(App):
         Returns:
             Whether the caller may continue.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         outcome = await self._hooks.on_session_start(
             cause,
-            model=settings.model_name or None,
+            model=runtime_state.model_name or None,
         )
         if outcome.ok:
             return True
@@ -5762,7 +5762,7 @@ class DeepAgentsApp(App):
         if self._resume_thread_intent:
             await self._resolve_resume_thread()
 
-        # Run deferred model creation. settings.model_name / model_provider
+        # Run deferred model creation. runtime_state.model_name / model_provider
         # are already set eagerly for the status bar display; this call
         # does the heavy langchain import + SDK init and may refine them
         # (e.g., context_limit from the model profile).
@@ -5818,7 +5818,7 @@ class DeepAgentsApp(App):
             except ModelConfigError as exc:
                 self.post_message(self.ServerStartFailed(error=exc))
                 return
-            result.apply_to_settings()
+            result.apply_to_runtime_state()
             resolved_spec = f"{result.provider}:{result.model_name}"
             await self._restore_effort_override(resolved_spec)
             # Best-effort persistence. `resolved_spec` came out of `create_model`, so
@@ -5960,7 +5960,7 @@ class DeepAgentsApp(App):
         # startup (e.g. `/model` switching providers after `ModelConfigError`)
         # surfaces the now-active model. `StatusBar.on_mount` only runs once,
         # and `_retry_startup_with_model` updates `settings` via
-        # `apply_to_settings` without pushing into the widget.
+        # `apply_to_runtime_state` without pushing into the widget.
         if self._status_bar is None:
             logger.warning("Status bar not found during server ready transition")
         else:
@@ -15360,12 +15360,12 @@ class DeepAgentsApp(App):
         source: Literal["goal", "rubric"] = "rubric",
     ) -> None:
         """Open the model selector for choosing a grader model."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
-        current_provider = settings.model_provider
-        current_model = settings.model_name
+        current_provider = runtime_state.model_provider
+        current_model = runtime_state.model_name
         if self._rubric_model:
             parsed = ModelSpec.try_parse(self._rubric_model)
             if parsed:
@@ -15642,7 +15642,7 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
-        from deepagents_code.config import newline_shortcut, settings
+        from deepagents_code.config import newline_shortcut, runtime_state
 
         cmd = command.lower().strip()
 
@@ -15894,8 +15894,8 @@ class DeepAgentsApp(App):
                 ContextUsageScreen(
                     context_tokens=context_tokens,
                     conversation_tokens=conversation_tokens,
-                    context_limit=settings.model_context_limit,
-                    model_spec=self._effective_model_spec() or settings.model_name,
+                    context_limit=runtime_state.model_context_limit,
+                    model_spec=self._effective_model_spec() or runtime_state.model_name,
                     approximate=approximate,
                 ),
                 lambda _result: self._focus_chat_input_after_refresh(),
@@ -15908,8 +15908,8 @@ class DeepAgentsApp(App):
                 count = self._context_tokens
                 formatted = format_token_count(count)
 
-                model_name = settings.model_name
-                context_limit = settings.model_context_limit
+                model_name = runtime_state.model_name
+                context_limit = runtime_state.model_context_limit
 
                 if context_limit is not None:
                     limit_str = format_token_count(context_limit)
@@ -16864,13 +16864,13 @@ class DeepAgentsApp(App):
         try:
             await self._set_spinner("Offloading")
             from deepagents_code._cli_context import CLIContext
-            from deepagents_code.config import settings
+            from deepagents_code.config import runtime_state
 
             context = CLIContext(
                 model=self._effective_model_spec(),
                 model_params=self._model_params_override or {},
                 profile_overrides=self._profile_override or {},
-                model_context_limit=settings.model_context_limit,
+                model_context_limit=runtime_state.model_context_limit,
                 thread_id=self._lc_thread_id,
                 # The operation runs the agent's `PreCompact` and `PreToolUse`
                 # hooks, and the server defaults a missing mode to `manual`.
@@ -17330,10 +17330,10 @@ class DeepAgentsApp(App):
         """
         if self._model_override:
             return self._model_override
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
-        provider = settings.model_provider or ""
-        model = settings.model_name or ""
+        provider = runtime_state.model_provider or ""
+        model = runtime_state.model_name or ""
         if provider and model:
             return f"{provider}:{model}"
         return None
@@ -17342,27 +17342,27 @@ class DeepAgentsApp(App):
         """Return the provider name in effect for the next invocation.
 
         Derives the provider from the effective `provider:model` spec, falling
-        back to `settings.model_provider`. Used to diagnose gateway/key
+        back to `runtime_state.model_provider`. Used to diagnose gateway/key
         mismatches when an error is rendered.
         """
         spec = self._effective_model_spec()
         if spec and ":" in spec:
             return spec.split(":", 1)[0] or None
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
-        return settings.model_provider or None
+        return runtime_state.model_provider or None
 
     def _sync_status_model(self) -> None:
         """Update model displays and the `/effort` hint for the active model."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
         from deepagents_code.reasoning_effort import (
             current_effort_from_model_params,
             default_effort_for_model,
             supported_efforts_for_model,
         )
 
-        provider = settings.model_provider or ""
-        model = settings.model_name or ""
+        provider = runtime_state.model_provider or ""
+        model = runtime_state.model_name or ""
         spec = self._effective_model_spec()
         if self._chat_input is not None:
             try:
@@ -17390,10 +17390,10 @@ class DeepAgentsApp(App):
             logger.debug("Screen stack empty during model sync", exc_info=True)
         if self._status_bar is None:
             return
-        self._status_bar.set_context_limit(settings.model_context_limit)
+        self._status_bar.set_context_limit(runtime_state.model_context_limit)
         if not provider or not model:
             logger.warning(
-                "Settings missing model identity at status sync "
+                "Runtime state missing model identity at status sync "
                 "(provider=%r, model=%r); status bar will render blank",
                 provider,
                 model,
@@ -17667,7 +17667,7 @@ class DeepAgentsApp(App):
         # `_agent_turn_started`.
         self._agent_turn_started = True
 
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
         from deepagents_code.hooks.client_lifecycle import ClientHookStopError
         from deepagents_code.resume_state import RUBRIC_RESULT_VALUES
         from deepagents_code.tui.textual_adapter import (
@@ -17850,7 +17850,7 @@ class DeepAgentsApp(App):
                     model=self._model_override,
                     model_params=self._model_params_override or {},
                     profile_overrides=self._profile_override or {},
-                    model_context_limit=settings.model_context_limit,
+                    model_context_limit=runtime_state.model_context_limit,
                     classifier_model=self._auto_classifier_context_value(),
                 ),
                 turn_stats=turn_stats,
@@ -21525,15 +21525,15 @@ class DeepAgentsApp(App):
 
     async def _show_auto_classifier_model_selector(self) -> None:
         """Open the model selector for choosing the Auto classifier model."""
-        from deepagents_code.config import detect_provider, settings
+        from deepagents_code.config import detect_provider, runtime_state
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import (
             AUTO_CLASSIFIER_DEFAULT_SCOPE,
             ModelSelectorScreen,
         )
 
-        current_provider = settings.model_provider
-        current_model = settings.model_name
+        current_provider = runtime_state.model_provider
+        current_model = runtime_state.model_name
         if display := self._auto_classifier_display_spec():
             parsed = ModelSpec.try_parse(display)
             if parsed:
@@ -22496,15 +22496,15 @@ class DeepAgentsApp(App):
         Returns:
             Configured model selector modal.
         """
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
         from deepagents_code.tui.widgets.model_selector import (
             MAIN_MODEL_DEFAULT_SCOPE,
             ModelSelectorScreen,
         )
 
         return ModelSelectorScreen(
-            current_model=settings.model_name,
-            current_provider=settings.model_provider,
+            current_model=runtime_state.model_name,
+            current_provider=runtime_state.model_provider,
             cli_profile_override=self._profile_override,
             curated=curated,
             title="Choose a Recommended Model" if curated else None,
@@ -22681,15 +22681,15 @@ class DeepAgentsApp(App):
         callers reach it through `_schedule_off_message_pump` because their
         continuation starts on the App message pump.
         """
-        from deepagents_code.config import detect_provider, settings
+        from deepagents_code.config import detect_provider, runtime_state
         from deepagents_code.model_config import ModelSpec
 
         target = model_spec.removeprefix(":")
         parsed = ModelSpec.try_parse(target)
         provider = parsed.provider if parsed else detect_provider(target)
         model_name = parsed.model if parsed else target
-        if model_name == settings.model_name and (
-            not provider or provider == settings.model_provider
+        if model_name == runtime_state.model_name and (
+            not provider or provider == runtime_state.model_provider
         ):
             await self._switch_model(target, extra_kwargs=extra_kwargs)
             return
@@ -22703,7 +22703,7 @@ class DeepAgentsApp(App):
                 ModelSwitchWarningScreen,
             )
 
-            current = f"{settings.model_provider}:{settings.model_name}"
+            current = f"{runtime_state.model_provider}:{runtime_state.model_name}"
             display = f"{provider}:{model_name}" if provider and not parsed else target
             screen = ModelSwitchWarningScreen(
                 current_model=current,
@@ -28718,7 +28718,7 @@ class DeepAgentsApp(App):
                 messaging (which model couldn't be restored and what the session
                 is falling back to) rather than the interactive `/model` errors.
         """
-        from deepagents_code.config import detect_provider, settings
+        from deepagents_code.config import detect_provider, runtime_state
         from deepagents_code.model_config import (
             ModelSpec,
             ProviderAuthState,
@@ -28815,10 +28815,10 @@ class DeepAgentsApp(App):
                 )
 
             # Check if already using this exact model
-            if model_name == settings.model_name and (
-                not provider or provider == settings.model_provider
+            if model_name == runtime_state.model_name and (
+                not provider or provider == runtime_state.model_provider
             ):
-                current = f"{settings.model_provider}:{settings.model_name}"
+                current = f"{runtime_state.model_provider}:{runtime_state.model_name}"
                 # Mirror the regular-switch path so `--model-params` semantics
                 # are consistent across same-model and different-model cases:
                 # passing params applies them, omitting params clears any
@@ -28858,7 +28858,7 @@ class DeepAgentsApp(App):
                     extra_kwargs=extra_kwargs,
                     profile_overrides=self._profile_override,
                 )
-                result.apply_to_settings()
+                result.apply_to_runtime_state()
             except Exception as exc:
                 logger.exception("Failed to resolve model metadata for %s", display)
                 if from_resume:

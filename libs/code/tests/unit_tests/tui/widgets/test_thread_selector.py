@@ -4626,7 +4626,7 @@ class TestResumeAdoptionFailureMessage:
 
     async def test_omits_fallback_when_no_current_model(self) -> None:
         """With no resolvable current model, the fallback clause is dropped."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         app = DeepAgentsApp()
         app._model_override = None
@@ -4636,8 +4636,8 @@ class TestResumeAdoptionFailureMessage:
         )
 
         with (
-            patch.object(settings, "model_provider", ""),
-            patch.object(settings, "model_name", ""),
+            patch.object(runtime_state, "model_provider", ""),
+            patch.object(runtime_state, "model_name", ""),
         ):
             await app._mount_resume_adoption_failure(
                 "anthropic:claude-opus-4-8", "the model could not be initialized"
@@ -4652,38 +4652,38 @@ class TestEffectiveModelSpec:
     """Tests for DeepAgentsApp._effective_model_spec."""
 
     async def test_prefers_session_override(self) -> None:
-        """A `/model` override wins over the startup default in `settings`."""
-        from deepagents_code.config import settings
+        """A `/model` override wins over process-wide runtime model state."""
+        from deepagents_code.config import runtime_state
 
         app = DeepAgentsApp()
         app._model_override = "openai:gpt-5.1"
         with (
-            patch.object(settings, "model_provider", "anthropic"),
-            patch.object(settings, "model_name", "claude-sonnet-4-5"),
+            patch.object(runtime_state, "model_provider", "anthropic"),
+            patch.object(runtime_state, "model_name", "claude-sonnet-4-5"),
         ):
             assert app._effective_model_spec() == "openai:gpt-5.1"
 
     async def test_falls_back_to_settings_spec(self) -> None:
-        """With no override, the resolved `provider:model` from settings is used."""
-        from deepagents_code.config import settings
+        """With no override, the resolved runtime `provider:model` is used."""
+        from deepagents_code.config import runtime_state
 
         app = DeepAgentsApp()
         app._model_override = None
         with (
-            patch.object(settings, "model_provider", "anthropic"),
-            patch.object(settings, "model_name", "claude-sonnet-4-5"),
+            patch.object(runtime_state, "model_provider", "anthropic"),
+            patch.object(runtime_state, "model_name", "claude-sonnet-4-5"),
         ):
             assert app._effective_model_spec() == "anthropic:claude-sonnet-4-5"
 
     async def test_none_when_spec_incomplete(self) -> None:
         """No override and a blank model yields `None` (no malformed spec)."""
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
         app = DeepAgentsApp()
         app._model_override = None
         with (
-            patch.object(settings, "model_provider", "anthropic"),
-            patch.object(settings, "model_name", ""),
+            patch.object(runtime_state, "model_provider", "anthropic"),
+            patch.object(runtime_state, "model_name", ""),
         ):
             assert app._effective_model_spec() is None
 

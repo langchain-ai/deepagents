@@ -251,7 +251,7 @@ class TestServerGraph:
 
         model_result = SimpleNamespace(
             model=model_obj,
-            apply_to_settings=MagicMock(),
+            apply_to_runtime_state=MagicMock(),
             model_retries=5,
             cli_max_retries=3,
         )
@@ -470,7 +470,7 @@ class TestServerGraph:
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,
-                    apply_to_settings=MagicMock(),
+                    apply_to_runtime_state=MagicMock(),
                     model_retries=5,
                     cli_max_retries=None,
                 ),

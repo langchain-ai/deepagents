@@ -103,7 +103,7 @@ _bootstrap_lock = threading.Lock()
 and the prewarm worker thread."""
 
 _singleton_lock = threading.Lock()
-"""Guards lazy singleton construction in `_get_console` / `_get_settings`."""
+"""Guards lazy construction of process-wide config, runtime, and console state."""
 
 _dotenv_loaded_values: dict[str, str] = {}
 """Environment values injected by our dotenv loader and safe to refresh later."""
@@ -1432,9 +1432,10 @@ if TYPE_CHECKING:
     from deepagents_code._git import RepositoryMetadata
 
     # Static type stubs for lazy module attributes resolved by __getattr__.
-    # At runtime these are created on first access by _get_settings() /
-    # _get_console() and cached in globals().
+    # At runtime these are created on first access by the singleton helpers and
+    # cached in globals().
     settings: Settings
+    runtime_state: RuntimeState
     console: Console
 
 MODE_PREFIXES: dict[str, str] = {
@@ -2889,9 +2890,9 @@ _RELOADABLE_FIELDS = (
 )
 """Fields refreshed on `/reload` and cwd switches.
 
-Runtime model state (`model_name`, `model_provider`, `model_context_limit`) and
-the original user LangSmith project are intentionally excluded -- they are set
-once and should not change across reloads.
+Runtime model metadata lives in `RuntimeState` and cannot be touched by a config
+reload. The original user LangSmith project is intentionally excluded because it
+is captured once at bootstrap.
 """
 
 _API_KEY_FIELDS = frozenset(
@@ -2902,6 +2903,23 @@ _API_KEY_FIELDS = frozenset(
 Derived from `_RELOADABLE_FIELDS` so new `*_api_key` fields are picked up
 automatically.
 """
+
+
+@dataclass
+class RuntimeState:
+    """Mutable metadata for the model active in this process."""
+
+    model_name: str | None = None
+    """Currently active model name, set after model creation."""
+
+    model_provider: str | None = None
+    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
+
+    model_context_limit: int | None = None
+    """Maximum input token count from the model profile."""
+
+    model_unsupported_modalities: frozenset[str] = frozenset()
+    """Input modalities not indicated as supported by the model profile."""
 
 
 @dataclass
@@ -2941,18 +2959,6 @@ class Settings:
 
     user_langchain_project: str | None
     """Original `LANGSMITH_PROJECT` from environment (for user code)."""
-
-    model_name: str | None = None
-    """Currently active model name, set after model creation."""
-
-    model_provider: str | None = None
-    """Provider identifier (e.g., `openai`, `anthropic`, `google_genai`)."""
-
-    model_context_limit: int | None = None
-    """Maximum input token count from the model profile."""
-
-    model_unsupported_modalities: frozenset[str] = frozenset()
-    """Input modalities not indicated as supported by the model profile."""
 
     project_root: Path | None = None
     """Current project root directory, or `None` if not in a git project."""
@@ -3441,10 +3447,10 @@ class Settings:
         (API keys, Google Cloud project, project root, shell allow-list, and
         LangSmith tracing project).
 
-        Runtime model state (`model_name`, `model_provider`,
-        `model_context_limit`) and the original user LangSmith project
-        (`user_langchain_project`) are intentionally preserved -- they are
-        not in `_RELOADABLE_FIELDS` and are never touched by this method.
+        Runtime model metadata lives in `RuntimeState` and is never touched by
+        this method. The original user LangSmith project
+        (`user_langchain_project`) is also intentionally preserved because it is
+        not in `_RELOADABLE_FIELDS`.
 
         !!! note
 
@@ -5666,8 +5672,8 @@ def _create_model_via_init(
 class ModelResult:
     """Result of creating a chat model, bundling the model with its metadata.
 
-    This separates model creation from settings mutation so callers can decide
-    when to commit the metadata to global settings.
+    This separates model creation from runtime-state mutation so callers can
+    decide when to commit the metadata to process-wide state.
 
     Attributes:
         model: The instantiated chat model.
@@ -5729,13 +5735,13 @@ class ModelResult:
             msg = f"cli_max_retries must be >= 0, got {self.cli_max_retries}"
             raise ValueError(msg)
 
-    def apply_to_settings(self) -> None:
-        """Commit this result's metadata to global `settings`."""
-        s = _get_settings()
-        s.model_name = self.model_name
-        s.model_provider = self.provider
-        s.model_context_limit = self.context_limit
-        s.model_unsupported_modalities = self.unsupported_modalities
+    def apply_to_runtime_state(self) -> None:
+        """Commit this result's metadata to global `runtime_state`."""
+        state = _get_runtime_state()
+        state.model_name = self.model_name
+        state.model_provider = self.provider
+        state.model_context_limit = self.context_limit
+        state.model_unsupported_modalities = self.unsupported_modalities
 
 
 def _apply_profile_overrides(
@@ -6248,8 +6254,22 @@ def _get_settings() -> Settings:
         return inst
 
 
-def __getattr__(name: str) -> Settings | Console:
-    """Lazy module attributes for `settings` and `console`.
+def _get_runtime_state() -> RuntimeState:
+    """Return the lazily initialized process-wide `RuntimeState` instance."""
+    cached = globals().get("runtime_state")
+    if cached is not None:
+        return cached
+    with _singleton_lock:
+        cached = globals().get("runtime_state")
+        if cached is not None:
+            return cached
+        state = RuntimeState()
+        globals()["runtime_state"] = state
+        return state
+
+
+def __getattr__(name: str) -> Settings | RuntimeState | Console:
+    """Lazy module attributes for process-wide state and the console.
 
     Defers heavy initialization until first access. Subsequent accesses hit
     the module-level attribute directly (no `__getattr__` overhead).
@@ -6262,6 +6282,8 @@ def __getattr__(name: str) -> Settings | Console:
     """
     if name == "settings":
         return _get_settings()
+    if name == "runtime_state":
+        return _get_runtime_state()
     if name == "console":
         return _get_console()
     msg = f"module {__name__!r} has no attribute {name!r}"

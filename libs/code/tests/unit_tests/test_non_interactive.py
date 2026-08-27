@@ -51,7 +51,7 @@ from deepagents_code.client.non_interactive import (
     _summarization_stream_status,
     run_non_interactive,
 )
-from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult
+from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult, runtime_state
 from deepagents_code.file_ops import (
     DiffOutcome,
     FileOperationRecord,
@@ -73,6 +73,24 @@ from deepagents_code.hooks.models.domain import (
 )
 from deepagents_code.hooks.transcript import TranscriptRecorder, TranscriptStore
 from deepagents_code.tool_display import format_tool_message_content
+
+
+@pytest.fixture(autouse=True)
+def _restore_runtime_state() -> Iterator[None]:
+    """Keep process-wide model metadata isolated between tests."""
+    previous = (
+        runtime_state.model_name,
+        runtime_state.model_provider,
+        runtime_state.model_context_limit,
+        runtime_state.model_unsupported_modalities,
+    )
+    yield
+    (
+        runtime_state.model_name,
+        runtime_state.model_provider,
+        runtime_state.model_context_limit,
+        runtime_state.model_unsupported_modalities,
+    ) = previous
 
 
 @pytest.fixture
@@ -326,8 +344,8 @@ class TestBuildNonInteractiveHeader:
 
     def test_includes_agent_id(self) -> None:
         """Header should contain the agent identifier."""
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = None
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = None
             header = _build_non_interactive_header("my-agent", "abc123")
         assert "Agent: my-agent" in header.plain
         # Non-default agent should not have "(default)" label
@@ -335,37 +353,37 @@ class TestBuildNonInteractiveHeader:
 
     def test_default_agent_label(self) -> None:
         """Header should show '(default)' for the default agent name."""
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = None
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = None
             header = _build_non_interactive_header("agent", "abc123")
         assert "Agent: agent (default)" in header.plain
 
     def test_includes_model_name(self) -> None:
         """Header should display model name when available."""
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = "gpt-5"
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = "gpt-5"
             header = _build_non_interactive_header("agent", "abc123")
         assert "Model: gpt-5" in header.plain
 
     def test_omits_model_when_none(self) -> None:
         """Header should not include model section when model_name is None."""
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = None
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = None
             header = _build_non_interactive_header("agent", "abc123")
         assert "Model:" not in header.plain
 
     def test_includes_thread_id(self) -> None:
         """Header should contain the thread ID."""
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = None
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = None
             header = _build_non_interactive_header("agent", "deadbeef")
         assert "Thread: deadbeef" in header.plain
 
     def test_thread_clickable_when_url_available(self) -> None:
         """Thread ID should be a hyperlink when LangSmith URL is available."""
         url = "https://smith.langchain.com/o/org/projects/p/proj/t/abc123"
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = None
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = None
             with patch(
                 "deepagents_code.client.non_interactive.build_langsmith_thread_url",
                 return_value=url,
@@ -386,8 +404,8 @@ class TestBuildNonInteractiveHeader:
 
     def test_default_header_does_not_lookup_langsmith(self) -> None:
         """Header should skip LangSmith lookup unless explicitly enabled."""
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = None
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = None
             with patch(
                 "deepagents_code.client.non_interactive.build_langsmith_thread_url",
             ) as mock_build_url:
@@ -433,7 +451,7 @@ class TestSandboxTypeForwarding:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(
                 message="test task",
@@ -489,7 +507,7 @@ class TestSandboxTypeForwarding:
         ):
             mock_settings.shell_allow_list = SHELL_ALLOW_ALL
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test task")
 
@@ -535,7 +553,7 @@ class TestSandboxTypeForwarding:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(
                 message="test task",
@@ -589,7 +607,7 @@ class TestAllowFsToolsForwarding:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(
                 message="test task",
@@ -651,7 +669,7 @@ class TestQuietMode:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=quiet)
 
@@ -707,7 +725,7 @@ class TestQuietMode:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True)
 
@@ -905,7 +923,7 @@ class TestNoStreamMode:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True, stream=False)
 
@@ -974,7 +992,7 @@ class TestNoStreamMode:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True, stream=True)
 
@@ -1036,7 +1054,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=False)
 
@@ -1089,7 +1107,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=False)
 
@@ -1140,7 +1158,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=False)
 
@@ -1186,7 +1204,7 @@ class TestFastFollowLangsmithLink:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test", quiet=True)
 
@@ -1302,7 +1320,7 @@ class TestShellAllowListDecisionLogic:
         ):
             mock_settings.shell_allow_list = shell_allow_list
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test task")
 
@@ -1358,7 +1376,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="do the thing")
 
@@ -1417,7 +1435,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(
                 message="review this patch",
@@ -1459,7 +1477,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(
                 message="review this patch",
@@ -1517,7 +1535,7 @@ class TestNonInteractivePrompt:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(
                 message="review this patch",
@@ -1823,10 +1841,10 @@ class TestMaxTurns:
                 "deepagents_code.client.non_interactive.dispatch_hook",
                 new_callable=AsyncMock,
             ),
-            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings"),
         ):
-            mock_settings.model_name = "test:model"
-            mock_settings.model_provider = "test"
+            runtime_state.model_name = "test:model"
+            runtime_state.model_provider = "test"
             await _run_agent_loop(
                 agent,
                 "question",
@@ -1975,7 +1993,7 @@ class TestMaxTurns:
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
-            mock_settings.model_name = ""
+            runtime_state.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
@@ -2011,7 +2029,7 @@ class TestMaxTurns:
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
-            mock_settings.model_name = ""
+            runtime_state.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
@@ -2054,7 +2072,7 @@ class TestMaxTurns:
             patch("deepagents_code.client.non_interactive._MAX_HITL_ITERATIONS", 2),
         ):
             mock_settings.shell_allow_list = None
-            mock_settings.model_name = ""
+            runtime_state.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
@@ -2095,7 +2113,7 @@ class TestMaxTurns:
             patch("deepagents_code.client.non_interactive._MAX_HITL_ITERATIONS", 1),
         ):
             mock_settings.shell_allow_list = None
-            mock_settings.model_name = ""
+            runtime_state.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError) as exc_info:
                 await _run_agent_loop(
@@ -2146,7 +2164,7 @@ class TestMaxTurns:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="task", max_turns=7)
 
@@ -2189,7 +2207,7 @@ class TestMaxTurns:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="task")
 
@@ -2223,7 +2241,7 @@ class TestMaxTurns:
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
-            mock_settings.model_name = ""
+            runtime_state.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError):
                 await _run_agent_loop(
@@ -2266,7 +2284,7 @@ class TestMaxTurns:
             ) as mock_adapter,
         ):
             mock_settings.shell_allow_list = None
-            mock_settings.model_name = ""
+            runtime_state.model_name = ""
             mock_adapter.validate_python.side_effect = lambda v: v
             with pytest.raises(HITLIterationLimitError):
                 await _run_agent_loop(
@@ -2330,7 +2348,7 @@ class TestMaxTurns:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(message="task", max_turns=1)
 
@@ -2540,7 +2558,7 @@ class TestRunStartupCommand:
 class TestRecordUsageFromMessageStats:
     """`_record_usage_from_message` threads the active provider into usage stats.
 
-    Guards the wiring between `settings.model_provider` and
+    Guards the wiring between `runtime_state.model_provider` and
     `SessionStats.record_request` — the per-model API is unit-tested in
     isolation elsewhere, but these confirm the call site actually forwards the
     configured provider.
@@ -2558,11 +2576,11 @@ class TestRecordUsageFromMessageStats:
             },
         )
         with (
-            patch("deepagents_code.client.non_interactive.settings") as mock_settings,
+            patch("deepagents_code.client.non_interactive.settings"),
             patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
         ):
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+            runtime_state.model_name = "gpt-5.5"
+            runtime_state.model_provider = "openai"
             _record_usage_from_message(message, state)
 
         model_stats = state.stats.per_model["openai", "gpt-5.5"]
@@ -2582,9 +2600,9 @@ class TestRecordUsageFromMessageStats:
                 "total_tokens": 150,
             },
         )
-        with patch("deepagents_code.client.non_interactive.settings") as mock_settings:
-            mock_settings.model_name = "gpt-5.5"
-            mock_settings.model_provider = "openai"
+        with patch("deepagents_code.client.non_interactive.settings"):
+            runtime_state.model_name = "gpt-5.5"
+            runtime_state.model_provider = "openai"
             _record_usage_from_message(message, state)
 
         assert state.stats.per_model["openai", "gpt-5.5"].input_tokens == 150
@@ -2770,7 +2788,7 @@ class TestMakeStdioEncodingSafe:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             await run_non_interactive(message="test task")
 
@@ -3966,7 +3984,7 @@ class TestDrainWiring:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
 
@@ -4011,7 +4029,7 @@ class TestDrainWiring:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
 
@@ -4061,7 +4079,7 @@ class TestDrainWiring:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
 
@@ -4106,7 +4124,7 @@ class TestDrainWiring:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             result = await run_non_interactive(message="test", quiet=True)
 
@@ -4178,7 +4196,7 @@ class TestHeadlessUsageStats:
         ):
             mock_settings.shell_allow_list = None
             mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
 
             return_code = await run_non_interactive(message="test", quiet=quiet)
 

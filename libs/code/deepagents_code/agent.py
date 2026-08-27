@@ -92,6 +92,7 @@ from deepagents_code.config import (
     get_langsmith_project_name,
     restore_user_tracing_api_keys,
     restore_user_tracing_env,
+    runtime_state,
     settings,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
@@ -1546,10 +1547,10 @@ def get_system_prompt(
         )
 
     model_identity_section = build_model_identity_section(
-        settings.model_name,
-        provider=settings.model_provider,
-        context_limit=settings.model_context_limit,
-        unsupported_modalities=settings.model_unsupported_modalities,
+        runtime_state.model_name,
+        provider=runtime_state.model_provider,
+        context_limit=runtime_state.model_context_limit,
+        unsupported_modalities=runtime_state.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
     web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""

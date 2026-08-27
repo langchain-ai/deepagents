@@ -57,7 +57,7 @@ from deepagents_code.agent import (
     list_agents,
     load_async_subagents,
 )
-from deepagents_code.config import Settings, get_glyphs
+from deepagents_code.config import Settings, get_glyphs, runtime_state
 from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.offload import (
     _FALLBACK_ARTIFACTS_ROOT,
@@ -67,6 +67,24 @@ from deepagents_code.offload import (
 )
 from deepagents_code.plugins.store import DEFAULT_PLUGIN_DIRNAME
 from deepagents_code.project_utils import ProjectContext
+
+
+@pytest.fixture(autouse=True)
+def _restore_runtime_state() -> Iterator[None]:
+    """Keep process-wide model metadata isolated between tests."""
+    previous = (
+        runtime_state.model_name,
+        runtime_state.model_provider,
+        runtime_state.model_context_limit,
+        runtime_state.model_unsupported_modalities,
+    )
+    yield
+    (
+        runtime_state.model_name,
+        runtime_state.model_provider,
+        runtime_state.model_context_limit,
+        runtime_state.model_unsupported_modalities,
+    ) = previous
 
 
 @dataclass
@@ -1443,10 +1461,10 @@ class TestGetSystemPromptModelIdentity:
     def test_includes_model_identity_when_all_settings_present(self) -> None:
         """Test that model identity section is included when all settings are set."""
         mock_settings = Mock()
-        mock_settings.model_name = "claude-sonnet-4-6"
-        mock_settings.model_provider = "anthropic"
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = 200000
+        runtime_state.model_name = "claude-sonnet-4-6"
+        runtime_state.model_provider = "anthropic"
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = 200000
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1459,10 +1477,10 @@ class TestGetSystemPromptModelIdentity:
     def test_excludes_model_identity_when_model_name_is_none(self) -> None:
         """Test that model identity section is excluded when model_name is None."""
         mock_settings = Mock()
-        mock_settings.model_name = None
-        mock_settings.model_provider = "anthropic"
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = 200000
+        runtime_state.model_name = None
+        runtime_state.model_provider = "anthropic"
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = 200000
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1472,7 +1490,7 @@ class TestGetSystemPromptModelIdentity:
     def test_skills_path_uses_launch_profile(self) -> None:
         """Agent-facing instructions name the effective configured skills root."""
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
         mock_settings.has_tavily = False
 
         with patch("deepagents_code.agent.settings", mock_settings):
@@ -1485,10 +1503,10 @@ class TestGetSystemPromptModelIdentity:
     def test_excludes_provider_when_not_set(self) -> None:
         """Test that provider is excluded when model_provider is None."""
         mock_settings = Mock()
-        mock_settings.model_name = "gpt-4"
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = 128000
+        runtime_state.model_name = "gpt-4"
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = 128000
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1501,10 +1519,10 @@ class TestGetSystemPromptModelIdentity:
     def test_excludes_context_limit_when_not_set(self) -> None:
         """Test that context limit is excluded when model_context_limit is None."""
         mock_settings = Mock()
-        mock_settings.model_name = "gemini-3-pro"
-        mock_settings.model_provider = "google"
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = "gemini-3-pro"
+        runtime_state.model_provider = "google"
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1517,10 +1535,10 @@ class TestGetSystemPromptModelIdentity:
     def test_model_identity_with_only_model_name(self) -> None:
         """Test model identity section with only model_name set."""
         mock_settings = Mock()
-        mock_settings.model_name = "test-model"
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = "test-model"
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1533,12 +1551,12 @@ class TestGetSystemPromptModelIdentity:
     def test_includes_unsupported_modalities_warning(self) -> None:
         """Test that unsupported modalities are surfaced in the prompt."""
         mock_settings = Mock()
-        mock_settings.model_name = "deepseek-r1"
-        mock_settings.model_provider = "deepseek"
-        mock_settings.model_unsupported_modalities = frozenset(
+        runtime_state.model_name = "deepseek-r1"
+        runtime_state.model_provider = "deepseek"
+        runtime_state.model_unsupported_modalities = frozenset(
             {"image", "audio", "video", "pdf"}
         )
-        mock_settings.model_context_limit = 64000
+        runtime_state.model_context_limit = 64000
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1548,10 +1566,10 @@ class TestGetSystemPromptModelIdentity:
     def test_single_unsupported_modality(self) -> None:
         """Test warning with a single unsupported modality."""
         mock_settings = Mock()
-        mock_settings.model_name = "test-model"
-        mock_settings.model_provider = "test"
-        mock_settings.model_unsupported_modalities = frozenset({"audio"})
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = "test-model"
+        runtime_state.model_provider = "test"
+        runtime_state.model_unsupported_modalities = frozenset({"audio"})
+        runtime_state.model_context_limit = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1561,10 +1579,10 @@ class TestGetSystemPromptModelIdentity:
     def test_no_modality_warning_when_all_supported(self) -> None:
         """Test that no modality warning appears when all modalities supported."""
         mock_settings = Mock()
-        mock_settings.model_name = "claude-opus-4-6"
-        mock_settings.model_provider = "anthropic"
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = 200000
+        runtime_state.model_name = "claude-opus-4-6"
+        runtime_state.model_provider = "anthropic"
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = 200000
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1577,7 +1595,7 @@ class TestGetSystemPromptWebSearch:
 
     def test_omits_guidance_without_tavily(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
         mock_settings.has_tavily = False
 
         with patch("deepagents_code.agent.settings", mock_settings):
@@ -1588,7 +1606,7 @@ class TestGetSystemPromptWebSearch:
 
     def test_includes_guidance_with_tavily(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
         mock_settings.has_tavily = True
 
         with patch("deepagents_code.agent.settings", mock_settings):
@@ -1603,7 +1621,7 @@ class TestGetSystemPromptNonInteractive:
 
     def test_interactive_prompt_mentions_interactive_tui(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=True)
@@ -1613,7 +1631,7 @@ class TestGetSystemPromptNonInteractive:
 
     def test_non_interactive_prompt_mentions_headless(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
@@ -1623,7 +1641,7 @@ class TestGetSystemPromptNonInteractive:
 
     def test_non_interactive_prompt_does_not_ask_questions(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
@@ -1632,7 +1650,7 @@ class TestGetSystemPromptNonInteractive:
 
     def test_non_interactive_prompt_instructs_autonomous_execution(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
@@ -1642,7 +1660,7 @@ class TestGetSystemPromptNonInteractive:
 
     def test_non_interactive_prompt_requires_non_interactive_commands(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
@@ -1652,7 +1670,7 @@ class TestGetSystemPromptNonInteractive:
 
     def test_default_is_interactive(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1666,7 +1684,7 @@ class TestGetSystemPromptNonInteractive:
         `{todo_list_section}`/`{todo_guidance}` wiring is gone.
         """
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         for interactive in (True, False):
             with patch("deepagents_code.agent.settings", mock_settings):
@@ -1684,7 +1702,7 @@ class TestGetSystemPromptCwdOSError:
     def test_falls_back_on_cwd_oserror(self) -> None:
         """get_system_prompt should not crash when Path.cwd() raises OSError."""
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with (
             patch("deepagents_code.agent.settings", mock_settings),
@@ -1700,7 +1718,7 @@ class TestGetSystemPromptSandbox:
 
     def test_sandbox_includes_no_local_filesystem_warning(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", sandbox_type="modal")
@@ -1709,7 +1727,7 @@ class TestGetSystemPromptSandbox:
 
     def test_sandbox_includes_working_dir_constraint(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", sandbox_type="modal")
@@ -1719,7 +1737,7 @@ class TestGetSystemPromptSandbox:
 
     def test_sandbox_warns_about_subagent_paths(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", sandbox_type="daytona")
@@ -1729,7 +1747,7 @@ class TestGetSystemPromptSandbox:
 
     def test_local_mode_omits_sandbox_warnings(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1743,7 +1761,7 @@ class TestGetSystemPromptFilesystemTools:
 
     def test_restricted_prompt_omits_unavailable_mutation_tools(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt(
@@ -1757,7 +1775,7 @@ class TestGetSystemPromptFilesystemTools:
 
     def test_restricted_prompt_keeps_enabled_mutation_tool(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt(
@@ -1771,7 +1789,7 @@ class TestGetSystemPromptFilesystemTools:
 
     def test_unrestricted_prompt_keeps_all_mutation_tool_guidance(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent")
@@ -1785,7 +1803,7 @@ class TestGetSystemPromptPlaceholderValidation:
 
     def test_no_unreplaced_placeholders_in_interactive(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=True)
@@ -1797,7 +1815,7 @@ class TestGetSystemPromptPlaceholderValidation:
 
     def test_no_unreplaced_placeholders_in_non_interactive(self) -> None:
         mock_settings = Mock()
-        mock_settings.model_name = None
+        runtime_state.model_name = None
 
         with patch("deepagents_code.agent.settings", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
@@ -1830,10 +1848,10 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         mock_agent = Mock()
@@ -1903,10 +1921,10 @@ class TestCreateCliAgentInteractiveForwarding:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         mock_agent = Mock()
@@ -2207,10 +2225,10 @@ class TestCreateCliAgentSkillsSources:
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
         # Needed by get_system_prompt() which formats model identity
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         captured_sources: list[list[str]] = []
@@ -2305,10 +2323,10 @@ class TestCreateCliAgentSkillsSources:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         captured_sources: list[list[str]] = []
@@ -2372,10 +2390,10 @@ class TestCreateCliAgentMemorySources:
         ]
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = tmp_path
 
         captured: list[list[str]] = []
@@ -2438,10 +2456,10 @@ class TestCreateCliAgentMemorySources:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         captured: list[list[str]] = []
@@ -2504,10 +2522,10 @@ class TestCreateCliAgentMemoryAutoSave:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         return mock_settings
 
@@ -2615,10 +2633,10 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.user_langchain_project = None
 
@@ -2695,10 +2713,10 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.user_langchain_project = None
 
@@ -2775,10 +2793,10 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.user_langchain_project = user_langchain_project
 
@@ -2906,10 +2924,10 @@ class TestCreateCliAgentProjectContext:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         mock_agent = Mock()
@@ -2968,10 +2986,10 @@ class TestMiddlewareStackConformance:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         captured_middleware: list[list[Any]] = []
@@ -3056,10 +3074,10 @@ class TestEnableAskUser:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
 
         captured: list[list[Any]] = []
@@ -3400,10 +3418,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.shell_allow_list = ["ls", "cat"]
         return mock_settings
@@ -4162,10 +4180,10 @@ class TestCreateCliAgentFsToolsWiring:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.shell_allow_list = None
         return mock_settings
@@ -4787,10 +4805,10 @@ class TestAutoModeSubagentHITLWiring:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.shell_allow_list = ["ls", "cat"]
         return mock_settings
@@ -5127,10 +5145,10 @@ class TestCreateCliAgentInterpreterWiring:
         mock_settings.get_project_agent_md_path.return_value = []
         mock_settings.get_user_agents_dir.return_value = tmp_path / "agents"
         mock_settings.get_project_agents_dir.return_value = None
-        mock_settings.model_name = None
-        mock_settings.model_provider = None
-        mock_settings.model_unsupported_modalities = frozenset()
-        mock_settings.model_context_limit = None
+        runtime_state.model_name = None
+        runtime_state.model_provider = None
+        runtime_state.model_unsupported_modalities = frozenset()
+        runtime_state.model_context_limit = None
         mock_settings.project_root = None
         mock_settings.shell_allow_list = None
         mock_settings.user_langchain_project = None

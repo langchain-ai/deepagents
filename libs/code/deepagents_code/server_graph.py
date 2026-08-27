@@ -286,7 +286,7 @@ async def _make_graphs() -> ServerRuntime:
         profile_overrides=config.profile_overrides,
         cli_max_retries=config.cli_max_retries,
     )
-    result.apply_to_settings()
+    result.apply_to_runtime_state()
 
     tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
     read_only_context_tools = _criteria_context_tools(tools, mcp_tools)

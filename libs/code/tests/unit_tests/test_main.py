@@ -3204,9 +3204,9 @@ class TestCheckOptionalTools:
 
     @pytest.fixture(autouse=True)
     def _tavily_available(self) -> Iterator[None]:
-        """Patch settings.has_tavily to True so ripgrep-only tests stay isolated."""
+        """Patch credentials.has_tavily so ripgrep-only tests stay isolated."""
         with patch(
-            "deepagents_code.config.settings",
+            "deepagents_code.config.credentials",
             SimpleNamespace(has_tavily=True),
         ):
             yield
@@ -3286,7 +3286,7 @@ class TestCheckOptionalTools:
         with (
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
-                "deepagents_code.config.settings",
+                "deepagents_code.config.credentials",
                 SimpleNamespace(has_tavily=False),
             ),
         ):
@@ -3309,7 +3309,7 @@ class TestCheckOptionalTools:
         with (
             patch("deepagents_code.main.shutil.which", return_value="/usr/bin/rg"),
             patch(
-                "deepagents_code.config.settings",
+                "deepagents_code.config.credentials",
                 SimpleNamespace(has_tavily=False),
             ),
         ):

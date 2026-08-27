@@ -13,6 +13,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
+    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
 from textual.fuzzy import Matcher
 from textual.message import Message
@@ -48,6 +49,7 @@ from deepagents_code.model_config import (
     save_auto_classifier_model,
     save_default_model,
 )
+from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 
 logger = logging.getLogger(__name__)
 
@@ -310,6 +312,36 @@ class ModelOption(Static):
         """
         event.stop()
         self.post_message(self.Clicked(self.model_spec, self.provider, self.index))
+
+
+class CurrentModelTitle(Static):
+    """Selector title whose current-model span copies on click."""
+
+    def on_click(self, event: Click) -> None:
+        """Copy the current model when its title span is clicked."""
+        target = copy_span_target(event.style)
+        if target is None:
+            return
+        event.stop()
+        text, label = target
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        copy_text_with_feedback(
+            self.app,
+            text,
+            failure_noun="selection",
+            success_message=f"{label} copied",
+        )
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over the copyable model span."""
+        self.styles.pointer = (
+            "pointer" if copy_span_target(event.style) is not None else "default"
+        )
+
+    def on_leave(self) -> None:
+        """Reset the pointer when it leaves the title."""
+        self.styles.pointer = "default"
 
 
 class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
@@ -659,17 +691,28 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             Widgets for the model selector UI.
         """
         with Vertical():
-            # Title with current model in provider:model format
             if self._title:
-                title = self._title
-            elif self._current_model and self._current_provider:
-                current_spec = f"{self._current_provider}:{self._current_model}"
-                title = f"Select Model (current: {current_spec})"
+                title: str | Content = self._title
+            elif self._current_spec:
+                title = Content.assemble(
+                    "Select Model (current: ",
+                    (self._current_spec, copy_span_style(self._current_spec, "Model")),
+                    ")",
+                )
             elif self._current_model:
-                title = f"Select Model (current: {self._current_model})"
+                title = Content.assemble(
+                    "Select Model (current: ",
+                    (
+                        self._current_model,
+                        copy_span_style(self._current_model, "Model"),
+                    ),
+                    ")",
+                )
             else:
                 title = "Select Model"
-            yield Static(title, classes="model-selector-title")
+            yield CurrentModelTitle(
+                title, classes="model-selector-title", id="model-selector-title"
+            )
             if self._description:
                 yield Static(
                     self._description,

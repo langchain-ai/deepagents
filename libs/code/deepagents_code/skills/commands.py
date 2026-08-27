@@ -15,7 +15,16 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
 
 from deepagents_code import theme
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import (
+    PATHS,
+    ensure_project_skills_dir,
+    ensure_user_skills_dir,
+    get_built_in_skills_dir,
+    get_project_agent_skills_dir,
+    get_project_skills_dir,
+    get_user_agent_skills_dir,
+    get_user_skills_dir,
+)
 
 MAX_SKILL_NAME_LENGTH = 64
 
@@ -147,14 +156,14 @@ def _list(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import Credentials, console, get_glyphs
     from deepagents_code.skills.load import list_skills
 
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+    credentials = Credentials.from_environment()
+    user_skills_dir = get_user_skills_dir(agent)
+    project_skills_dir = get_project_skills_dir(credentials.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(credentials.project_root)
 
     # If --project flag is used, only show project skills
     if project:
@@ -219,7 +228,7 @@ def _list(
     else:
         # Load skills from all directories (including built-in)
         skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
+            built_in_skills_dir=get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -412,7 +421,7 @@ def _create(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import Credentials, console, get_glyphs
 
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
@@ -427,9 +436,9 @@ def _create(
         raise SystemExit(1)
 
     # Determine target directory
-    settings = Settings.from_environment()
+    credentials = Credentials.from_environment()
     if project:
-        if not settings.project_root:
+        if not credentials.project_root:
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
             console.print(
                 "[dim]Project skills require a .git directory "
@@ -437,14 +446,14 @@ def _create(
                 style=theme.MUTED,
             )
             raise SystemExit(1)
-        skills_dir = settings.ensure_project_skills_dir()
+        skills_dir = ensure_project_skills_dir(credentials.project_root)
         if skills_dir is None:
             console.print(
                 "[bold red]Error:[/bold red] Could not create project skills directory."
             )
             raise SystemExit(1)
     else:
-        skills_dir = settings.ensure_user_skills_dir(agent)
+        skills_dir = ensure_user_skills_dir(agent)
 
     skill_dir = skills_dir / skill_name
 
@@ -542,14 +551,14 @@ def _info(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console
+    from deepagents_code.config import Credentials, console
     from deepagents_code.skills.load import list_skills
 
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+    credentials = Credentials.from_environment()
+    user_skills_dir = get_user_skills_dir(agent)
+    project_skills_dir = get_project_skills_dir(credentials.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(credentials.project_root)
 
     # Load skills based on --project flag
     if project:
@@ -564,7 +573,7 @@ def _info(
         )
     else:
         skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
+            built_in_skills_dir=get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -688,7 +697,7 @@ def _delete(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import Credentials, console, get_glyphs
     from deepagents_code.skills.load import list_skills
 
     # Validate skill name first (per Agent Skills spec)
@@ -697,11 +706,11 @@ def _delete(
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         raise SystemExit(1)
 
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+    credentials = Credentials.from_environment()
+    user_skills_dir = get_user_skills_dir(agent)
+    project_skills_dir = get_project_skills_dir(credentials.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(credentials.project_root)
 
     # Load skills based on --project flag
     if project:

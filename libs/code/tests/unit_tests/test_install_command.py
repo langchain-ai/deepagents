@@ -889,7 +889,9 @@ async def test_install_restart_capable_extra_offers_restart_when_idle() -> None:
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
-            patch("deepagents_code.config.settings.reload_from_environment", _reload),
+            patch(
+                "deepagents_code.config.credentials.reload_from_environment", _reload
+            ),
             patch("deepagents_code.model_config.clear_caches", _clear),
             patch.object(
                 app,
@@ -1034,7 +1036,9 @@ async def test_install_package_offers_restart_when_idle() -> None:
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
-            patch("deepagents_code.config.settings.reload_from_environment", _reload),
+            patch(
+                "deepagents_code.config.credentials.reload_from_environment", _reload
+            ),
             patch("deepagents_code.model_config.clear_caches", _clear),
             patch.object(
                 app,
@@ -1153,7 +1157,7 @@ async def test_install_restart_failure_omits_complete_message() -> None:
             patch.object(
                 app, "_push_screen_wait", new=AsyncMock(return_value="restart")
             ) as prompt,
-            patch("deepagents_code.config.settings.reload_from_environment", list),
+            patch("deepagents_code.config.credentials.reload_from_environment", list),
             patch("deepagents_code.model_config.clear_caches", lambda: None),
             patch.object(
                 app, "_restart_server_manual", new=AsyncMock(return_value=False)
@@ -1186,7 +1190,7 @@ async def test_install_restart_raising_removes_transient_and_propagates() -> Non
         app._server_kwargs = {"model_name": "fireworks:fake"}
 
         with (
-            patch("deepagents_code.config.settings.reload_from_environment", list),
+            patch("deepagents_code.config.credentials.reload_from_environment", list),
             patch("deepagents_code.model_config.clear_caches", lambda: None),
             patch.object(
                 app,

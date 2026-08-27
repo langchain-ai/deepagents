@@ -7,6 +7,7 @@ import textwrap
 import time
 import warnings
 from collections.abc import Iterator
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import Mock, patch
@@ -15,6 +16,17 @@ import pytest
 
 from deepagents_code import _git as git_module, config as config_module, model_config
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+from deepagents_code._paths import (
+    get_agent_dir,
+    get_project_agent_md_path,
+    get_project_agent_skills_dir,
+    get_project_claude_skills_dir,
+    get_user_agent_md_path,
+    get_user_agent_skills_dir,
+    get_user_claude_skills_dir,
+    user_agents_dir,
+    user_deepagents_dir,
+)
 from deepagents_code._version import __version__
 from deepagents_code.config import (
     _MCP_SHUTDOWN_RACE_MESSAGES,
@@ -26,11 +38,11 @@ from deepagents_code.config import (
     MODEL_RETRIES_ATTR,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
+    Credentials,
     LangSmithApiError,
     LangSmithProjectNotFoundError,
     LangsmithShadowResult,
     ModelResult,
-    Settings,
     _apply_default_langsmith_project,
     _apply_stored_langsmith_tracing,
     _create_model_from_class,
@@ -49,6 +61,7 @@ from deepagents_code.config import (
     configure_langsmith_secret_redaction,
     consume_orphaned_tracing_disabled_notice,
     create_model,
+    credentials,
     detect_mode_prefix,
     detect_provider,
     fetch_langsmith_project_url,
@@ -62,9 +75,10 @@ from deepagents_code.config import (
     normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
-    settings,
+    runtime_state,
     validate_model_capabilities,
 )
+from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.model_config import (
     ModelConfig,
     ModelConfigError,
@@ -115,7 +129,7 @@ class TestRuntimeDotenvReload:
 
         try:
             config_mod._load_dotenv(start_path=current)
-            runtime = Settings.from_environment(start_path=current)
+            runtime = Credentials.from_environment(start_path=current)
             assert runtime.openai_api_key == "sk-current"
 
             changes = runtime.reload_from_environment(start_path=target)
@@ -150,7 +164,7 @@ class TestRuntimeDotenvReload:
         caplog.set_level(logging.DEBUG, logger="deepagents_code.model_config")
         reset_env_resolution_log()
         try:
-            runtime = Settings.from_environment(start_path=tmp_path)
+            runtime = Credentials.from_environment(start_path=tmp_path)
             assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
             runtime.reload_from_environment(start_path=tmp_path)
             assert resolve_env_var("OPENAI_API_KEY") == "sk-prefixed"
@@ -202,7 +216,7 @@ class TestRuntimeDotenvReload:
             # Agent-project override is active before the reload, cleared after.
             monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", "agent-project")
 
-            runtime = Settings.from_environment(start_path=current)
+            runtime = Credentials.from_environment(start_path=current)
             assert runtime.deepagents_langchain_project == "agent-project"
 
             monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_PROJECT", raising=False)
@@ -814,7 +828,7 @@ class TestProjectAgentMdFinding:
         regular-file candidate to fail the absolute-vs-resolved equality check
         and be returned as the canonical target rather than reported as missing.
         Pin behavior so that callers passing an uncanonicalized root (common
-        when `Settings.project_root` originates from an unresolved cwd) still
+        when `Credentials.project_root` originates from an unresolved cwd) still
         find a regular AGENTS.md.
         """
         real_root = tmp_path / "real"
@@ -833,36 +847,31 @@ class TestProjectAgentMdFinding:
         assert result[0].is_relative_to(link_root.resolve())
 
 
-class TestSettingsUserDeepagentsDir:
+class TestUserDeepagentsDir:
     """Test user-level paths derived from `DEEPAGENTS_HOME`."""
 
     def test_uses_deepagents_home(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Agent profiles and instructions use the configured root."""
-        import deepagents_code.config as config_module
+        import deepagents_code._paths as paths_module
         from deepagents_code._paths import _capture_paths
 
         configured = tmp_path / "custom-home"
         snapshot = _capture_paths(str(configured), launch_home=tmp_path)
-        monkeypatch.setattr(config_module, "PATHS", snapshot)
-        settings = Settings.__new__(Settings)
+        monkeypatch.setattr(paths_module, "PATHS", snapshot)
 
-        assert settings.user_deepagents_dir == configured
-        assert settings.get_agent_dir("coder") == configured / "coder"
-        assert settings.get_user_agent_md_path("coder") == (
-            configured / "coder" / "AGENTS.md"
-        )
+        assert user_deepagents_dir() == configured
+        assert get_agent_dir("coder") == configured / "coder"
+        assert get_user_agent_md_path("coder") == (configured / "coder" / "AGENTS.md")
 
 
-class TestSettingsGetProjectAgentMdPath:
-    """Test Settings.get_project_agent_md_path() integration."""
+class TestGetProjectAgentMdPath:
+    """Test `get_project_agent_md_path` integration."""
 
     def test_returns_empty_list_when_no_project_root(self) -> None:
         """Should return [] when project_root is None."""
-        s = Settings.__new__(Settings)
-        s.project_root = None
-        assert s.get_project_agent_md_path() == []
+        assert get_project_agent_md_path(None) == []
 
     def test_returns_existing_paths(self, tmp_path: Path) -> None:
         """Should return existing AGENTS.md paths from project root."""
@@ -874,17 +883,12 @@ class TestSettingsGetProjectAgentMdPath:
         root_md = tmp_path / "AGENTS.md"
         root_md.write_text("root")
 
-        s = Settings.__new__(Settings)
-        s.project_root = tmp_path
-
-        result = s.get_project_agent_md_path()
+        result = get_project_agent_md_path(tmp_path)
         assert result == [deepagents_md, root_md]
 
     def test_returns_empty_when_no_agents_md_files(self, tmp_path: Path) -> None:
         """Should return [] when project exists but has no AGENTS.md."""
-        s = Settings.__new__(Settings)
-        s.project_root = tmp_path
-        assert s.get_project_agent_md_path() == []
+        assert get_project_agent_md_path(tmp_path) == []
 
 
 class TestNewlineShortcut:
@@ -941,7 +945,7 @@ class TestNewlineShortcut:
 class TestValidateModelCapabilities:
     """Tests for model capability validation."""
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_without_profile_attribute_warns(self, mock_console: Mock) -> None:
         """Test that models without profile attribute trigger a warning."""
         model = Mock(spec=[])  # No profile attribute
@@ -952,7 +956,7 @@ class TestValidateModelCapabilities:
         assert "No capability profile" in call_args
         assert "test-model" in call_args
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_none_profile_warns(self, mock_console: Mock) -> None:
         """Test that models with `profile=None` trigger a warning."""
         model = Mock()
@@ -964,7 +968,7 @@ class TestValidateModelCapabilities:
         call_args = mock_console.print.call_args[0][0]
         assert "No capability profile" in call_args
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_tool_calling_false_exits(self, mock_console: Mock) -> None:
         """Test that models with `tool_calling=False` cause `sys.exit(1)`."""
         model = Mock()
@@ -980,7 +984,7 @@ class TestValidateModelCapabilities:
         assert "does not support tool calling" in error_call
         assert "no-tools-model" in error_call
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_tool_calling_true_passes(self, mock_console: Mock) -> None:
         """Test that models with `tool_calling=True` pass without messages."""
         model = Mock()
@@ -990,7 +994,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_tool_calling_none_passes(self, mock_console: Mock) -> None:
         """Test that models with `tool_calling=None` (missing) pass."""
         model = Mock()
@@ -1000,7 +1004,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_limited_context_warns(self, mock_console: Mock) -> None:
         """Test that models with <8000 token context trigger a warning."""
         model = Mock()
@@ -1014,7 +1018,7 @@ class TestValidateModelCapabilities:
         assert "4,096" in call_args
         assert "small-context-model" in call_args
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_adequate_context_passes(self, mock_console: Mock) -> None:
         """Confirm that models with >=8000 token context pass silently."""
         model = Mock()
@@ -1024,7 +1028,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_without_max_input_tokens_passes(self, mock_console: Mock) -> None:
         """Test that models without `max_input_tokens` key pass silently."""
         model = Mock()
@@ -1034,7 +1038,7 @@ class TestValidateModelCapabilities:
 
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_zero_max_input_tokens_passes(self, mock_console: Mock) -> None:
         """Test that models with `max_input_tokens=0` pass (falsy value check)."""
         model = Mock()
@@ -1045,7 +1049,7 @@ class TestValidateModelCapabilities:
         # Should pass because 0 is falsy, so the condition `if max_input_tokens` fails
         mock_console.print.assert_not_called()
 
-    @patch("deepagents_code.config.console")
+    @patch("deepagents_code.config._console_instance")
     def test_model_with_empty_profile_passes(self, mock_console: Mock) -> None:
         """Test that models with empty profile dict pass silently."""
         model = Mock()
@@ -1057,35 +1061,32 @@ class TestValidateModelCapabilities:
 
 
 class TestAgentsAliasDirectories:
-    """Tests for .agents directory alias methods."""
+    """Tests for `.agents` directory path helpers."""
 
     def test_user_agents_dir(self) -> None:
         """Test user_agents_dir returns ~/.agents."""
-        settings = Settings.from_environment()
         expected = Path.home() / ".agents"
-        assert settings.user_agents_dir == expected
+        assert user_agents_dir() == expected
 
     def test_get_user_agent_skills_dir(self) -> None:
         """Test get_user_agent_skills_dir returns ~/.agents/skills."""
-        settings = Settings.from_environment()
         expected = Path.home() / ".agents" / "skills"
-        assert settings.get_user_agent_skills_dir() == expected
+        assert get_user_agent_skills_dir() == expected
 
     def test_home_aliases_are_skipped_when_home_is_unresolvable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """An absolute profile stays usable without optional home aliases."""
-        import deepagents_code.config as config_module
+        import deepagents_code._paths as paths_module
         from deepagents_code._paths import _capture_paths
 
         with patch.object(Path, "home", side_effect=RuntimeError("no home")):
             snapshot = _capture_paths(str(tmp_path / "profile"))
-        monkeypatch.setattr(config_module, "PATHS", snapshot)
-        settings = Settings.__new__(Settings)
+        monkeypatch.setattr(paths_module, "PATHS", snapshot)
 
-        assert settings.user_agents_dir is None
-        assert settings.get_user_agent_skills_dir() is None
-        assert settings.get_user_claude_skills_dir() is None
+        assert user_agents_dir() is None
+        assert get_user_agent_skills_dir() is None
+        assert get_user_claude_skills_dir() is None
 
     def test_get_project_agent_skills_dir_with_project(self, tmp_path: Path) -> None:
         """Test get_project_agent_skills_dir returns .agents/skills in project."""
@@ -1094,27 +1095,21 @@ class TestAgentsAliasDirectories:
         project_root.mkdir()
         (project_root / ".git").mkdir()
 
-        settings = Settings.from_environment(start_path=project_root)
         expected = project_root / ".agents" / "skills"
-        assert settings.get_project_agent_skills_dir() == expected
+        assert get_project_agent_skills_dir(project_root) == expected
 
-    def test_get_project_agent_skills_dir_without_project(self, tmp_path: Path) -> None:
+    def test_get_project_agent_skills_dir_without_project(self) -> None:
         """Test get_project_agent_skills_dir returns None when not in a project."""
-        # Create a directory without .git
-        no_project = tmp_path / "no-project"
-        no_project.mkdir()
-
-        settings = Settings.from_environment(start_path=no_project)
-        assert settings.get_project_agent_skills_dir() is None
+        assert get_project_agent_skills_dir(None) is None
 
 
 class TestClaudeSkillsDirs:
-    """Tests for .claude/skills/ directory methods."""
+    """Tests for `.claude/skills` path helpers."""
 
     def test_get_user_claude_skills_dir(self) -> None:
         """Test get_user_claude_skills_dir returns ~/.claude/skills."""
         expected = Path.home() / ".claude" / "skills"
-        assert Settings.get_user_claude_skills_dir() == expected
+        assert get_user_claude_skills_dir() == expected
 
     def test_get_project_claude_skills_dir_with_project(self, tmp_path: Path) -> None:
         """Test get_project_claude_skills_dir returns .claude/skills in project."""
@@ -1122,17 +1117,12 @@ class TestClaudeSkillsDirs:
         project_root.mkdir()
         (project_root / ".git").mkdir()
 
-        settings = Settings.from_environment(start_path=project_root)
         expected = project_root / ".claude" / "skills"
-        assert settings.get_project_claude_skills_dir() == expected
+        assert get_project_claude_skills_dir(project_root) == expected
 
-    def test_project_claude_skills_dir_without_project(self, tmp_path: Path) -> None:
+    def test_project_claude_skills_dir_without_project(self) -> None:
         """Test get_project_claude_skills_dir returns None outside a project."""
-        no_project = tmp_path / "no-project"
-        no_project.mkdir()
-
-        settings = Settings.from_environment(start_path=no_project)
-        assert settings.get_project_claude_skills_dir() is None
+        assert get_project_claude_skills_dir(None) is None
 
 
 class TestCreateModelAllowlist:
@@ -1633,11 +1623,11 @@ class TestCreateModelSplitCredentialWiring:
         assert ordered == ["warn", "apply"]
 
 
-class TestModelResultApplyToSettings:
-    """Tests for ModelResult.apply_to_settings propagation."""
+class TestModelResultApplyToRuntimeState:
+    """Tests for `ModelResult.apply_to_runtime_state` propagation."""
 
     def test_propagates_unsupported_modalities(self) -> None:
-        """Test that apply_to_settings writes unsupported_modalities to settings."""
+        """Test model results update all process-wide runtime metadata."""
         model_result = ModelResult(
             model=Mock(),
             model_name="deepseek-r1",
@@ -1645,21 +1635,24 @@ class TestModelResultApplyToSettings:
             context_limit=64000,
             unsupported_modalities=frozenset({"image", "audio"}),
         )
-        # `apply_to_settings` writes four fields to the process-global settings;
+        # The method writes four fields to process-global runtime state;
         # restore all of them or the values leak into every later test.
-        original_name = settings.model_name
-        original_provider = settings.model_provider
-        original_limit = settings.model_context_limit
-        original_modalities = settings.model_unsupported_modalities
+        original_name = runtime_state.model_name
+        original_provider = runtime_state.model_provider
+        original_limit = runtime_state.model_context_limit
+        original_modalities = runtime_state.model_unsupported_modalities
         try:
-            model_result.apply_to_settings()
+            model_result.apply_to_runtime_state()
             expected = frozenset({"image", "audio"})
-            assert settings.model_unsupported_modalities == expected
+            assert runtime_state.model_name == "deepseek-r1"
+            assert runtime_state.model_provider == "deepseek"
+            assert runtime_state.model_context_limit == 64000
+            assert runtime_state.model_unsupported_modalities == expected
         finally:
-            settings.model_name = original_name
-            settings.model_provider = original_provider
-            settings.model_context_limit = original_limit
-            settings.model_unsupported_modalities = original_modalities
+            runtime_state.model_name = original_name
+            runtime_state.model_provider = original_provider
+            runtime_state.model_context_limit = original_limit
+            runtime_state.model_unsupported_modalities = original_modalities
 
 
 class TestRetriesConfig:
@@ -2516,8 +2509,8 @@ class TestGetLangsmithProjectName:
         with patch.dict("os.environ", env, clear=True):
             assert get_langsmith_project_name() is None
 
-    def test_returns_project_from_settings(self) -> None:
-        """Should prefer settings.deepagents_langchain_project."""
+    def test_returns_project_from_credentials(self) -> None:
+        """Should prefer `credentials.deepagents_langchain_project`."""
         env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -2525,10 +2518,10 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = "settings-project"
-            assert get_langsmith_project_name() == "settings-project"
+            mock_credentials.deepagents_langchain_project = "credentials-project"
+            assert get_langsmith_project_name() == "credentials-project"
 
     def test_falls_back_to_env_project(self) -> None:
         """Should fall back to LANGSMITH_PROJECT env var."""
@@ -2539,9 +2532,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == "env-project"
 
     def test_falls_back_to_default(self) -> None:
@@ -2554,9 +2547,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_accepts_langchain_api_key(self) -> None:
@@ -2570,9 +2563,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             assert get_langsmith_project_name() == LANGSMITH_PROJECT_DEFAULT
 
     def test_agrees_with_config_manifest_resolution(self) -> None:
@@ -2613,7 +2606,7 @@ class TestGetLangsmithProjectName:
                 .value
             )
 
-        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no settings value.
+        # Bare `LANGSMITH_PROJECT` set, no prefixed override, no credential value.
         bare_env = {
             "LANGSMITH_API_KEY": "lsv2_test",
             "LANGSMITH_TRACING": "true",
@@ -2622,9 +2615,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", bare_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             manifest_value = resolve()
             assert get_langsmith_project_name() == manifest_value == "parity-bare"
 
@@ -2637,9 +2630,9 @@ class TestGetLangsmithProjectName:
         }
         with (
             patch.dict("os.environ", default_env, clear=False),
-            patch("deepagents_code.config.settings") as mock_settings,
+            patch("deepagents_code.config._credentials_instance") as mock_credentials,
         ):
-            mock_settings.deepagents_langchain_project = None
+            mock_credentials.deepagents_langchain_project = None
             manifest_value = resolve()
             assert (
                 get_langsmith_project_name()
@@ -6014,8 +6007,10 @@ max_tokens = 1024
 
         monkeypatch.setenv("GOOGLE_CLOUD_PROJECT", "test-project")
         monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-east5")
-        runtime_settings = Settings.from_environment()
-        monkeypatch.setattr(config_module, "_get_settings", lambda: runtime_settings)
+        runtime_credentials = Credentials.from_environment()
+        monkeypatch.setattr(
+            config_module, "_get_credentials", lambda: runtime_credentials
+        )
         sync_client = Mock()
         async_client = Mock()
         monkeypatch.setattr(anthropic, "AnthropicVertex", sync_client)
@@ -6038,10 +6033,13 @@ max_tokens = 1024
     ) -> None:
         """Explicit model params outrank Google Cloud environment defaults."""
         mock_init_chat_model.return_value = _make_init_chat_model_mock()
-        with (
-            patch.object(settings, "google_cloud_project", "env-project"),
-            patch.object(settings, "google_cloud_location", "us-east5"),
-        ):
+        owner = config_module._get_credentials()
+        replacement = replace(
+            owner.active,
+            google_cloud_project="env-project",
+            google_cloud_location="us-east5",
+        )
+        with patch.object(owner, "_active", replacement):
             create_model(
                 "google_anthropic_vertex:claude-sonnet-4-6",
                 extra_kwargs={"project": "param-project", "location": "europe-west1"},
@@ -6052,9 +6050,14 @@ max_tokens = 1024
 
     def test_google_anthropic_vertex_requires_location(self) -> None:
         """Missing Claude-on-Vertex location produces an actionable error."""
+        owner = config_module._get_credentials()
+        replacement = replace(
+            owner.active,
+            google_cloud_project="test-project",
+            google_cloud_location=None,
+        )
         with (
-            patch.object(settings, "google_cloud_project", "test-project"),
-            patch.object(settings, "google_cloud_location", None),
+            patch.object(owner, "_active", replacement),
             pytest.raises(
                 ModelConfigError,
                 match=r"GOOGLE_CLOUD_LOCATION.*DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION",
@@ -6112,11 +6115,11 @@ class TestCreateModelEdgeCaseParsing:
         mock_model.profile = None
         mock_init_chat_model.return_value = mock_model
 
-        settings.anthropic_api_key = "test"
+        credentials.anthropic_api_key = "test"
         try:
             result = create_model(":claude-opus-4-6")
         finally:
-            settings.anthropic_api_key = None
+            credentials.anthropic_api_key = None
 
         # Should have detected 'anthropic' provider and used 'claude-opus-4-6'
         assert result.model_name == "claude-opus-4-6"
@@ -6534,67 +6537,77 @@ class TestDetectProvider:
         """detect_provider returns the correct provider for known patterns."""
         # Ensure both Anthropic and Google credentials are "available" so the
         # default paths are taken (not the Vertex AI fallbacks).
-        settings.anthropic_api_key = "test"
-        settings.google_api_key = "test"
+        credentials.anthropic_api_key = "test"
+        credentials.google_api_key = "test"
         try:
             assert detect_provider(model_name) == expected
         finally:
-            settings.anthropic_api_key = None
-            settings.google_api_key = None
+            credentials.anthropic_api_key = None
+            credentials.google_api_key = None
 
     def test_claude_falls_back_to_vertex_when_no_anthropic(self) -> None:
         """Claude models route to Anthropic Vertex when only Vertex is configured."""
-        settings.anthropic_api_key = None
-        settings.google_cloud_project = "my-project"
-        settings.google_api_key = None
+        credentials.anthropic_api_key = None
+        credentials.google_cloud_project = "my-project"
+        credentials.google_api_key = None
         try:
             assert detect_provider("claude-sonnet-4-5") == "google_anthropic_vertex"
         finally:
-            settings.google_cloud_project = None
+            credentials.google_cloud_project = None
 
     def test_gemini_falls_back_to_vertex_when_no_google(self) -> None:
         """Gemini models route to google_vertexai when only Vertex AI is configured."""
-        settings.google_api_key = None
-        settings.google_cloud_project = "my-project"
+        credentials.google_api_key = None
+        credentials.google_cloud_project = "my-project"
         try:
             assert detect_provider("gemini-3-pro") == "google_vertexai"
         finally:
-            settings.google_cloud_project = None
+            credentials.google_cloud_project = None
 
     def test_gemini_prefers_google_genai_when_both_available(self) -> None:
         """Gemini prefers google_genai when both Google and Vertex AI are configured."""
-        settings.google_api_key = "test"
-        settings.google_cloud_project = "my-project"
+        credentials.google_api_key = "test"
+        credentials.google_cloud_project = "my-project"
         try:
             # has_vertex_ai is False when google_api_key is set, so this
             # tests the google_genai path which is preferred.
             assert detect_provider("gemini-3-pro") == "google_genai"
         finally:
-            settings.google_api_key = None
-            settings.google_cloud_project = None
+            credentials.google_api_key = None
+            credentials.google_cloud_project = None
 
     def test_case_insensitive(self) -> None:
         """detect_provider is case-insensitive."""
-        settings.anthropic_api_key = "test"
+        credentials.anthropic_api_key = "test"
         try:
             assert detect_provider("Claude-Sonnet-4-5") == "anthropic"
             assert detect_provider("gpt-5.5") == "openai"
         finally:
-            settings.anthropic_api_key = None
+            credentials.anthropic_api_key = None
 
 
-class TestLazyModuleAttributes:
-    """Tests for lazy `__getattr__` resolution of `settings` and `console`."""
+class TestLazySingletons:
+    """Tests for lazy process-wide state and console resolution."""
 
-    def test_getattr_returns_settings(self) -> None:
-        """Module __getattr__ resolves 'settings' to a Settings instance."""
-        from deepagents_code.config import _get_settings
+    def test_settings_surface_is_removed(self) -> None:
+        """The dissolved `Settings` class and module hook stay absent."""
+        import deepagents_code.config as config_mod
 
-        result = _get_settings()
-        assert isinstance(result, Settings)
+        assert "Settings" not in config_mod.__dict__
+        assert "settings" not in config_mod.__dict__
+        assert "__getattr__" not in config_mod.__dict__
+
+    def test_getattr_returns_credentials(self) -> None:
+        """The credentials accessor returns the typed singleton."""
+        from deepagents_code.config import _get_credentials
+
+        result = _get_credentials()
+        assert isinstance(result, Credentials)
+        assert result is _get_credentials()
+        assert result.active is result.active
 
     def test_getattr_returns_console(self) -> None:
-        """Module __getattr__ resolves 'console' to a Console instance."""
+        """The console accessor returns a Console instance."""
         from rich.console import Console
 
         from deepagents_code.config import _get_console
@@ -6603,7 +6616,7 @@ class TestLazyModuleAttributes:
         assert isinstance(result, Console)
 
     def test_getattr_raises_for_unknown(self) -> None:
-        """Module __getattr__ raises AttributeError for unknown names."""
+        """Unknown module attributes raise `AttributeError`."""
         import deepagents_code.config as config_mod
 
         with pytest.raises(AttributeError, match="no attribute"):
@@ -6613,10 +6626,12 @@ class TestLazyModuleAttributes:
         """_ensure_bootstrap is a no-op on second call."""
         from deepagents_code.config import _ensure_bootstrap
 
-        # First call already ran (settings was imported above).
+        # First call already ran (credentials were used above).
         # Calling again should be a harmless no-op.
         _ensure_bootstrap()
-        assert isinstance(settings, Settings)
+        from deepagents_code.config import _get_credentials
+
+        assert isinstance(_get_credentials(), Credentials)
 
     def test_ensure_bootstrap_marks_done_on_failure(self) -> None:
         """_ensure_bootstrap sets flag even when the try body raises."""
@@ -6638,12 +6653,12 @@ class TestLazyModuleAttributes:
         finally:
             config_mod._bootstrap_state.done = original
 
-    def test_get_settings_returns_same_instance(self) -> None:
-        """_get_settings caches in globals — two calls return the same object."""
-        from deepagents_code.config import _get_settings
+    def test_get_credentials_returns_same_instance(self) -> None:
+        """The credentials accessor returns one process-wide object."""
+        from deepagents_code.config import _get_credentials
 
-        a = _get_settings()
-        b = _get_settings()
+        a = _get_credentials()
+        b = _get_credentials()
         assert a is b
 
     def test_ensure_bootstrap_langsmith_override(
@@ -7542,18 +7557,28 @@ class TestDetectModePrefix:
 class TestInterpreterSettings:
     """Tests for `[interpreter]` config.toml loading and validation."""
 
+    @staticmethod
+    def _resolve() -> tuple[bool, InterpreterConfig]:
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        option = get_option("interpreter.enable_interpreter")
+        assert option is not None
+        enabled = bool(get_config_resolver().get(option).value)
+        return enabled, InterpreterConfig.from_resolver()
+
     def test_defaults_when_config_absent(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"  # does not exist
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            enabled, interpreter = self._resolve()
 
-        assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == pytest.approx(5.0)
-        assert settings_obj.interpreter_memory_limit_mb == 64
-        assert settings_obj.interpreter_max_ptc_calls == 256
-        assert settings_obj.interpreter_max_result_chars == 4000
-        assert settings_obj.interpreter_ptc == "safe"
-        assert settings_obj.interpreter_ptc_acknowledge_unsafe is False
+        assert enabled is True
+        assert interpreter.timeout_seconds == pytest.approx(5.0)
+        assert interpreter.memory_limit_mb == 64
+        assert interpreter.max_ptc_calls == 256
+        assert interpreter.max_result_chars == 4000
+        assert interpreter.ptc == "safe"
+        assert interpreter.ptc_acknowledge_unsafe is False
 
     def test_round_trip_through_toml(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7570,15 +7595,15 @@ ptc_acknowledge_unsafe = true
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            enabled, interpreter = self._resolve()
 
-        assert settings_obj.enable_interpreter is True
-        assert settings_obj.interpreter_timeout_seconds == pytest.approx(12.5)
-        assert settings_obj.interpreter_memory_limit_mb == 128
-        assert settings_obj.interpreter_max_ptc_calls == 64
-        assert settings_obj.interpreter_max_result_chars == 8000
-        assert settings_obj.interpreter_ptc == "safe"
-        assert settings_obj.interpreter_ptc_acknowledge_unsafe is True
+        assert enabled is True
+        assert interpreter.timeout_seconds == pytest.approx(12.5)
+        assert interpreter.memory_limit_mb == 128
+        assert interpreter.max_ptc_calls == 64
+        assert interpreter.max_result_chars == 8000
+        assert interpreter.ptc == "safe"
+        assert interpreter.ptc_acknowledge_unsafe is True
 
     def test_ptc_explicit_list_round_trip(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7589,9 +7614,9 @@ ptc = ["grep", "read_file"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == ["grep", "read_file"]
+        assert interpreter.ptc == ["grep", "read_file"]
 
     def test_invalid_ptc_list_entry_falls_back(self, tmp_path: Path) -> None:
         config_path = tmp_path / "config.toml"
@@ -7602,9 +7627,9 @@ ptc = [""]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == "safe"
+        assert interpreter.ptc == "safe"
 
     def test_ptc_list_with_safe_preset_round_trip(self, tmp_path: Path) -> None:
         """`"safe"` is preserved as a list entry until agent-build expansion."""
@@ -7616,9 +7641,9 @@ ptc = ["safe", "task"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == ["safe", "task"]
+        assert interpreter.ptc == ["safe", "task"]
 
     def test_ptc_list_with_all_falls_back(self, tmp_path: Path) -> None:
         """`"all"` inside a list is rejected, falling back to the default."""
@@ -7630,9 +7655,9 @@ ptc = ["all", "task"]
 """
         )
         with patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path):
-            settings_obj = Settings.from_environment(start_path=tmp_path)
+            _, interpreter = self._resolve()
 
-        assert settings_obj.interpreter_ptc == "safe"
+        assert interpreter.ptc == "safe"
 
 
 class TestCreateModelCodex:
@@ -8118,15 +8143,11 @@ class TestReservedAgentNames:
 
     @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
     def test_reserved_names_are_rejected(self, name: str) -> None:
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_agent_dir(name)
+            get_agent_dir(name)
 
     def test_ordinary_names_still_resolve(self) -> None:
-        settings = Settings.__new__(Settings)
-
-        assert settings.get_agent_dir("coder").name == "coder"
+        assert get_agent_dir("coder").name == "coder"
 
     @pytest.mark.parametrize(
         "name", ["BIN", "Plugins", "CONVERSATION_HISTORY", "pLuGiNs"]
@@ -8141,10 +8162,9 @@ class TestReservedAgentNames:
         through and stamp agent state into app-owned directories.
         """
         monkeypatch.setattr(sys, "platform", "darwin")
-        settings = Settings.__new__(Settings)
 
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_agent_dir(name)
+            get_agent_dir(name)
 
     def test_case_alias_is_allowed_on_case_sensitive_linux(
         self, monkeypatch: pytest.MonkeyPatch
@@ -8156,9 +8176,8 @@ class TestReservedAgentNames:
         must not be rejected.
         """
         monkeypatch.setattr(sys, "platform", "linux")
-        settings = Settings.__new__(Settings)
 
-        assert settings.get_agent_dir("Plugins").name == "Plugins"
+        assert get_agent_dir("Plugins").name == "Plugins"
 
     def test_windows_trailing_space_alias_is_rejected(
         self, monkeypatch: pytest.MonkeyPatch
@@ -8171,10 +8190,9 @@ class TestReservedAgentNames:
         it there; on POSIX `plugins ` is a genuinely different directory.
         """
         monkeypatch.setattr(sys, "platform", "win32")
-        settings = Settings.__new__(Settings)
 
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_agent_dir("plugins ")
+            get_agent_dir("plugins ")
 
     def test_trailing_dot_never_reaches_the_reserved_check(self) -> None:
         """The character allowlist already rejects `.` on every platform.
@@ -8182,19 +8200,16 @@ class TestReservedAgentNames:
         A trailing-dot alias such as `plugins.` is refused as an invalid name
         before the reserved-name comparison runs.
         """
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="Invalid agent name"):
-            settings.get_agent_dir("plugins.")
+            get_agent_dir("plugins.")
 
     def test_trailing_space_is_allowed_off_windows(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """On POSIX a trailing space names a different, non-reserved directory."""
         monkeypatch.setattr(sys, "platform", "linux")
-        settings = Settings.__new__(Settings)
 
-        assert settings.get_agent_dir("plugins ").name == "plugins "
+        assert get_agent_dir("plugins ").name == "plugins "
 
     @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
     def test_the_agents_md_accessor_rejects_them_too(self, name: str) -> None:
@@ -8204,17 +8219,13 @@ class TestReservedAgentNames:
         parent directory, so leaving it unchecked is what would stamp
         `AGENTS.md` into app-owned state.
         """
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="reserved"):
-            settings.get_user_agent_md_path(name)
+            get_user_agent_md_path(name)
 
     def test_the_agents_md_accessor_rejects_invalid_characters(self) -> None:
         """It skipped the character check as well, not only reserved names."""
-        settings = Settings.__new__(Settings)
-
         with pytest.raises(ValueError, match="Invalid agent name"):
-            settings.get_user_agent_md_path("../escape")
+            get_user_agent_md_path("../escape")
 
 
 class TestAgentDirStaysOffTheHeavyImportPath:
@@ -8231,9 +8242,9 @@ class TestAgentDirStaysOffTheHeavyImportPath:
         source = textwrap.dedent(
             """
             import sys
-            from deepagents_code.config import Settings
+            from deepagents_code._paths import get_agent_dir
 
-            Settings.get_agent_dir(object.__new__(Settings), "demo")
+            get_agent_dir("demo")
             heavy = sorted(
                 name
                 for name in sys.modules

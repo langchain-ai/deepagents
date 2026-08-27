@@ -672,6 +672,9 @@ def test_local_shell_backend_async_cancellation_skips_queued_command() -> None:
             loop.call_soon_threadsafe(executor_started.set)
             release_executor.wait()
 
+        # `asyncio.to_thread` currently submits to the loop's default executor.
+        # This test intentionally observes that CPython detail to hold the
+        # command queued; the submit-count assertion fails loudly if it changes.
         executor = ThreadPoolExecutor(max_workers=1)
         with patch.object(executor, "submit", wraps=executor.submit) as submit:
             loop.set_default_executor(executor)

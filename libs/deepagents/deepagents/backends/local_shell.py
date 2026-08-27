@@ -33,6 +33,8 @@ DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
 
 _CANCELLATION_POLL_INTERVAL = 0.1
+"""Seconds between cancellation checks while collecting command output."""
+
 _ASYNC_CANCELLATION_GRACE_PERIOD = 1
 """Maximum seconds to wait for cooperative cleanup after async cancellation."""
 
@@ -43,6 +45,8 @@ _ASYNC_EXECUTION_CONTEXT: ContextVar[tuple[object, threading.Event] | None] = Co
     "_ASYNC_EXECUTION_CONTEXT",
     default=None,
 )
+"""Owning backend and cancellation event for one async execution thread."""
+
 _BACKGROUND_WORKERS: set[asyncio.Task[ExecuteResponse]] = set()
 """Workers retained until an uncooperative `execute` override finishes."""
 
@@ -132,7 +136,7 @@ def _communicate(
     *,
     process_group: int | None = None,
 ) -> tuple[str, str]:
-    """Collect output while ensuring interrupted commands cannot outlive us."""
+    """Collect output with best-effort cleanup when execution is interrupted."""
     if cancellation_event is None:
         try:
             return process.communicate(timeout=timeout)
@@ -354,8 +358,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         execution_started: threading.Event,
     ) -> ExecuteResponse:
         """Run a command only if cancellation did not win the start race."""
-        # Publishing first makes it safe for `aexecute` to stop waiting when
-        # this event is unset: a worker that starts later will see cancellation.
+        # `aexecute` sets `cancellation_event` before inspecting
+        # `execution_started`; this worker publishes in the opposite order.
+        # Cancelling `to_thread` cannot stop a running thread, so the handshake
+        # ensures a late worker observes cancellation before calling `execute`.
         execution_started.set()
         if cancellation_event.is_set():
             raise asyncio.CancelledError
@@ -386,6 +392,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
         Raises:
             asyncio.CancelledError: If the caller cancels command execution.
+            ValueError: If `timeout` is not positive.
+            Exception: Any exception raised by an overridden `execute` method.
 
         Note:
             Cancellation allows synchronous execution one second for cleanup.
@@ -509,6 +517,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             ```
         """
         execution_context = _ASYNC_EXECUTION_CONTEXT.get()
+        # An override may call another backend in the copied context. Match the
+        # owner so backend A's cancellation cannot stop backend B's command.
         cancellation_event = execution_context[1] if execution_context is not None and execution_context[0] is self else None
         return self._execute(command, timeout=timeout, cancellation_event=cancellation_event)
 

@@ -393,6 +393,7 @@ class TestBuildSkillInvocationEnvelope:
         assert meta["description"] == "Review code changes"
         assert meta["source"] == "user"
         assert meta["args"] == "review this patch"
+        assert envelope.skill_name == "code-review"
 
     def test_empty_args_omits_user_request(self) -> None:
         """No `**User request:**` line when args is empty."""
@@ -514,6 +515,7 @@ class TestHandleSkillCommand:
 
         app._send_to_agent.assert_awaited_once()
         prompt = app._send_to_agent.call_args[0][0]
+        assert app._send_to_agent.call_args.kwargs["skill_name"] == "test-skill"
         assert "test-skill" in prompt
         assert "# Instructions" in prompt
         # Verify SkillMessage was mounted instead of UserMessage

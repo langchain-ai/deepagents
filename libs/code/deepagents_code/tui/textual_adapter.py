@@ -1438,6 +1438,7 @@ async def execute_task_textual(
     *,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    skill_name: str | None = None,
     graph_input: dict[str, Any] | None = None,
     rubric: str | None = None,
     goal_active: bool = False,
@@ -1465,6 +1466,7 @@ async def execute_task_textual(
         message_kwargs: Extra fields merged into the stream input message
             dict (e.g., `additional_kwargs` for persisting skill metadata
             in the checkpoint).
+        skill_name: Invoked skill name for trace attribution, or `None`.
         graph_input: Prepared non-conversation input for a server-side graph
             operation. When provided, no user message or media is constructed.
         rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
@@ -1572,6 +1574,7 @@ async def execute_task_textual(
         turn_id=turn_id,
         turn_number=turn_number,
         auto_approve=bool(session_state.auto_approve),
+        skill_name=skill_name,
     )
 
     captured_input_tokens = 0

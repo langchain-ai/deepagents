@@ -2037,6 +2037,7 @@ async def run_non_interactive(
         await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
 
     message_kwargs: dict[str, Any] | None = None
+    skill_name: str | None = None
     if initial_skill and initial_skill.strip():
         from deepagents_code.skills.invocation import (
             build_skill_invocation_envelope,
@@ -2131,6 +2132,7 @@ async def run_non_interactive(
         envelope = build_skill_invocation_envelope(skill, content, message)
         message = envelope.prompt
         message_kwargs = envelope.message_kwargs
+        skill_name = envelope.skill_name
 
     try:
         result = create_model(
@@ -2238,6 +2240,7 @@ async def run_non_interactive(
             turn_id=str(turn_id),
             turn_number=1,
             auto_approve=use_auto_approve,
+            skill_name=skill_name,
         )
 
         if not quiet:

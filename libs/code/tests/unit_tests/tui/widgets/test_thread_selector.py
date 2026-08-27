@@ -4073,10 +4073,17 @@ class TestFetchThreadHistoryData:
         module-wide stub would silently disable unrelated work and hand back a
         false pass.
         """
+
+        def prepare(
+            _messages: list[Any], *, show_reasoning: bool = False
+        ) -> tuple[list[MessageData], tuple[()]]:
+            assert not show_reasoning
+            return converted, ()
+
         return patch.object(
             DeepAgentsApp,
             "_prepare_thread_history_messages",
-            staticmethod(lambda _messages: (converted, ())),
+            staticmethod(prepare),
         )
 
     async def test_offloads_conversion_to_thread(self) -> None:
@@ -4105,6 +4112,7 @@ class TestFetchThreadHistoryData:
         to_thread_mock.assert_awaited_once_with(
             DeepAgentsApp._prepare_thread_history_messages,
             raw_messages,
+            show_reasoning=False,
         )
 
     async def test_extracts_nonzero_context_tokens(self) -> None:

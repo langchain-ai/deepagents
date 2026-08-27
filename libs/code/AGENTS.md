@@ -139,7 +139,7 @@ Hints that tell the user to run something (for example the teardown `-r <thread>
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+g to compose prompts in your external editor"`).
 
 ## Slash commands
 

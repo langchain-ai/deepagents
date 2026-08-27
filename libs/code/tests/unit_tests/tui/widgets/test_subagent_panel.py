@@ -399,7 +399,7 @@ class TestHeaderToggle:
 
             summary = pilot.app.query_one("#subagent-header-summary", Static)
             hint = pilot.app.query_one("#subagent-header-hint", Static)
-            text = "click or Ctrl+G to collapse"
+            text = "click or Ctrl+T to collapse"
             # `_render` returns the unclipped content, so this is the "summary
             # really is overflowing" precondition; the ellipsis assertion below
             # reads the painted strip, which is where truncation happens.

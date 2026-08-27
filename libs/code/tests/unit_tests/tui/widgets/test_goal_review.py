@@ -210,11 +210,11 @@ class TestGoalReviewMenu:
             help_widget = menu.query_one(".goal-review-help", Static)
 
             menu.action_edit()
-            assert "Ctrl+X edit in nvim" in str(help_widget.content)
+            assert "Ctrl+G edit in nvim" in str(help_widget.content)
 
             menu.action_cancel()
             menu.action_reject_with_message()
-            assert "Ctrl+X edit in nvim" in str(help_widget.content)
+            assert "Ctrl+G edit in nvim" in str(help_widget.content)
 
     async def test_text_editor_help_uses_generic_fallback(
         self, monkeypatch: pytest.MonkeyPatch
@@ -229,7 +229,7 @@ class TestGoalReviewMenu:
             help_widget = menu.query_one(".goal-review-help", Static)
 
             menu.action_edit()
-            assert "Ctrl+X external editor" in str(help_widget.content)
+            assert "Ctrl+G external editor" in str(help_widget.content)
 
     async def test_newline_hint_uses_terminal_shortcut(
         self, monkeypatch: pytest.MonkeyPatch
@@ -537,7 +537,7 @@ class TestGoalReviewMenu:
             help_text = str(help_widget.content)
             assert "combined" in help_text
             assert "Remove at least" in help_text
-            assert "Ctrl+X external editor" in help_text
+            assert "Ctrl+G external editor" in help_text
 
     async def test_hint_without_a_help_widget_is_logged(
         self, caplog: pytest.LogCaptureFixture

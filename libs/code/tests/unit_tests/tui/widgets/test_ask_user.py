@@ -2390,7 +2390,7 @@ class TestAskUserMenu:
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             assert isinstance(app.focused, AskUserTextArea)
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X edit in nvim" in str(help_text)
+            assert "Ctrl+G edit in nvim" in str(help_text)
 
     async def test_help_text_uses_generic_editor_hint_without_configuration(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2403,7 +2403,7 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X external editor" in str(help_text)
+            assert "Ctrl+G external editor" in str(help_text)
 
     async def test_help_text_shows_editor_hint_for_choiceless_multiple_choice(
         self,
@@ -2417,10 +2417,10 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X" in str(help_text)
+            assert "Ctrl+G" in str(help_text)
 
     async def test_help_text_omits_editor_hint_for_multiple_choice(self) -> None:
-        """Footer omits Ctrl+X when only choices (no free-text field) are shown."""
+        """Footer omits Ctrl+G when only choices (no free-text field) are shown."""
         app = _AskUserTestApp(
             [
                 {
@@ -2435,10 +2435,10 @@ class TestAskUserMenu:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X" not in str(help_text)
+            assert "Ctrl+G" not in str(help_text)
 
     async def test_help_text_shows_editor_hint_when_other_selected(self) -> None:
-        """Landing on Other reveals and focuses its field, enabling Ctrl+X."""
+        """Landing on Other reveals and focuses its field, enabling Ctrl+G."""
         app = _AskUserTestApp(
             [
                 {
@@ -2463,10 +2463,10 @@ class TestAskUserMenu:
             assert other_input.display is True
             assert app.focused is other_input
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X" in str(help_text)
+            assert "Ctrl+G" in str(help_text)
 
     async def test_help_text_hides_editor_hint_when_leaving_other(self) -> None:
-        """Moving off Other hides its field and retracts the Ctrl+X hint."""
+        """Moving off Other hides its field and retracts the Ctrl+G hint."""
         app = _AskUserTestApp(
             [
                 {
@@ -2484,7 +2484,7 @@ class TestAskUserMenu:
             await pilot.press("down")
             await pilot.press("down")
             await pilot.pause()
-            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" in str(menu.query_one(".ask-user-help").render())
 
             # Back up to the last real choice: no free-text field is focused.
             await pilot.press("up")
@@ -2493,10 +2493,10 @@ class TestAskUserMenu:
             other_input = menu._question_widgets[0]._other_input
             assert other_input is not None
             assert other_input.display is False
-            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" not in str(menu.query_one(".ask-user-help").render())
 
     async def test_help_text_omits_editor_hint_when_other_field_unfocused(self) -> None:
-        """A visible but unfocused Other field must not advertise Ctrl+X.
+        """A visible but unfocused Other field must not advertise Ctrl+G.
 
         `App.action_open_editor` routes to an ask-user text area only while one
         is focused, and otherwise opens the chat draft, so the hint has to
@@ -2519,7 +2519,7 @@ class TestAskUserMenu:
             await pilot.press("down")
             await pilot.press("down")
             await pilot.pause()
-            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" in str(menu.query_one(".ask-user-help").render())
 
             # Mirrors a click landing on the question container: the Other
             # field stays visible, but focus moves off it.
@@ -2530,21 +2530,21 @@ class TestAskUserMenu:
             assert other_input is not None
             assert other_input.display is True
             assert app.focused is not other_input
-            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" not in str(menu.query_one(".ask-user-help").render())
 
     async def test_help_text_hides_editor_hint_when_focus_leaves_menu(self) -> None:
-        """Focus moving off the menu entirely retracts the Ctrl+X hint."""
+        """Focus moving off the menu entirely retracts the Ctrl+G hint."""
         app = _AskUserTestApp([{"question": "Q1?", "type": "text"}])
 
         async with app.run_test() as pilot:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" in str(menu.query_one(".ask-user-help").render())
 
             app.set_focus(None)
             await pilot.pause()
 
-            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" not in str(menu.query_one(".ask-user-help").render())
 
     async def test_help_text_editor_hint_follows_clicked_question(self) -> None:
         """Clicking into another question's text field turns the hint on."""
@@ -2562,7 +2562,7 @@ class TestAskUserMenu:
         async with app.run_test() as pilot:
             await pilot.pause()
             menu = app.query_one("#ask-user-menu", AskUserMenu)
-            assert "Ctrl+X" not in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" not in str(menu.query_one(".ask-user-help").render())
 
             text_input = menu._question_widgets[1]._text_input
             assert text_input is not None
@@ -2570,10 +2570,10 @@ class TestAskUserMenu:
             await pilot.pause()
 
             assert app.focused is text_input
-            assert "Ctrl+X" in str(menu.query_one(".ask-user-help").render())
+            assert "Ctrl+G" in str(menu.query_one(".ask-user-help").render())
 
     async def test_help_text_editor_hint_follows_active_question(self) -> None:
-        """Mixed prompts only advertise Ctrl+X for the active free-text field."""
+        """Mixed prompts only advertise Ctrl+G for the active free-text field."""
         app = _AskUserTestApp(
             [
                 {
@@ -2591,19 +2591,19 @@ class TestAskUserMenu:
 
             # Initial focus is the multiple-choice question: no free-text field.
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X" not in str(help_text)
+            assert "Ctrl+G" not in str(help_text)
 
-            # Move to the text question: the focused field can use Ctrl+X.
+            # Move to the text question: the focused field can use Ctrl+G.
             menu.action_next_question()
             await pilot.pause()
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X" in str(help_text)
+            assert "Ctrl+G" in str(help_text)
 
             # Move back: stop advertising the shortcut for the choice list.
             menu.action_previous_question()
             await pilot.pause()
             help_text = menu.query_one(".ask-user-help").render()
-            assert "Ctrl+X" not in str(help_text)
+            assert "Ctrl+G" not in str(help_text)
 
     async def test_single_question_hides_number_label(self) -> None:
         app = _AskUserTestApp([{"question": "Name?", "type": "text"}])

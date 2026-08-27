@@ -163,7 +163,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
         tools: Sequence[BaseTool] | None = None,
         grader_middleware: Sequence[AgentMiddleware[Any, Any]] | None = None,
         grader_context_schema: type[Any] | None = None,
-        runtime_bootstrap_model: BaseChatModel | None = None,
+        runtime_bootstrap_model: str | BaseChatModel | None = None,
         inherit_main_model: bool = False,
         max_iterations: int = 3,
         on_evaluation: Callable[[RubricEvaluation], None] | None = None,

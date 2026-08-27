@@ -806,6 +806,42 @@ class TestReliableRubricMiddleware:
             middleware._invoke_grader(_state(), 0)
         assert resolved == [bootstrap, "unavailable:startup"]
 
+    def test_runtime_model_bypasses_with_a_string_bootstrap(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A string main-model spec bootstraps the runtime grader as well.
+
+        `create_cli_agent` leaves the main model as a spec when startup
+        cannot resolve it, so the bypass must not require an instance.
+        """
+        grader = MagicMock()
+        grader.invoke.return_value = _tool_satisfied_result()
+        resolved: list[object] = []
+
+        def resolve_model(model: object) -> object:
+            resolved.append(model)
+            if model == "unavailable:startup":
+                msg = "startup provider unavailable"
+                raise RuntimeError(msg)
+            return model
+
+        monkeypatch.setattr("deepagents._models.resolve_model", resolve_model)
+        monkeypatch.setattr("langchain.agents.create_agent", lambda **_kwargs: grader)
+        middleware = ReliableRubricMiddleware(
+            model="unavailable:startup",
+            runtime_bootstrap_model="working:model",
+        )
+        state = cast("ReliableRubricState", _state())
+        state["_rubric_model_spec"] = "openai:gpt-5.5"
+
+        result = middleware._invoke_grader(state, 0)
+
+        assert result.result == "satisfied"
+        assert resolved == ["working:model"]
+        assert middleware._grader is None
+        assert grader.invoke.call_args.kwargs["context"].model == "openai:gpt-5.5"
+
     async def test_nested_grader_interrupt_propagates_with_context(
         self,
         monkeypatch: pytest.MonkeyPatch,

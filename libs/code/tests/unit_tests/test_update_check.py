@@ -32,6 +32,7 @@ from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extr
 from deepagents_code.update_check import (
     CACHE_TTL,
     INSTALLED_STALE_NOTICE_DAYS,
+    ContendedExtraInstallOutcome,
     DependencyChange,
     InstallMethod,
     ShadowedDcode,
@@ -5018,10 +5019,12 @@ class TestPerformInstallExtra:
             ),
             patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_extra("quickjs")
+            outcome = await perform_install_extra("quickjs")
 
-        assert success is False
-        assert "already running" in output
+        assert isinstance(outcome, ContendedExtraInstallOutcome)
+        assert outcome.success is False
+        assert "already running" in outcome.output
+        assert outcome.manual_recovery_safe is False
         command.assert_not_called()
         run.assert_not_awaited()
 

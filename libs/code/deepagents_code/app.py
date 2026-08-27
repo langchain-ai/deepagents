@@ -7451,7 +7451,8 @@ class DeepAgentsApp(App):
             )
             return False
         try:
-            success, output = await perform_install_extra(extra, log_path=log_path)
+            outcome = await perform_install_extra(extra, log_path=log_path)
+            success, output = outcome
         except (OSError, asyncio.CancelledError) as exc:
             logger.warning("/install command failed", exc_info=True)
             # Best-effort upgrade of `manual_cmd` to the install-method-specific
@@ -7475,16 +7476,17 @@ class DeepAgentsApp(App):
             # Tail the last 200 chars — uv resolver prints the resolved
             # error at the end, not the beginning.
             detail = f": {output[-200:]}" if output else ""
-            # See the OSError branch above: best-effort recovery command, falling
-            # back to the already-bound install-script command on failure.
-            manual_cmd = await asyncio.to_thread(
-                safe_install_extra_recovery_command, extra, fallback=manual_cmd
-            )
+            recovery = ""
+            if getattr(outcome, "manual_recovery_safe", True):
+                # See the OSError branch above: best-effort recovery command,
+                # falling back to the already-bound install-script command.
+                manual_cmd = await asyncio.to_thread(
+                    safe_install_extra_recovery_command, extra, fallback=manual_cmd
+                )
+                recovery = f"\nRun manually: {manual_cmd}"
             await self._mount_message(
                 ErrorMessage(
-                    f"Install failed{detail}\n"
-                    f"Log: {log_path}\n"
-                    f"Run manually: {manual_cmd}",
+                    f"Install failed{detail}\nLog: {log_path}{recovery}",
                 ),
             )
             return False

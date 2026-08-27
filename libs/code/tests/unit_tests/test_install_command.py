@@ -327,6 +327,39 @@ async def test_install_slash_failure_surfaces_log_path_and_manual_cmd() -> None:
         assert "quickjs" in joined
 
 
+async def test_install_slash_contention_omits_manual_cmd() -> None:
+    """Lock contention never recommends bypassing the held install lock."""
+    from deepagents_code.update_check import ContendedExtraInstallOutcome
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.create_update_log_path",
+                return_value="/tmp/deepagents-install.log",
+            ),
+            patch(
+                "deepagents_code.update_check.install_extra_command",
+                return_value=MANUAL_EXTRA_COMMAND,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_install_extra",
+                new_callable=AsyncMock,
+                return_value=ContendedExtraInstallOutcome(
+                    False, "Another dcode update or install is already running."
+                ),
+            ),
+        ):
+            await app._handle_command("/install quickjs")
+            await pilot.pause()
+
+        joined = "\n".join(str(m._content) for m in app.query(ErrorMessage))
+        assert "already running" in joined
+        assert "Run manually" not in joined
+
+
 async def test_install_slash_exception_surfaces_log_path_and_manual_cmd() -> None:
     """When `perform_install_extra` raises, surface log path + manual cmd."""
     app = DeepAgentsApp()

@@ -3839,6 +3839,21 @@ def editable_package_hint(package: str) -> str:
     )
 
 
+class ContendedExtraInstallOutcome(NamedTuple):
+    """Install result returned when another process holds the update lock."""
+
+    success: bool
+    """Always `False`; the install did not run."""
+
+    output: str
+    """An explanatory lock-contention message."""
+
+    @property
+    def manual_recovery_safe(self) -> bool:
+        """Suppress manual commands that would bypass the held update lock."""
+        return False
+
+
 async def perform_install_extra(
     extra: str,
     *,
@@ -3865,7 +3880,9 @@ async def perform_install_extra(
     Returns:
         `(success, output)` — *output* is the combined stdout/stderr, or an
             explanatory error message when the install method is unsupported
-            or `extra` is malformed.
+            or `extra` is malformed. Lock contention returns a distinguishable
+            `ContendedExtraInstallOutcome` so callers can suppress unsafe manual
+            recovery commands while preserving two-item tuple unpacking.
     """
     if not is_valid_extra_name(extra):
         return False, (
@@ -3901,9 +3918,12 @@ async def perform_install_extra(
 
     with update_install_lock() as holding_update_lock:
         if not holding_update_lock:
-            return False, (
-                "Another dcode update or install is already running. "
-                "Wait for it to finish, then try again."
+            return ContendedExtraInstallOutcome(
+                False,
+                (
+                    "Another dcode update or install is already running. "
+                    "Wait for it to finish, then try again."
+                ),
             )
         from deepagents_code.extras_info import ExtrasIntrospectionError
 

@@ -381,7 +381,8 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
             highlight=False,
             markup=False,
         )
-        success, output = asyncio.run(perform_install_extra(extra, log_path=log_path))
+        outcome = asyncio.run(perform_install_extra(extra, log_path=log_path))
+        success, output = outcome
         if success:
             console.print(f"[green]Installed extra '{extra}'.[/green]")
             return 0
@@ -392,11 +393,13 @@ def _run_install_extra(*, name: str, yes: bool) -> int:
         # `install_extra_command`) to the install-method-specific recovery
         # command. On failure, keep that already-bound install-script command
         # so the hint is never empty.
-        manual_cmd = safe_install_extra_recovery_command(extra, fallback=manual_cmd)
+        recovery = ""
+        if getattr(outcome, "manual_recovery_safe", True):
+            manual_cmd = safe_install_extra_recovery_command(extra, fallback=manual_cmd)
+            recovery = f"\nRun manually: [cyan]{escape(manual_cmd)}[/cyan]"
         console.print(
             f"[bold red]Install failed[/bold red]{escape(detail)}\n"
-            f"Log: {log_path}\n"
-            f"Run manually: [cyan]{escape(manual_cmd)}[/cyan]",
+            f"Log: {log_path}{recovery}",
             markup=True,
             highlight=False,
         )

@@ -186,19 +186,20 @@ async def workspace(request: Request) -> JSONResponse:
 
         server_config = ServerConfig.from_env()
         trusted_config = server_config.to_workspace_payload()
-        _, trusted_policy_fingerprint = canonical_workspace_config(trusted_config)
-        _, claimed_policy_fingerprint = canonical_workspace_config(
-            body.get("workspace_config")
-        )
-        claimed_config_fingerprint = body.get("config_fingerprint")
-        if (
-            claimed_policy_fingerprint != trusted_policy_fingerprint
-            or claimed_config_fingerprint != server_config.workspace_fingerprint()
-        ):
-            return JSONResponse(
-                {"detail": "workspace configuration does not match server policy"},
-                status_code=409,
+        if "workspace_config" in body or "config_fingerprint" in body:
+            _, trusted_policy_fingerprint = canonical_workspace_config(trusted_config)
+            _, claimed_policy_fingerprint = canonical_workspace_config(
+                body.get("workspace_config")
             )
+            claimed_config_fingerprint = body.get("config_fingerprint")
+            if (
+                claimed_policy_fingerprint != trusted_policy_fingerprint
+                or claimed_config_fingerprint != server_config.workspace_fingerprint()
+            ):
+                return JSONResponse(
+                    {"detail": "workspace configuration does not match server policy"},
+                    status_code=409,
+                )
         binding = await bind_thread_workspace(
             thread_id,
             body.get("cwd"),
@@ -897,10 +898,13 @@ async def _execute_offload(
         checkpoint_id = _checkpoint_id(before)
         context = _checkpoint_model_context(context, state)
         context["thread_id"] = thread_id
-        binding = await require_thread_workspace(
-            thread_id,
-            context.get("workspace"),
-        )
+        try:
+            binding = await require_thread_workspace(
+                thread_id,
+                context.get("workspace"),
+            )
+        except (TypeError, ValueError, WorkspaceConflictError) as exc:
+            raise _OffloadConflictError(str(exc)) from exc
         namespace = f"dcode_offload:{operation_id}"
         info = ExecutionInfo(
             checkpoint_id=checkpoint_id,

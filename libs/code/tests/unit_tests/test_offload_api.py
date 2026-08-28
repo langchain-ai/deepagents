@@ -44,6 +44,47 @@ def _reset_offload_globals() -> Iterator[None]:
 
 
 class TestWorkspaceRoute:
+    async def test_server_supplies_policy_when_client_omits_claim(
+        self, tmp_path
+    ) -> None:
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(return_value={"cwd": str(tmp_path)}),
+        )
+        server_config = ServerConfig(auto_approve=True)
+        binding = SimpleNamespace(
+            cwd=str(tmp_path),
+            workspace_id="workspace-1",
+            generation=1,
+            to_payload=lambda: {"workspace_id": "workspace-1"},
+        )
+        threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        with (
+            patch.object(ServerConfig, "from_env", return_value=server_config),
+            patch.object(
+                offload_api,
+                "bind_thread_workspace",
+                new=AsyncMock(return_value=binding),
+            ) as bind,
+            patch.object(
+                offload_api,
+                "_thread_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+        ):
+            response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 200
+        bind.assert_awaited_once_with(
+            "thread-1",
+            str(tmp_path),
+            server_config.to_workspace_payload(),
+            config_fingerprint=server_config.workspace_fingerprint(),
+        )
+
     async def test_rejects_client_policy_mismatch(self, tmp_path) -> None:
         """A caller cannot choose privileged runtime configuration."""
         from deepagents_code import offload_api
@@ -318,7 +359,43 @@ class TestExecuteOffload:
                 new=AsyncMock(side_effect=WorkspaceConflictError("not bound")),
             ),
             patch.object(offload_api, "get_server_runtime", new=runtime),
-            pytest.raises(WorkspaceConflictError, match="not bound"),
+            pytest.raises(offload_api._OffloadConflictError, match="not bound"),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        runtime.assert_not_awaited()
+        threads.update_state.assert_not_awaited()
+
+    async def test_missing_workspace_context_is_rejected(self) -> None:
+        from deepagents_code import offload_api
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=_thread_state()),
+            update_state=AsyncMock(),
+        )
+        runtime = AsyncMock()
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(side_effect=TypeError("workspace context is required")),
+            ),
+            patch.object(offload_api, "get_server_runtime", new=runtime),
+            pytest.raises(
+                offload_api._OffloadConflictError,
+                match="workspace context is required",
+            ),
         ):
             await offload_api._execute_offload(
                 "thread-1",

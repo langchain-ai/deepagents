@@ -331,7 +331,7 @@ class RemoteAgent:
         self._headers = headers
         self._graph: Any = None
         self._workspaces: dict[str, dict[str, Any]] = {}
-        self._workspace_config: dict[str, Any] = {}
+        self._workspace_config: dict[str, Any] | None = None
         self._workspace_config_fingerprint: str | None = None
         self._workspace_cwd: str | None = None
 
@@ -814,13 +814,13 @@ class RemoteAgent:
         """
         thread_id = _require_thread_id(config)
         graph = self._get_graph()
+        payload: dict[str, Any] = {"cwd": cwd}
+        if self._workspace_config is not None:
+            payload["workspace_config"] = self._workspace_config
+            payload["config_fingerprint"] = self._workspace_config_fingerprint
         response = await graph.client.http.post(
             f"/dcode/threads/{thread_id}/workspace",
-            json={
-                "cwd": cwd,
-                "workspace_config": self._workspace_config,
-                "config_fingerprint": self._workspace_config_fingerprint,
-            },
+            json=payload,
         )
         if not isinstance(response, dict) or not isinstance(
             response.get("workspace"), dict
@@ -834,13 +834,20 @@ class RemoteAgent:
     def set_workspace(
         self,
         cwd: str,
-        config: Mapping[str, Any],
+        config: Mapping[str, Any] | None = None,
         *,
-        config_fingerprint: str,
+        config_fingerprint: str | None = None,
     ) -> None:
-        """Configure the explicit workspace used when binding threads."""
+        """Configure the explicit workspace used when binding threads.
+
+        Raises:
+            ValueError: If only one policy field is provided.
+        """
+        if (config is None) != (config_fingerprint is None):
+            msg = "Workspace policy and fingerprint must be configured together."
+            raise ValueError(msg)
         self._workspace_cwd = cwd
-        self._workspace_config = dict(config)
+        self._workspace_config = dict(config) if config is not None else None
         self._workspace_config_fingerprint = config_fingerprint
         self._workspaces.clear()
 

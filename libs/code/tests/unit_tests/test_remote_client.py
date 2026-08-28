@@ -1343,6 +1343,29 @@ class TestRemoteAgentWorkspace:
             "config_fingerprint": "config-fingerprint",
         }
 
+    async def test_binding_can_defer_policy_to_external_server(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        post = AsyncMock(return_value={"workspace": {"workspace_id": "remote"}})
+        graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
+        agent.set_workspace("/workspace/project")
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            workspace = await agent._workspace_for_thread(
+                {"configurable": {"thread_id": "thread-1"}}
+            )
+
+        assert workspace == {"workspace_id": "remote"}
+        post.assert_awaited_once_with(
+            "/dcode/threads/thread-1/workspace",
+            json={"cwd": "/workspace/project"},
+        )
+
+    def test_policy_and_fingerprint_must_be_configured_together(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+
+        with pytest.raises(ValueError, match="configured together"):
+            agent.set_workspace("/workspace/project", {"enable_shell": True})
+
     async def test_binding_requires_explicit_workspace(self) -> None:
         agent = RemoteAgent("http://localhost:1234")
 

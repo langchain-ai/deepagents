@@ -4601,20 +4601,14 @@ class DeepAgentsApp(App):
 
         Returns:
             The configured client.
-
-        Raises:
-            RuntimeError: If an external server declares another workspace.
         """
+        if self._server_kwargs is None:
+            agent.set_workspace(self._cwd)
+            return agent
+
         from deepagents_code._server_config import ServerConfig
 
         config = ServerConfig.from_env()
-        if (
-            self._server_kwargs is None
-            and config.cwd is not None
-            and Path(config.cwd) != Path(self._cwd)
-        ):
-            msg = "Remote server workspace does not match the current session."
-            raise RuntimeError(msg)
         agent.set_workspace(
             self._cwd,
             config.to_workspace_payload(),

@@ -4,6 +4,7 @@ An `eval` tool is available. It runs JavaScript in a persistent REPL.
 
 - State (variables, functions) persists across tool calls and across multiple turns for this conversation thread.
 - Top-level `await` works; Promises resolve before the call returns.
+- Evaluations sharing this REPL are serialized. Put dependent work in one script and use `var` or an IIFE for temporary bindings that may repeat.
 - Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are unavailable or stubbed).
 - The REPL has no access to host tools, files, or the network: it is pure computation. Return values to communicate results.
 - Timeout: 5.0s per call. Memory: 64 MB total.
@@ -233,3 +234,9 @@ the workflow directly when it is small or sequential. Use a bounded delegation
 only for independent work that cannot be handled efficiently in the current
 script. Never delegate a subagent solely to read or parse data already available
 to this agent.
+
+
+Available agent types (use exactly one of these):
+<available-agent-types>
+- `general-purpose`
+</available-agent-types>

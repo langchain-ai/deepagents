@@ -631,6 +631,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         description=description,
         infer_schema=False,
         args_schema=TaskToolSchema,
+        metadata={"deepagents_subagent_types": list(subagent_graphs)},
     )
 
 

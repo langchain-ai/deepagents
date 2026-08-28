@@ -130,6 +130,19 @@ def _resolve_thread_id(fallback: str) -> str:
     return str(thread_id)
 
 
+def _available_agent_types(task_tool: BaseTool) -> tuple[str, ...]:
+    """Read the configured subagent names attached to the task tool."""
+    metadata = getattr(task_tool, "metadata", None)
+    raw_names = (
+        metadata.get("deepagents_subagent_types")
+        if isinstance(metadata, dict)
+        else None
+    )
+    if not isinstance(raw_names, (list, tuple)):
+        return ()
+    return tuple(name for name in raw_names if isinstance(name, str) and name)
+
+
 @beta()
 class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     """Middleware exposing a JS REPL to the agent.
@@ -529,8 +542,12 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         request_tools: list[BaseTool] = list(getattr(request, "tools", []) or [])
 
         subagent_section = ""
-        if self._subagents and find_subagent_task_tool(request_tools) is not None:
-            subagent_section = render_subagent_system_prompt(tool_name=self._tool_name)
+        task_tool = find_subagent_task_tool(request_tools)
+        if self._subagents and task_tool is not None:
+            subagent_section = render_subagent_system_prompt(
+                tool_name=self._tool_name,
+                available_agent_types=_available_agent_types(task_tool),
+            )
 
         if self._ptc is None:
             return self._base_prompt(ptc_attached=False) + subagent_section

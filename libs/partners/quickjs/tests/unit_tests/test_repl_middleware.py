@@ -269,6 +269,7 @@ def test_system_prompt_includes_subagent_guidance_when_specs_configured() -> Non
     )
     assert "### Dispatching Subagents with `task`" in sys_text
     assert "await task({" in sys_text
+    assert "`worker`" in sys_text
 
 
 def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
@@ -1493,15 +1494,8 @@ async def test_async_deadlock_detection(repl: _ThreadREPL) -> None:
     assert outcome.error_type == "Deadlock"
 
 
-async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
-    """Overlapping async evals on the same context surface as
-    `ConcurrentEvalError` rather than silently serialising.
-
-    A model issuing overlapping evals against shared state is almost
-    always a prompting bug; a loud failure is a better signal than
-    silent queueing. The slow tool forces a yield so the two evals
-    actually overlap (pure sync code takes the non-promise fast path).
-    """
+async def test_async_concurrent_calls_are_serialized(repl: _ThreadREPL) -> None:
+    """Overlapping eval calls share one ordered persistent context."""
 
     class _NoArgs(BaseModel):
         pass
@@ -1522,7 +1516,9 @@ async def test_async_concurrent_calls_surface_error(repl: _ThreadREPL) -> None:
         repl.eval_async("await tools.slow({})"),
         repl.eval_async("await tools.slow({})"),
     )
-    assert "ConcurrentEval" in {a.error_type, b.error_type}, (a, b)
+    assert a.error_type is None, a
+    assert b.error_type is None, b
+    assert {a.result, b.result} == {"ok"}
 
 
 def test_sync_path_still_works(repl: _ThreadREPL) -> None:

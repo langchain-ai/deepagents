@@ -22,6 +22,8 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{repl_intro_line}\n\n"
     "{state_persistence_line}\n"
     "- Top-level `await` works; Promises resolve before the call returns.\n"
+    "- Evaluations sharing this REPL are serialized. Put dependent work in one "
+    "script and use `var` or an IIFE for temporary bindings that may repeat.\n"
     "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
     "APIs (`fetch`, `require`, `fs`, `process`, real `Date.now()` are "
     "unavailable or stubbed).\n"
@@ -318,9 +320,18 @@ def render_repl_system_prompt(
     )
 
 
-def render_subagent_system_prompt(*, tool_name: str = "eval") -> str:
+def render_subagent_system_prompt(
+    *, tool_name: str = "eval", available_agent_types: Sequence[str] | None = None
+) -> str:
     """Render guidance for the top-level QuickJS `task` global."""
-    return _SUBAGENT_SYSTEM_PROMPT_TEMPLATE.replace("{tool_name}", tool_name)
+    prompt = _SUBAGENT_SYSTEM_PROMPT_TEMPLATE.replace("{tool_name}", tool_name)
+    if not available_agent_types:
+        return prompt
+    names = "\n".join(f"- `{name}`" for name in available_agent_types)
+    return (
+        f"{prompt}\n\nAvailable agent types (use exactly one of these):\n"
+        f"<available-agent-types>\n{names}\n</available-agent-types>"
+    )
 
 
 def render_eval_tool_code_doc(*, mode: Literal["thread", "turn", "call"]) -> str:

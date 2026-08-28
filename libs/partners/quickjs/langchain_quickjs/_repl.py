@@ -488,6 +488,7 @@ class _ThreadREPL:
         self._subagents_enabled = subagents_enabled
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._ctx: Context | None = None
+        self._eval_lock: asyncio.Lock | None = None
         # PTC state. `_registered_tools` tracks which camel-case names
         # have already had their host-function bridge installed on the
         # QuickJS context. Host functions cannot be un-registered, so we
@@ -515,6 +516,7 @@ class _ThreadREPL:
         worker.run_sync(self._ainit())
 
     async def _ainit(self) -> None:
+        self._eval_lock = asyncio.Lock()
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
         if self._capture_console:
             self._install_console()
@@ -901,26 +903,37 @@ class _ThreadREPL:
             inject_globals=inject_globals,
         )
 
-    async def _aeval_async(  # noqa: C901, PLR0912, PLR0915
+    async def _aeval_async(
         self,
         code: str,
         *,
         outer_runtime: ToolRuntime | None = None,
         outer_loop: asyncio.AbstractEventLoop | None = None,
     ) -> EvalOutcome:
-        """Uses `ctx.eval_async` directly.
+        """Serialize evaluations that share one persistent QuickJS context."""
+        eval_lock = self._eval_lock
+        if eval_lock is None:
+            msg = "QuickJS eval lock is not initialized"
+            raise RuntimeError(msg)
+        async with eval_lock:
+            return await self._aeval_unlocked(
+                code,
+                outer_runtime=outer_runtime,
+                outer_loop=outer_loop,
+            )
 
-        Overlapping evals on the same context surface as
-        `ConcurrentEvalError` (recorded in `EvalOutcome.error_type`).
-        We intentionally do not queue: a model dispatching overlapping
-        evals against shared state is almost always a prompting bug,
-        and a loud failure is a better signal than silent serialisation.
-        """
+    async def _aeval_unlocked(  # noqa: C901, PLR0912, PLR0915
+        self,
+        code: str,
+        *,
+        outer_runtime: ToolRuntime | None = None,
+        outer_loop: asyncio.AbstractEventLoop | None = None,
+    ) -> EvalOutcome:
+        """Evaluate code while holding the context lock."""
         ctx = self._require_ctx()
         outcome = EvalOutcome()
-        # Save/restore rather than clear-on-exit: a second eval that hits
-        # ConcurrentEvalError would otherwise null out the in-flight
-        # eval's state and orphan its bridge calls.
+        # Save/restore so nested bridge callbacks cannot clear the active
+        # evaluation's dispatch state.
         prev_ptc_state = self._ptc_state
         self._ptc_state = _PTCState(
             remaining_calls=self._max_ptc_calls,

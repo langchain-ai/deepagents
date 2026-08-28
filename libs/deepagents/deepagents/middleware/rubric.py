@@ -1004,7 +1004,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         grader_state = state
         if self._prepare_messages_for_grader:
             grader_state = cast("RubricState", dict(state))
-            grader_state["messages"] = self._prepare_messages_for_grader(state.get("messages", []))
+            grader_state["messages"] = self._prepare_messages_for_grader(list(state.get("messages", [])))
         payload = self._build_grader_payload(grader_state, iteration, correction)
         grader_input = dict(self._build_grader_state(grader_state, iteration)) if self._build_grader_state else {}
         if "messages" in grader_input:

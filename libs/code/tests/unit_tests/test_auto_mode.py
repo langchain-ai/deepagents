@@ -39,6 +39,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import StateGraph
 from langgraph.runtime import ExecutionInfo
 from langgraph.types import Command
+from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents_code._ask_user_types import (
@@ -4545,6 +4546,104 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         "review_started",
         "review_completed",
     ]
+
+
+class _RecordingTracingClient:
+    """Stand-in for `langsmith.Client` that records what a run posts."""
+
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+        self.updated: list[dict[str, Any]] = []
+
+    def create_run(self, **kwargs: Any) -> None:
+        self.created.append(kwargs)
+
+    def update_run(self, **kwargs: Any) -> None:
+        self.updated.append(kwargs)
+
+
+def _review_span(client: _RecordingTracingClient) -> dict[str, Any]:
+    """Return the single closed `auto_classifier_review` run."""
+    spans = [
+        run for run in client.updated if run.get("name") == "auto_classifier_review"
+    ]
+    assert len(spans) == 1
+    return spans[0]
+
+
+def _review_span_inputs(client: _RecordingTracingClient) -> dict[str, Any]:
+    """Return the review run's inputs, which travel on the create, not the close."""
+    opens = [
+        run for run in client.created if run.get("name") == "auto_classifier_review"
+    ]
+    assert len(opens) == 1
+    return cast("dict[str, Any]", opens[0]["inputs"])
+
+
+async def test_classifier_timeout_closes_review_span_with_error(tmp_path: Path) -> None:
+    """A deadline reaches tracing as a failed span, not one that never ended."""
+
+    class _SlowModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(5)
+            return self.result
+
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=0.05)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_SlowModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    client = _RecordingTracingClient()
+
+    with tracing_context(enabled=True, client=cast("Any", client)):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    span = _review_span(client)
+    assert span["end_time"] is not None
+    assert "_ClassifierDeadlineExceededError" in span["error"]
+    # No verdict was reached, so the span must not claim one.
+    assert not span["outputs"]
+
+
+async def test_classifier_review_span_records_verdict(tmp_path: Path) -> None:
+    """A completed review closes the span with no error and a decision count."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    client = _RecordingTracingClient()
+
+    with tracing_context(enabled=True, client=cast("Any", client)):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    span = _review_span(client)
+    assert span["error"] is None
+    assert span["outputs"] == {"decision_count": 1}
+    # Names identify the batch; arguments can carry secrets and stay out.
+    assert _review_span_inputs(client) == {
+        "tool_count": 1,
+        "tools": ["delete"],
+        "classifier_model": "inherited",
+    }
 
 
 @pytest.mark.parametrize("budget", [0, -1.0, float("nan"), float("inf")])

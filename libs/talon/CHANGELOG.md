@@ -2,10 +2,9 @@
 
 ## [0.0.6](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.5...deepagents-talon==0.0.6) (2026-08-28)
 
-
 ### Bug Fixes
 
-* **talon:** drop extract-zip from the WhatsApp bridge dependency tree ([#5924](https://github.com/langchain-ai/deepagents/issues/5924)) ([7301d01](https://github.com/langchain-ai/deepagents/commit/7301d01e483d0b76745c725134ec09db82f38856))
+- Removed `extract-zip` from the WhatsApp bridge dependency tree. ([#5924](https://github.com/langchain-ai/deepagents/issues/5924))
 
 ## [0.0.5](https://github.com/langchain-ai/deepagents/compare/deepagents-talon==0.0.4...deepagents-talon==0.0.5) (2026-08-26)
 

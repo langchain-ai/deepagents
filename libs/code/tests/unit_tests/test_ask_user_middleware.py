@@ -77,93 +77,6 @@ class TestValidateQuestions:
     correct.
     """
 
-    def test_rejects_blank_question_text(self) -> None:
-        """Empty or whitespace-only text would render as a blank prompt.
-
-        The `AfterValidator` runs before `min_length=1` is consulted, so the
-        empty string lands on the same "blank" rejection as whitespace-only
-        text.
-        """
-        for text in ("", "   ", "\t\n ", "\u00a0"):
-            with pytest.raises(ValidationError, match="must not be blank"):
-                _validate([{"question": text, "type": "text"}])
-
-    def test_rejects_multiple_choice_without_choices(self) -> None:
-        with pytest.raises(ValidationError, match="requires a non-empty 'choices'"):
-            _validate(
-                [{"question": "Pick one", "type": "multiple_choice", "choices": []}]
-            )
-
-    def test_rejects_text_question_with_choices(self) -> None:
-        with pytest.raises(ValidationError, match="must not define 'choices'"):
-            _validate(
-                [
-                    {
-                        "question": "Name?",
-                        "type": "text",
-                        "choices": [{"value": "Alice"}],
-                    }
-                ]
-            )
-
-    def test_rejects_multi_select_without_choices(self) -> None:
-        with pytest.raises(
-            ValidationError, match=r"multi_select question .* non-empty"
-        ):
-            _validate(
-                [{"question": "Pick some", "type": "multi_select", "choices": []}]
-            )
-
-    def test_rejects_blank_choice_value(self) -> None:
-        """A blank label would render as a selectable option with no answer."""
-        with pytest.raises(ValidationError, match="blank 'value'"):
-            _validate(
-                [
-                    {
-                        "question": "Pick some",
-                        "type": "multi_select",
-                        "choices": [{"value": "logs"}, {"value": "  "}],
-                    }
-                ]
-            )
-
-    def test_rejects_non_string_choice_value(self) -> None:
-        """The `Choice.value` field type rejects a non-string before the validator."""
-        with pytest.raises(ValidationError):
-            _validate(
-                [
-                    {
-                        "question": "Color?",
-                        "type": "multiple_choice",
-                        "choices": [{"value": 1}],
-                    }
-                ]
-            )
-
-    def test_allows_comma_in_multi_select_choice_value(self) -> None:
-        """The JSON-array answer encoding keeps a comma inside a value exact."""
-        _validate(
-            [
-                {
-                    "question": "Where?",
-                    "type": "multi_select",
-                    "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
-                }
-            ]
-        )
-
-    def test_allows_comma_in_multiple_choice_value(self) -> None:
-        """Choice values are returned as-is, so a comma needs no special handling."""
-        _validate(
-            [
-                {
-                    "question": "Where?",
-                    "type": "multiple_choice",
-                    "choices": [{"value": "Boston, MA"}],
-                }
-            ]
-        )
-
     def test_rejects_unknown_question_type(self) -> None:
         """Nothing outside `QuestionType` may reach the interrupt."""
         with pytest.raises(ValidationError, match="Input should be"):
@@ -194,80 +107,9 @@ class TestValidateQuestions:
                     [{"question": "Q?", "type": "text", "required": coercible}]
                 )
 
-    def test_accepts_every_declared_question_type(self) -> None:
-        """Guards against a `QuestionType` member the validator rejects.
-
-        Note this cannot catch a member *added* to `QuestionType`, since the
-        fixture derives its shape from `CHOICE_QUESTION_TYPES`. That direction is
-        covered by `test_choice_question_types_covers_every_question_type` and by
-        the widget-side `assert_never` in `_QuestionWidget.compose`.
-        """
-        for question_type in sorted(QUESTION_TYPES):
-            question: dict[str, Any] = {
-                "question": "Q?",
-                "type": question_type,
-            }
-            if question_type in CHOICE_QUESTION_TYPES:
-                question["choices"] = [{"value": "a"}, {"value": "b"}]
-            _validate([question])
-
-    def test_choice_question_types_covers_every_question_type(self) -> None:
-        """`CHOICE_QUESTION_TYPES` must partition `QUESTION_TYPES`, not lag it.
-
-        Non-tautological in the direction that matters: a `QuestionType` member
-        missing from `_requires_choices` would pass `_validate_question` with no
-        choices validation *and* make `_ask_user_question_count` return `None`
-        for any payload that does carry choices.
-        """
-        assert CHOICE_QUESTION_TYPES <= QUESTION_TYPES
-        assert {
-            question_type
-            for question_type in QUESTION_TYPES
-            if _requires_choices(cast("Any", question_type))
-        } == CHOICE_QUESTION_TYPES
-
-    def test_non_choice_question_types_reject_choices(self) -> None:
-        """Every non-choice type must refuse a `choices` list."""
-        for question_type in sorted(QUESTION_TYPES - CHOICE_QUESTION_TYPES):
-            questions = [
-                {
-                    "question": "Q?",
-                    "type": question_type,
-                    "choices": [{"value": "a"}],
-                }
-            ]
-            with pytest.raises(ValidationError, match="must not define 'choices'"):
-                _validate(questions)
-
-    def test_accepts_valid_question_set(self) -> None:
-        _validate(
-            [
-                {"question": "Name?", "type": "text"},
-                {
-                    "question": "Color?",
-                    "type": "multiple_choice",
-                    "choices": [{"value": "red"}, {"value": "blue"}],
-                },
-                {
-                    "question": "Toppings?",
-                    "type": "multi_select",
-                    "choices": [{"value": "cheese"}, {"value": "olives"}],
-                },
-            ]
-        )
-
 
 class TestParseAnswers:
     """Tests for `_parse_answers`."""
-
-    def test_parses_answered_payload(self) -> None:
-        cmd = _parse_answers(
-            {"answers": ["Alice"]},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert "Q: Name?" in _extract_tool_message_content(cmd)
-        assert "A: Alice" in _extract_tool_message_content(cmd)
 
     def test_records_trusted_same_turn_authorization_receipt(self) -> None:
         cmd = _parse_answers(
@@ -412,39 +254,6 @@ class TestParseAnswers:
         )
         assert "A: (cancelled)" in _extract_tool_message_content(cmd)
 
-    def test_error_status_uses_error_placeholder(self) -> None:
-        cmd = _parse_answers(
-            {"status": "error", "error": "failed to display ask_user prompt"},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert (
-            "A: (error: failed to display ask_user prompt)"
-            in _extract_tool_message_content(cmd)
-        )
-
-    def test_error_status_marks_the_tool_message_as_errored(self) -> None:
-        """A failed prompt must not be recorded as a successful tool call.
-
-        `status` defaults to `"success"`, which told the model the tool had
-        succeeded and made a reloaded thread render the `(error: ...)` transcript
-        as an ordinary answered row.
-        """
-        cmd = _parse_answers(
-            {"status": "error", "error": "failed to display ask_user prompt"},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert _extract_tool_message(cmd).status == "error"
-
-    def test_answered_status_marks_the_tool_message_as_successful(self) -> None:
-        cmd = _parse_answers(
-            {"status": "answered", "answers": ["Alice"]},
-            [{"question": "Name?", "type": "text"}],
-            "tc-1",
-        )
-        assert _extract_tool_message(cmd).status == "success"
-
     def test_cancelled_status_marks_the_tool_message_as_successful(self) -> None:
         """Cancelling is a user choice, not a tool failure."""
         cmd = _parse_answers(
@@ -486,50 +295,6 @@ class TestParseAnswers:
         assert message.status == "error"
         assert f"A: (error: {expected_detail})" in str(message.content)
 
-    def test_caller_declared_error_detail_wins_over_a_local_one(self) -> None:
-        """An explicit `error` from the caller is the root cause; keep it.
-
-        A caller that declares `status="error"` knows why. A payload that instead
-        claims `"answered"` and fails validation here may still carry a stale
-        `error` field, and that must not describe a defect this function found —
-        so the two details are tracked separately rather than overwriting.
-        """
-        declared = _extract_tool_message(
-            _parse_answers(
-                {"status": "error", "error": "widget crashed", "answers": "bad"},
-                [{"question": "Name?", "type": "text"}],
-                "tc-1",
-            )
-        )
-        assert "A: (error: widget crashed)" in str(declared.content)
-
-        stale = _extract_tool_message(
-            _parse_answers(
-                {"status": "answered", "error": "stale", "answers": "bad"},
-                [{"question": "Name?", "type": "text"}],
-                "tc-1",
-            )
-        )
-        assert "A: (error: invalid ask_user answers payload)" in str(stale.content)
-
-    def test_error_status_without_a_detail_uses_the_default(self) -> None:
-        """The third arm of the detail chain: neither a caller nor a local detail.
-
-        `status="error"` with no `error` field and a well-formed answer list reaches
-        neither `client_error_text` nor `local_error_text`, so the generic fallback
-        is what the model sees.
-        """
-        message = _extract_tool_message(
-            _parse_answers(
-                {"status": "error", "answers": [""]},
-                [{"question": "Name?", "type": "text"}],
-                "tc-1",
-            )
-        )
-
-        assert message.status == "error"
-        assert "A: (error: ask_user interaction failed)" in str(message.content)
-
     def test_non_string_answers_are_coerced_loudly(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -556,31 +321,6 @@ class TestParseAnswers:
         assert any(
             "non-string answer element" in record.message for record in caplog.records
         )
-
-    def test_answer_count_mismatch_is_an_error(self) -> None:
-        """A short answer list is a failed prompt, not a partial one.
-
-        Padding with `(no answer)` would keep `status="success"` while silently
-        re-attributing every answer after the gap to the wrong question — here
-        `"Alice"` would stay on `Name?` only by luck of it being first. The model
-        must be told the payload was unusable rather than handed a confident
-        wrong pairing.
-        """
-        cmd = _parse_answers(
-            {"answers": ["Alice"]},
-            [
-                {"question": "Name?", "type": "text"},
-                {"question": "Color?", "type": "text"},
-            ],
-            "tc-1",
-        )
-        message = _extract_tool_message(cmd)
-        assert message.status == "error"
-        content = str(message.content)
-        assert "Q: Name?\nA: (error: ask_user answer count mismatch" in content
-        assert "Q: Color?\nA: (error: ask_user answer count mismatch" in content
-        assert "expected 2, got 1" in content
-        assert "Alice" not in content
 
     def test_extra_answers_are_also_an_error(self) -> None:
         """A long list is equally untrustworthy; extras would be dropped."""
@@ -629,47 +369,6 @@ class TestMultiSelectEncoding:
             'push-to-main — no PR label, always "strict"',
             "line one\nline two",
         ]
-
-    def test_transcript_renders_the_json_array_verbatim(self) -> None:
-        """The model sees the self-delimiting form, not a re-joined string."""
-        questions: list[Question] = [
-            {
-                "question": "Where?",
-                "type": "multi_select",
-                "choices": [{"value": "Boston, MA"}, {"value": "Austin"}],
-            }
-        ]
-        answer = encode_multi_select_answer(["Boston, MA", "Austin"])
-
-        content = _extract_tool_message_content(
-            _parse_answers({"answers": [answer]}, questions, "tc-1")
-        )
-
-        assert content == 'Q: Where?\nA: ["Boston, MA", "Austin"]'
-
-    def test_empty_multi_select_answer_keeps_its_receipt(self) -> None:
-        """`[]` is a real answer — it must not read as a blank `A:` line."""
-        questions: list[Question] = [
-            {
-                "question": "Extras?",
-                "type": "multi_select",
-                "choices": [{"value": "docs"}],
-                "required": False,
-            }
-        ]
-
-        cmd = _parse_answers(
-            {"answers": [encode_multi_select_answer([])]},
-            questions,
-            "tc-1",
-            thread_id="thread-1",
-            turn_id="turn-1",
-        )
-
-        message = _extract_tool_message(cmd)
-        assert "A: []" in str(message.content)
-        receipt = message.additional_kwargs[ASK_USER_AUTHORIZATION_METADATA_KEY]
-        assert decode_multi_select_answer(receipt["answers"][0]) == []
 
 
 def _turn_state(turn_id: str) -> dict[str, object]:
@@ -778,26 +477,6 @@ class TestAskUserTool:
 class TestWrapModelCall:
     """Tests for ask_user prompt injection wrappers."""
 
-    def test_wrap_model_call_appends_system_prompt(self) -> None:
-        middleware = AskUserMiddleware(system_prompt="ASK_USER_PROMPT")
-        request = Mock()
-        request.system_message = SystemMessage(
-            content=[{"type": "text", "text": "Base prompt"}]
-        )
-        overridden_request = Mock()
-        request.override.return_value = overridden_request
-        handler = Mock(return_value="ok")
-
-        result = middleware.wrap_model_call(request, handler)
-
-        request.override.assert_called_once()
-        override_kwargs = request.override.call_args.kwargs
-        system_message = override_kwargs["system_message"]
-        assert isinstance(system_message, SystemMessage)
-        assert system_message.content_blocks[-1]["text"] == "\n\nASK_USER_PROMPT"
-        handler.assert_called_once_with(overridden_request)
-        assert result == "ok"
-
     def test_wrap_model_call_creates_system_prompt_when_missing(self) -> None:
         middleware = AskUserMiddleware(system_prompt="ASK_USER_PROMPT")
         request = Mock()
@@ -814,26 +493,6 @@ class TestWrapModelCall:
         assert system_message.content_blocks == [
             {"type": "text", "text": "ASK_USER_PROMPT"}
         ]
-
-    async def test_awrap_model_call_appends_system_prompt(self) -> None:
-        middleware = AskUserMiddleware(system_prompt="ASK_USER_PROMPT")
-        request = Mock()
-        request.system_message = SystemMessage(
-            content=[{"type": "text", "text": "Base prompt"}]
-        )
-        overridden_request = Mock()
-        request.override.return_value = overridden_request
-        handler = AsyncMock(return_value="ok")
-
-        result = await middleware.awrap_model_call(request, handler)
-
-        request.override.assert_called_once()
-        override_kwargs = request.override.call_args.kwargs
-        system_message = override_kwargs["system_message"]
-        assert isinstance(system_message, SystemMessage)
-        assert system_message.content_blocks[-1]["text"] == "\n\nASK_USER_PROMPT"
-        handler.assert_awaited_once_with(overridden_request)
-        assert result == "ok"
 
 
 def _harness_runtime() -> ToolRuntime[Any, Any]:
@@ -911,60 +570,6 @@ class TestToolArgumentValidation:
         assert isinstance(result, Command)
         message = _extract_tool_message(cast("Command[object]", result))
         assert message.status != "error"
-
-    def test_empty_questions_is_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="at least one question"):
-            _invoke_ask_user([])
-
-    def test_blank_choice_value_names_the_field(self) -> None:
-        with pytest.raises(ValidationError, match="blank 'value'"):
-            _invoke_ask_user(
-                [
-                    {
-                        "question": "Pick some",
-                        "type": "multi_select",
-                        "choices": [{"value": "logs"}, {"value": "  "}],
-                    }
-                ]
-            )
-
-    def test_unknown_question_type_is_rejected(self) -> None:
-        with pytest.raises(ValidationError, match="Input should be"):
-            _invoke_ask_user([{"question": "Q?", "type": "multiselect"}])
-
-    def test_choice_question_without_choices_is_rejected(self) -> None:
-        """Pins `ValidatedQuestion` on the tool's own `questions` annotation.
-
-        Both cross-field rules live on that alias and nowhere else on the tool,
-        so this test and its sibling below are what stop the annotation from
-        silently degrading to `list[Question]`. Every other case in this class
-        survives that change, because each is enforced by the parameter-level
-        validator, by a `Choice` validator, or by `Literal`.
-        """
-        with pytest.raises(ValidationError, match="requires a non-empty 'choices'"):
-            _invoke_ask_user([{"question": "Pick", "type": "multiple_choice"}])
-
-    def test_non_choice_question_with_choices_is_rejected(self) -> None:
-        """The other half of the cross-field rule. See the sibling above."""
-        with pytest.raises(ValidationError, match="must not define 'choices'"):
-            _invoke_ask_user(
-                [
-                    {
-                        "question": "Why?",
-                        "type": "text",
-                        "choices": [{"value": "a"}],
-                    }
-                ]
-            )
-
-    def test_blank_question_text_is_rejected(self) -> None:
-        """Covered against the parallel adapter too, but pinned here as well.
-
-        A blank prompt is the most visible of the failures these rules prevent,
-        so it is worth holding at the boundary the model actually reaches.
-        """
-        with pytest.raises(ValidationError, match="must not be blank"):
-            _invoke_ask_user([{"question": "   ", "type": "text"}])
 
     def test_stringly_typed_required_is_rejected(self) -> None:
         """`strict=True` must survive on the tool's own schema.

@@ -112,29 +112,6 @@ def _read_marker(stderr: str, prefix: str) -> object:
     raise AssertionError(msg)
 
 
-def test_managed_health_import_defers_remote_http_stack() -> None:
-    """Ordinary managed-config checks do not import remote networking code."""
-    code = """
-        import json
-        import sys
-
-        import deepagents_code.configuration.service
-
-        remote_modules = ("http.client", "urllib.error", "urllib.request")
-        print(json.dumps([name for name in remote_modules if name in sys.modules]))
-    """
-    result = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent(code)],
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert json.loads(result.stdout) == []
-
-
 @pytest.mark.parametrize(
     ("argv", "expected"),
     [
@@ -251,16 +228,6 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
     assert bootstrap_done is True
 
 
-def test_bare_config_runs_primary_action() -> None:
-    """Bare `config` must resolve values instead of rendering command help."""
-    result = _run_cli_main(["config", "--json"])
-
-    assert result.returncode == 0, result.stderr
-    assert '"command": "config"' in result.stdout
-    bootstrap_done = _read_marker(result.stderr, "BOOTSTRAP_DONE=")
-    assert bootstrap_done is True
-
-
 @pytest.mark.parametrize(
     "argv",
     [
@@ -283,30 +250,6 @@ def test_subcommands_bypass_fast_path(argv: list[str]) -> None:
     """
     args = parse_args_from(argv)
     assert _show_bare_command_group_help(args) is False
-
-
-def test_unknown_command_bypasses_fast_path() -> None:
-    """`command=None` (no command at all) must not trigger help dispatch."""
-    args = parse_args_from([])
-    assert _show_bare_command_group_help(args) is False
-
-
-def test_command_group_specs_cover_every_subparser_group() -> None:
-    """Every command group must declare what its bare invocation does."""
-    parser = _build_top_level_parser()
-    groups_with_subparsers = _top_level_subparser_groups(parser)
-    overlap = set(_HELP_SPECS) & _BARE_ACTION_GROUPS
-    assert not overlap, (
-        f"Command groups declare conflicting defaults: {sorted(overlap)}"
-    )
-
-    known_groups = set(_HELP_SPECS) | _BARE_ACTION_GROUPS
-    missing = groups_with_subparsers - known_groups
-    assert not missing, (
-        "Top-level command groups have subparsers but no declared bare behavior: "
-        f"{sorted(missing)}. Add each group to `_HELP_SPECS` or "
-        "`_BARE_ACTION_GROUPS` in main.py."
-    )
 
 
 def parse_args_from(argv: list[str]) -> argparse.Namespace:

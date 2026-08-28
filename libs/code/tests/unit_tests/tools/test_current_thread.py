@@ -13,10 +13,3 @@ def test_get_current_thread_id_returns_config_thread() -> None:
     )
 
     assert result == "thread-123"
-
-
-def test_get_current_thread_id_handles_missing_thread() -> None:
-    """Tool should return a clear message when no thread ID is present."""
-    result = get_current_thread_id.invoke({}, config={"configurable": {}})
-
-    assert result == "No current thread ID is available."

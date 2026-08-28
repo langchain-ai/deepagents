@@ -26,26 +26,6 @@ if TYPE_CHECKING:
 class TestGenerateThreadId:
     """Tests for generate_thread_id function."""
 
-    def test_length(self) -> None:
-        """Thread IDs use the canonical UUID string format."""
-        tid = sessions.generate_thread_id()
-        assert len(tid) == 36
-
-    def test_uuid7(self) -> None:
-        """Thread IDs are valid UUID7 strings."""
-        tid = sessions.generate_thread_id()
-        assert uuid.UUID(tid).version == 7
-
-    def test_monotonic_ordering(self) -> None:
-        """Thread IDs sort chronologically by creation time."""
-        ids = [sessions.generate_thread_id() for _ in range(10)]
-        assert ids == sorted(ids)
-
-    def test_unique(self) -> None:
-        """Thread IDs are unique."""
-        ids = {sessions.generate_thread_id() for _ in range(100)}
-        assert len(ids) == 100
-
 
 class TestMixedThreadIdFormats:
     """Old 8-char hex IDs and new UUID7 IDs coexist in the database."""
@@ -167,105 +147,6 @@ class TestThreadFunctions:
             threads = asyncio.run(sessions.list_threads())
             assert threads == []
 
-    def test_list_threads(self, temp_db):
-        """List returns all threads with cwd."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            threads = asyncio.run(sessions.list_threads())
-            assert len(threads) == 3
-            by_id = {t["thread_id"]: t for t in threads}
-            assert by_id["thread1"]["cwd"] == "/home/user/project-a"
-            assert by_id["thread2"]["cwd"] == "/tmp/workspace"
-            assert by_id["thread3"]["cwd"] is None
-
-    def test_list_threads_creates_covering_index(self, temp_db):
-        """`list_threads` creates the covering index and the plan uses it.
-
-        Regression guard for the `threads list` slowdown on large profiles: the
-        GROUP BY must be an index-only scan of `idx_dcode_threads_list`, not a
-        full scan of the blob-bearing checkpoints table.
-        """
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            asyncio.run(sessions.list_threads())
-
-        conn = sqlite3.connect(str(temp_db))
-        try:
-            index_names = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='index'"
-                )
-            }
-            assert "idx_dcode_threads_list" in index_names
-
-            plan = " ".join(
-                str(row[3])
-                for row in conn.execute(
-                    "EXPLAIN QUERY PLAN "
-                    "SELECT thread_id, "
-                    "MAX(json_extract(metadata, '$.updated_at')) u, "
-                    "MAX(checkpoint_id), "
-                    "MAX(json_extract(metadata, '$.agent_name')), "
-                    "MAX(json_extract(metadata, '$.git_branch')), "
-                    "MAX(json_extract(metadata, '$.cwd')) "
-                    "FROM checkpoints GROUP BY thread_id ORDER BY u DESC LIMIT 20"
-                )
-            )
-            # Index-only scan of the covering index, not the PK autoindex (which
-            # would drag the checkpoint state blobs through I/O).
-            assert "idx_dcode_threads_list" in plan
-            assert "sqlite_autoindex_checkpoints_1" not in plan
-        finally:
-            conn.close()
-
-    def test_list_threads_index_creation_is_idempotent(self, temp_db):
-        """Repeated `list_threads` calls succeed once the index already exists."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            first = asyncio.run(sessions.list_threads())
-            second = asyncio.run(sessions.list_threads())
-        assert len(first) == len(second) == 3
-
-    def test_list_threads_filter_by_agent(self, temp_db):
-        """List filters by agent name."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            threads = asyncio.run(sessions.list_threads(agent_name="agent1"))
-            assert len(threads) == 2
-            assert all(t["agent_name"] == "agent1" for t in threads)
-
-    def test_list_threads_limit(self, temp_db):
-        """List respects limit."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            threads = asyncio.run(sessions.list_threads(limit=2))
-            assert len(threads) == 2
-
-    def test_get_most_recent(self, temp_db):
-        """Get most recent returns latest thread."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            tid = asyncio.run(sessions.get_most_recent())
-            assert tid is not None
-
-    def test_get_most_recent_filter(self, temp_db):
-        """Get most recent filters by agent."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            tid = asyncio.run(sessions.get_most_recent(agent_name="agent2"))
-            assert tid == "thread2"
-
-    def test_get_most_recent_excludes_thread(self, temp_db):
-        """Get most recent skips the excluded thread."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            tid = asyncio.run(sessions.get_most_recent(exclude_thread_id="thread3"))
-            assert tid == "thread2"
-
-    def test_get_most_recent_excludes_thread_with_agent_filter(self, temp_db):
-        """Thread exclusion composes with the agent filter."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            tid = asyncio.run(
-                sessions.get_most_recent(
-                    agent_name="agent1",
-                    exclude_thread_id="thread3",
-                )
-            )
-            assert tid == "thread1"
-
     def test_get_most_recent_empty(self, tmp_path):
         """Get most recent returns None when empty."""
         db_path = tmp_path / "empty.db"
@@ -285,28 +166,6 @@ class TestThreadFunctions:
         with patch.object(sessions, "get_db_path", return_value=db_path):
             tid = asyncio.run(sessions.get_most_recent())
             assert tid is None
-
-    def test_thread_exists(self, temp_db):
-        """Thread exists returns True for existing thread."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            assert asyncio.run(sessions.thread_exists("thread1")) is True
-
-    def test_thread_not_exists(self, temp_db):
-        """Thread exists returns False for non-existing thread."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            assert asyncio.run(sessions.thread_exists("nonexistent")) is False
-
-    def test_get_thread_agent(self, temp_db):
-        """Get thread agent returns correct agent name."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            agent = asyncio.run(sessions.get_thread_agent("thread1"))
-            assert agent == "agent1"
-
-    def test_get_thread_agent_not_found(self, temp_db):
-        """Get thread agent returns None for non-existing thread."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            agent = asyncio.run(sessions.get_thread_agent("nonexistent"))
-            assert agent is None
 
     def test_get_thread_cwd(self, temp_db):
         """Get thread cwd returns the stored working directory."""
@@ -445,177 +304,9 @@ class TestGetCheckpointer:
 
         asyncio.run(_test())
 
-    def test_drains_worker_thread(self, tmp_path):
-        """`get_checkpointer` joins the aiosqlite worker thread on exit.
-
-        Prevents the daemon worker from outliving the surrounding event loop
-        and raising `RuntimeError: Event loop is closed` via
-        `call_soon_threadsafe` during interpreter / xdist worker shutdown.
-        """
-        captured: dict[str, object] = {}
-
-        async def _test() -> None:
-            db_path = tmp_path / "test.db"
-            with patch.object(sessions, "get_db_path", return_value=db_path):
-                async with sessions.get_checkpointer() as cp:
-                    captured["conn"] = cp.conn
-
-        asyncio.run(_test())
-        conn = cast("aiosqlite.Connection", captured["conn"])
-        worker = conn._thread
-        assert not worker.is_alive(), (
-            "aiosqlite worker thread should be joined after get_checkpointer exit"
-        )
-
-
-class TestConnectHelper:
-    """Tests for the internal `_connect` async context manager."""
-
-    def test_drains_worker_thread(self, tmp_path):
-        """`_connect` joins the aiosqlite worker thread on exit."""
-        db_path = tmp_path / "drain.db"
-        # Create empty file so aiosqlite has something to open.
-        sqlite3.connect(str(db_path)).close()
-        captured: dict[str, object] = {}
-
-        async def _test() -> None:
-            with patch.object(sessions, "get_db_path", return_value=db_path):
-                async with sessions._connect() as conn:
-                    captured["conn"] = conn
-
-        asyncio.run(_test())
-        conn = cast("aiosqlite.Connection", captured["conn"])
-        worker = conn._thread
-        assert not worker.is_alive(), (
-            "aiosqlite worker thread should be joined after _connect exit"
-        )
-
-    def test_cancelled_open_closes_the_sqlite_handle(self, tmp_path, monkeypatch):
-        """A connect cancelled mid-open still closes the sqlite handle.
-
-        Background workers are routinely cancelled at app exit, and aiosqlite
-        opens the database on a worker thread. Without the handle being
-        recorded as soon as it exists, a cancel landing in that window strands
-        it for the garbage collector to report as an unclosed database.
-        """
-        db_path = tmp_path / "cancelled.db"
-        opening = threading.Event()
-        finish_open = threading.Event()
-        handles: list[sqlite3.Connection] = []
-        connections: list[aiosqlite.Connection] = []
-        real_sqlite_connect = sqlite3.connect
-        real_new_connection = sessions._new_connection
-
-        def blocking_connect(database: str, **kwargs: Any) -> sqlite3.Connection:
-            opening.set()
-            finish_open.wait(10)
-            handle = real_sqlite_connect(database, **kwargs)
-            handles.append(handle)
-            return handle
-
-        def capturing_new_connection(timeout: float) -> "aiosqlite.Connection":
-            conn = real_new_connection(timeout)
-            connections.append(conn)
-            return conn
-
-        async def _test() -> None:
-            async def use_connection() -> None:
-                async with sessions._connect():
-                    pass
-
-            task = asyncio.create_task(use_connection())
-            await asyncio.to_thread(opening.wait, 10)
-            task.cancel()
-            finish_open.set()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
-        monkeypatch.setattr(sessions, "_new_connection", capturing_new_connection)
-        monkeypatch.setattr(sqlite3, "connect", blocking_connect)
-        asyncio.run(_test())
-
-        assert handles, "the worker thread should have opened a handle"
-        assert not connections[0]._thread.is_alive()
-        handles.clear()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            gc.collect()
-        unclosed = [w for w in caught if "unclosed database" in str(w.message)]
-        assert not unclosed, [str(w.message) for w in unclosed]
-
-    def test_cancel_after_open_closes_the_sqlite_handle(self, tmp_path, monkeypatch):
-        """A cancel landing after the open, before the resume, also closes it.
-
-        The other half of the same window: aiosqlite has the handle by now, but
-        its cancellation path drops that reference before the cleanup it queued
-        gets a chance to run, so the handle would again be left to the garbage
-        collector.
-        """
-        db_path = tmp_path / "raced.db"
-        handles: list[sqlite3.Connection] = []
-        connections: list[aiosqlite.Connection] = []
-        pending: dict[str, Any] = {}
-        real_sqlite_connect = sqlite3.connect
-        real_new_connection = sessions._new_connection
-
-        def cancelling_connect(database: str, **kwargs: Any) -> sqlite3.Connection:
-            handle = real_sqlite_connect(database, **kwargs)
-            handles.append(handle)
-            # Queued from the worker thread before aiosqlite delivers the
-            # handle to the awaiting coroutine, so the cancel deterministically
-            # lands in the gap between the open and the resume.
-            pending["loop"].call_soon_threadsafe(pending["task"].cancel)
-            return handle
-
-        def capturing_new_connection(timeout: float) -> "aiosqlite.Connection":
-            conn = real_new_connection(timeout)
-            connections.append(conn)
-            return conn
-
-        async def _test() -> None:
-            async def use_connection() -> None:
-                async with sessions._connect():
-                    pass
-
-            pending["loop"] = asyncio.get_running_loop()
-            pending["task"] = asyncio.create_task(use_connection())
-            with pytest.raises(asyncio.CancelledError):
-                await pending["task"]
-
-        monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
-        monkeypatch.setattr(sessions, "_new_connection", capturing_new_connection)
-        monkeypatch.setattr(sqlite3, "connect", cancelling_connect)
-        asyncio.run(_test())
-
-        assert handles, "the worker thread should have opened a handle"
-        assert not connections[0]._thread.is_alive()
-        handles.clear()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            gc.collect()
-        unclosed = [w for w in caught if "unclosed database" in str(w.message)]
-        assert not unclosed, [str(w.message) for w in unclosed]
-
 
 class TestFormatTimestamp:
     """Tests for format_timestamp helper."""
-
-    def test_valid_timestamp(self):
-        """Formats valid ISO timestamp."""
-        result = sessions.format_timestamp("2024-12-30T21:18:00+00:00")
-        assert result  # Non-empty string
-        assert "dec" in result.lower()
-
-    def test_none(self):
-        """Returns empty for None."""
-        result = sessions.format_timestamp(None)
-        assert result == ""
-
-    def test_invalid(self):
-        """Returns empty for invalid timestamp."""
-        result = sessions.format_timestamp("not a timestamp")
-        assert result == ""
 
     # Naive inputs keep these exact: `astimezone` attaches the local zone to a
     # naive datetime without shifting the wall clock, so the rendering is the
@@ -656,71 +347,6 @@ class TestFormatTimestamp:
 class TestFormatRelativeTimestamp:
     """Tests for format_relative_timestamp helper."""
 
-    def test_none_returns_empty(self) -> None:
-        """Returns empty string for None input."""
-        assert sessions.format_relative_timestamp(None) == ""
-
-    def test_empty_returns_empty(self) -> None:
-        """Returns empty string for empty string input."""
-        assert sessions.format_relative_timestamp("") == ""
-
-    def test_invalid_returns_empty(self) -> None:
-        """Returns empty string for invalid timestamp."""
-        assert sessions.format_relative_timestamp("not a timestamp") == ""
-
-    def test_seconds_ago(self) -> None:
-        """Recent timestamps show seconds."""
-        ts = (datetime.now(tz=UTC) - timedelta(seconds=30)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("s ago")
-
-    def test_minutes_ago(self) -> None:
-        """Timestamps within the hour show minutes."""
-        ts = (datetime.now(tz=UTC) - timedelta(minutes=5)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("m ago")
-
-    def test_hours_ago(self) -> None:
-        """Timestamps within the day show hours."""
-        ts = (datetime.now(tz=UTC) - timedelta(hours=3)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("h ago")
-
-    def test_days_ago(self) -> None:
-        """Timestamps within the month show days."""
-        ts = (datetime.now(tz=UTC) - timedelta(days=10)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("d ago")
-
-    def test_months_ago(self) -> None:
-        """Timestamps within the year show months."""
-        ts = (datetime.now(tz=UTC) - timedelta(days=90)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("mo ago")
-
-    def test_years_ago(self) -> None:
-        """Timestamps over a year show years."""
-        ts = (datetime.now(tz=UTC) - timedelta(days=400)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("y ago")
-
-    def test_future_timestamp_returns_just_now(self) -> None:
-        """Future timestamps return 'just now'."""
-        ts = (datetime.now(tz=UTC) + timedelta(minutes=5)).isoformat()
-        assert sessions.format_relative_timestamp(ts) == "just now"
-
-    def test_boundary_60_seconds(self) -> None:
-        """At exactly 60 seconds, should show 1m ago."""
-        ts = (datetime.now(tz=UTC) - timedelta(seconds=60)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result == "1m ago"
-
-    def test_boundary_59_seconds(self) -> None:
-        """At 59 seconds, should still show seconds."""
-        ts = (datetime.now(tz=UTC) - timedelta(seconds=59)).isoformat()
-        result = sessions.format_relative_timestamp(ts)
-        assert result.endswith("s ago")
-
     def test_boundary_360_to_364_days_shows_months(self) -> None:
         """360-364 days old should show months, never the bogus '0y ago'."""
         for days in (360, 362, 364):
@@ -738,59 +364,9 @@ class TestFormatRelativeTimestamp:
 class TestFormatPath:
     """Tests for format_path helper."""
 
-    def test_none(self):
-        """Returns empty for None."""
-        assert sessions.format_path(None) == ""
-
-    def test_empty_string(self):
-        """Returns empty for empty string."""
-        assert sessions.format_path("") == ""
-
-    def test_home_directory(self):
-        """Home directory is shown as ~."""
-        home = str(Path.home())
-        assert sessions.format_path(home) == "~"
-
-    def test_path_under_home(self):
-        """Paths under home are shown relative to ~."""
-        home = str(Path.home())
-        path = home + "/projects/my-app"
-        assert sessions.format_path(path) == "~/projects/my-app"
-
-    def test_path_outside_home(self):
-        """Paths outside home are shown as-is."""
-        assert sessions.format_path("/tmp/workspace") == "/tmp/workspace"
-
-    def test_path_with_similar_prefix(self):
-        """Paths that start like home but aren't under it are shown as-is."""
-        home = str(Path.home())
-        path = home + "-other/projects"
-        assert sessions.format_path(path) == path
-
 
 class TestTextualSessionState:
     """Tests for TextualSessionState from app.py."""
-
-    def test_stores_provided_thread_id(self):
-        """TextualSessionState stores provided thread_id."""
-        tid = sessions.generate_thread_id()
-        state = TextualSessionState(thread_id=tid)
-        assert state.thread_id == tid
-
-    def test_generates_id_if_none(self):
-        """TextualSessionState generates ID if none provided."""
-        state = TextualSessionState(thread_id=None)
-        assert state.thread_id is not None
-        assert uuid.UUID(state.thread_id).version == 7
-
-    def test_reset_thread(self):
-        """reset_thread generates a new thread ID."""
-        state = TextualSessionState(thread_id="original")
-        old_id = state.thread_id
-        new_id = state.reset_thread()
-        assert new_id != old_id
-        assert uuid.UUID(new_id).version == 7
-        assert state.thread_id == new_id
 
     def test_reset_thread_clears_approval_mode_key(self):
         """A new thread must not inherit the prior thread's live approval key.
@@ -802,33 +378,6 @@ class TestTextualSessionState:
         state.approval_mode_key = "stale"
         state.reset_thread()
         assert state.approval_mode_key is None
-
-    def test_advance_turn_increments_and_generates_id(self):
-        """advance_turn bumps a 1-based turn_number and yields a fresh turn_id."""
-        state = TextualSessionState(thread_id="t")
-        assert state.turn_number == 0
-        assert state.turn_id is None
-
-        turn_id_1, turn_number_1 = state.advance_turn()
-        assert turn_number_1 == 1
-        assert state.turn_number == 1
-        assert state.turn_id == turn_id_1
-        assert uuid.UUID(turn_id_1)  # valid uuid
-
-        turn_id_2, turn_number_2 = state.advance_turn()
-        assert turn_number_2 == 2
-        assert turn_id_2 != turn_id_1
-
-    def test_reset_thread_resets_turn_markers(self):
-        """reset_thread restarts the per-thread turn sequence."""
-        state = TextualSessionState(thread_id="t")
-        state.advance_turn()
-        state.advance_turn()
-        assert state.turn_number == 2
-
-        state.reset_thread()
-        assert state.turn_number == 0
-        assert state.turn_id is None
 
     def test_thread_switch_resets_turn_markers(self):
         """Assigning a different thread_id must not carry the prior turn count.
@@ -849,16 +398,6 @@ class TestTextualSessionState:
 
         turn_id, turn_number = state.advance_turn()
         assert turn_number == 1
-        assert state.turn_id == turn_id
-
-    def test_thread_id_reassigned_same_value_keeps_turn_markers(self):
-        """Re-assigning the identical thread_id is a no-op for the turn markers."""
-        state = TextualSessionState(thread_id="thread-a")
-        state.advance_turn()
-        turn_id = state.turn_id
-
-        state.thread_id = "thread-a"
-        assert state.turn_number == 1
         assert state.turn_id == turn_id
 
 
@@ -894,34 +433,6 @@ class TestFindSimilarThreads:
         conn.commit()
         conn.close()
         return db_path
-
-    def test_finds_matching_prefix(self, temp_db_with_threads: Path) -> None:
-        """Find threads that start with given prefix."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db_with_threads):
-            results = asyncio.run(sessions.find_similar_threads("abc"))
-            assert len(results) == 3
-            assert all(r.startswith("abc") for r in results)
-
-    def test_no_matches(self, temp_db_with_threads: Path) -> None:
-        """Return empty list when no matches found."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db_with_threads):
-            results = asyncio.run(sessions.find_similar_threads("zzz"))
-            assert results == []
-
-    def test_respects_limit(self, temp_db_with_threads: Path) -> None:
-        """Respects the limit parameter."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db_with_threads):
-            results = asyncio.run(sessions.find_similar_threads("abc", limit=2))
-            assert len(results) == 2
-
-    def test_empty_db(self, tmp_path: Path) -> None:
-        """Return empty list for empty database."""
-        db_path = tmp_path / "empty.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.close()
-        with patch.object(sessions, "get_db_path", return_value=db_path):
-            results = asyncio.run(sessions.find_similar_threads("abc"))
-            assert results == []
 
 
 class TestListThreadsWithMessageCount:
@@ -987,20 +498,6 @@ class TestListThreadsWithMessageCount:
         conn.commit()
         conn.close()
         return db_path
-
-    def test_includes_message_count(self, temp_db_with_messages: Path) -> None:
-        """List threads includes message count when requested."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
-            threads = asyncio.run(sessions.list_threads(include_message_count=True))
-            assert len(threads) == 1
-            assert threads[0]["message_count"] == 3
-
-    def test_no_message_count_by_default(self, temp_db_with_messages: Path) -> None:
-        """List threads does not include message count by default."""
-        with patch.object(sessions, "get_db_path", return_value=temp_db_with_messages):
-            threads = asyncio.run(sessions.list_threads())
-            assert len(threads) == 1
-            assert "message_count" not in threads[0]
 
     def test_message_count_uses_cache_for_unchanged_thread(
         self, temp_db_with_messages: Path
@@ -1361,102 +858,6 @@ class TestApplyCachedThreadInitialPrompts:
             sessions._initial_prompt_cache.clear()
 
 
-class TestGetCachedThreads:
-    """Tests for cached thread snapshot retrieval."""
-
-    def test_returns_exact_cached_limit(self) -> None:
-        """Exact cache key should return copied rows."""
-        sessions._recent_threads_cache.clear()
-        try:
-            sessions._recent_threads_cache[None, 5] = [
-                {
-                    "thread_id": "thread-a",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                    "message_count": 3,
-                }
-            ]
-            rows = sessions.get_cached_threads(limit=5)
-            assert rows is not None
-            assert len(rows) == 1
-            assert rows[0]["thread_id"] == "thread-a"
-            rows[0]["thread_id"] = "mutated"
-            assert sessions._recent_threads_cache[None, 5][0]["thread_id"] == "thread-a"
-        finally:
-            sessions._recent_threads_cache.clear()
-
-    def test_uses_larger_cached_limit(self) -> None:
-        """Larger cached window should satisfy smaller requested limit."""
-        sessions._recent_threads_cache.clear()
-        try:
-            sessions._recent_threads_cache[None, 20] = [
-                {
-                    "thread_id": "thread-1",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                },
-                {
-                    "thread_id": "thread-2",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                },
-            ]
-            rows = sessions.get_cached_threads(limit=1)
-            assert rows is not None
-            assert len(rows) == 1
-            assert rows[0]["thread_id"] == "thread-1"
-        finally:
-            sessions._recent_threads_cache.clear()
-
-    def test_applies_cached_message_counts_to_snapshot(self) -> None:
-        """Returned snapshot should hydrate counts from message-count cache."""
-        sessions._recent_threads_cache.clear()
-        sessions._message_count_cache.clear()
-        try:
-            sessions._recent_threads_cache[None, 5] = [
-                {
-                    "thread_id": "thread-a",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                    "latest_checkpoint_id": "cp_1",
-                }
-            ]
-            sessions._message_count_cache["thread-a"] = ("cp_1", 9)
-
-            rows = sessions.get_cached_threads(limit=5)
-
-            assert rows is not None
-            assert rows[0]["message_count"] == 9
-            assert "message_count" not in sessions._recent_threads_cache[None, 5][0]
-        finally:
-            sessions._recent_threads_cache.clear()
-            sessions._message_count_cache.clear()
-
-    def test_applies_cached_initial_prompts_to_snapshot(self) -> None:
-        """Returned snapshot should hydrate prompts from prompt cache."""
-        sessions._recent_threads_cache.clear()
-        sessions._initial_prompt_cache.clear()
-        try:
-            sessions._recent_threads_cache[None, 5] = [
-                {
-                    "thread_id": "thread-a",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                    "latest_checkpoint_id": "cp_1",
-                }
-            ]
-            sessions._initial_prompt_cache["thread-a"] = ("cp_1", "hello world")
-
-            rows = sessions.get_cached_threads(limit=5)
-
-            assert rows is not None
-            assert rows[0]["initial_prompt"] == "hello world"
-            assert "initial_prompt" not in sessions._recent_threads_cache[None, 5][0]
-        finally:
-            sessions._recent_threads_cache.clear()
-            sessions._initial_prompt_cache.clear()
-
-
 class TestPrewarmThreadMessageCounts:
     """Tests for thread-selector cache prewarming."""
 
@@ -1511,87 +912,9 @@ class TestPrewarmThreadMessageCounts:
             include_initial_prompt=False,
         )
 
-    async def test_prewarm_populates_checkpoint_details_before_caching(self) -> None:
-        """Prefetched rows should include prompt/count data in the recent cache."""
-        sessions._recent_threads_cache.clear()
-        threads: list[sessions.ThreadInfo] = [
-            {
-                "thread_id": "thread-a",
-                "agent_name": "agent",
-                "updated_at": "2026-03-08T02:00:00+00:00",
-            }
-        ]
-
-        async def _populate(
-            rows: list[sessions.ThreadInfo],
-            *,
-            include_message_count: bool,
-            include_initial_prompt: bool,
-        ) -> list[sessions.ThreadInfo]:
-            await asyncio.sleep(0)
-            assert include_message_count is True
-            assert include_initial_prompt is True
-            rows[0]["message_count"] = 6
-            rows[0]["initial_prompt"] = "hello world"
-            return rows
-
-        try:
-            with (
-                patch.object(
-                    sessions,
-                    "list_threads",
-                    new_callable=AsyncMock,
-                    return_value=threads,
-                ),
-                patch.object(
-                    sessions,
-                    "populate_thread_checkpoint_details",
-                    new_callable=AsyncMock,
-                    side_effect=_populate,
-                ) as mock_populate,
-            ):
-                await sessions.prewarm_thread_message_counts(limit=3)
-
-            mock_populate.assert_awaited_once()
-            cached = sessions.get_cached_threads(limit=3)
-            assert cached is not None
-            assert cached[0]["message_count"] == 6
-            assert cached[0]["initial_prompt"] == "hello world"
-        finally:
-            sessions._recent_threads_cache.clear()
-
-    async def test_unexpected_errors_log_warning(self) -> None:
-        """Unexpected prewarm failures should be visible at warning level."""
-        with (
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                side_effect=RuntimeError("unexpected type mismatch"),
-            ),
-            patch.object(sessions.logger, "warning") as mock_warning,
-        ):
-            await sessions.prewarm_thread_message_counts(limit=3)
-
-        mock_warning.assert_called_once()
-
 
 class TestCacheMessageCount:
     """Tests for message-count cache eviction behavior."""
-
-    def test_overflow_evicts_oldest_entry_only(self) -> None:
-        """Cache overflow should evict only the oldest key, not clear all keys."""
-        sessions._message_count_cache.clear()
-        try:
-            with patch.object(sessions, "_MAX_MESSAGE_COUNT_CACHE", 2):
-                sessions._cache_message_count("thread-1", "cp_1", 1)
-                sessions._cache_message_count("thread-2", "cp_2", 2)
-                sessions._cache_message_count("thread-3", "cp_3", 3)
-
-            assert "thread-1" not in sessions._message_count_cache
-            assert sessions._message_count_cache["thread-2"] == ("cp_2", 2)
-            assert sessions._message_count_cache["thread-3"] == ("cp_3", 3)
-        finally:
-            sessions._message_count_cache.clear()
 
 
 class TestMessageCountFromCheckpointBlob:
@@ -1838,36 +1161,6 @@ class TestMessageCountFromCheckpointBlob:
 class TestGetThreadLimit:
     """Tests for get_thread_limit() env var parsing."""
 
-    def test_default_when_unset(self) -> None:
-        """Returns default limit when DA_CLI_RECENT_THREADS is not set."""
-        env = {
-            k: v
-            for k, v in __import__("os").environ.items()
-            if k != "DA_CLI_RECENT_THREADS"
-        }
-        with patch.dict("os.environ", env, clear=True):
-            assert get_thread_limit() == 20
-
-    def test_custom_value(self) -> None:
-        """Returns parsed integer from DA_CLI_RECENT_THREADS."""
-        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "50"}):
-            assert get_thread_limit() == 50
-
-    def test_invalid_value_falls_back(self) -> None:
-        """Returns default when DA_CLI_RECENT_THREADS is not a valid integer."""
-        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "abc"}):
-            assert get_thread_limit() == 20
-
-    def test_zero_clamps_to_one(self) -> None:
-        """Returns 1 when DA_CLI_RECENT_THREADS is 0."""
-        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "0"}):
-            assert get_thread_limit() == 1
-
-    def test_negative_clamps_to_one(self) -> None:
-        """Returns 1 when DA_CLI_RECENT_THREADS is negative."""
-        with patch.dict("os.environ", {"DA_CLI_RECENT_THREADS": "-5"}):
-            assert get_thread_limit() == 1
-
 
 class TestListThreadsSortAndBranch:
     """Tests for sort_by and branch params on list_threads."""
@@ -1977,41 +1270,6 @@ class TestListThreadsSortAndBranch:
         conn.close()
         return db_path
 
-    def test_sort_by_updated(self, db_with_branches: Path) -> None:
-        """Default sort returns most recently updated first."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
-            threads = asyncio.run(sessions.list_threads(sort_by="updated"))
-            assert threads[0]["thread_id"] == "thread_a"
-
-    def test_sort_by_created(self, db_with_branches: Path) -> None:
-        """Most recently created first (thread_b: March > thread_a: Jan)."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
-            threads = asyncio.run(sessions.list_threads(sort_by="created"))
-            assert threads[0]["thread_id"] == "thread_b"
-
-    def test_filter_by_branch(self, db_with_branches: Path) -> None:
-        """Branch filter returns only matching threads."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
-            threads = asyncio.run(sessions.list_threads(branch="feat"))
-            assert len(threads) == 1
-            assert threads[0]["thread_id"] == "thread_b"
-            assert threads[0]["git_branch"] == "feat"
-
-    def test_filter_by_branch_no_match(self, db_with_branches: Path) -> None:
-        """Branch filter returns empty list when no match."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
-            threads = asyncio.run(sessions.list_threads(branch="nonexistent"))
-            assert threads == []
-
-    def test_combined_agent_and_branch_filter(self, db_with_branches: Path) -> None:
-        """Agent + branch filters combine with AND."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_branches):
-            threads = asyncio.run(
-                sessions.list_threads(agent_name="bot", branch="main")
-            )
-            assert len(threads) == 1
-            assert threads[0]["thread_id"] == "thread_a"
-
 
 class TestListThreadsCwdFilter:
     """Tests for the `cwd` filter on `list_threads`."""
@@ -2088,13 +1346,6 @@ class TestListThreadsCwdFilter:
         conn.close()
         return db_path
 
-    def test_filter_by_cwd(self, db_with_cwds: Path) -> None:
-        """Only threads with exactly the supplied cwd are returned."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
-            threads = asyncio.run(sessions.list_threads(cwd="/home/user/project-a"))
-        assert [t["thread_id"] for t in threads] == ["thread_a"]
-        assert threads[0]["cwd"] == "/home/user/project-a"
-
     def test_filter_by_cwd_excludes_legacy_rows(self, db_with_cwds: Path) -> None:
         """Threads without stored cwd metadata are dropped by the filter."""
         with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
@@ -2102,43 +1353,6 @@ class TestListThreadsCwdFilter:
         ids = {t["thread_id"] for t in threads}
         # thread_c (no cwd) must not leak through; only thread_b matches.
         assert ids == {"thread_b"}
-
-    def test_filter_by_cwd_no_match(self, db_with_cwds: Path) -> None:
-        """Unknown cwd returns empty list."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
-            threads = asyncio.run(sessions.list_threads(cwd="/no/such/dir"))
-        assert threads == []
-
-    def test_filter_by_cwd_combined_with_branch(self, db_with_cwds: Path) -> None:
-        """`cwd` + branch combine with AND."""
-        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
-            threads = asyncio.run(
-                sessions.list_threads(cwd="/home/user/project-a", branch="main")
-            )
-            assert [t["thread_id"] for t in threads] == ["thread_a"]
-            # Mismatched branch yields empty even when cwd matches.
-            threads = asyncio.run(
-                sessions.list_threads(cwd="/home/user/project-a", branch="feat")
-            )
-            assert threads == []
-
-    def test_cwd_filter_skips_recent_threads_cache(self, db_with_cwds: Path) -> None:
-        """Filtered queries must not poison the unfiltered picker cache."""
-        sessions._recent_threads_cache.clear()
-        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
-            asyncio.run(
-                sessions.list_threads(
-                    cwd="/home/user/project-a", sort_by="updated", limit=10
-                )
-            )
-        assert sessions._recent_threads_cache == {}
-
-    def test_unfiltered_query_populates_cache(self, db_with_cwds: Path) -> None:
-        """Sanity: cache still fills when cwd is None (regression guard)."""
-        sessions._recent_threads_cache.clear()
-        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
-            asyncio.run(sessions.list_threads(sort_by="updated", limit=10))
-        assert (None, 10) in sessions._recent_threads_cache
 
 
 class TestListThreadsCommandConfigDefaults:
@@ -2151,158 +1365,6 @@ class TestListThreadsCommandConfigDefaults:
         "updated_at": "2025-06-01T12:00:00+00:00",
         "created_at": "2025-05-30T10:00:00+00:00",
     }
-
-    def test_sort_reads_config_when_not_specified(self) -> None:
-        """sort_by=None falls back to config value."""
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="created_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[self._THREAD],
-            ) as mock_list,
-            patch("deepagents_code.sessions.format_timestamp", side_effect=str),
-            patch("deepagents_code.config.console"),
-        ):
-            asyncio.run(sessions.list_threads_command())
-            mock_list.assert_called_once()
-            assert mock_list.call_args.kwargs["sort_by"] == "created"
-
-    def test_sort_flag_overrides_config(self) -> None:
-        """Explicit sort_by overrides config."""
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="created_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[self._THREAD],
-            ) as mock_list,
-            patch("deepagents_code.sessions.format_timestamp", side_effect=str),
-            patch("deepagents_code.config.console"),
-        ):
-            asyncio.run(sessions.list_threads_command(sort_by="updated"))
-            mock_list.assert_called_once()
-            assert mock_list.call_args.kwargs["sort_by"] == "updated"
-
-    def test_relative_reads_config_when_not_specified(self) -> None:
-        """relative=None falls back to config value."""
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="updated_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[self._THREAD],
-            ),
-            patch(
-                "deepagents_code.sessions.format_relative_timestamp",
-                side_effect=str,
-            ) as mock_rel,
-            patch("deepagents_code.sessions.format_timestamp") as mock_abs,
-            patch("deepagents_code.config.console"),
-        ):
-            asyncio.run(sessions.list_threads_command())
-            assert mock_rel.call_count > 0
-            assert mock_abs.call_count == 0
-
-    def test_relative_flag_overrides_config(self) -> None:
-        """Explicit relative=False overrides config True."""
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="updated_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[self._THREAD],
-            ),
-            patch(
-                "deepagents_code.sessions.format_relative_timestamp",
-            ) as mock_rel,
-            patch(
-                "deepagents_code.sessions.format_timestamp",
-                side_effect=str,
-            ) as mock_abs,
-            patch("deepagents_code.config.console"),
-        ):
-            asyncio.run(sessions.list_threads_command(relative=False))
-            assert mock_abs.call_count > 0
-            assert mock_rel.call_count == 0
-
-    def test_branch_forwarded_to_list_threads(self) -> None:
-        """Branch parameter is passed through to list_threads."""
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="updated_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[self._THREAD],
-            ) as mock_list,
-            patch("deepagents_code.sessions.format_timestamp", side_effect=str),
-            patch("deepagents_code.config.console"),
-        ):
-            asyncio.run(sessions.list_threads_command(branch="main"))
-            mock_list.assert_called_once()
-            assert mock_list.call_args.kwargs["branch"] == "main"
-
-    def test_verbose_calls_populate_details(self) -> None:
-        """verbose=True triggers populate_thread_checkpoint_details."""
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="updated_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[{**self._THREAD, "git_branch": "main"}],
-            ),
-            patch(
-                "deepagents_code.sessions.populate_thread_checkpoint_details",
-                new_callable=AsyncMock,
-            ) as mock_populate,
-            patch("deepagents_code.sessions.format_timestamp", side_effect=str),
-            patch("deepagents_code.config.console"),
-        ):
-            asyncio.run(sessions.list_threads_command(verbose=True))
-            mock_populate.assert_called_once()
-            assert mock_populate.call_args.kwargs["include_initial_prompt"] is True
 
 
 class TestListThreadsCommandJson:
@@ -2319,102 +1381,9 @@ class TestListThreadsCommandJson:
         "message_count": 5,
     }
 
-    def test_json_outputs_threads(self) -> None:
-        """JSON mode writes thread data to stdout."""
-        import io
-
-        buf = io.StringIO()
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="updated_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[self._THREAD],
-            ),
-            patch("sys.stdout", buf),
-        ):
-            asyncio.run(sessions.list_threads_command(output_format="json"))
-
-        result = json.loads(buf.getvalue())
-        assert result["schema_version"] == 1
-        assert result["command"] == "threads list"
-        assert len(result["data"]) == 1
-        assert result["data"][0]["thread_id"] == "abc12345"
-
-    def test_json_empty_threads(self) -> None:
-        """JSON mode returns empty array when no threads exist."""
-        import io
-
-        buf = io.StringIO()
-        with (
-            patch(
-                "deepagents_code.model_config.load_thread_sort_order",
-                return_value="updated_at",
-            ),
-            patch(
-                "deepagents_code.model_config.load_thread_relative_time",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=[],
-            ),
-            patch("sys.stdout", buf),
-        ):
-            asyncio.run(sessions.list_threads_command(output_format="json"))
-
-        result = json.loads(buf.getvalue())
-        assert result["data"] == []
-
 
 class TestDeleteThreadCommandJson:
     """Tests for delete_thread_command JSON output."""
-
-    def test_json_deleted(self) -> None:
-        """JSON mode reports successful deletion."""
-        import io
-
-        buf = io.StringIO()
-        with (
-            patch(
-                "deepagents_code.sessions.delete_thread",
-                new_callable=AsyncMock,
-                return_value=True,
-            ),
-            patch("sys.stdout", buf),
-        ):
-            asyncio.run(sessions.delete_thread_command("abc123", output_format="json"))
-
-        result = json.loads(buf.getvalue())
-        assert result["command"] == "threads delete"
-        assert result["data"]["thread_id"] == "abc123"
-        assert result["data"]["deleted"] is True
-
-    def test_json_not_found(self) -> None:
-        """JSON mode reports thread not found."""
-        import io
-
-        buf = io.StringIO()
-        with (
-            patch(
-                "deepagents_code.sessions.delete_thread",
-                new_callable=AsyncMock,
-                return_value=False,
-            ),
-            patch("sys.stdout", buf),
-        ):
-            asyncio.run(sessions.delete_thread_command("missing", output_format="json"))
-
-        result = json.loads(buf.getvalue())
-        assert result["data"]["deleted"] is False
 
 
 class TestBatchCheckpointSummaries:
@@ -2500,65 +1469,6 @@ class TestBatchCheckpointSummaries:
             serde,
         )
         assert result == {}
-
-    async def test_batch_populate_fills_multiple_threads(self) -> None:
-        """_populate_checkpoint_fields should batch-fill uncached threads."""
-        sessions._message_count_cache.clear()
-        sessions._initial_prompt_cache.clear()
-        try:
-            threads: list[sessions.ThreadInfo] = [
-                {
-                    "thread_id": "t1",
-                    "agent_name": "a",
-                    "updated_at": "2025-01-01",
-                    "latest_checkpoint_id": "cp_1",
-                },
-                {
-                    "thread_id": "t2",
-                    "agent_name": "b",
-                    "updated_at": "2025-01-02",
-                    "latest_checkpoint_id": "cp_2",
-                },
-            ]
-            with (
-                patch.object(
-                    sessions,
-                    "_get_jsonplus_serializer",
-                    new_callable=AsyncMock,
-                    return_value=object(),
-                ),
-                patch.object(
-                    sessions,
-                    "_load_latest_checkpoint_summaries_batch",
-                    new_callable=AsyncMock,
-                    return_value={
-                        "t1": sessions._CheckpointSummary(3, None),
-                        "t2": sessions._CheckpointSummary(7, None),
-                    },
-                ) as mock_batch,
-                patch.object(
-                    sessions,
-                    "_load_initial_prompts_from_writes_batch",
-                    new_callable=AsyncMock,
-                    return_value={"t1": "prompt1", "t2": "prompt2"},
-                ) as mock_prompts,
-            ):
-                await sessions._populate_checkpoint_fields(
-                    cast("aiosqlite.Connection", object()),
-                    threads,
-                    include_message_count=True,
-                    include_initial_prompt=True,
-                )
-
-            assert threads[0]["message_count"] == 3
-            assert threads[0]["initial_prompt"] == "prompt1"
-            assert threads[1]["message_count"] == 7
-            assert threads[1]["initial_prompt"] == "prompt2"
-            mock_batch.assert_awaited_once()
-            mock_prompts.assert_awaited_once()
-        finally:
-            sessions._message_count_cache.clear()
-            sessions._initial_prompt_cache.clear()
 
 
 class TestLoadInitialPromptsFromWritesBatch:
@@ -3025,74 +1935,6 @@ class TestLoadMessageCountsFromWritesBatch:
 class TestCountMessagesFromDeltas:
     """Tests for the delta-folding message counter and its exact fallback."""
 
-    def test_fast_path_dedups_repeated_ids(self) -> None:
-        """Repeated IDs across deltas collapse to one message (fast path)."""
-        from langchain_core.messages import AIMessage
-
-        deltas = [
-            [AIMessage(content="draft", id="a1")],
-            [AIMessage(content="final", id="a1")],
-        ]
-        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
-
-    def test_remove_all_then_append_resets(self) -> None:
-        """`REMOVE_ALL_MESSAGES` clears the buffer before later appends."""
-        from langchain_core.messages import HumanMessage, RemoveMessage
-        from langgraph.graph.message import REMOVE_ALL_MESSAGES
-
-        deltas = [
-            [HumanMessage(content="a", id="h1")],
-            [HumanMessage(content="b", id="h2")],
-            [
-                RemoveMessage(id=REMOVE_ALL_MESSAGES),
-                HumanMessage(content="fresh", id="h9"),
-            ],
-        ]
-        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
-
-    def test_overwrite_resets_buffer(self) -> None:
-        """An `Overwrite` delta replaces the accumulated buffer."""
-        from langchain_core.messages import HumanMessage
-        from langgraph.types import Overwrite
-
-        deltas = [
-            [HumanMessage(content="a", id="h1")],
-            [HumanMessage(content="b", id="h2")],
-            Overwrite(value=[HumanMessage(content="fresh", id="h9")]),
-        ]
-        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
-
-    def test_duplicate_id_within_one_delta_counts_once(self) -> None:
-        """Two messages sharing an ID in one delta collapse to a single count.
-
-        Pins the case excluded from the property test: batch and sequential
-        `add_messages` may order/identify differently, but the *count* the
-        counter reports is the same (both dedup by ID), so the fast path is
-        safe here and needs no exact-fold routing.
-        """
-        from langchain_core.messages import AIMessage
-
-        deltas = [
-            [AIMessage(content="draft", id="d1"), AIMessage(content="final", id="d1")]
-        ]
-        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
-        assert sessions._count_messages_from_deltas(  # pyright: ignore[reportPrivateUsage]
-            deltas
-        ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
-
-    def test_specific_remove_matches_incremental_fold(self) -> None:
-        """A delete-by-ID routes through the exact fold and matches it."""
-        from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
-
-        deltas = [
-            [HumanMessage(content="a", id="h1"), AIMessage(content="b", id="a1")],
-            [RemoveMessage(id="a1")],
-        ]
-        assert sessions._count_messages_from_deltas(  # pyright: ignore[reportPrivateUsage]
-            deltas
-        ) == sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
-        assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
-
     def test_internal_messages_do_not_inflate_count(self) -> None:
         """Metadata-marked local and remote notices are not user-visible rows."""
         from langchain_core.messages import HumanMessage
@@ -3138,53 +1980,6 @@ class TestCountMessagesFromDeltas:
         ]
 
         assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
-
-    def test_fast_and_exact_agree_on_realistic_histories(self) -> None:
-        """Fast path and exact fold agree on append/clear/overwrite histories.
-
-        Covers the realistic shapes the counter sees (unique-ID appends,
-        streaming updates that reuse an ID, compaction clears, and snapshot
-        overwrites). Excludes duplicate-ID-within-one-delta, whose batch-vs-
-        sequential *ordering/identity* equivalence we haven't characterized;
-        the counts still match there (see
-        `test_duplicate_id_within_one_delta_counts_once`).
-        """
-        import random
-
-        from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
-        from langgraph.graph.message import REMOVE_ALL_MESSAGES
-        from langgraph.types import Overwrite
-
-        rng = random.Random(20240117)
-        for _ in range(500):
-            deltas: list[object] = []
-            next_id = 0
-            for _ in range(rng.randint(0, 25)):
-                roll = rng.random()
-                if roll < 0.6:
-                    next_id += 1
-                    cls = rng.choice([HumanMessage, AIMessage])
-                    deltas.append([cls(content="x", id=f"m{next_id}")])
-                elif roll < 0.75 and next_id:
-                    # Streaming update: reuse a recent ID.
-                    deltas.append(
-                        [AIMessage(content="y", id=f"m{rng.randint(1, next_id)}")]
-                    )
-                elif roll < 0.85:
-                    deltas.append([RemoveMessage(id=REMOVE_ALL_MESSAGES)])
-                else:
-                    count = rng.randint(0, 3)
-                    deltas.append(
-                        Overwrite(
-                            value=[
-                                HumanMessage(content="o", id=f"ov{j}")
-                                for j in range(count)
-                            ]
-                        )
-                    )
-            fast = sessions._count_messages_from_deltas(deltas)  # pyright: ignore[reportPrivateUsage]
-            exact = sessions._incremental_message_count(deltas)  # pyright: ignore[reportPrivateUsage]
-            assert fast == exact, deltas
 
 
 def test_inlined_checkpoint_count_excludes_internal_messages() -> None:

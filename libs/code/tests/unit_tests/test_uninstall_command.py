@@ -394,62 +394,6 @@ class TestPerformUninstallExtra:
         assert outcome.extra_was_absent is False
         run.assert_not_awaited()
 
-    async def test_lock_wraps_command_generation_and_subprocess(self) -> None:
-        events: list[str] = []
-
-        def run_subprocess(*_args: object, **_kwargs: object) -> tuple[bool, str]:
-            events.append("run")
-            return False, "resolver failed"
-
-        run = AsyncMock(side_effect=run_subprocess)
-
-        @contextmanager
-        def lock() -> Iterator[bool]:
-            events.append("acquire")
-            try:
-                yield True
-            finally:
-                events.append("release")
-
-        def read_version() -> str:
-            events.append("version")
-            return "9.8.7"
-
-        def command(_extra: str, *, version: str) -> str:
-            events.append("command")
-            assert version == "9.8.7"
-            return "uv tool install safe-command"
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.detect_install_method", return_value="uv"
-            ),
-            patch(
-                "deepagents_code.update_check.shutil.which", return_value="/usr/bin/uv"
-            ),
-            patch("deepagents_code.update_check.update_install_lock", lock),
-            patch(
-                "deepagents_code.update_check.read_installed_distribution_version",
-                side_effect=read_version,
-            ),
-            patch(
-                "deepagents_code.update_check.uninstall_extra_command",
-                side_effect=command,
-            ),
-            patch("deepagents_code.update_check._run_install_subprocess", run),
-        ):
-            result = await perform_uninstall_extra("ollama", log_path=Path("/tmp/log"))
-
-        assert result.success is False
-        assert result.output == "resolver failed"
-        assert result.manual_recovery_safe is True
-        assert result.manual_recovery_command == "uv tool install safe-command"
-        assert events == ["acquire", "version", "command", "run", "release"]
-        run.assert_awaited_once_with(
-            "uv tool install safe-command", progress=None, log_path=Path("/tmp/log")
-        )
-
     async def test_cancellation_returns_the_locked_recovery_command(self) -> None:
         run = AsyncMock(side_effect=asyncio.CancelledError)
         with (

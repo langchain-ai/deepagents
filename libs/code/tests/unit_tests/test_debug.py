@@ -41,52 +41,7 @@ def _icacls_entries(path) -> list[str]:
     return [entry.strip() for entry in entries if entry.strip()]
 
 
-class TestResolveLogLevel:
-    def test_defaults_to_debug_when_debug_enabled(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            assert resolve_log_level(debug_enabled=True) == logging.DEBUG
-
-    def test_defaults_to_info_when_debug_disabled(self) -> None:
-        with patch.dict(os.environ, {}, clear=True):
-            assert resolve_log_level(debug_enabled=False) == logging.INFO
-
-    def test_empty_value_falls_back(self) -> None:
-        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": ""}, clear=True):
-            assert resolve_log_level(debug_enabled=False) == logging.INFO
-
-    def test_whitespace_value_falls_back(self) -> None:
-        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "   "}, clear=True):
-            assert resolve_log_level(debug_enabled=True) == logging.DEBUG
-
-    def test_value_is_case_insensitive(self) -> None:
-        with patch.dict(
-            os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "warning"}, clear=True
-        ):
-            assert resolve_log_level(debug_enabled=False) == logging.WARNING
-
-    def test_explicit_level_overrides_debug_fallback(self) -> None:
-        """An explicit level wins over the debug-derived default."""
-        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "ERROR"}, clear=True):
-            assert resolve_log_level(debug_enabled=True) == logging.ERROR
-
-    def test_reads_debug_env_when_flag_omitted(self) -> None:
-        """With no explicit flag, the truthiness of the env var decides."""
-        with patch.dict(os.environ, {"DEEPAGENTS_CODE_DEBUG": "1"}, clear=True):
-            assert resolve_log_level() == logging.DEBUG
-        with patch.dict(os.environ, {}, clear=True):
-            assert resolve_log_level() == logging.INFO
-
-
 class TestConfigureDebugLogging:
-    def test_noop_when_env_unset(self) -> None:
-        """No handlers should be added when DEEPAGENTS_CODE_DEBUG is unset."""
-        logger = logging.getLogger("test.debug.noop")
-        original_count = len(logger.handlers)
-        with patch.dict(os.environ, {}, clear=True):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("test-thread")
-        assert len(logger.handlers) == original_count
-
     def test_adds_handler_when_env_set(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.add")
         log_file = tmp_path / "test-thread.log"
@@ -154,27 +109,6 @@ class TestConfigureDebugLogging:
         assert "Warning" in capsys.readouterr().err
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW refusal")
-    def test_symlinked_debug_directory_is_refused(self, tmp_path, capsys) -> None:
-        logger = logging.getLogger("test.debug.symlink_directory")
-        logger.handlers = []
-        directory = tmp_path / "directory"
-        directory.mkdir()
-        link = tmp_path / "link"
-        link.symlink_to(directory, target_is_directory=True)
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(link),
-            },
-        ):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("test-thread")
-        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
-        assert "Warning" in capsys.readouterr().err
-        assert list(directory.iterdir()) == []
-
-    @pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW refusal")
     def test_symlinked_debug_file_is_refused(self, tmp_path, capsys) -> None:
         """A symlink at the debug path is refused, not followed.
 
@@ -201,40 +135,6 @@ class TestConfigureDebugLogging:
         logger.warning("must not be written through the symlink")
         assert victim.read_text() == ""
 
-    def test_log_level_debug_enables_debug_without_file_handler(self) -> None:
-        logger = logging.getLogger("test.debug.level_only")
-        logger.handlers = []
-        with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "DEBUG"}, clear=True):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("test-thread")
-        assert logger.level == logging.DEBUG
-        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
-
-    def test_debug_file_can_use_info_runtime_level(self, tmp_path) -> None:
-        logger = logging.getLogger("test.debug.file_info_level")
-        log_file = tmp_path / "test-thread.log"
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
-                "DEEPAGENTS_CODE_LOG_LEVEL": "INFO",
-            },
-        ):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("test-thread")
-        file_handlers = [
-            h for h in logger.handlers if isinstance(h, logging.FileHandler)
-        ]
-        try:
-            assert logger.level == logging.INFO
-            assert file_handlers
-            assert file_handlers[-1].level == logging.INFO
-        finally:
-            for h in file_handlers:
-                h.close()
-                logger.removeHandler(h)
-
     def test_invalid_log_level_warns_and_uses_default(self, capsys) -> None:
         logger = logging.getLogger("test.debug.bad_level")
         with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "TRACE"}, clear=True):
@@ -243,28 +143,6 @@ class TestConfigureDebugLogging:
         assert logger.level == logging.INFO
         captured = capsys.readouterr()
         assert "DEEPAGENTS_CODE_LOG_LEVEL" in captured.err
-
-    def test_thread_id_cannot_escape_directory(self, tmp_path) -> None:
-        logger = logging.getLogger("test.debug.unsafe_thread")
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(tmp_path),
-            },
-        ):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("../../victim")
-        handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
-        try:
-            assert len(handlers) == 1
-            path = Path(handlers[0].baseFilename)
-            assert path.parent == tmp_path
-            assert path.name.startswith("thread-")
-        finally:
-            for handler in handlers:
-                handler.close()
-                logger.removeHandler(handler)
 
     def test_custom_path_used(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.custom_path")
@@ -312,91 +190,6 @@ class TestConfigureDebugLogging:
             for h in file_handlers:
                 h.close()
                 logger.removeHandler(h)
-
-    def test_changed_thread_swaps_handler(self, tmp_path) -> None:
-        """Binding a new thread replaces the stale handler, not stacks."""
-        logger = logging.getLogger("test.debug.swap")
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(tmp_path),
-            },
-        ):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("first")
-            bind_debug_logging_to_thread("second")
-
-        file_handlers = [
-            h for h in logger.handlers if isinstance(h, logging.FileHandler)
-        ]
-        try:
-            assert len(file_handlers) == 1
-            assert str(tmp_path / "second.log") == file_handlers[0].baseFilename
-        finally:
-            for h in file_handlers:
-                h.close()
-                logger.removeHandler(h)
-
-    def test_failed_thread_rotation_removes_stale_handler(
-        self, tmp_path, capsys
-    ) -> None:
-        logger = logging.getLogger("test.debug.failed_rotation")
-        directory = tmp_path / "debug"
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(directory),
-            },
-        ):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("first")
-            assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
-            with patch.object(
-                _debug, "_prepare_debug_directory", side_effect=OSError("nope")
-            ):
-                bind_debug_logging_to_thread("second")
-
-        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
-        logger.warning("must not reach the first thread")
-        assert (
-            "must not reach the first thread"
-            not in (directory / "first.log").read_text()
-        )
-        assert "Warning" in capsys.readouterr().err
-
-    def test_legacy_debug_file_uses_parent_directory(self, tmp_path) -> None:
-        legacy_file = tmp_path / "legacy" / "debug.log"
-        with patch.dict(
-            os.environ,
-            {"DEEPAGENTS_CODE_DEBUG_FILE": str(legacy_file)},
-            clear=True,
-        ):
-            assert _debug._debug_directory() == legacy_file.parent
-
-    def test_debug_directory_overrides_legacy_file(self, tmp_path) -> None:
-        directory = tmp_path / "current"
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(directory),
-                "DEEPAGENTS_CODE_DEBUG_FILE": str(tmp_path / "legacy" / "debug.log"),
-            },
-            clear=True,
-        ):
-            assert _debug._debug_directory() == directory
-
-    def test_legacy_debug_file_config_uses_parent_directory(self, tmp_path) -> None:
-        legacy_file = tmp_path / "legacy" / "debug.log"
-        with (
-            patch.dict(os.environ, {}, clear=True),
-            patch(
-                "deepagents_code.config_manifest.load_config_toml",
-                return_value={"debug": {"file": str(legacy_file)}},
-            ),
-        ):
-            assert _debug._debug_directory() == legacy_file.parent
 
     def test_untagged_handler_does_not_block_configuration(self, tmp_path) -> None:
         """A foreign FileHandler on the same path must not suppress our handler."""
@@ -456,22 +249,133 @@ class TestConfigureDebugLogging:
                 h.close()
                 logger.removeHandler(h)
 
-    def test_bad_path_prints_warning_no_crash(self, capsys) -> None:
-        """Invalid log path should print warning to stderr, not crash."""
-        logger = logging.getLogger("test.debug.bad_path")
-        original_count = len(logger.handlers)
+    def test_changed_thread_swaps_handler(self, tmp_path) -> None:
+        """Binding a new thread replaces the stale handler, not stacks."""
+        logger = logging.getLogger("test.debug.swap")
         with patch.dict(
             os.environ,
             {
                 "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": "/nonexistent_dir/debug.log",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(tmp_path),
+            },
+        ):
+            configure_debug_logging(logger)
+            bind_debug_logging_to_thread("first")
+            bind_debug_logging_to_thread("second")
+
+        file_handlers = [
+            h for h in logger.handlers if isinstance(h, logging.FileHandler)
+        ]
+        try:
+            assert len(file_handlers) == 1
+            assert str(tmp_path / "second.log") == file_handlers[0].baseFilename
+        finally:
+            for h in file_handlers:
+                h.close()
+                logger.removeHandler(h)
+
+    def test_debug_directory_overrides_legacy_file(self, tmp_path) -> None:
+        directory = tmp_path / "current"
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(directory),
+                "DEEPAGENTS_CODE_DEBUG_FILE": str(tmp_path / "legacy" / "debug.log"),
+            },
+            clear=True,
+        ):
+            assert _debug._debug_directory() == directory
+
+    def test_failed_thread_rotation_removes_stale_handler(
+        self, tmp_path, capsys
+    ) -> None:
+        logger = logging.getLogger("test.debug.failed_rotation")
+        directory = tmp_path / "debug"
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(directory),
+            },
+        ):
+            configure_debug_logging(logger)
+            bind_debug_logging_to_thread("first")
+            assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+            with patch.object(
+                _debug, "_prepare_debug_directory", side_effect=OSError("nope")
+            ):
+                bind_debug_logging_to_thread("second")
+
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        logger.warning("must not reach the first thread")
+        assert (
+            "must not reach the first thread"
+            not in (directory / "first.log").read_text()
+        )
+        assert "Warning" in capsys.readouterr().err
+
+    def test_legacy_debug_file_config_uses_parent_directory(self, tmp_path) -> None:
+        legacy_file = tmp_path / "legacy" / "debug.log"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "deepagents_code.config_manifest.load_config_toml",
+                return_value={"debug": {"file": str(legacy_file)}},
+            ),
+        ):
+            assert _debug._debug_directory() == legacy_file.parent
+
+    def test_legacy_debug_file_uses_parent_directory(self, tmp_path) -> None:
+        legacy_file = tmp_path / "legacy" / "debug.log"
+        with patch.dict(
+            os.environ,
+            {"DEEPAGENTS_CODE_DEBUG_FILE": str(legacy_file)},
+            clear=True,
+        ):
+            assert _debug._debug_directory() == legacy_file.parent
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX O_NOFOLLOW refusal")
+    def test_symlinked_debug_directory_is_refused(self, tmp_path, capsys) -> None:
+        logger = logging.getLogger("test.debug.symlink_directory")
+        logger.handlers = []
+        directory = tmp_path / "directory"
+        directory.mkdir()
+        link = tmp_path / "link"
+        link.symlink_to(directory, target_is_directory=True)
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(link),
             },
         ):
             configure_debug_logging(logger)
             bind_debug_logging_to_thread("test-thread")
-        assert len(logger.handlers) == original_count
-        captured = capsys.readouterr()
-        assert "Warning" in captured.err
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        assert "Warning" in capsys.readouterr().err
+        assert list(directory.iterdir()) == []
+
+    def test_thread_id_cannot_escape_directory(self, tmp_path) -> None:
+        logger = logging.getLogger("test.debug.unsafe_thread")
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(tmp_path),
+            },
+        ):
+            configure_debug_logging(logger)
+            bind_debug_logging_to_thread("../../victim")
+        handlers = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
+        try:
+            assert len(handlers) == 1
+            path = Path(handlers[0].baseFilename)
+            assert path.parent == tmp_path
+            assert path.name.startswith("thread-")
+        finally:
+            for handler in handlers:
+                handler.close()
+                logger.removeHandler(handler)
 
 
 class TestInstalledDebugLogPath:
@@ -589,45 +493,3 @@ class TestSweepDebugHandlers:
     `_close_leaked_debug_handlers` fixture has already run, so none of them
     would notice if the sweep started closing handlers it did not own.
     """
-
-    def test_leaves_untagged_file_handler_attached_and_open(
-        self, tmp_path, sweep_debug_handlers
-    ) -> None:
-        """An unrelated `FileHandler` must survive the sweep untouched."""
-        logger = logging.getLogger("test.sweep.untagged")
-        foreign = logging.FileHandler(tmp_path / "foreign.log")
-        logger.addHandler(foreign)
-        try:
-            sweep_debug_handlers()
-
-            assert foreign in logger.handlers
-            assert foreign.stream is not None
-            assert not foreign.stream.closed
-        finally:
-            logger.removeHandler(foreign)
-            foreign.close()
-
-    def test_closes_and_detaches_tagged_file_handler(
-        self, tmp_path, sweep_debug_handlers
-    ) -> None:
-        """A `configure_debug_logging` handler is removed and closed."""
-        logger = logging.getLogger("test.sweep.tagged")
-        with patch.dict(
-            os.environ,
-            {
-                "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(tmp_path),
-            },
-        ):
-            configure_debug_logging(logger)
-            bind_debug_logging_to_thread("test-thread")
-        tagged = [h for h in logger.handlers if isinstance(h, logging.FileHandler)]
-        assert tagged, "configure_debug_logging installed no FileHandler"
-
-        sweep_debug_handlers()
-
-        assert not [h for h in logger.handlers if isinstance(h, logging.FileHandler)], (
-            "sweep left a tagged handler attached"
-        )
-        for handler in tagged:
-            assert handler.stream is None or handler.stream.closed

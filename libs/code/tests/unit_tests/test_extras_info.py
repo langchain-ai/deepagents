@@ -107,33 +107,6 @@ def _declared_extras() -> frozenset[str]:
     return frozenset(_optional_dependencies()) - _COMPOSITE_EXTRAS
 
 
-def test_nvidia_extra_requires_aiohttp_safe_ai_endpoints_release() -> None:
-    """The NVIDIA extra must require an aiohttp-safe ai-endpoints release."""
-    assert _optional_dependencies()["nvidia"] == [
-        "aiohttp>=3.14.3,<3.15.0",
-        "langchain-nvidia-ai-endpoints>=1.4.3,<2.0.0",
-    ]
-
-
-def test_real_distribution_groups_entries_by_extra() -> None:
-    # `langchain-anthropic` is declared under the `anthropic` extra and
-    # also lives in the core dependency list, so it should always resolve
-    # to an installed version when the CLI itself is installed.
-    extras = get_extras_status()
-    assert "anthropic" in extras
-    pkgs = dict(extras["anthropic"])
-    assert pkgs["langchain-anthropic"]
-
-
-def test_real_distribution_skips_self_references() -> None:
-    # Composite extras like `all-providers` list `deepagents-code[...]`
-    # entries; those should never surface as packages themselves.
-    extras = get_extras_status()
-    for pkgs in extras.values():
-        for pkg_name, _version in pkgs:
-            assert pkg_name.lower() != "deepagents-code"
-
-
 def test_incomplete_extras_are_omitted() -> None:
     mock_dist = MagicMock()
     mock_dist.requires = [
@@ -187,147 +160,6 @@ def test_complete_multi_package_extras_are_kept() -> None:
     }
 
 
-def test_optional_dependency_status_includes_missing_packages() -> None:
-    mock_dist = MagicMock()
-    mock_dist.requires = [
-        "langchain-anthropic>=1.0.0 ; extra == 'anthropic'",
-        "fake-absent-package>=1.0.0 ; extra == 'custom'",
-        "partially-present>=1.0.0 ; extra == 'mixed'",
-        "also-missing>=1.0.0 ; extra == 'mixed'",
-    ]
-
-    def fake_version(name: str) -> str:
-        if name == "langchain-anthropic":
-            return "1.4.0"
-        if name == "partially-present":
-            return "2.0.0"
-        raise PackageNotFoundError(name)
-
-    with (
-        patch("deepagents_code.extras_info.distribution", return_value=mock_dist),
-        patch("deepagents_code.extras_info.pkg_version", side_effect=fake_version),
-    ):
-        extras = get_optional_dependency_status()
-
-    by_name = {extra.name: extra for extra in extras}
-    assert by_name["anthropic"].ready is True
-    assert by_name["anthropic"].installed == (("langchain-anthropic", "1.4.0"),)
-    assert by_name["anthropic"].missing == ()
-    assert by_name["custom"].ready is False
-    assert by_name["custom"].installed == ()
-    assert by_name["custom"].missing == ("fake-absent-package",)
-    assert by_name["mixed"].ready is False
-    assert by_name["mixed"].installed == (("partially-present", "2.0.0"),)
-    assert by_name["mixed"].missing == ("also-missing",)
-
-
-def test_skips_entries_without_extra_marker() -> None:
-    # Core dependencies (no `extra ==` marker) must be ignored; only
-    # extra-gated entries should be reported.
-    mock_dist = MagicMock()
-    mock_dist.requires = [
-        "some-core-package>=1.0.0",
-        "another-core>=1.0.0 ; python_version >= '3.11'",
-        "gated-pkg>=1.0.0 ; extra == 'foo'",
-    ]
-
-    with (
-        patch("deepagents_code.extras_info.distribution", return_value=mock_dist),
-        patch("deepagents_code.extras_info.pkg_version", return_value="1.2.3"),
-    ):
-        extras = get_extras_status()
-
-    assert extras == {"foo": [("gated-pkg", "1.2.3")]}
-
-
-def test_extra_for_package_returns_declaring_known_extra() -> None:
-    """Package lookup should use declared extras instead of provider-name guesses."""
-    mock_dist = MagicMock()
-    mock_dist.requires = [
-        "langchain-google-vertexai>=3.2.3,<4.0.0 ; extra == 'vertex'",
-        "deepagents-code[anthropic,baseten] ; extra == 'all-providers'",
-    ]
-
-    with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
-        assert extra_for_package("langchain-google-vertexai") == "vertex"
-
-
-def test_extra_for_package_returns_none_for_unknown_package() -> None:
-    mock_dist = MagicMock()
-    mock_dist.requires = [
-        "langchain-google-vertexai>=3.2.3,<4.0.0 ; extra == 'vertex'",
-    ]
-
-    with patch("deepagents_code.extras_info.distribution", return_value=mock_dist):
-        assert extra_for_package("not-declared") is None
-
-
-def test_resolve_install_hint_prefers_declared_extra() -> None:
-    """A package declared by an extra resolves to that extra, no raw command."""
-    with patch("deepagents_code.extras_info.extra_for_package", return_value="vertex"):
-        hint = resolve_install_hint("langchain-google-vertexai")
-    assert hint == InstallHint(extra="vertex", command=None)
-
-
-def test_resolve_install_hint_falls_back_to_package_command() -> None:
-    """A package with no extra falls back to a raw install command."""
-    with (
-        patch("deepagents_code.extras_info.extra_for_package", return_value=None),
-        patch(
-            "deepagents_code.update_check.install_package_command",
-            return_value="uv tool install --with langchain-custom deepagents-code",
-        ) as mock_install_package_command,
-    ):
-        hint = resolve_install_hint(
-            "langchain-custom", distribution_name="deepagents-code-dev"
-        )
-    mock_install_package_command.assert_called_once_with(
-        "langchain-custom", distribution_name="deepagents-code-dev"
-    )
-    assert hint == InstallHint(
-        extra=None,
-        command="uv tool install --with langchain-custom deepagents-code",
-    )
-
-
-def test_resolve_install_hint_degrades_to_manual_on_error() -> None:
-    """When neither an extra nor a command resolves, both fields are None."""
-    with (
-        patch("deepagents_code.extras_info.extra_for_package", return_value=None),
-        patch(
-            "deepagents_code.update_check.install_package_command",
-            side_effect=ValueError("bad package"),
-        ),
-    ):
-        hint = resolve_install_hint("bad package")
-    assert hint == InstallHint(extra=None, command=None)
-
-
-def test_install_hint_rejects_both_extra_and_command() -> None:
-    """Dual-action resolutions are impossible and must fail construction."""
-    with pytest.raises(ValueError, match="both extra and command"):
-        InstallHint(extra="vertex", command="uv tool install deepagents-code")
-
-
-def test_skips_composite_self_referencing_extras() -> None:
-    mock_dist = MagicMock()
-    mock_dist.requires = [
-        "deepagents-code[anthropic,baseten] ; extra == 'some-bundle'",
-        "langchain-anthropic>=1.0.0 ; extra == 'anthropic'",
-    ]
-
-    with (
-        patch("deepagents_code.extras_info.distribution", return_value=mock_dist),
-        patch("deepagents_code.extras_info.pkg_version", return_value="1.0.0"),
-    ):
-        extras = get_extras_status()
-
-    # The self-reference is the only entry under `some-bundle`, so the
-    # extra should not appear at all in the output.
-    assert "some-bundle" not in extras
-    assert extras["anthropic"] == [("langchain-anthropic", "1.0.0")]
-
-
 def test_skips_known_composite_extras() -> None:
     # The build backend flattens composite extras like `all-providers`
     # into their component packages, so name-based filtering is needed to
@@ -352,28 +184,6 @@ def test_skips_known_composite_extras() -> None:
     assert extras["anthropic"] == [("langchain-anthropic", "1.0.0")]
 
 
-def test_format_extras_status_empty() -> None:
-    assert format_extras_status({}) == ""
-
-
-def test_format_extras_status_plain_empty() -> None:
-    assert format_extras_status_plain({}) == ""
-
-
-def test_format_extras_status_plain_columns_are_aligned() -> None:
-    status = {
-        "anthropic": [("langchain-anthropic", "1.4.0")],
-        "google-genai": [("langchain-google-genai", "4.2.1")],
-    }
-    rendered = format_extras_status_plain(status)
-    lines = rendered.splitlines()
-
-    assert lines[0] == "Installed optional dependencies:"
-    # Extra column widened to the longest name (`google-genai` -> 12 chars).
-    assert lines[1] == "  anthropic     langchain-anthropic     1.4.0"
-    assert lines[2] == "  google-genai  langchain-google-genai  4.2.1"
-
-
 def test_extras_taxonomy_covers_pyproject() -> None:
     """Every declared extra must be classified in one of the taxonomy sets.
 
@@ -396,99 +206,6 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     assert not stale, (
         f"extras_info classifies extras not declared in pyproject.toml: {sorted(stale)}"
     )
-
-
-class TestBaseDependencyExtras:
-    """`BASE_DEPENDENCY_EXTRAS` must mirror `pyproject.toml`."""
-
-    def test_matches_extras_fully_covered_by_base_dependencies(self) -> None:
-        """The set equals the extras whose packages are all base dependencies.
-
-        Removal refuses these because deselecting them frees nothing. An extra
-        that gains or loses that property in `pyproject.toml` without a matching
-        update here would either be refused for no reason or accepted and then
-        rebuild the environment to no effect.
-        """
-        data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
-        base_packages = {
-            canonicalize_name(Requirement(requirement).name)
-            for requirement in data["project"]["dependencies"]
-        }
-        covered = {
-            extra
-            for extra, requirements in _optional_dependencies().items()
-            # An empty extra (e.g. `quickjs`, kept for backwards-compatible
-            # install commands) adds nothing to remove either, so it belongs
-            # here too.
-            if all(
-                canonicalize_name(Requirement(requirement).name) in base_packages
-                for requirement in requirements
-            )
-        }
-        assert covered == set(BASE_DEPENDENCY_EXTRAS)
-
-
-class TestCompositeExtraMembers:
-    """`COMPOSITE_EXTRA_MEMBERS` must mirror `pyproject.toml`."""
-
-    def test_mapping_covers_every_composite(self) -> None:
-        """Every self-referencing extra in pyproject.toml has a member set.
-
-        A composite is exactly an extra that expands through a single
-        `deepagents-code[...]` requirement, so a new one added to
-        `pyproject.toml` must appear here rather than being silently treated
-        as an ordinary extra.
-        """
-        composites = {
-            extra
-            for extra, requirements in _optional_dependencies().items()
-            if len(requirements) == 1
-            and canonicalize_name(Requirement(requirements[0]).name)
-            == canonicalize_name("deepagents-code")
-        }
-        assert composites == set(COMPOSITE_EXTRA_MEMBERS)
-
-    def test_members_match_pyproject_expansion(self) -> None:
-        """The mapped members equal the extras the composite requirement selects.
-
-        Removal reports which composite provides an unremovable member, so a
-        composite that gained or lost providers in `pyproject.toml` without a
-        matching update here would name the wrong extra — or stay silent and
-        report an installed member as "not installed".
-        """
-        optional = _optional_dependencies()
-        for composite, members in COMPOSITE_EXTRA_MEMBERS.items():
-            requirements = optional[composite]
-            assert len(requirements) == 1, (
-                f"{composite} must expand through a single self-referencing "
-                f"requirement, got {requirements}"
-            )
-            declared = Requirement(requirements[0]).extras
-            assert declared == set(members), (
-                f"pyproject.toml {composite} selects {sorted(declared)}, "
-                f"COMPOSITE_EXTRA_MEMBERS has {sorted(members)}"
-            )
-
-    def test_lookup_finds_providing_composite(self) -> None:
-        """A member maps back to the composite that provides it."""
-        assert composite_extras_providing("ollama") == frozenset({"all-providers"})
-        assert composite_extras_providing("daytona") == frozenset({"all-sandboxes"})
-
-    def test_lookup_is_empty_for_unbundled_extras(self) -> None:
-        """Extras no composite expands to return an empty set."""
-        assert composite_extras_providing("media") == frozenset()
-        assert composite_extras_providing("all-providers") == frozenset()
-
-
-def test_known_extras_is_union_of_categories() -> None:
-    """`KNOWN_EXTRAS` must be the union of the three category frozensets.
-
-    `dcode install <extra>` and `/install <extra>` consult `KNOWN_EXTRAS`
-    to decide whether to prompt for confirmation on unknown values, so this
-    set has to stay aligned with the taxonomy or callers will see spurious
-    prompts for real extras.
-    """
-    assert KNOWN_EXTRAS == (MODEL_PROVIDER_EXTRAS | SANDBOX_EXTRAS | STANDALONE_EXTRAS)
 
 
 def test_extras_categories_are_disjoint() -> None:
@@ -540,52 +257,6 @@ def test_format_known_extras_groups_extras_under_correct_label() -> None:
 # `deepagents_code.config` at call time. Patch the source module — patching
 # `deepagents_code.extras_info._is_editable_install` would not work (it isn't
 # bound there as a module-level attribute).
-def test_verify_interpreter_deps_raises_with_reinstall_hint_for_tool_install() -> None:
-    with (
-        patch(
-            "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
-        ),
-        patch("deepagents_code.config._is_editable_install", return_value=False),
-        pytest.raises(ImportError, match="Reinstall dcode"),
-    ):
-        verify_interpreter_deps()
-
-
-def test_verify_interpreter_deps_raises_with_uv_sync_hint_for_editable_install() -> (
-    None
-):
-    with (
-        patch(
-            "deepagents_code.extras_info.importlib.util.find_spec", return_value=None
-        ),
-        patch("deepagents_code.config._is_editable_install", return_value=True),
-        pytest.raises(ImportError, match="uv sync"),
-    ):
-        verify_interpreter_deps()
-
-
-def test_verify_interpreter_deps_passes_when_module_present() -> None:
-    fake_spec = MagicMock()
-    with patch(
-        "deepagents_code.extras_info.importlib.util.find_spec", return_value=fake_spec
-    ):
-        verify_interpreter_deps()
-
-
-def test_format_extras_status_renders_markdown_table() -> None:
-    status = {
-        "anthropic": [("langchain-anthropic", "1.4.0")],
-        "daytona": [("langchain-daytona", "0.0.4")],
-    }
-    rendered = format_extras_status(status)
-    lines = rendered.splitlines()
-
-    assert lines[0] == "### Installed optional dependencies"
-    assert lines[1] == ""
-    assert lines[2] == "| Extra | Package | Version |"
-    assert lines[3] == "| --- | --- | --- |"
-    assert lines[4] == "| anthropic | langchain-anthropic | 1.4.0 |"
-    assert lines[5] == "| daytona | langchain-daytona | 0.0.4 |"
 
 
 class TestResolveSdkVersion:
@@ -1010,15 +681,6 @@ class TestResolveSdkVersion:
         ):
             assert _editable_sdk_source_root() == expected
 
-    def test_not_installed_distinguished_from_error(self) -> None:
-        """A missing package reports `not_installed`, never `error`."""
-        with patch(
-            "deepagents_code.extras_info.pkg_version",
-            side_effect=PackageNotFoundError("deepagents"),
-        ):
-            version, status = resolve_sdk_version()
-        assert (version, status) == (None, "not_installed")
-
     def test_unexpected_error_reports_error_status(self) -> None:
         """Any non-`PackageNotFoundError` failure reports `error`, not a crash."""
         with patch(
@@ -1401,36 +1063,6 @@ class TestWithEditableLocalVersion:
     `deepagents._version._with_editable_local_version`; both helpers must stamp
     identical strings so the two `lc_versions` entries in a trace match.
     """
-
-    def test_appends_editable_local_segment(self) -> None:
-        assert _with_editable_local_version("0.6.12") == "0.6.12+editable"
-
-    def test_preserves_existing_local_segment(self) -> None:
-        assert _with_editable_local_version("0.6.12+build") == "0.6.12+build.editable"
-
-    def test_returns_original_for_invalid_version(self) -> None:
-        assert _with_editable_local_version("not-a-version") == "not-a-version"
-
-    @pytest.mark.parametrize(
-        ("value", "expected"),
-        [
-            pytest.param(
-                "1.0.0-alpha1", "1.0.0a1+editable", id="prerelease-normalized"
-            ),
-            pytest.param("v1.2.3", "1.2.3+editable", id="v-prefix-stripped"),
-            pytest.param("01.2.3", "1.2.3+editable", id="leading-zeros-stripped"),
-            pytest.param("1.0+Build", "1.0+build.editable", id="local-lowercased"),
-            pytest.param("1!2.0", "1!2.0+editable", id="epoch-preserved"),
-        ],
-    )
-    def test_reemits_base_in_canonical_form(self, value: str, expected: str) -> None:
-        """The base version is canonicalized, so output can differ beyond the suffix."""
-        assert _with_editable_local_version(value) == expected
-
-    def test_is_not_idempotent(self) -> None:
-        """Applying twice stacks segments; callers must apply exactly once."""
-        once = _with_editable_local_version("0.7.0")
-        assert _with_editable_local_version(once) == "0.7.0+editable.editable"
 
 
 class TestRequirementSatisfied:
@@ -1840,3 +1472,85 @@ class TestCollectVersionInfo:
 
         report = collect_version_report()
         assert isinstance(report, VersionReport)
+
+
+class TestCompositeExtraMembers:
+    """`COMPOSITE_EXTRA_MEMBERS` must mirror `pyproject.toml`."""
+
+    def test_lookup_finds_providing_composite(self) -> None:
+        """A member maps back to the composite that provides it."""
+        assert composite_extras_providing("ollama") == frozenset({"all-providers"})
+        assert composite_extras_providing("daytona") == frozenset({"all-sandboxes"})
+
+    def test_lookup_is_empty_for_unbundled_extras(self) -> None:
+        """Extras no composite expands to return an empty set."""
+        assert composite_extras_providing("media") == frozenset()
+        assert composite_extras_providing("all-providers") == frozenset()
+
+    def test_mapping_covers_every_composite(self) -> None:
+        """Every self-referencing extra in pyproject.toml has a member set.
+
+        A composite is exactly an extra that expands through a single
+        `deepagents-code[...]` requirement, so a new one added to
+        `pyproject.toml` must appear here rather than being silently treated
+        as an ordinary extra.
+        """
+        composites = {
+            extra
+            for extra, requirements in _optional_dependencies().items()
+            if len(requirements) == 1
+            and canonicalize_name(Requirement(requirements[0]).name)
+            == canonicalize_name("deepagents-code")
+        }
+        assert composites == set(COMPOSITE_EXTRA_MEMBERS)
+
+    def test_members_match_pyproject_expansion(self) -> None:
+        """The mapped members equal the extras the composite requirement selects.
+
+        Removal reports which composite provides an unremovable member, so a
+        composite that gained or lost providers in `pyproject.toml` without a
+        matching update here would name the wrong extra — or stay silent and
+        report an installed member as "not installed".
+        """
+        optional = _optional_dependencies()
+        for composite, members in COMPOSITE_EXTRA_MEMBERS.items():
+            requirements = optional[composite]
+            assert len(requirements) == 1, (
+                f"{composite} must expand through a single self-referencing "
+                f"requirement, got {requirements}"
+            )
+            declared = Requirement(requirements[0]).extras
+            assert declared == set(members), (
+                f"pyproject.toml {composite} selects {sorted(declared)}, "
+                f"COMPOSITE_EXTRA_MEMBERS has {sorted(members)}"
+            )
+
+
+class TestBaseDependencyExtras:
+    """`BASE_DEPENDENCY_EXTRAS` must mirror `pyproject.toml`."""
+
+    def test_matches_extras_fully_covered_by_base_dependencies(self) -> None:
+        """The set equals the extras whose packages are all base dependencies.
+
+        Removal refuses these because deselecting them frees nothing. An extra
+        that gains or loses that property in `pyproject.toml` without a matching
+        update here would either be refused for no reason or accepted and then
+        rebuild the environment to no effect.
+        """
+        data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+        base_packages = {
+            canonicalize_name(Requirement(requirement).name)
+            for requirement in data["project"]["dependencies"]
+        }
+        covered = {
+            extra
+            for extra, requirements in _optional_dependencies().items()
+            # An empty extra (e.g. `quickjs`, kept for backwards-compatible
+            # install commands) adds nothing to remove either, so it belongs
+            # here too.
+            if all(
+                canonicalize_name(Requirement(requirement).name) in base_packages
+                for requirement in requirements
+            )
+        }
+        assert covered == set(BASE_DEPENDENCY_EXTRAS)

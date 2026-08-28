@@ -23,20 +23,25 @@ Minimal deepagents-code example:
 
 ```python
 import asyncio
+import os
 from pathlib import Path
-from unittest.mock import MagicMock
-
-from deepagents_code.app import DeepAgentsApp
+from tempfile import TemporaryDirectory
+from unittest.mock import AsyncMock, MagicMock, patch
 
 
 async def main() -> None:
     output = Path("/tmp/dcode-ui.svg")
-    app = DeepAgentsApp(agent=MagicMock())
-    async with app.run_test(size=(110, 36)) as pilot:
-        await pilot.pause()
-        await app._handle_command("/model")
-        await pilot.pause()
-        app.save_screenshot(output)
+    with TemporaryDirectory() as profile:
+        os.environ["DEEPAGENTS_HOME"] = profile
+        from deepagents_code.app import DeepAgentsApp
+
+        app = DeepAgentsApp(agent=MagicMock())
+        with patch.object(app, "_post_paint_init", new=AsyncMock()):
+            async with app.run_test(size=(110, 36)) as pilot:
+                await pilot.pause()
+                await app._handle_command("/model")
+                await pilot.pause()
+                app.save_screenshot(output)
     print(output)
 
 
@@ -53,7 +58,7 @@ Adapt only the app constructor and action that opens the target state. For a sta
 
 ## Reliability and safety
 
-- Use trusted local application code only. A headless app can still run startup hooks, subprocesses, or network calls; mock or disable unrelated integrations.
+- Use trusted local application code only. A headless app can still run startup hooks, subprocesses, or network calls. For `DeepAgentsApp`, set `DEEPAGENTS_HOME` to a temporary directory before importing `deepagents_code`, and mock `_post_paint_init` before mounting; replacing only the agent does not isolate startup side effects.
 - Never capture secrets, credentials, private conversation content, or unrelated user data. Seed only synthetic content needed for the preview.
 - Choose a bounded terminal size; start with `(110, 36)` and adjust only when the target clips or wastes substantial space.
 - Wait for workers, animations, and modal transitions to settle. Add another `await pilot.pause()` rather than using arbitrary sleeps.

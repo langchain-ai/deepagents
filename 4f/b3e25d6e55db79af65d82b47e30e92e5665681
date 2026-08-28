@@ -1,0 +1,14 @@
+.github/workflows/openwiki-update.yml
+  h_f78d33d4280f3f 26
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.24",
+  "base_commit_sha": "4fb3e25d6e55db79af65d82b47e30e92e5665681",
+  "prompts": {},
+  "humans": {
+    "h_f78d33d4280f3f": {
+      "author": "Colin Francis <colin.francis@langchain.dev>"
+    }
+  }
+}

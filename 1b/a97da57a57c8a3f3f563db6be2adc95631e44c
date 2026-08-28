@@ -1,0 +1,19 @@
+libs/code/deepagents_code/mcp_auth.py
+  s_44def6363bc4db::t_506fb55ccbc314 28-29,88-89,91-93,95-100
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "1ba97da57a57c8a3f3f563db6be2adc95631e44c",
+  "prompts": {},
+  "sessions": {
+    "s_44def6363bc4db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45f95b08-43d8-417a-8cfc-ccc07c44d8d4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

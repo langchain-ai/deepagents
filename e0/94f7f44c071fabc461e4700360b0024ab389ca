@@ -1,0 +1,27 @@
+libs/code/deepagents_code/mcp_tools.py
+  s_44def6363bc4db::t_83104630230d1a 274-307,2042-2045
+libs/code/pyproject.toml
+  s_44def6363bc4db::t_bfafcaf352e2b4 92
+libs/code/scripts/mcp_router_prototype.py
+  s_44def6363bc4db::t_c6e7b1da919963 1-53
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_44def6363bc4db::t_93081dae54d9c6 35,48,905-914,3048-3051,3054-3060,3064,3068-3072,3074-3085,3089-3090,3092-3096,3098-3100,3102-3106,3108,3110-3112,3114-3115,3117-3119,3121-3123,3125-3130,3132,3134-3135,3137-3140,3142-3146,3148,3150-3158,3160,3162-3163,3165-3166,3168-3171,3173-3175,3177-3179,3181,3183-3189,3191-3195,5017-5074
+libs/code/uv.lock
+  s_44def6363bc4db::t_188d75b56dd883 916-930,1113,1294,1511-1522,1551-1573,1991-1999,2648-2656,2672-2686,2759,4200-4211,4532-4540,5503-5515,6178-6186
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "e094f7f44c071fabc461e4700360b0024ab389ca",
+  "prompts": {},
+  "sessions": {
+    "s_44def6363bc4db": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "45f95b08-43d8-417a-8cfc-ccc07c44d8d4",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

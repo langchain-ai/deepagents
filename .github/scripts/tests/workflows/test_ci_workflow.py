@@ -190,12 +190,58 @@ SELECTION_CASES = [
 
 
 def test_deepagents_code_collects_coverage_on_python_3_14() -> None:
-    """Keep all supported runtimes while collecting coverage on Python 3.14."""
+    """Keep all supported runtimes while sharding Python 3.14 coverage."""
     workflow = _load_workflow(CI_WORKFLOW)
     config = workflow["jobs"]["test-code"]["with"]
 
     assert json.loads(config["python-versions"]) == ["3.12", "3.13", "3.14"]
     assert config["coverage-python-version"] == "3.14"
+    assert json.loads(config["coverage-shard-splits"]) == [
+        {"name": "app", "test-file": "tests/unit_tests/test_app.py"},
+        {
+            "name": "rest",
+            "test-file": "tests/unit_tests/",
+            "ignore-file": "tests/unit_tests/test_app.py",
+        },
+    ]
+
+
+def test_unit_workflow_combines_sharded_coverage_and_keeps_timings() -> None:
+    """Coverage sharding must retain one report and per-leg timing artifacts."""
+    workflow = _load_workflow(TEST_WORKFLOW)
+    build = workflow["jobs"]["build"]
+    combine = workflow["jobs"]["combine-coverage"]
+
+    assert "coverage-shard-splits" in workflow["on"]["workflow_call"]["inputs"]
+    assert (
+        build["strategy"]["matrix"]
+        == "${{ fromJSON(needs.validate-inputs.outputs.matrix) }}"
+    )
+    matrix_script = _find_step(
+        workflow,
+        job="validate-inputs",
+        name="🔍 Validate matrix inputs and coverage leg",
+    )["run"]
+    assert "length == 0 or length == 2" in matrix_script
+    assert "^tests/unit_tests/[A-Za-z0-9_./-]*$" in matrix_script
+    assert '"shard-name": .name' in matrix_script
+    test_script = _find_step(workflow, job="build", name="🧪 Run Unit Tests")["run"]
+    assert 'COV_ARGS="--cov --cov-report="' in test_script
+    assert "--junitxml=$JUNIT_FILE" in test_script
+    assert combine["needs"] == ["validate-inputs", "build"]
+    assert combine["if"] == "inputs.coverage-shard-splits != '[]'"
+    assert (
+        "coverage combine"
+        in _find_step(workflow, job="combine-coverage", name="📊 Combine coverage")[
+            "run"
+        ]
+    )
+    assert (
+        _find_step(workflow, job="build", name="📤 Upload unit test timings")["with"][
+            "retention-days"
+        ]
+        == 14
+    )
 
 
 def test_ci_success_builds_named_results_from_needs_object() -> None:

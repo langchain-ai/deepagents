@@ -277,6 +277,8 @@ jobs:
       working-directory: "libs/code"
       python-versions: '["3.12", "3.13", "3.14"]'
       coverage-python-version: "3.14"
+      coverage-shard-splits: >-
+        [{"name":"app","test-file":"tests/unit_tests/test_app.py"},{"name":"rest","test-file":"tests/unit_tests/","ignore-file":"tests/unit_tests/test_app.py"}]
 
   test-talon:
     name: "🧪 Test deepagents-talon"

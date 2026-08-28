@@ -33,6 +33,11 @@ on:
         type: string
         default: ""
         description: "Runner OS of the coverage leg; empty defaults to the primary 'os' input"
+      coverage-shard-splits:
+        required: false
+        type: string
+        default: "[]"
+        description: "JSON array of two {name, test-file, ignore-file?} splits for the coverage leg"
 
 # `pull-requests: read` lets the reusable workflow read live PR labels for the
 # warnings bypass below; a called workflow can only narrow the caller's token,
@@ -51,8 +56,12 @@ jobs:
   validate-inputs:
     runs-on: ubuntu-latest
     timeout-minutes: 1
+    outputs:
+      artifact-prefix: ${{ steps.matrix.outputs.artifact-prefix }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
       - name: "🔍 Validate matrix inputs and coverage leg"
+        id: matrix
         shell: bash
         env:
           VERSIONS: ${{ inputs.python-versions }}
@@ -60,6 +69,8 @@ jobs:
           PRIMARY_OS: ${{ inputs.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          SHARDS: ${{ inputs.coverage-shard-splits }}
+          WORKDIR: ${{ inputs.working-directory }}
         run: |
           if ! echo "$VERSIONS" | jq -e 'type == "array" and all(.[]; type == "string")' > /dev/null; then
             echo "::error::python-versions must be a JSON array of quoted strings (got: $VERSIONS)"
@@ -69,21 +80,58 @@ jobs:
             echo "::error::extra-configurations must be a JSON array of objects each with string 'python-version' and 'os' keys (got: $EXTRAS)"
             exit 1
           fi
-          if [ -z "$COV_PY" ]; then
-            echo "coverage-python-version is empty; coverage disabled for all legs"
-            exit 0
+          if ! echo "$SHARDS" | jq -e '
+            type == "array" and
+            (length == 0 or length == 2) and
+            all(.[];
+              type == "object" and
+              (keys_unsorted - ["name", "test-file", "ignore-file"] | length == 0) and
+              (.name | type == "string" and test("^[A-Za-z0-9_-]+$")) and
+              (.["test-file"] | type == "string" and test("^tests/unit_tests/[A-Za-z0-9_./-]*$") and (contains("..") | not)) and
+              ((.["ignore-file"] // "") | type == "string" and test("^(tests/unit_tests/[A-Za-z0-9_./-]*)?$") and (contains("..") | not))
+            ) and
+            ([.[].name] | unique | length) == length
+          ' > /dev/null; then
+            echo "::error::coverage-shard-splits must be empty or contain two unique, path-safe splits"
+            exit 1
           fi
           LEGS=$(jq -nc \
             --argjson versions "$VERSIONS" \
             --arg primary_os "$PRIMARY_OS" \
             --argjson extras "$EXTRAS" \
             '($versions | map({"python-version": ., "os": $primary_os})) + $extras')
-          if ! echo "$LEGS" | jq -e --arg py "$COV_PY" --arg os "$COV_OS" \
+          if [ -n "$COV_PY" ] && ! echo "$LEGS" | jq -e --arg py "$COV_PY" --arg os "$COV_OS" \
             'any(.[]; .["python-version"] == $py and .os == $os)' > /dev/null; then
             echo "::error::coverage leg (python=$COV_PY, os=$COV_OS) is not among configured legs: $LEGS"
             exit 1
           fi
-          echo "Coverage will be collected on Python $COV_PY / $COV_OS"
+          if [ "$SHARDS" != "[]" ] && [ -z "$COV_PY" ]; then
+            echo "::error::coverage-shard-splits requires coverage-python-version"
+            exit 1
+          fi
+          MATRIX=$(jq -nc \
+            --argjson legs "$LEGS" \
+            --argjson shards "$SHARDS" \
+            --arg cov_py "$COV_PY" \
+            --arg cov_os "$COV_OS" '
+              {include: [
+                $legs[] as $leg |
+                if ($shards | length) > 0 and $leg["python-version"] == $cov_py and $leg.os == $cov_os then
+                  $shards[] | $leg + {
+                    "shard-name": .name,
+                    "test-file": .["test-file"],
+                    "ignore-file": (.["ignore-file"] // "")
+                  }
+                else
+                  $leg + {"shard-name": "", "test-file": "tests/unit_tests/", "ignore-file": ""}
+                end
+              ]}
+            ')
+          ARTIFACT_PREFIX="unit-tests-${{ github.run_id }}-${{ github.run_attempt }}-$WORKDIR"
+          ARTIFACT_PREFIX="${ARTIFACT_PREFIX//\//-}"
+          ARTIFACT_PREFIX="${ARTIFACT_PREFIX//./-}"
+          echo "artifact-prefix=$ARTIFACT_PREFIX" >> "$GITHUB_OUTPUT"
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
   build:
     needs: validate-inputs
@@ -93,13 +141,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     strategy:
-      matrix:
-        python-version: ${{ fromJSON(inputs.python-versions) }}
-        os:
-          - ${{ inputs.os }}
-        include: ${{ fromJSON(inputs.extra-configurations) }}
+      matrix: ${{ fromJSON(needs.validate-inputs.outputs.matrix) }}
       fail-fast: false
-    name: "Python ${{ matrix.python-version }} (${{ matrix.os }})"
+    name: "Python ${{ matrix.python-version }} (${{ matrix.os }})${{ matrix.shard-name && format(' / {0}', matrix.shard-name) || '' }}"
     steps:
       - name: "📋 Checkout Code"
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -369,16 +413,53 @@ jobs:
           PY_OS: ${{ matrix.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          TEST_FILE: ${{ matrix.test-file }}
+          IGNORE_FILE: ${{ matrix.ignore-file }}
+          SHARD: ${{ matrix.shard-name }}
+          JUNIT_FILE: ${{ runner.temp }}/junit-${{ matrix.python-version }}-${{ matrix.os }}-${{ matrix.shard-name || 'all' }}.xml
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage.${{ matrix.shard-name || 'all' }}
           # A command-line `-W` filter outranks every ini `filterwarnings`
           # entry, so the bypass also demotes intentional `error:` filters.
           WARNINGS_FLAG: ${{ steps.warnings.outputs.flag }}
         run: |
+          PYTEST_FLAGS="-q $WARNINGS_FLAG --junitxml=$JUNIT_FILE"
+          if [ -n "$IGNORE_FILE" ]; then
+            PYTEST_FLAGS="$PYTEST_FLAGS --ignore=$IGNORE_FILE"
+          fi
           if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
-            make test PYTEST_EXTRA="-q $WARNINGS_FLAG"
+            export COVERAGE_FILE
+            if [ -n "$SHARD" ]; then
+              COV_ARGS="--cov --cov-report=" make test TEST_FILE="$TEST_FILE" PYTEST_EXTRA="$PYTEST_FLAGS"
+            else
+              make test TEST_FILE="$TEST_FILE" PYTEST_EXTRA="$PYTEST_FLAGS"
+            fi
           else
             echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
-            make test COV_ARGS= PYTEST_EXTRA="-q $WARNINGS_FLAG"
+            make test TEST_FILE="$TEST_FILE" COV_ARGS= PYTEST_EXTRA="$PYTEST_FLAGS"
           fi
+
+      - name: "📤 Upload unit test timings"
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.validate-inputs.outputs.artifact-prefix }}-junit-${{ matrix.python-version }}-${{ matrix.os }}-${{ matrix.shard-name || 'all' }}
+          path: ${{ runner.temp }}/junit-*.xml
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: "📤 Upload coverage shard"
+        if: >-
+          runner.os != 'Windows' &&
+          matrix.shard-name != '' &&
+          matrix.python-version == inputs.coverage-python-version &&
+          matrix.os == (inputs.coverage-os || inputs.os)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.validate-inputs.outputs.artifact-prefix }}-coverage-${{ matrix.shard-name }}
+          path: ${{ runner.temp }}/.coverage.${{ matrix.shard-name }}
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
 
       # Windows cannot run `make test` because `LocalShellBackend` requires POSIX
       # `sh`, so the sandbox matrix is skipped here (`RUN_SANDBOX_TESTS` is
@@ -394,15 +475,25 @@ jobs:
           PY_OS: ${{ matrix.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          JUNIT_FILE: ${{ runner.temp }}/junit-${{ matrix.python-version }}-${{ matrix.os }}-all.xml
           # See the POSIX step: the command-line bypass outranks ini filters.
           WARNINGS_FLAG: ${{ steps.warnings.outputs.flag }}
         run: |
           if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
-            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG tests/unit_tests/ --cov=deepagents --cov-report=term-missing
+            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG --junitxml="$JUNIT_FILE" tests/unit_tests/ --cov=deepagents --cov-report=term-missing
           else
             echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
-            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG tests/unit_tests/
+            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG --junitxml="$JUNIT_FILE" tests/unit_tests/
           fi
+
+      - name: "📤 Upload Windows unit test timings"
+        if: always() && runner.os == 'Windows'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: ${{ needs.validate-inputs.outputs.artifact-prefix }}-junit-${{ matrix.python-version }}-${{ matrix.os }}-all
+          path: ${{ runner.temp }}/junit-*.xml
+          if-no-files-found: warn
+          retention-days: 14
 
       - name: "🧹 Verify Clean Working Directory"
         shell: bash
@@ -411,3 +502,51 @@ jobs:
           STATUS="$(git status)"
           echo "$STATUS"
           echo "$STATUS" | grep 'nothing to commit, working tree clean'
+
+  combine-coverage:
+    needs: [validate-inputs, build]
+    if: inputs.coverage-shard-splits != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up coverage Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: ${{ inputs.coverage-python-version }}
+          cache-suffix: coverage-${{ inputs.working-directory }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: "📦 Install Test Dependencies"
+        shell: bash
+        run: uv sync --group test
+
+      - name: "📦 Install Editable Package"
+        shell: bash
+        run: uv pip install -e . --config-settings editable_mode=compat
+
+      - name: "📥 Download coverage shards"
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: ${{ needs.validate-inputs.outputs.artifact-prefix }}-coverage-*
+          path: ${{ runner.temp }}/coverage-shards
+          merge-multiple: true
+
+      - name: "📊 Combine coverage"
+        shell: bash
+        env:
+          COVERAGE_FILE: ${{ runner.temp }}/.coverage
+        run: |
+          set -eu
+          count=$(find "${{ runner.temp }}/coverage-shards" -maxdepth 1 -type f -name '.coverage.*' | wc -l)
+          if [ "$count" -ne 2 ]; then
+            echo "::error::expected two coverage shards, found $count"
+            exit 1
+          fi
+          uv run --group test coverage combine "${{ runner.temp }}/coverage-shards"
+          uv run --group test coverage report --show-missing

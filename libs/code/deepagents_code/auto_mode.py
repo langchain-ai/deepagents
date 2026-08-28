@@ -1689,6 +1689,18 @@ def _resolve_path(root: Path, raw: object) -> Path | None:
         return None
 
 
+def _path_error_reason(error: Exception, raw: str) -> str:
+    """Return a reason describing why a model-authored path failed to resolve.
+
+    The path is echoed back so the model can see which argument to correct, and
+    it is untrusted: it carries whatever length and bytes the model produced.
+    `sanitize_auto_reason` strips control characters and caps the result at
+    `_REASON_LIMIT`, which keeps an oversized path from failing plan validation
+    and discarding the decisions for every other call in the batch.
+    """
+    return sanitize_auto_reason(f"{type(error).__name__}: {error} (path: {raw})")
+
+
 _WRITE_PATH_TOOLS = frozenset({"write_file", "edit_file", "delete"})
 
 
@@ -1708,7 +1720,7 @@ def _unresolvable_write_path_reason(root: Path, raw: object) -> str | None:
             candidate = root / candidate
         candidate.resolve(strict=False)
     except (OSError, RuntimeError, ValueError) as error:
-        return f"{type(error).__name__}: {error} (path: {raw})"
+        return _path_error_reason(error, raw)
     return None
 
 
@@ -2285,7 +2297,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             # resolver's error instead, which the model can act on. Reached in
             # approval modes that do not consult the Auto gate.
             return ToolMessage(
-                content=f"{type(error).__name__}: {error} (path: {raw_path})",
+                content=_path_error_reason(error, raw_path),
                 name=tool_name,
                 tool_call_id=_tool_call_id(request.tool_call),
                 status="error",

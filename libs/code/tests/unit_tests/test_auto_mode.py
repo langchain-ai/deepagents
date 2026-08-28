@@ -61,6 +61,7 @@ from deepagents_code.auto_mode import (
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
+    _REASON_LIMIT,
     AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
     USER_PROMPT_METADATA_KEY,
@@ -80,6 +81,7 @@ from deepagents_code.auto_mode import (
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
     _routine_write_allowed,
+    _unresolvable_write_path_reason,
     classifier_unavailable_reason,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
@@ -1403,6 +1405,56 @@ async def test_unresolvable_home_write_is_denied_with_a_reason(
     assert prefix in decision["reason"]
     # Denied on the path itself, so the classifier is never consulted.
     assert not model.calls
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        pytest.param("a" * 600, id="over-reason-limit"),
+        pytest.param("\x00\x1b[31m", id="control-characters"),
+    ],
+)
+def test_unresolvable_write_path_reason_stays_plan_safe(
+    tmp_path: Path, suffix: str
+) -> None:
+    """The echoed path is untrusted, so the reason must survive plan validation.
+
+    An oversized reason fails `_validated_plan`, which discards the decisions
+    for every call in the batch and drops the whole turn to Manual.
+    """
+    prefix = _unresolvable_home_prefix()
+
+    reason = _unresolvable_write_path_reason(tmp_path, f"{prefix}{suffix}/f.txt")
+
+    assert reason is not None
+    assert len(reason) <= _REASON_LIMIT
+    assert "\x00" not in reason
+    assert "\x1b" not in reason
+
+
+async def test_oversized_unresolvable_write_path_keeps_the_plan_valid(
+    tmp_path: Path,
+) -> None:
+    """A long malformed path denies its own call without voiding the batch."""
+    prefix = _unresolvable_home_prefix()
+    model = _StructuredModel(_deny_result(call_id="write-call"))
+    middleware = _middleware(tmp_path)
+    args: dict[str, object] = {
+        "file_path": f"{prefix}{'a' * 600}/f.txt",
+        "content": "x",
+    }
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(middleware, request, tool_name="write_file", args=args)
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "policy_deny"
+    assert len(decision["reason"]) <= _REASON_LIMIT
 
 
 def test_classifier_schema_requires_every_object_property() -> None:

@@ -26,10 +26,11 @@ import stat
 import threading
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
-from typing import TYPE_CHECKING, Any, Literal, TypeAlias, override
+from typing import TYPE_CHECKING, Any, Literal, override
 from urllib.parse import parse_qs, urlparse
 
 import httpx
+import httpx2
 from anyio import CancelScope
 from filelock import FileLock, Timeout
 from mcp.client.auth import OAuthClientProvider, TokenStorage
@@ -44,6 +45,7 @@ from mcp.client.streamable_http import (
     MCP_PROTOCOL_VERSION_HEADER as MCP_PROTOCOL_VERSION,
 )
 from mcp.shared.auth import (
+    AuthorizationCodeResult,
     OAuthClientInformationFull,
     OAuthMetadata,
     OAuthToken,
@@ -85,7 +87,7 @@ class _DeviceCodeResponse(BaseModel):
     """Recommended polling interval in seconds when the provider omits one."""
 
 
-McpServerSpec: TypeAlias = Mapping[str, Any]
+type McpServerSpec = Mapping[str, Any]
 """A raw `mcpServers` entry, as it appears in a config file.
 
 Deliberately a mapping rather than one of FastMCP's server models: entries
@@ -807,7 +809,7 @@ class _FreshLoginTokenStorage(FileTokenStorage):
 
 
 RedirectHandler = Callable[[str], Awaitable[None]]
-CallbackHandler = Callable[[], Awaitable[tuple[str, str | None]]]
+CallbackHandler = Callable[[], Awaitable[AuthorizationCodeResult]]
 _LOOPBACK_BIND_HOST = "127.0.0.1"
 _LOOPBACK_URI_HOST = "localhost"
 _LOOPBACK_CALLBACK_PATH = "/callback"
@@ -854,7 +856,7 @@ class _LoopbackOAuthCallbackServer:
         self.redirect_uri = (
             f"http://{_LOOPBACK_URI_HOST}:{port}{_LOOPBACK_CALLBACK_PATH}"
         )
-        self._future: concurrent.futures.Future[tuple[str, str | None]] = (
+        self._future: concurrent.futures.Future[AuthorizationCodeResult] = (
             concurrent.futures.Future()
         )
         self._server: object | None = None
@@ -901,11 +903,11 @@ class _LoopbackOAuthCallbackServer:
         if isinstance(self._server, ThreadingHTTPServer):
             self._server.serve_forever()
 
-    async def wait(self) -> tuple[str, str | None]:
-        """Wait for the authorization callback and return `(code, state)`.
+    async def wait(self) -> AuthorizationCodeResult:
+        """Wait for the authorization callback and return its parsed result.
 
         Returns:
-            The OAuth authorization code and optional state.
+            The authorization code with its optional `state` and RFC 9207 `iss`.
 
         Raises:
             _LoopbackCallbackTimeoutError: If no callback arrives before the timeout.
@@ -1003,7 +1005,13 @@ class _LoopbackOAuthCallbackServer:
             self._send_html(handler, 400, _oauth_error_html(msg))
             return
 
-        self._future.set_result((params["code"][0], (params.get("state") or [None])[0]))
+        self._future.set_result(
+            AuthorizationCodeResult(
+                code=params["code"][0],
+                state=(params.get("state") or [None])[0],
+                iss=(params.get("iss") or [None])[0],
+            )
+        )
         self._send_html(
             handler,
             200,
@@ -1119,7 +1127,7 @@ def _make_reauth_required_handlers(
     async def redirect(_auth_url: str) -> None:  # noqa: RUF029
         raise MCPReauthRequiredError(server_name)
 
-    async def callback() -> tuple[str, str | None]:  # noqa: RUF029
+    async def callback() -> AuthorizationCodeResult:  # noqa: RUF029
         raise MCPReauthRequiredError(server_name)
 
     return redirect, callback
@@ -1147,21 +1155,21 @@ def _make_paste_back_handlers(
         final_url = _append_query_params(auth_url, extras) if extras else auth_url
         await interaction.show_authorize_url(final_url, opened_in_browser=False)
 
-    async def callback() -> tuple[str, str | None]:
+    async def callback() -> AuthorizationCodeResult:
         url = await interaction.request_callback_url()
         return _parse_callback_url(url)
 
     return redirect, callback
 
 
-def _parse_callback_url(url: str) -> tuple[str, str | None]:
-    """Parse a provider callback URL into `(code, state)`.
+def _parse_callback_url(url: str) -> AuthorizationCodeResult:
+    """Parse a provider callback URL into the SDK's authorization result.
 
     Args:
         url: Raw callback URL pasted by the user.
 
     Returns:
-        The `code` and optional `state` query parameters.
+        The `code` with its optional `state` and RFC 9207 `iss` parameters.
 
     Raises:
         RuntimeError: If the URL contains `error=` or lacks `code`.
@@ -1176,7 +1184,11 @@ def _parse_callback_url(url: str) -> tuple[str, str | None]:
     if "code" not in params or not params["code"]:
         msg = "Callback URL is missing the 'code' parameter."
         raise RuntimeError(msg)
-    return params["code"][0], (params.get("state") or [None])[0]
+    return AuthorizationCodeResult(
+        code=params["code"][0],
+        state=(params.get("state") or [None])[0],
+        iss=(params.get("iss") or [None])[0],
+    )
 
 
 def _default_ui() -> OAuthInteraction:
@@ -1258,7 +1270,7 @@ def _make_loopback_handlers(
             return
         await interaction.show_authorize_url(final_url, opened_in_browser=True)
 
-    async def callback() -> tuple[str, str | None]:
+    async def callback() -> AuthorizationCodeResult:
         try:
             return await callback_server.wait()
         except (
@@ -1580,12 +1592,12 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
         if set_oauth_metadata is not None:
             await set_oauth_metadata(self.context.oauth_metadata)
 
-    async def _handle_token_response(self, response: httpx.Response) -> None:
+    async def _handle_token_response(self, response: httpx2.Response) -> None:
         """Persist tokens and any metadata discovered during full OAuth login."""
         await super()._handle_token_response(response)
         await self._persist_oauth_metadata()
 
-    async def _handle_locked_refresh_response(self, response: httpx.Response) -> bool:
+    async def _handle_locked_refresh_response(self, response: httpx2.Response) -> bool:
         """Handle a serialized refresh without bypassing SDK re-auth fallback.
 
         Args:
@@ -1612,8 +1624,8 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
 
     async def async_auth_flow(
         self,
-        request: httpx.Request,
-    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        request: httpx2.Request,
+    ) -> AsyncGenerator[httpx2.Request, httpx2.Response]:
         """Discover and cache OAuth metadata before the SDK refresh branch.
 
         Yields:
@@ -1671,7 +1683,7 @@ class _ExpiryAwareOAuthClientProvider(OAuthClientProvider):
                         self.context.oauth_metadata = metadata
                         await self._persist_oauth_metadata()
                         break
-                except httpx.HTTPError as exc:
+                except httpx2.HTTPError as exc:
                     # Log only the exception type, never its payload — discovery
                     # responses travel the same channel as bearer tokens.
                     logger.debug(
@@ -2059,7 +2071,7 @@ _RESOURCE_METADATA_RE = re.compile(
 """Capture the RFC 9728 `resource_metadata` URL from a Bearer challenge."""
 
 
-def _oauth_resource_challenge(headers: httpx.Headers) -> str | None:
+def _oauth_resource_challenge(headers: httpx.Headers | httpx2.Headers) -> str | None:
     """Return the RFC 9728 `resource_metadata` URL from a Bearer challenge.
 
     A single `WWW-Authenticate` header line may carry several comma-separated
@@ -2089,7 +2101,9 @@ def find_oauth_challenge(exc: BaseException) -> str | None:
     Per the MCP authorization spec (RFC 9728), a server requiring OAuth
     answers an unauthenticated request with HTTP 401 plus a Bearer
     `WWW-Authenticate` challenge pointing at its protected-resource metadata.
-    The MCP client surfaces that as an `httpx.HTTPStatusError`. Walks
+    The MCP client surfaces that as an `httpx2.HTTPStatusError` (the MCP
+    SDK's HTTP client); dcode's own `httpx` calls raise the `httpx` one, so
+    both are matched. Walks
     `exceptions` (for `ExceptionGroup`), then `__cause__`/`__context__`,
     tracking visited nodes to terminate on cyclic chains.
 
@@ -2107,7 +2121,7 @@ def find_oauth_challenge(exc: BaseException) -> str | None:
         if id(current) in visited:
             continue
         visited.add(id(current))
-        if isinstance(current, httpx.HTTPStatusError):
+        if isinstance(current, (httpx.HTTPStatusError, httpx2.HTTPStatusError)):
             response = current.response
             if (
                 response is not None and response.status_code == 401  # noqa: PLR2004  # HTTP Unauthorized

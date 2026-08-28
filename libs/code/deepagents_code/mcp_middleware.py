@@ -102,10 +102,11 @@ def mcp_tool_middleware() -> AgentMiddleware:
         request: ToolCallRequest,
         handler: Callable[[ToolCallRequest], Awaitable[ToolMessage]],
     ) -> ToolMessage:
-        if not _is_mcp_tool(request):
+        tool = request.tool
+        if tool is None or not _is_mcp_tool(request):
             return await handler(request)
 
-        server = (request.tool.metadata or {}).get(_MCP_SERVER, "?")
+        server = (tool.metadata or {}).get(_MCP_SERVER, "?")
         arguments = normalize_mcp_arguments(
             request.tool_call.get("args") or {},
             getattr(request.tool, "args_schema", None),

@@ -56,6 +56,17 @@ hardcoded integers.
 """
 
 
+def _warn(message: str) -> None:
+    """Report a debug-logging failure to stderr and the in-memory buffer.
+
+    stderr covers headless / pre-TUI visibility; the logger also lands the
+    record in the always-on buffer behind the Debug Console (installed before
+    this module configures anything; see `__init__.py`).
+    """
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", message)
+
+
 def _prepare_debug_file(path: Path) -> None:
     """Create or tighten a debug file before attaching the logging handler.
 
@@ -272,11 +283,7 @@ def resolve_log_level(*, debug_enabled: bool | None = None) -> int:
         return level
     valid = ", ".join(LOG_LEVELS)
     message = f"ignoring invalid {LOG_LEVEL}={raw!r}; expected one of {valid}"
-    # stderr for headless / pre-TUI visibility; the logger so it also lands in
-    # the always-on in-memory buffer and surfaces in the Debug Console (the
-    # buffer is installed before this runs; see __init__.py).
-    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
-    logger.warning("%s", message)
+    _warn(message)
     return fallback
 
 
@@ -319,13 +326,15 @@ def _thread_log_name(thread_id: str) -> str:
     return f"thread-{digest}.log"
 
 
-def _remove_debug_handlers(target: logging.Logger, *, except_path: Path | None) -> bool:
+def _remove_debug_handlers(
+    target: logging.Logger, *, except_path: Path | None
+) -> logging.FileHandler | None:
     """Remove stale tagged handlers.
 
     Returns:
-        Whether a handler for `except_path` remains attached.
+        The handler for `except_path` that remains attached, or `None`.
     """
-    found = False
+    kept: logging.FileHandler | None = None
     for existing in list(target.handlers):
         if not (
             isinstance(existing, logging.FileHandler)
@@ -333,27 +342,23 @@ def _remove_debug_handlers(target: logging.Logger, *, except_path: Path | None) 
         ):
             continue
         if except_path is not None and Path(existing.baseFilename) == except_path:
-            found = True
+            kept = existing
             continue
         target.removeHandler(existing)
         existing.close()
-    return found
+    return kept
 
 
 def _attach_debug_handler(target: logging.Logger, debug_path: Path, level: int) -> None:
     """Attach one secured debug handler to a configured logger."""
-    if _remove_debug_handlers(target, except_path=debug_path):
-        for handler in target.handlers:
-            if getattr(handler, _DEBUG_HANDLER_ATTR, False):
-                handler.setLevel(level)
+    if kept := _remove_debug_handlers(target, except_path=debug_path):
+        kept.setLevel(level)
         return
     try:
         _prepare_debug_file(debug_path)
         handler = logging.FileHandler(str(debug_path), mode="a")
     except OSError as exc:
-        message = f"could not secure or open debug log file {debug_path}: {exc}"
-        print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
-        logger.warning("%s", message)
+        _warn(f"could not secure or open debug log file {debug_path}: {exc}")
         return
     setattr(handler, _DEBUG_HANDLER_ATTR, True)
     handler.setLevel(level)
@@ -404,9 +409,7 @@ def bind_debug_logging_to_thread(thread_id: str) -> None:
     except OSError as exc:
         for target in list(_CONFIGURED_LOGGERS):
             _remove_debug_handlers(target, except_path=None)
-        message = f"could not secure debug log directory {directory}: {exc}"
-        print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
-        logger.warning("%s", message)
+        _warn(f"could not secure debug log directory {directory}: {exc}")
         return
     debug_path = directory / _thread_log_name(thread_id)
     for target in list(_CONFIGURED_LOGGERS):

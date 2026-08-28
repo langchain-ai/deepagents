@@ -1,0 +1,19 @@
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_f578a3606b7ac5::t_4346814bfdf737 103,183-186,190,199-200,202-203,223-236,1023,1029,1035,1038,1248,1262,1272,1296,1300,1310,1323,1335,1351
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "136bd4fd5d2008557556b4a4c523a78a74941494",
+  "prompts": {},
+  "sessions": {
+    "s_f578a3606b7ac5": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "e8e2b720-7821-414e-9c37-f3546b3ba301",
+        "model": "unknown"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

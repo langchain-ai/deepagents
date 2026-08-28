@@ -935,6 +935,58 @@ def _current_temp_artifacts(
     }
 
 
+def _stale_temp_artifacts(
+    state: Mapping[str, object], runtime: object, messages: Sequence[object]
+) -> dict[str, AutoTempArtifact]:
+    """Return this thread's artifacts allocated by an already-finished turn.
+
+    Args:
+        state: Agent state carrying the private artifact ledger.
+        runtime: Runtime carrying the trusted thread identity.
+        messages: Messages carrying the trusted turn identity.
+
+    Returns:
+        Artifacts owned by this thread whose allocating turn is over. The result
+        is empty when either trusted identity is missing, so an unidentifiable
+        turn never reaps a live allocation.
+    """
+    thread_key = _thread_key(runtime)
+    turn_id = _latest_turn_id(messages)
+    if thread_key is None or turn_id is None:
+        return {}
+    return {
+        file_path: artifact
+        for file_path, artifact in _active_temp_artifacts(state).items()
+        if artifact["thread_key"] == thread_key and artifact["turn_id"] != turn_id
+    }
+
+
+def _reap_temp_artifacts(
+    artifacts: Mapping[str, AutoTempArtifact],
+) -> dict[str, AutoTempArtifactMutation]:
+    """Delete finished-turn artifact files and build their ledger removals.
+
+    Args:
+        artifacts: Stale artifacts keyed by their allocated path.
+
+    Returns:
+        A ledger mutation per artifact, clearing the entry. Entries are cleared
+        even when the file is already gone or its identity changed, because the
+        allocating turn no longer owns the path either way.
+    """
+    mutations: dict[str, AutoTempArtifactMutation] = {}
+    for file_path, artifact in artifacts.items():
+        try:
+            _delete_temp_artifact_file(artifact)
+        except OSError as exc:
+            logger.debug("Could not reap temporary artifact %s: %s", file_path, exc)
+        mutations[file_path] = AutoTempArtifactMutation(
+            allocation_id=artifact["allocation_id"],
+            artifact=None,
+        )
+    return mutations
+
+
 def _validate_temp_artifact_suffix(suffix: str) -> str:
     if not _TEMP_ARTIFACT_SUFFIX_RE.fullmatch(suffix):
         msg = "suffix must be empty or a short extension such as .md"
@@ -2221,6 +2273,35 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         self.tools = [create_temp_artifact, delete_temp_artifact]
         self._temp_tools_by_name = {item.name: item for item in self.tools}
+
+    async def abefore_model(  # noqa: PLR6301
+        self, state: AutoModeState, runtime: Runtime[Any]
+    ) -> dict[str, Any] | None:
+        """Reap temporary artifacts the model left behind on earlier turns.
+
+        `delete_temp_artifact` only accepts paths allocated by the current turn,
+        so an artifact the model forgets to delete before the turn ends can never
+        be deleted by the model afterwards. Reaping here keeps that strict
+        ownership check while bounding how long an orphan survives to a single
+        turn, instead of leaving it for the OS temp sweeper.
+
+        Args:
+            state: Agent state carrying the private artifact ledger.
+            runtime: LangGraph runtime carrying the trusted thread identity.
+
+        Returns:
+            A ledger update clearing the reaped entries, or `None` when nothing
+            is stale.
+        """
+        stale = _stale_temp_artifacts(
+            cast("Mapping[str, object]", state),
+            runtime,
+            state.get("messages", []),
+        )
+        if not stale:
+            return None
+        mutations = await asyncio.to_thread(_reap_temp_artifacts, stale)
+        return {_TEMP_ARTIFACT_STATE_KEY: mutations}
 
     def _managed_temp_rejection(self, request: ToolCallRequest) -> ToolMessage | None:
         tool_name = request.tool_call["name"]

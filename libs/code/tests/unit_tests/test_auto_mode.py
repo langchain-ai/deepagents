@@ -6872,3 +6872,88 @@ def test_classifier_policy_section_order_and_references() -> None:
 
     # A missing space between adjacent literals would silently join two words.
     assert "  " not in _CLASSIFIER_POLICY
+
+
+async def test_temp_artifact_from_a_finished_turn_is_reaped(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, request)
+    artifact_path = Path(cast("str", artifact["file_path"]))
+
+    same_turn = await middleware.abefore_model(
+        cast("Any", state), cast("Any", request.runtime)
+    )
+
+    assert same_turn is None
+    assert await asyncio.to_thread(artifact_path.exists)
+
+    state["messages"] = [
+        HumanMessage(
+            content="another request",
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    "another request", [], turn_id="turn-2"
+                )
+            },
+        )
+    ]
+
+    update = await middleware.abefore_model(
+        cast("Any", state), cast("Any", request.runtime)
+    )
+
+    assert update is not None
+    assert not await asyncio.to_thread(artifact_path.exists)
+    merged = _merge_temp_artifacts(
+        cast("dict[str, Any]", state["_auto_temp_artifacts"]),
+        cast("dict[str, Any]", update["_auto_temp_artifacts"]),
+    )
+    assert merged == {}
+
+
+async def test_reaping_tolerates_a_temp_artifact_file_already_gone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    worktree = tmp_path / "repo"
+    worktree.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    middleware = _middleware(worktree)
+    request, _store, _key = _request(
+        worktree,
+        model=_FailIfClassifiedModel(),
+        tool_name="create_temp_artifact",
+        args={},
+    )
+    state, artifact = _create_test_temp_artifact(middleware, request)
+    await asyncio.to_thread(Path(cast("str", artifact["file_path"])).unlink)
+    state["messages"] = [
+        HumanMessage(
+            content="another request",
+            additional_kwargs={
+                USER_PROMPT_METADATA_KEY: user_prompt_metadata(
+                    "another request", [], turn_id="turn-2"
+                )
+            },
+        )
+    ]
+
+    update = await middleware.abefore_model(
+        cast("Any", state), cast("Any", request.runtime)
+    )
+
+    assert update is not None
+    merged = _merge_temp_artifacts(
+        cast("dict[str, Any]", state["_auto_temp_artifacts"]),
+        cast("dict[str, Any]", update["_auto_temp_artifacts"]),
+    )
+    assert merged == {}

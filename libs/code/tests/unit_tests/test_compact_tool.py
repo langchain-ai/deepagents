@@ -7,6 +7,8 @@ Core compact tool logic tests live in the SDK at
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 from types import MethodType, SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -1172,6 +1174,49 @@ class TestLazySummaryModel:
         assert helper._partial_token_counter == "main-partial-counter"
         assert helper.trim_tokens_to_summarize is None
 
+    def test_concurrent_invocation_failures_both_fall_back(self) -> None:
+        """Concurrent failures must not observe another call's reset state."""
+        summarization = self._dispatching_summarizer()
+        summarization.model.invoke = lambda _input, **_kwargs: "main-model-summary"
+        _install_lazy_summary_model(cast("Any", summarization), "p:broken", None)
+        first_started = Event()
+        two_started = Event()
+        allow_failure = Event()
+        count_lock = Lock()
+        calls = 0
+
+        def _fail(_input: object, **_kwargs: object) -> object:
+            nonlocal calls
+            with count_lock:
+                calls += 1
+                first_started.set()
+                if calls == 2:
+                    two_started.set()
+            assert allow_failure.wait(timeout=5)
+            msg = "provider has no such model"
+            raise RuntimeError(msg)
+
+        model = SimpleNamespace(
+            profile={"max_input_tokens": 10_000},
+            _llm_type="summary",
+            invoke=_fail,
+        )
+        with (
+            patch(
+                "deepagents_code.config.create_model",
+                return_value=SimpleNamespace(model=model),
+            ),
+            ThreadPoolExecutor(max_workers=2) as executor,
+        ):
+            first = executor.submit(summarization._lc_helper._create_summary, [])
+            assert first_started.wait(timeout=5)
+            second = executor.submit(summarization._lc_helper._create_summary, [])
+            assert not two_started.wait(timeout=0.1)
+            allow_failure.set()
+
+            assert first.result(timeout=5) == "main-model-summary"
+            assert second.result(timeout=5) == "main-model-summary"
+
     def test_invocation_failure_retries_the_override_on_the_next_summary(
         self,
     ) -> None:
@@ -1299,6 +1344,50 @@ class TestLazySummaryModel:
             )
 
         assert summarization._lc_helper._summary_model._model is summarization.model
+
+    async def test_concurrent_async_invocation_failures_both_fall_back(self) -> None:
+        """Async failures serialize the shared configure-and-fallback state."""
+        summarization = self._dispatching_summarizer()
+
+        async def _main_ainvoke(_input: object, **_kwargs: object) -> str:
+            await asyncio.sleep(0)
+            return "main-model-summary"
+
+        summarization.model.ainvoke = _main_ainvoke
+        _install_lazy_summary_model(cast("Any", summarization), "p:broken", None)
+        first_started = asyncio.Event()
+        two_started = asyncio.Event()
+        allow_failure = asyncio.Event()
+        calls = 0
+
+        async def _fail(_input: object, **_kwargs: object) -> object:
+            nonlocal calls
+            calls += 1
+            first_started.set()
+            if calls == 2:
+                two_started.set()
+            await asyncio.wait_for(allow_failure.wait(), timeout=5)
+            msg = "provider has no such model"
+            raise RuntimeError(msg)
+
+        model = SimpleNamespace(
+            profile={"max_input_tokens": 10_000},
+            _llm_type="summary",
+            ainvoke=_fail,
+        )
+        with patch(
+            "deepagents_code.config.create_model",
+            return_value=SimpleNamespace(model=model),
+        ):
+            first = asyncio.create_task(summarization._lc_helper._acreate_summary([]))
+            await asyncio.wait_for(first_started.wait(), timeout=5)
+            second = asyncio.create_task(summarization._lc_helper._acreate_summary([]))
+            with pytest.raises(TimeoutError):
+                await asyncio.wait_for(two_started.wait(), timeout=0.1)
+            allow_failure.set()
+
+            assert await asyncio.wait_for(first, timeout=5) == "main-model-summary"
+            assert await asyncio.wait_for(second, timeout=5) == "main-model-summary"
 
 
 class TestRetryingModelInvoker:

@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from contextlib import asynccontextmanager
 from functools import partial
 from pathlib import Path
 from threading import Lock
@@ -58,7 +59,7 @@ from deepagents_code.hooks.server_middleware import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents.backends.composite import CompositeBackend
     from deepagents.backends.protocol import (
@@ -289,6 +290,7 @@ class _LazySummaryModel:
         self._model_spec = model_spec
         self._cli_max_retries = cli_max_retries
         self._lock = Lock()
+        self._invocation_lock = Lock()
         self._configured = False
         self._warned = False
         helper = summarization._lc_helper
@@ -385,16 +387,34 @@ class _LazySummaryModel:
         Returns:
             The generated summary.
         """
-        self._configure()
-        try:
+        with self._invocation_lock:
+            self._configure()
+            try:
+                return self._create_summary(messages)
+            except Exception as exc:
+                # `_configured` means the override, not the main model, was behind
+                # the failed call; a main-model failure has nothing to fall back to.
+                if _is_blocking_error(exc) or not self._configured:
+                    raise
+                self._degrade_to_main_model(exc)
             return self._create_summary(messages)
-        except Exception as exc:
-            # `_configured` means the override, not the main model, was behind
-            # the failed call; a main-model failure has nothing to fall back to.
-            if _is_blocking_error(exc) or not self._configured:
-                raise
-            self._degrade_to_main_model(exc)
-        return self._create_summary(messages)
+
+    @asynccontextmanager
+    async def _async_invocation_lock(self) -> AsyncIterator[None]:
+        """Hold the shared invocation lock without blocking the event loop."""
+        acquisition = asyncio.create_task(
+            asyncio.to_thread(self._invocation_lock.acquire)
+        )
+        try:
+            await asyncio.shield(acquisition)
+        except BaseException:
+            await acquisition
+            self._invocation_lock.release()
+            raise
+        try:
+            yield
+        finally:
+            self._invocation_lock.release()
 
     async def acreate_summary(self, messages: list[AnyMessage]) -> str:
         """Generate an asynchronous summary after lazy configuration.
@@ -402,17 +422,18 @@ class _LazySummaryModel:
         Returns:
             The generated summary.
         """
-        await asyncio.to_thread(self._configure)
-        try:
+        async with self._async_invocation_lock():
+            await asyncio.to_thread(self._configure)
+            try:
+                return await self._acreate_summary(messages)
+            except Exception as exc:
+                # `_configured` means the override, not the main model, was behind
+                # the failed call; a main-model failure has nothing to fall back to.
+                if _is_blocking_error(exc) or not self._configured:
+                    raise
+                # Locked like `_configure`, so it stays off the event loop.
+                await asyncio.to_thread(self._degrade_to_main_model, exc)
             return await self._acreate_summary(messages)
-        except Exception as exc:
-            # `_configured` means the override, not the main model, was behind
-            # the failed call; a main-model failure has nothing to fall back to.
-            if _is_blocking_error(exc) or not self._configured:
-                raise
-            # Locked like `_configure`, so it stays off the event loop.
-            await asyncio.to_thread(self._degrade_to_main_model, exc)
-        return await self._acreate_summary(messages)
 
 
 def _install_lazy_summary_model(

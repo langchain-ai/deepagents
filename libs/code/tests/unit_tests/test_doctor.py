@@ -800,6 +800,14 @@ class TestRunDoctorCommand:
 
         assert "https://github.com/langchain-ai/deepagents/commit/abc1234" in output
 
+    def test_invalid_commit_hash_renders_without_link(self) -> None:
+        """Text output leaves an invalid hash unlinked."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="not-a-sha"):
+            _, output = self._run_text(force_terminal=True)
+
+        assert "not-a-sha" in output
+        assert "https://github.com/langchain-ai/deepagents/commit/" not in output
+
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""
         args = argparse.Namespace(output_format="json")

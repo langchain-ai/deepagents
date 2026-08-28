@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -796,7 +797,8 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
             value_color = theme.MUTED if item.ok else "red"
             url = (
                 f"https://github.com/langchain-ai/deepagents/commit/{item.value}"
-                if item.label == "Commit hash" and item.value != "unknown"
+                if item.label == "Commit hash"
+                and re.fullmatch(r"[0-9a-fA-F]{7,40}", item.value)
                 else None
             )
             console.print(

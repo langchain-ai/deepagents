@@ -558,10 +558,10 @@ def test_strict_ripgrep_install_bypass(
 def test_ripgrep_bypass_step_runs_only_where_the_strict_step_does() -> None:
     """The label step must not annotate legs that have no strict install.
 
-    Its `if:` is the intersection of `pull_request` and the strict step's own
-    condition. Widen it and every ordinary PR collects a per-leg `::error::`
-    about a check that is not enforced there; narrow it and a release PR
-    silently loses the bypass.
+    Its `if:` is the SDK package's `pull_request` intersection with the strict
+    step's own condition. Widen it and every ordinary PR collects a per-leg
+    `::error::` about a check that is not enforced there; narrow it and a release
+    PR silently loses the bypass.
     """
     workflow = _load_workflow(TEST_WORKFLOW)
     resolve = _find_step(workflow, job="build", name=RESOLVE_STEP)

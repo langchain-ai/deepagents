@@ -122,10 +122,10 @@ jobs:
       # `github.event.pull_request.labels` because re-running a job replays the
       # original event payload, which would miss a label added after the fact.
       #
-      # The condition is the intersection of "this is a `pull_request`" and the
-      # strict step's own `if:` below. Running anywhere else would annotate legs
-      # that have no strict install to bypass -- an `::error::` about a check
-      # that is not enforced there, once per matrix leg. `push` and
+      # The condition is the intersection of "this is the SDK package", "this is
+      # a `pull_request`", and the strict step's own `if:` below. Running anywhere
+      # else would annotate legs that have no strict install to bypass -- an
+      # `::error::` about a check that is not enforced there, once per matrix leg. `push` and
       # `merge_group` carry no PR label context at all, so they skip this step
       # and the strict install always fails loudly for them.
       - name: "🏷️ Resolve ripgrep bypass"

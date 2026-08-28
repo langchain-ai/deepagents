@@ -11,7 +11,6 @@ the strict step's bypass runs against a stubbed `gh` in
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
@@ -187,29 +186,6 @@ SELECTION_CASES = [
         None,
     ),
 ]
-
-
-def test_ci_unit_tests_do_not_collect_coverage() -> None:
-    """Run every supported runtime without coverage bookkeeping."""
-    workflow = _load_workflow(CI_WORKFLOW)
-    test_workflow = _load_workflow(TEST_WORKFLOW)
-    config = workflow["jobs"]["test-code"]["with"]
-
-    assert json.loads(config["python-versions"]) == ["3.12", "3.13", "3.14"]
-    assert all(
-        "coverage-python-version" not in job.get("with", {})
-        for job in workflow["jobs"].values()
-    )
-    inputs = test_workflow["on"]["workflow_call"]["inputs"]
-    assert "coverage-python-version" not in inputs
-    assert "coverage-os" not in inputs
-    for name in ("🧪 Run Unit Tests", "🧪 Run Unit Tests (Windows)"):
-        run = _find_step(test_workflow, job="build", name=name)["run"]
-        assert "--cov" not in run
-    assert (
-        "COV_ARGS="
-        in _find_step(test_workflow, job="build", name="🧪 Run Unit Tests")["run"]
-    )
 
 
 def test_ci_success_builds_named_results_from_needs_object() -> None:

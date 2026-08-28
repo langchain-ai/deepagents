@@ -45,7 +45,7 @@ if TYPE_CHECKING:
     )
     from typing import TextIO
 
-    import httpx
+    import httpx2
     from fastmcp.client import Client as FastMCPClient
     from fastmcp.client.transports import ClientTransport
     from langchain_core.tools import BaseTool
@@ -1703,7 +1703,7 @@ def _build_transport(
     server_type: str,
     server_config: Mapping[str, Any],
     *,
-    auth: httpx.Auth | None,
+    auth: httpx2.Auth | None,
     keep_alive: bool,
 ) -> ClientTransport:
     """Build the FastMCP transport for one configured server.
@@ -1728,6 +1728,7 @@ def _build_transport(
     Returns:
         A transport ready to mount on the router.
     """
+    from fastmcp.client.transports import StdioTransport
     from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 
     if server_type in _SUPPORTED_REMOTE_TYPES:
@@ -1747,7 +1748,10 @@ def _build_transport(
     stdio = StdioMCPServer.model_validate(dict(server_config))
     stdio.keep_alive = keep_alive
     transport = stdio.to_transport()
-    transport.log_file = _server_stderr_log(server_name)
+    # `to_transport()` is typed as a union, but a stdio server always yields the
+    # stdio transport -- and that is the only one with a stderr sink to point.
+    if isinstance(transport, StdioTransport):
+        transport.log_file = _server_stderr_log(server_name)
     return transport
 
 
@@ -1935,7 +1939,11 @@ async def _load_tools_from_config(
     # ever reaching this function — never pays the adapter-import cost.
     await asyncio.to_thread(_warm_mcp_adapter_imports)
 
-    server_items = list(config["mcpServers"].items())
+    # Imported here, not at module scope: pulling FastMCP in eagerly would put
+    # it on the `dcode mcp --help` startup path.
+    from fastmcp.client.transports import ClientTransport as _ClientTransport
+
+    server_items: list[tuple[str, dict[str, Any]]] = list(config["mcpServers"].items())
     # Resolve each server's transport once, up front. `_resolve_server_type` is
     # pure, so this is a readability/DRY win over recomputing it in preflight,
     # discovery, and the final fold-in loop below.
@@ -1949,9 +1957,7 @@ async def _load_tools_from_config(
     # Whether each server's config interpolates `${VAR}`. Captured from the
     # *raw* config: once refs are expanded, an error message could echo a
     # resolved secret, so those servers' failures are reported without detail.
-    redacts = {
-        name: _config_uses_env_interpolation(cfg) for name, cfg in server_items
-    }
+    redacts = {name: _config_uses_env_interpolation(cfg) for name, cfg in server_items}
 
     async def _preflight_and_connect(
         server_name: str,
@@ -2031,7 +2037,7 @@ async def _load_tools_from_config(
                     )
                     return ("unauthenticated", auth_msg)
 
-                auth: httpx.Auth | None = None
+                auth: httpx2.Auth | None = None
                 if explicit_oauth or (
                     stored_tokens is not None and not has_authorization_header
                 ):
@@ -2039,7 +2045,7 @@ async def _load_tools_from_config(
                     # prior login (possibly triggered by 401 auto-detection)
                     # already stored tokens for this server. Static
                     # Authorization headers take precedence over stored OAuth.
-                    # `build_oauth_provider` returns an `httpx.Auth`, which is
+                    # `build_oauth_provider` returns an `httpx2.Auth`, which is
                     # what FastMCP's remote transports take directly.
                     oauth_servers.add(server_name)
                     auth = build_oauth_provider(
@@ -2050,12 +2056,18 @@ async def _load_tools_from_config(
                     )
 
                 return _build_transport(
-                    server_name, server_type, server_config,
-                    auth=auth, keep_alive=not stateless,
+                    server_name,
+                    server_type,
+                    server_config,
+                    auth=auth,
+                    keep_alive=not stateless,
                 )
             return _build_transport(
-                server_name, server_type, server_config,
-                auth=None, keep_alive=not stateless,
+                server_name,
+                server_type,
+                server_config,
+                auth=None,
+                keep_alive=not stateless,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
@@ -2095,10 +2107,10 @@ async def _load_tools_from_config(
     for (server_name, _server_config), result in zip(
         server_items, preflight_results, strict=True
     ):
-        if isinstance(result, tuple):
-            skipped[server_name] = result
-        else:
+        if isinstance(result, _ClientTransport):
             backends[server_name] = result
+        else:
+            skipped[server_name] = result
 
     runtime_manager = (
         session_manager if session_manager is not None else MCPSessionManager()

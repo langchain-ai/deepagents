@@ -102,7 +102,11 @@ def _make_mcp_tool(
     tool = MagicMock(spec=["name", "description", "inputSchema", "annotations", "meta"])
     tool.name = name
     tool.description = description
-    tool.inputSchema = input_schema or {"type": "object", "additionalProperties": False, "properties": {}}  # noqa: E501
+    tool.inputSchema = input_schema or {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {},
+    }
     tool.annotations = None
     tool.meta = None
     return tool

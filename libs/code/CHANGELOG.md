@@ -2,6 +2,31 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.65](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.64...deepagents-code==0.1.65) (2026-08-28)
+
+
+### Features
+
+* **code:** add `/summarization-model` ([#5884](https://github.com/langchain-ai/deepagents/issues/5884)) ([4f34c51](https://github.com/langchain-ai/deepagents/commit/4f34c51d4b9f6ed508af6a8e1ca6dbcf6e3e3877))
+* **code:** add optional extra uninstall commands ([#5875](https://github.com/langchain-ai/deepagents/issues/5875)) ([d36f226](https://github.com/langchain-ai/deepagents/commit/d36f22694d4b5d9ac9fa806292389954861cd53b))
+* **code:** open summarization model picker ([#5932](https://github.com/langchain-ai/deepagents/issues/5932)) ([f90d4fe](https://github.com/langchain-ai/deepagents/commit/f90d4fe114efe1de1e3d8dd8e5aee5b9f631093d))
+* **code:** optionally show visible reasoning ([#5887](https://github.com/langchain-ai/deepagents/issues/5887)) ([457ac43](https://github.com/langchain-ai/deepagents/commit/457ac435e1216d3f7cac76d4e856b7aa020b5ea8))
+
+
+### Bug Fixes
+
+* **code:** cap MCP tool names for provider compatibility ([#5953](https://github.com/langchain-ai/deepagents/issues/5953)) ([0eb8e57](https://github.com/langchain-ai/deepagents/commit/0eb8e578708a18c3a789f76c4bb13d92bd768192))
+* **code:** complete ASCII UI fallbacks ([#5930](https://github.com/langchain-ai/deepagents/issues/5930)) ([e9a1623](https://github.com/langchain-ai/deepagents/commit/e9a16234f14ea570e04a936cf8070156d01eae99))
+* **code:** guard path expansion in the Auto approval gate ([#5941](https://github.com/langchain-ai/deepagents/issues/5941)) ([46dea07](https://github.com/langchain-ai/deepagents/commit/46dea076a77f2b580829b5a211469c68b8924f2a))
+* **code:** hide inactive F2 tool hint ([#5939](https://github.com/langchain-ai/deepagents/issues/5939)) ([fd7ba1a](https://github.com/langchain-ai/deepagents/commit/fd7ba1ac47e9afbf7a60a40010f72130ff47ee25))
+* **code:** isolate debug logs by thread ([#5921](https://github.com/langchain-ai/deepagents/issues/5921)) ([4358cce](https://github.com/langchain-ai/deepagents/commit/4358ccee79dc9350600af02e4e52633b919d7382))
+* **code:** isolate parallel `task` failures ([#5954](https://github.com/langchain-ai/deepagents/issues/5954)) ([e0a474f](https://github.com/langchain-ai/deepagents/commit/e0a474fed575992abc991f6a8049cc8e18e328c0))
+* **code:** record Auto classifier deadline as a traced error ([#5944](https://github.com/langchain-ai/deepagents/issues/5944)) ([9a643c7](https://github.com/langchain-ai/deepagents/commit/9a643c75843a95d3ef770ac69dd1452435596efe))
+* **code:** recover stale pending work before compaction ([#5909](https://github.com/langchain-ai/deepagents/issues/5909)) ([213f0c8](https://github.com/langchain-ai/deepagents/commit/213f0c8a7dd01febff2a52c9ca0ea61b2cd8fd9d))
+* **code:** retry interrupted model streams ([#5905](https://github.com/langchain-ai/deepagents/issues/5905)) ([dfcd941](https://github.com/langchain-ai/deepagents/commit/dfcd9417a88c774a232de33e41bb0e69d76ec7ce))
+* **code:** update rubric grader model without restart ([#5885](https://github.com/langchain-ai/deepagents/issues/5885)) ([428e760](https://github.com/langchain-ai/deepagents/commit/428e760668d8fdfbb920966e2969c76040e30745))
+* **code:** wait for graph readiness after server restart ([#5947](https://github.com/langchain-ai/deepagents/issues/5947)) ([358bc33](https://github.com/langchain-ai/deepagents/commit/358bc3347135793afd12b8b387bda94e61bb6f07))
+
 ## [0.1.64](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.63...deepagents-code==0.1.64) (2026-08-28)
 
 ### Features

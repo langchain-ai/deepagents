@@ -876,6 +876,18 @@ async def _live_mode(runtime: object) -> ApprovalModeResolution:
     }
 
 
+def _fallback_telemetry(reason: str) -> tuple[list[str], dict[str, str]]:
+    """Build the tags and metadata that mark an approval-mode fallback.
+
+    Returns:
+        LangSmith tags and trace-safe metadata for one fallback reason.
+    """
+    return (
+        ["approval_mode:fallback", "approval_mode:store_unavailable"],
+        {"approval_mode_fallback_reason": reason},
+    )
+
+
 def _approval_mode_telemetry(
     runtime: object, resolution: ApprovalModeResolution
 ) -> tuple[list[str], dict[str, str]]:
@@ -885,11 +897,10 @@ def _approval_mode_telemetry(
         LangSmith tags and trace-safe metadata.
     """
     mode = resolution["mode"]
-    raw_client_mode = _context_value(_runtime_context(runtime), "approval_mode")
-    client_mode = raw_client_mode if isinstance(raw_client_mode, str) else None
+    client_mode = _context_value(_runtime_context(runtime), "approval_mode")
     metadata = {"effective_approval_mode": mode.value}
     tags: list[str] = []
-    if client_mode in {item.value for item in ApprovalMode}:
+    if isinstance(client_mode, str) and client_mode in ApprovalMode:
         metadata["client_approval_mode"] = client_mode
         metadata["server_approval_mode"] = mode.value
         if client_mode != mode.value:
@@ -902,8 +913,9 @@ def _approval_mode_telemetry(
                 mode.value,
             )
     if fallback_reason := resolution["fallback_reason"]:
-        tags.extend(["approval_mode:fallback", "approval_mode:store_unavailable"])
-        metadata["approval_mode_fallback_reason"] = fallback_reason
+        fallback_tags, fallback_metadata = _fallback_telemetry(fallback_reason)
+        tags.extend(fallback_tags)
+        metadata.update(fallback_metadata)
     return tags, metadata
 
 
@@ -916,14 +928,14 @@ def _attach_approval_mode_telemetry(
     run = get_current_run_tree()
     if run is None:
         return
-    run.add_tags([tag for tag in tags if tag not in (run.tags or [])])
-    run.add_metadata(dict(metadata))
     root = run
     while root.parent_run is not None:
         root = root.parent_run
-    if root is not run:
-        root.add_tags([tag for tag in tags if tag not in (root.tags or [])])
-        root.add_metadata(dict(metadata))
+    targets = [run] if root is run else [run, root]
+    payload = dict(metadata)
+    for target in targets:
+        target.add_tags([tag for tag in tags if tag not in (target.tags or [])])
+        target.add_metadata(payload)
 
 
 def _trusted_prompt_rows(
@@ -2831,7 +2843,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             response = await handler(request)
         resolution = await _live_mode(request.runtime)
         mode_tags, mode_metadata = _approval_mode_telemetry(request.runtime, resolution)
-        _attach_approval_mode_telemetry(mode_tags, mode_metadata)
+        # The mode rarely changes across the model call, so re-attaching identical
+        # diagnostics would only re-walk the run tree.
+        if (mode_tags, mode_metadata) != (trace_tags, trace_metadata):
+            _attach_approval_mode_telemetry(mode_tags, mode_metadata)
         ai_message = next(
             (
                 message
@@ -2869,7 +2884,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "counters_applied": False,
             "fallback_reason": (
                 resolution["fallback_reason"]
-                if mode_metadata.get("client_approval_mode") == ApprovalMode.AUTO.value
+                if _context_value(_runtime_context(request.runtime), "approval_mode")
+                == ApprovalMode.AUTO.value
                 else None
             ),
             "review_tool_call_ids": [],
@@ -2955,13 +2971,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         if counter_context is None:
             plan["fallback_reason"] = "control_state_unavailable"
-            fallback_tags = [
-                "approval_mode:fallback",
-                "approval_mode:store_unavailable",
-            ]
-            fallback_metadata = {
-                "approval_mode_fallback_reason": "control_state_unavailable"
-            }
+            fallback_tags, fallback_metadata = _fallback_telemetry(
+                "control_state_unavailable"
+            )
             plan["approval_mode_tags"] = sorted(
                 {*plan["approval_mode_tags"], *fallback_tags}
             )
@@ -3578,11 +3590,12 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if thread_key is None or raw.get("thread_key") != thread_key:
             return None
         raw_mode = raw.get("mode_at_proposal")
-        valid_modes = {mode.value for mode in ApprovalMode}
-        if not isinstance(raw_mode, str) or raw_mode not in valid_modes:
+        if not isinstance(raw_mode, str) or raw_mode not in ApprovalMode:
             return None
         effective_mode = raw.get("effective_approval_mode")
-        if effective_mode is not None and effective_mode not in valid_modes:
+        if effective_mode is not None and (
+            not isinstance(effective_mode, str) or effective_mode not in ApprovalMode
+        ):
             return None
         mode_tags = raw.get("approval_mode_tags")
         if mode_tags is not None and (

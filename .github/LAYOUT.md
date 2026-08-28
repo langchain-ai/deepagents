@@ -43,9 +43,10 @@ bypass label is applied. They consume labels rather than apply them.
 
 - `pr_scope_file_check.yml` — fails when the PR title's package scope does not cover the package dirs it changes; bypass with `allow-scope-mismatch`.
 - `markdown_file_check.yml` — fails non-`docs` PRs that add Markdown files; bypass with `markdown-added: acknowledged`.
+- `project_readme_check.yml` — fails non-`docs` PRs that edit a project README; bypass with `readme: acknowledged`.
 
-Neither gates merges on its own — each must be added to the branch's required
-status checks.
+None of these gate merges on their own — each must be added to the branch's
+required status checks.
 
 ## Local composite actions (`actions/`)
 

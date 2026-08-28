@@ -45,10 +45,12 @@
 # Limitations:
 #   - Matches `.md` only. The repo has no `.mdx` or `.markdown` files today; add
 #     them to `isMarkdown` if that changes.
-#   - The PR title is read from the event payload while files and labels are read
-#     live, so a title edited between event delivery and job execution is
-#     evaluated stale. `edited` is in the trigger list, so the edit fires its own
-#     corrective run; the residual exposure is one green check a merge could race.
+#   - Nothing is decided from the event payload except the PR number. Title,
+#     author, head, and changed-file total all come from a live `pulls.get`,
+#     because two rapid title edits queue two runs against the same head SHA and
+#     check name, and nothing guarantees the newer event finishes last. A stale
+#     `docs:` payload landing after a `feat:` retitle would otherwise publish a
+#     green required check that a re-run cannot repair.
 
 name: "📝 Markdown file check"
 
@@ -70,8 +72,9 @@ jobs:
     concurrency:
       group: markdown-file-check-${{ github.event.pull_request.number }}
       # Not cancel-in-progress: a cancelled run leaves whatever sticky comment
-      # the previous one wrote, and the label-toggle path depends on the final
-      # state being written by the last event, not the fastest one.
+      # the previous one wrote. Runs are allowed to overlap because none of them
+      # trusts its own event payload — each re-reads the PR live — so a run that
+      # finishes out of order still decides on current state.
       cancel-in-progress: false
     steps:
       - name: "Checkout detector from trusted base"

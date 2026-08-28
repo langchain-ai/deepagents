@@ -76,10 +76,26 @@ function httpError(message, status) {
   return error;
 }
 
+const DEFAULT_PR = {
+  number: 7,
+  title: "feat(code): add a thing",
+  changed_files: 1,
+  user: { login: "contributor", type: "User" },
+  head: {
+    ref: "feature-branch",
+    repo: { full_name: "langchain-ai/deepagents" },
+  },
+};
+
 function makeGithub({
+  // What `pulls.get` returns. Every gate input is read from here rather than
+  // the event payload, so tests set the PR's real state here and use
+  // makeContext only to model what the (possibly stale) event carried.
+  pr = {},
   files = [],
   labels = [],
   comments = [],
+  pullsGetError = null,
   listFilesError = null,
   listLabelsError = null,
   listCommentsError = null,
@@ -87,10 +103,12 @@ function makeGithub({
   updateCommentError = null,
   deleteCommentError = null,
 } = {}) {
+  const livePr = { ...DEFAULT_PR, ...pr };
   const calls = {
     createComment: [],
     updateComment: [],
     deleteComment: [],
+    pullsGet: [],
     listFiles: [],
     listLabels: [],
   };
@@ -118,6 +136,11 @@ function makeGithub({
       },
       pulls: {
         listFiles: "listFiles",
+        get: async (params) => {
+          calls.pullsGet.push(params);
+          if (pullsGetError) throw pullsGetError;
+          return { data: livePr };
+        },
       },
     },
     async paginate(route, params) {
@@ -136,23 +159,14 @@ function makeGithub({
   return { github, calls };
 }
 
-function makeContext({
-  title = "feat(code): add a thing",
-  number = 7,
-  changedFiles = 1,
-  user = { login: "contributor", type: "User" },
-  head = { ref: "feature-branch", repo: { full_name: "langchain-ai/deepagents" } },
-} = {}) {
+// The event payload contributes only the PR number; everything the gate
+// decides on is re-read live. `stale` models what an out-of-order event still
+// claims, so a test can prove the payload's version is never consulted.
+function makeContext({ number = 7, stale = {} } = {}) {
   return {
     repo: { owner: "langchain-ai", repo: "deepagents" },
     payload: {
-      pull_request: {
-        number,
-        title,
-        changed_files: changedFiles,
-        user,
-        head,
-      },
+      pull_request: { number, ...stale },
     },
   };
 }
@@ -350,13 +364,14 @@ test("blocks a PR that lands Markdown by renaming a non-Markdown file", async ()
 
 test("passes a docs PR without consulting files or labels", async () => {
   const { github, calls } = makeGithub({
+    pr: { title: "docs: add a guide" },
     files: [{ filename: "NOTES.md", status: "added" }],
     labels: [],
     comments: [botComment()],
   });
   const core = newCore();
 
-  await run({ github, context: makeContext({ title: "docs: add a guide" }), core });
+  await run({ github, context: makeContext(), core });
 
   assert.equal(core.failed, null);
   assert.equal(calls.listFiles.length, 0);
@@ -367,40 +382,40 @@ test("passes a docs PR without consulting files or labels", async () => {
 
 test("passes a release-please PR that adds a new component CHANGELOG", async () => {
   const { github } = makeGithub({
+    pr: {
+      title: "release(newpkg): 0.1.0",
+      user: { login: "github-actions[bot]", type: "Bot" },
+      head: {
+        ref: `${RELEASE_PLEASE_BRANCH_PREFIX}newpkg`,
+        repo: { full_name: "langchain-ai/deepagents" },
+      },
+    },
     files: [{ filename: "libs/newpkg/CHANGELOG.md", status: "added" }],
     labels: [],
   });
   const core = newCore();
-  const context = makeContext({
-    title: "release(newpkg): 0.1.0",
-    user: { login: "github-actions[bot]", type: "Bot" },
-    head: {
-      ref: `${RELEASE_PLEASE_BRANCH_PREFIX}newpkg`,
-      repo: { full_name: "langchain-ai/deepagents" },
-    },
-  });
 
-  await run({ github, context, core });
+  await run({ github, context: makeContext(), core });
 
   assert.equal(core.failed, null);
 });
 
 test("blocks a PR imitating a release-please branch from a fork", async () => {
   const { github } = makeGithub({
+    pr: {
+      title: "release(newpkg): 0.1.0",
+      user: { login: "attacker", type: "User" },
+      head: {
+        ref: `${RELEASE_PLEASE_BRANCH_PREFIX}newpkg`,
+        repo: { full_name: "attacker/deepagents" },
+      },
+    },
     files: [{ filename: "sneaky.md", status: "added" }],
     labels: [],
   });
   const core = newCore();
-  const context = makeContext({
-    title: "release(newpkg): 0.1.0",
-    user: { login: "attacker", type: "User" },
-    head: {
-      ref: `${RELEASE_PLEASE_BRANCH_PREFIX}newpkg`,
-      repo: { full_name: "attacker/deepagents" },
-    },
-  });
 
-  await run({ github, context, core });
+  await run({ github, context: makeContext(), core });
 
   assert.match(core.failed, /adds 1 Markdown file/);
 });
@@ -421,15 +436,108 @@ test("passes and clears the sticky comment when no Markdown is added", async () 
   );
 });
 
+// --- run(): the payload is never trusted ------------------------------------
+
+test("a stale docs: payload title cannot pass a PR now titled feat:", async () => {
+  // Two rapid title edits produce two runs against the same head SHA and check
+  // name. Ordering is not guaranteed, so the older `docs:` event can land last
+  // — and its result is the one branch protection reads.
+  const { github } = makeGithub({
+    pr: { title: "feat(code): add a thing" },
+    files: [{ filename: "NOTES.md", status: "added" }],
+    labels: [],
+  });
+  const core = newCore();
+  const context = makeContext({ stale: { title: "docs: add a guide" } });
+
+  await run({ github, context, core });
+
+  assert.match(core.failed, /adds 1 Markdown file/);
+});
+
+test("a stale feat: payload title cannot block a PR now titled docs:", async () => {
+  const { github } = makeGithub({
+    pr: { title: "docs: add a guide" },
+    files: [{ filename: "NOTES.md", status: "added" }],
+    labels: [],
+  });
+  const core = newCore();
+  const context = makeContext({ stale: { title: "feat(code): add a thing" } });
+
+  await run({ github, context, core });
+
+  assert.equal(core.failed, null);
+});
+
+test("release-please provenance is read live, not from the payload", async () => {
+  // Otherwise a stale payload claiming bot provenance would carry the
+  // exemption for a PR that is no longer a release PR.
+  const { github } = makeGithub({
+    pr: { title: "feat(code): add a thing" },
+    files: [{ filename: "sneaky.md", status: "added" }],
+    labels: [],
+  });
+  const core = newCore();
+  const context = makeContext({
+    stale: {
+      title: "release(newpkg): 0.1.0",
+      user: { login: "github-actions[bot]", type: "Bot" },
+      head: {
+        ref: `${RELEASE_PLEASE_BRANCH_PREFIX}newpkg`,
+        repo: { full_name: "langchain-ai/deepagents" },
+      },
+    },
+  });
+
+  await run({ github, context, core });
+
+  assert.match(core.failed, /adds 1 Markdown file/);
+});
+
+test("the truncation guard compares live files against the live total", async () => {
+  // A live file list measured against a stale payload total would fail honest
+  // PRs whenever a push landed between event delivery and this run.
+  const { github } = makeGithub({
+    pr: { changed_files: 2 },
+    files: [
+      { filename: "main.py", status: "modified" },
+      { filename: "other.py", status: "modified" },
+    ],
+  });
+  const core = newCore();
+  const context = makeContext({ stale: { changed_files: 1 } });
+
+  await run({ github, context, core });
+
+  assert.equal(core.failed, null);
+});
+
+test("fails closed when the live pull request cannot be read", async () => {
+  // Falling back to the payload here would quietly reinstate the whole race.
+  const { github, calls } = makeGithub({
+    pullsGetError: httpError("upstream boom", 502),
+    files: [{ filename: "NOTES.md", status: "added" }],
+    labels: [],
+  });
+  const core = newCore();
+
+  await run({ github, context: makeContext(), core });
+
+  assert.match(core.failed, /Could not read the pull request.*status=502/s);
+  assert.equal(calls.listFiles.length, 0);
+  assert.equal(calls.createComment.length, 0);
+});
+
 // --- run(): fail-closed guards ---------------------------------------------
 
 test("fails closed when the changed-file list is truncated", async () => {
   const { github, calls } = makeGithub({
+    pr: { changed_files: 3000 },
     files: [{ filename: "main.py", status: "modified" }],
   });
   const core = newCore();
 
-  await run({ github, context: makeContext({ changedFiles: 3000 }), core });
+  await run({ github, context: makeContext(), core });
 
   assert.match(core.failed, /incomplete \(1 of 3000\)/);
   // The guard must block, not merely warn, and must not proceed to the label read.
@@ -438,12 +546,10 @@ test("fails closed when the changed-file list is truncated", async () => {
 });
 
 test("fails closed when changed_files is missing from the payload", async () => {
-  const { github } = makeGithub({ files: [] });
+  const { github } = makeGithub({ pr: { changed_files: undefined }, files: [] });
   const core = newCore();
-  const context = makeContext();
-  delete context.payload.pull_request.changed_files;
 
-  await run({ github, context, core });
+  await run({ github, context: makeContext(), core });
 
   assert.match(core.failed, /missing numeric changed_files/);
 });

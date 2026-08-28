@@ -261,12 +261,35 @@ async function run({ github, context, core }) {
     return;
   }
 
-  const { number, title } = pullRequest;
+  const { number } = pullRequest;
 
-  // The title comes from the event payload while files and labels are read
-  // live. A title edited between event delivery and this run is therefore
-  // evaluated stale — but `edited` is in the trigger list, so the edit fires
-  // its own corrective run. pr_scope_file_check.yml makes the same tradeoff.
+  // Every input to the decision is read live, never from the event payload.
+  // The payload is a snapshot taken at delivery, and two rapid title edits
+  // produce two runs against the same head SHA and the same check name.
+  // `cancel-in-progress: false` lets both finish and GitHub does not promise
+  // FIFO ordering, so the older event can land last: a payload still reading
+  // `docs:` would clear the sticky comment and publish a green required check
+  // over a PR whose title is now `feat:`. Re-running the check cannot repair
+  // that, because the stale run is the most recent result. One `pulls.get`
+  // removes the race for the title and, at no extra cost, for the
+  // release-please provenance and changed-file total alongside it.
+  let livePullRequest;
+  try {
+    ({ data: livePullRequest } = await github.rest.pulls.get({
+      owner,
+      repo,
+      pull_number: number,
+    }));
+  } catch (error) {
+    // A gate input, so it fails closed like listFiles and listLabelsOnIssue.
+    // Falling back to the payload would reinstate exactly the race above, and
+    // silently — the run would look like any other pass.
+    core.setFailed(`Could not read the pull request: ${describeError(error)}`);
+    return;
+  }
+
+  const title = livePullRequest.title;
+
   if (isDocsTitle(title)) {
     await clearStickyComment({ github, owner, repo, number, core });
     core.info("PR type is docs; no acknowledgment required.");
@@ -275,10 +298,10 @@ async function run({ github, context, core }) {
 
   if (isReleasePleasePr(
     {
-      authorLogin: pullRequest.user?.login,
-      authorType: pullRequest.user?.type,
-      headRef: pullRequest.head?.ref,
-      headRepo: pullRequest.head?.repo?.full_name,
+      authorLogin: livePullRequest.user?.login,
+      authorType: livePullRequest.user?.type,
+      headRef: livePullRequest.head?.ref,
+      headRepo: livePullRequest.head?.repo?.full_name,
     },
     { owner, repo },
   )) {
@@ -309,7 +332,7 @@ async function run({ github, context, core }) {
   // checks with distinct messages — as pr_scope_file_check.yml does — because
   // a missing payload field and a truncated list are different root causes and
   // a maintainer needs to tell them apart.
-  const expected = pullRequest.changed_files;
+  const expected = livePullRequest.changed_files;
   if (typeof expected !== "number") {
     core.setFailed(
       `PR payload missing numeric changed_files (got ${JSON.stringify(expected)}); ` +

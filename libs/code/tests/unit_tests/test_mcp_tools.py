@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -33,6 +34,7 @@ from deepagents_code.mcp_middleware import (
     normalize_mcp_arguments as _normalize_mcp_arguments,
 )
 from deepagents_code.mcp_tools import (
+    _MCP_TOOL_NAME_MAX_LENGTH,
     DiscoveredMCPConfig,
     MCPConfigError,
     MCPConfigIdentity,
@@ -48,6 +50,7 @@ from deepagents_code.mcp_tools import (
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
+    _mcp_tool_name,
     _same_config_location,
     _server_stderr_log,
     _warm_mcp_adapter_imports,
@@ -278,6 +281,31 @@ def fake_tool_result() -> Any:  # noqa: ANN401
     from mcp.types import CallToolResult, TextContent
 
     return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+
+class TestMCPToolName:
+    """Provider-safe names for MCP tools."""
+
+    def test_short_name_is_unchanged(self) -> None:
+        assert _mcp_tool_name("filesystem", "read_file") == "filesystem_read_file"
+
+    def test_long_names_are_bounded_and_collision_resistant(self) -> None:
+        first = _mcp_tool_name("s" * 50, "tool-one" * 10)
+        second = _mcp_tool_name("s" * 50, "tool-two" * 10)
+
+        assert len(first) == 64
+        assert len(second) == 64
+        assert first != second
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", first)
+
+    def test_reported_plugin_name_is_bounded(self) -> None:
+        server = "plugin__langchain-mcp_langchain-plugins_4431c345__langchain-docs"
+
+        name = _mcp_tool_name(server, "query_docs_filesystem_docs_by_lang_chain")
+
+        assert len(name) == 64
+        assert name.startswith("plugin__langchain-mcp_l")
+        assert "query_docs_filesystem" in name
 
 
 class TestLoadMCPConfig:
@@ -1059,6 +1087,50 @@ class TestGetMCPTools:
             )
         ]
         await manager.cleanup()
+
+    async def test_long_tool_name_is_bounded_but_calls_original(
+        self,
+        write_config: Callable[..., str],
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """A name over the provider limit is capped, and still dispatches."""
+        server_name = "server" * 10
+        original_name = "query_docs_filesystem_docs_by_lang_chain"
+        path = write_config(
+            {"mcpServers": {server_name: {"command": "node", "args": []}}}
+        )
+        mcp_servers.register(server_name, original_name)
+
+        tools, manager, server_infos = await get_mcp_tools(path)
+        result = await tools[0].ainvoke({})
+
+        # Capped for the provider, but the call still reaches the real tool --
+        # the mounted name the client dispatches on is not the LangChain name.
+        assert len(tools[0].name) == _MCP_TOOL_NAME_MAX_LENGTH
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", tools[0].name)
+        assert server_infos[0].tools[0].name == tools[0].name
+        assert original_name in str(result)
+        await manager.cleanup()  # ty: ignore
+
+    async def test_long_tool_name_keeps_the_original_in_metadata(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """Capping is lossy, so the server-side name is recorded alongside."""
+        server_name = "server" * 10
+        original_name = "tool" * 20
+        mcp_servers.register(server_name, original_name)
+
+        tools, manager, _server_infos = await _load_tools_from_config(
+            {"mcpServers": {server_name: {"command": "node"}}}, stateless=True
+        )
+
+        assert manager is None
+        assert len(tools[0].name) == _MCP_TOOL_NAME_MAX_LENGTH
+        metadata = tools[0].metadata
+        assert metadata is not None
+        assert metadata["_deepagents_code_mcp_server"] == server_name
+        assert metadata["_deepagents_code_mcp_tool"] == original_name
 
     async def test_discovery_failure_marks_server_error(
         self,
@@ -3283,6 +3355,16 @@ class TestApplyToolFilter:
             tools, "fs", {"command": "node", "allowedTools": ["fs_read"]}
         )
         assert [t.name for t in result] == ["fs_read"]
+
+    def test_allowed_matches_original_name_after_truncation(self) -> None:
+        tool = _make_prefixed_tool("server_" + "a" * 44 + "_0123456789ab")
+        tool.metadata = {"_deepagents_code_mcp_tool": "read_file"}
+
+        result = _apply_tool_filter(
+            [tool], "server", {"command": "node", "allowedTools": ["read_*"]}
+        )
+
+        assert result == [tool]
 
     def test_allowed_unknown_name_logs_warning(
         self, caplog: pytest.LogCaptureFixture

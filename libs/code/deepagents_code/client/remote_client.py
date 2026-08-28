@@ -190,11 +190,22 @@ def state_has_pending_work(state: object) -> bool:
 def _cancelled_tool_messages(values: object) -> list[Any]:
     """Build terminal results for tool calls left unanswered by a lost run.
 
-    Blocking and CPU-bound over the whole checkpoint history; async callers
-    must offload it with `asyncio.to_thread`.
+    Only the trailing turn is considered. The queued `tools` step is triggered
+    by the final `AIMessage`, and a provider requires every `tool_result` to
+    sit immediately after the `tool_use` it answers. Earlier unanswered calls
+    are left alone on purpose: interrupt recovery writes a partial `AIMessage`
+    with its in-flight `tool_calls` and then closes the turn with a following
+    message (`_build_interrupted_ai_message` in the TUI adapter), so those
+    calls stay dangling by design. Answering them here would append their
+    results at the tail, far from their `tool_use`, and the next model call --
+    the compaction summarizer that runs right after recovery -- would be
+    rejected.
+
+    Blocking and CPU-bound over the checkpoint history; async callers must
+    offload it with `asyncio.to_thread`.
 
     Returns:
-        Error results for every unanswered tool call in checkpoint history.
+        Error results for the trailing turn's unanswered tool calls.
     """
     if not isinstance(values, dict):
         return []
@@ -204,21 +215,27 @@ def _cancelled_tool_messages(values: object) -> list[Any]:
     if not isinstance(raw_messages, list):
         return []
     messages = convert_to_messages(cast("list[Any]", raw_messages))
-    answered = {
-        message.tool_call_id for message in messages if isinstance(message, ToolMessage)
-    }
-    return [
-        ToolMessage(
-            content="Tool call cancelled because the previous session ended.",
-            name=call["name"],
-            tool_call_id=call["id"],
-            status="error",
-        )
-        for message in messages
-        if isinstance(message, AIMessage)
-        for call in message.tool_calls
-        if call["id"] not in answered
-    ]
+    # Walk back over the results the lost run did manage to write, then stop at
+    # the message that owns them. Anything but an `AIMessage` there means the
+    # turn was already closed out and nothing is dangling.
+    answered: set[str] = set()
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            answered.add(message.tool_call_id)
+            continue
+        if not isinstance(message, AIMessage):
+            return []
+        return [
+            ToolMessage(
+                content="Tool call cancelled because the previous session ended.",
+                name=call["name"],
+                tool_call_id=call["id"],
+                status="error",
+            )
+            for call in message.tool_calls
+            if call["id"] not in answered
+        ]
+    return []
 
 
 def agent_error_type(exc: BaseException) -> str:

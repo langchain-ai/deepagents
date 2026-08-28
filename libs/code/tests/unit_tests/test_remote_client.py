@@ -934,6 +934,50 @@ class TestCancelledToolMessages:
     def test_ignores_state_without_a_message_list(self, values: object) -> None:
         assert _cancelled_tool_messages(values) == []
 
+    def test_leaves_earlier_interrupted_turns_dangling(self) -> None:
+        """Only the trailing turn is answered.
+
+        Interrupt recovery persists a partial `AIMessage` carrying its
+        in-flight `tool_calls` and then closes the turn with a cancellation
+        notice, so history routinely holds calls that are unanswered by
+        design. Answering one here would append its `tool_result` after
+        unrelated messages, which the provider rejects.
+        """
+        values = {
+            "messages": [
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [{"name": "shell", "args": {}, "id": "interrupted"}],
+                },
+                {"type": "human", "content": "Task interrupted by user."},
+                {"type": "human", "content": "try again"},
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [{"name": "shell", "args": {}, "id": "pending"}],
+                },
+            ]
+        }
+
+        cancelled = _cancelled_tool_messages(values)
+
+        assert [message.tool_call_id for message in cancelled] == ["pending"]
+
+    def test_ignores_a_turn_that_already_closed(self) -> None:
+        values = {
+            "messages": [
+                {
+                    "type": "ai",
+                    "content": "",
+                    "tool_calls": [{"name": "shell", "args": {}, "id": "interrupted"}],
+                },
+                {"type": "human", "content": "Task interrupted by user."},
+            ]
+        }
+
+        assert _cancelled_tool_messages(values) == []
+
 
 def _pending_state(values: dict[str, Any]) -> SimpleNamespace:
     """Snapshot stub for a thread with a queued `tools` step."""

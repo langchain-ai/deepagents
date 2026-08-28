@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:449cb7a99a6b0b0bd2cc63c4d3fdc8ca28641166b9614abaa81e98c16acd0512",
+  "pageVersion": "sha256:a2200c48749fb8bb81a2d5d8a96df73ab280234c2704512064b621c4e937ced8",
   "claims": [
     {
       "id": "claim_a64f733f2f92431a84333168dbfe4826",
@@ -236,17 +236,17 @@
     },
     {
       "id": "claim_4a0fef756f594209901908160d4144b9",
-      "statement": "The .release-please-manifest.json records each configured package's current release baseline independently; current values include libs/deepagents at 0.7.9, libs/acp at 0.0.10, libs/code at 0.1.63, and libs/talon at 0.0.5.",
+      "statement": "The .release-please-manifest.json records each configured package's current release baseline independently; current values include libs/deepagents at 0.7.10, libs/acp at 0.0.11, libs/code at 0.1.64, and libs/talon at 0.0.6.",
       "evidence": [
         {
           "resource": "repo://.release-please-manifest.json#L1-L10",
-          "version": "repo-lines-v1:sha256:33779e74ecb5c04bf624d6ec235b82b2cb62cfedc58153d3d8b09399bcd8e408:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5YzNkNWM1ODU4NmU2ZWI4NWUwNzFmOTM5MWE4MDI3YTkxMWQyYmJhNWFhZWNjYTE2YWQ5NjU1NWNmOGNlNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
+          "version": "repo-lines-v1:sha256:83df3c9c4840977dd4f10175b9538fb2605e50d60e9c4a7a1d7cea6f295193e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2ZmIwOGZkYTFhY2I5NTdiNjExNmJkMzc4MTFhMWZlNDFhMDE2MTFjMDYzMWVkYmY3ODZkNjg4OWEyN2E1NWMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk5YzNkNWM1ODU4NmU2ZWI4NWUwNzFmOTM5MWE4MDI3YTkxMWQyYmJhNWFhZWNjYTE2YWQ5NjU1NWNmOGNlNDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjoxLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQxMmNhMzQ1Y2NmNzViZjljMDgwNmJjZTY5NWJlOGRlODA4Yjc5OTg0MjUxYTdhNTRkMjAyY2Y2MTAxZGQ0NTEifQ"
         }
       ]
     },
     {
       "id": "claim_db598d7328bb45549395f4544671d4e4",
-      "statement": "release-please forms per-component tags using include-component-in-tag true with tag-separator == and include-v-in-tag false (e.g. deepagents==0.7.9), and skips the automatic GitHub release while drafting the release PR.",
+      "statement": "release-please forms per-component tags using include-component-in-tag true with tag-separator == and include-v-in-tag false (e.g. deepagents==0.7.10), and skips the automatic GitHub release while drafting the release PR.",
       "evidence": [
         {
           "resource": "repo://release-please-config.json#L194-L196",
@@ -333,10 +333,46 @@
           "version": "repo-lines-v1:sha256:5b949b85aaa88661bd5ed506e16cba5e101681a1d3ade9749aafdcd7276f284f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU3NThlMTI1NGNkMDllMjYwN2M0NTU3NTUyMTFkNzYwM2M5NjhkMmNkYTFhMjQ3MTY2NzAzYzY4NzgwOWQ4ZWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyZWFjNjU2NzRmYmE4YTg2NmZmNzcyODU0MjUxZGIyZWNmMTJiYmQzYTUzZDMzZWJkZDYyYzFjMjQzMzRmNDAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjliNDQ3YzVmZWQ4MGQ3MGMyZDBmOGE2YTMzNmJkNmM1MTRkYzc0MGNkZDJlODczMjY0ODZlNWI0OTNhOWU3NTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg3Yzc1Yzk0ZjE5NjkzMDg1YmQ4YTMxMDUyNGIwY2NlZmFmNGQxOWQxZGNiMmExZjc4YjMxY2ZmODA4M2E3YWQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_609308083b8044d88bf526e7fe07f90f",
+      "statement": "Shared target names are not a uniform contract: deepagents and code have parallel, coverage-enabled unit targets and networked integration targets, while ACP and evals use their own uv group/flag combinations and do not export UV_FROZEN in their Makefiles.",
+      "evidence": [
+        {
+          "resource": "repo://libs/acp/Makefile#L1-L45",
+          "version": "repo-lines-v1:sha256:a42b75b4dc9f599433218226cc62fd89e467c52909c1237c78fa75b28fa65f96:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE2NGIyMGNkMzU2MDNjOTUxYmIwOWYyMzY0NGY3OGFhYmZlMzE2NmRjOTJmMDZhMjNlZWZmMmViZWVmMmZkMzQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEyZmI1NTcxNWEzYjdmN2QyNWFjNTZjNjcyNGU5YjUxNGFjYjEzMWFjMzE5NGY4MTViNDNlNTBiMTljOWQ3MjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjJhYWI5YzQ3MzQ2NGI2ZGQ3YThmMzBlMTNlYzYzMzlkNzk5MWFmNDNkNjc5NTZlM2NiYmQ4NTE4NjA5ZjJhZWEifQ"
+        },
+        {
+          "resource": "repo://libs/code/Makefile#L5-L39",
+          "version": "repo-lines-v1:sha256:87a98c21a0c808d72b737292242a585130aa60abb14728467677df335eff403f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViYzhmMjk2MzFkY2JjNjhhZTY3MGE3NjFjZTZkMzMzNjI0OTcxY2M0MDI2Zjk2NDg5YmQ1YjFjMjE0NzY4YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMGRhNmZkYTVmZGRkMTM4ZjVmMjNhMGQ2ZDk3ODBhN2Y1OTJjMTQwYjdjODI5NjVmODJlODdlZTYxNWE0NDQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwNjM0NjAyNzhhZGRmMjI3MTMyZmNjNWE4YjZkOWI2ZWJmMjAwZjFiNWEwOGQwNzQwNWY1Y2IwY2E0N2I5YWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU4YmM5MDIwNDM1ODU2Njg4YzU4MjkyNDAwODViMDI1Y2QyMWZjNmFiZDI0NThjNDM3ZTQ4Yjc3YzZiOTJhODIifQ"
+        },
+        {
+          "resource": "repo://libs/deepagents/Makefile#L5-L38",
+          "version": "repo-lines-v1:sha256:eef7578453f23d66e9ecd86adf5e63aa5fe866a0c2e5413a05bc487441352ee9:eyJzZWxlY3RlZExpbmVDb3VudCI6MzQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImViYzhmMjk2MzFkY2JjNjhhZTY3MGE3NjFjZTZkMzMzNjI0OTcxY2M0MDI2Zjk2NDg5YmQ1YjFjMjE0NzY4YmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYwNWEzOGQzODM4ZjhkOTY4YTEwMjMyMDY4OGE1NGE2YzZmNDM0MTFkMDJlNWRkMjQzYTBlN2Q4ZGQ4N2EwNzYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjUwNjM0NjAyNzhhZGRmMjI3MTMyZmNjNWE4YjZkOWI2ZWJmMjAwZjFiNWEwOGQwNzQwNWY1Y2IwY2E0N2I5YWEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjI0YWM5ZjFmMzlmMGQ4OWJhNzkzMjlhMGU3ZDU0NWExYWMxMTUyODM2NTZjMWEzZDk1OGUxMzMzNWM4MWMyZWUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/Makefile#L1-L21",
+          "version": "repo-lines-v1:sha256:b3eae63f400a138cabc806a9560f88b747401343e283774934d2fea54fdf5c25:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhYTg1ZWMzODljZDlmMDU3YzhkNjhhYTdhNDE5NDkxMzVjMzRkOTcyNzhkNDVhMmJmOTU2NDc0MjUwZDY2YTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNjZTRiYmEyZjZhYWE3NTcwNDA4MWUxZTcyNGM3NmViZjg4MDMyZjgzOTUwZGQ0NmI3MGNhYzJlMDIxOGI4ZTgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjlhMDg0NjMxY2FlZTVmN2NjMjZjMmNmNTM2YTM4NjNhYjdiNTgzNmI1MDFjYzBlYjAxNTEyOGRlMWQwN2VjMjIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d37db9c9ddfa4cd9bd409d02813140f7",
+      "statement": "Release-please exposes feat, fix, perf, and revert in changelogs and hides docs, style, chore, refactor, test, CI, and hotfix; its per-package pre-1.0 settings make ordinary feature bumps patches and breaking changes minor bumps.",
+      "evidence": [
+        {
+          "resource": "repo://release-please-config.json#L58-L71",
+          "version": "repo-lines-v1:sha256:64a32f2ebc4e12e0a575c704b6ed1afe995255741b53d6e81c282972e11d79c3:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA0MTBmNjAwMjA2NGM0ZjRlMjA2NDMzNDk0YWFjYzg0YTYzZmU2YTA4YjQ1NjNlNTdjN2IxNDA2MmUzYWJlZTMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0MjIzOWIxYmQ4MmI4NWVkNTBjMThhYmU2YjhlOTk3ODc1NWRhYzZmZDgwNDA5MjRjOGE4ODBjNTJmMDY1ZDIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjdhYTVhYzYxOTZlYmNiNDFkNGE2ZWYwZjY0YTBjNGM3Y2NjMTViMzIxZmE2MmE0MmFhZDRkODA1OWJhYWRjZjMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhjZDdjNzQ0NGZiYjUwZmU3NmNhMDY0ZTE4OGQxYmJiZWE4ZGQyZjcxYjhlNGVhYzUyZDJhMWFhMmUzM2Q4NWEifQ"
+        },
+        {
+          "resource": "repo://release-please-config.json#L6-L51",
+          "version": "repo-lines-v1:sha256:88ff70fef9c3d720a4664ed96a906d60bbf1d71f19dea4499a80e712326bf56b:eyJzZWxlY3RlZExpbmVDb3VudCI6NDYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkNTJkNmI3ODdhYzNiZTk0Nzg1YzBjNzBmYmJiOGQwODNiYzJiMWRlYzQ3ZWQ3ZDViNzgyYzZiY2JjNDdiMjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4OTNmNDBlMzc4MWViODk2YzgyZDA0NmEwODA2N2ExMWUzNWNkZjJmMWRmYWYyNmZlYTkwYjhkYjY2NzY0MTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxZTNjODE4MWZlNTczZDk2NTA3NmU2NGNkMzcxNmNhYzVlMzFlNjZmMmVjZGE0Yzg2OWZhNTQzZTIzYWJkZmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2NGJhNWUzYTFhNDdkYmY2NzI0ZDg5ODEzYmJjNTI0ZjM5MjhlMDEzYmI2ZTE3NTNlY2VlZTllYjI2ZmFiMjkifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-08-27T11:19:20.720Z"
+    "at": "2026-08-28T11:44:48.051Z"
   }
 }

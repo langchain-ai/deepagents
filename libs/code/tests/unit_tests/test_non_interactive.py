@@ -15,11 +15,11 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from langchain_core.messages import AIMessage, ToolMessage
 from rich.console import Console
+from rich.style import Style
+from rich.text import Text
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
-from rich.style import Style
-from rich.text import Text
 
 from deepagents_code._tool_stream import (
     TOOL_OUTPUT_TRUNCATION_MARKER,
@@ -39,6 +39,7 @@ from deepagents_code.client.non_interactive import (
     _build_non_interactive_header,
     _collect_action_request_warnings,
     _compaction_result_id,
+    _ConsoleSpinner,
     _dispatch_orphaned_tool_result_hooks,
     _end_headless_session,
     _make_hitl_decision,
@@ -46,6 +47,7 @@ from deepagents_code.client.non_interactive import (
     _process_ai_message,
     _process_hitl_interrupts,
     _process_message_chunk,
+    _process_rubric_event,
     _process_stream_chunk,
     _record_usage_from_message,
     _run_agent_loop,
@@ -55,7 +57,13 @@ from deepagents_code.client.non_interactive import (
     _summarization_stream_status,
     run_non_interactive,
 )
-from deepagents_code.config import SHELL_ALLOW_ALL, ModelResult, runtime_state
+from deepagents_code.config import (
+    ASCII_GLYPHS,
+    SHELL_ALLOW_ALL,
+    ModelResult,
+    get_glyphs,
+    runtime_state,
+)
 from deepagents_code.file_ops import (
     DiffOutcome,
     FileOperationRecord,
@@ -101,6 +109,30 @@ def _restore_runtime_state() -> Iterator[None]:
 def console() -> Console:
     """Console that captures output."""
     return Console(quiet=True)
+
+
+def test_ascii_headless_status_uses_ascii_glyphs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = io.StringIO()
+    console = Console(file=output, force_terminal=False, color_system=None)
+    monkeypatch.setattr(
+        "deepagents_code.client.non_interactive.get_glyphs", lambda: ASCII_GLYPHS
+    )
+    monkeypatch.setattr(
+        "deepagents_code.client.non_interactive.is_ascii_mode", lambda: True
+    )
+
+    _process_rubric_event(
+        {"type": "rubric_evaluation_start", "iteration": 0},
+        StreamState(thread_id="thread-1"),
+        console,
+    )
+    spinner = _ConsoleSpinner._build_spinner("Working...")
+
+    assert output.getvalue().isascii()
+    assert ASCII_GLYPHS.hourglass in output.getvalue()
+    assert spinner.frames == list(ASCII_GLYPHS.spinner_frames)
 
 
 def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
@@ -4892,7 +4924,9 @@ class TestAttemptLifecycle:
             )
             # tool.use fired; the status line is staged, not printed.
             assert any(c[0][0] == "tool.use" for c in mock_dispatch.call_args_list)
-            assert state.pending_tool_status_lines == ["🔧 Calling tool: execute"]
+            assert state.pending_tool_status_lines == [
+                f"{get_glyphs().tool} Calling tool: execute"
+            ]
             assert state.tool_call_buffers == {}  # parsed buffer popped
             assert "call-x" in state.in_flight_tool_calls
 
@@ -5617,7 +5651,7 @@ class TestAttemptLifecycle:
             console,
             tracker,
         )
-        assert "🔧 Calling tool: read_file" in output.getvalue()
+        assert f"{get_glyphs().tool} Calling tool: read_file" in output.getvalue()
         assert state.pending_tool_status_lines == []
 
 
@@ -5824,5 +5858,7 @@ class TestRunAgentLoopRetryTeardown:
 
         # The completed attempt's status flushed at completion; the buffered
         # text flushed at end of run on stdout.
-        assert "🔧 Calling tool: read_file" in console_output.getvalue()
+        assert (
+            f"{get_glyphs().tool} Calling tool: read_file" in console_output.getvalue()
+        )
         assert "done" in stdout_buf.getvalue()

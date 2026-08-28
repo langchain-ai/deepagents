@@ -770,16 +770,21 @@ class SubagentPanel(Vertical):
         Returns:
             The styled `Content` pieces appended after the header label.
         """
+        separator = get_glyphs().separator
         meta_text = f"   {done}/{total} done"
         count = len(self._phase_order)
         if count:
             plural = "phase" if count == 1 else "phases"
-            meta_text += f"  ·  {count} {plural}"
+            meta_text += f"  {separator}  {count} {plural}"
         parts: list[Content] = [Content.styled(meta_text, colors.muted)]
         if failed:
-            parts.append(Content.styled(f"  ·  {failed} failed", colors.error))
+            parts.append(
+                Content.styled(f"  {separator}  {failed} failed", colors.error)
+            )
         if cancelled:
-            parts.append(Content.styled(f"  ·  {cancelled} cancelled", colors.muted))
+            parts.append(
+                Content.styled(f"  {separator}  {cancelled} cancelled", colors.muted)
+            )
         return parts
 
     def _refresh_phases(self) -> None:
@@ -836,7 +841,8 @@ class SubagentPanel(Vertical):
         tint = colors.primary if selected else colors.muted
         elapsed = _format_timing(phase.elapsed_seconds())
         return Content.styled(
-            f"{caret} {mark} {phase.index} {done}/{total} · {elapsed}", tint
+            f"{caret} {mark} {phase.index} {done}/{total} {glyphs.separator} {elapsed}",
+            tint,
         )
 
     def _agents_width(self) -> int:

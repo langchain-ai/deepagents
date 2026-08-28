@@ -641,6 +641,9 @@ sequence regardless.
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
 
+UI_CHARSET_MODE = "DEEPAGENTS_CODE_UI_CHARSET_MODE"
+"""Terminal character-set mode (`auto`, `ascii`, or `unicode`)."""
+
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""
 

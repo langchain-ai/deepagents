@@ -32,6 +32,7 @@ class TestServerConfigRoundTrip:
         """to_env -> from_env should reconstruct the original config."""
         original = ServerConfig(
             model="anthropic:claude-sonnet-4-6",
+            summarization_model="anthropic:claude-haiku-4-5",
             model_params={"temperature": 0.7},
             assistant_id="my-agent",
             system_prompt="Be helpful",
@@ -330,14 +331,14 @@ class TestStartServerAndGetAgent:
 
         assert mock_server_process.call_args.kwargs["scaffold"] is mock_scaffold
 
-    async def test_forwards_allow_fs_tools_into_server_config(
+    async def test_forwards_agent_options_into_server_config(
         self, tmp_path: Path, monkeypatch
     ) -> None:
-        """`allow_fs_tools` reaches the `ServerConfig` written to the subprocess.
+        """Agent construction options reach the subprocess `ServerConfig`.
 
         The higher-level TUI/non-interactive forwarding tests mock this function
-        out, so without this a dropped kwarg here would disable the feature for
-        every server-backed session with no failing test.
+        out, so a dropped kwarg here would silently disable the option for every
+        server-backed session.
         """
         project_root = tmp_path / "project"
         project_root.mkdir()
@@ -379,10 +380,12 @@ class TestStartServerAndGetAgent:
                 assistant_id="agent",
                 mcp_config_path=None,
                 allow_fs_tools=["ls", "read_file"],
+                summarization_model="openai:summary-model",
             )
 
         assert len(captured) == 1
         assert captured[0].allow_fs_tools == ["ls", "read_file"]
+        assert captured[0].summarization_model == "openai:summary-model"
 
     async def test_stops_server_when_graph_readiness_fails(
         self, tmp_path: Path, monkeypatch
@@ -747,6 +750,33 @@ class TestServerSession:
 
         mock_mcp.cleanup.assert_awaited_once()
         mock_server.stop.assert_called_once()
+
+    async def test_forwards_summarization_model(self) -> None:
+        """The context manager forwards the dedicated summary model.
+
+        `start_server_and_get_agent` accepts `summarization_model`; a wrapper
+        that drops it makes the option unreachable for `server_session`
+        callers, and server startup is the only channel that configures
+        server-owned `/offload` summaries.
+        """
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), mock_server, None),
+        ) as start:
+            async with server_session(
+                assistant_id="agent",
+                summarization_model="openai:summary-model",
+            ):
+                pass
+
+        start.assert_awaited_once()
+        await_args = start.await_args
+        assert await_args is not None
+        assert await_args.kwargs["summarization_model"] == "openai:summary-model"
 
 
 class TestPreflightValidateMCPConfig:

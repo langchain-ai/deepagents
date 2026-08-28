@@ -3564,16 +3564,16 @@ class TestResumeThread:
 
     @pytest.mark.parametrize(
         "output_type",
-        ["ASSISTANT", "TOOL", "SKILL"],
+        ["ASSISTANT", "REASONING", "TOOL", "SKILL"],
     )
     async def test_switch_hints_for_any_server_output_type(
         self, output_type: str
     ) -> None:
         """Every `_SERVER_OUTPUT_MESSAGE_TYPES` member counts as work done.
 
-        A turn can leave behind tool calls or a skill invocation without any
-        assistant text, so narrowing the constant to `ASSISTANT` would strand
-        those threads.
+        A turn can leave behind reasoning, tool calls, or a skill invocation
+        without any assistant text, so narrowing the constant to `ASSISTANT`
+        would strand those threads.
         """
         from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
@@ -4073,10 +4073,17 @@ class TestFetchThreadHistoryData:
         module-wide stub would silently disable unrelated work and hand back a
         false pass.
         """
+
+        def prepare(
+            _messages: list[Any], *, show_reasoning: bool = False
+        ) -> tuple[list[MessageData], tuple[()]]:
+            assert not show_reasoning
+            return converted, ()
+
         return patch.object(
             DeepAgentsApp,
             "_prepare_thread_history_messages",
-            staticmethod(lambda _messages: (converted, ())),
+            staticmethod(prepare),
         )
 
     async def test_offloads_conversion_to_thread(self) -> None:
@@ -4105,6 +4112,7 @@ class TestFetchThreadHistoryData:
         to_thread_mock.assert_awaited_once_with(
             DeepAgentsApp._prepare_thread_history_messages,
             raw_messages,
+            show_reasoning=False,
         )
 
     async def test_extracts_nonzero_context_tokens(self) -> None:
@@ -4994,6 +5002,31 @@ class TestConvertMessagesToData:
         assert len(result) == 1
         assert result[0].type == MessageType.ASSISTANT
         assert result[0].content == "Part 1. Part 2."
+
+    def test_ai_message_reasoning_blocks_follow_preference(self) -> None:
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = [
+            self._make_ai(
+                [
+                    {"type": "text", "text": "Before "},
+                    {"type": "reasoning", "reasoning": "Thinking"},
+                    {"type": "text", "text": "after"},
+                ]
+            )
+        ]
+
+        hidden = DeepAgentsApp._convert_messages_to_data(messages)
+        visible = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+
+        assert [(message.type, message.content) for message in hidden] == [
+            (MessageType.ASSISTANT, "Before after")
+        ]
+        assert [(message.type, message.content) for message in visible] == [
+            (MessageType.ASSISTANT, "Before "),
+            (MessageType.REASONING, "Thinking"),
+            (MessageType.ASSISTANT, "after"),
+        ]
 
     def test_ai_message_empty_text_skipped(self) -> None:
         """AIMessage with empty text should not produce an ASSISTANT entry."""

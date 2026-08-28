@@ -733,6 +733,23 @@ class TestMCPViewerScreen:
             assert isinstance(screen._row_widgets[screen._selected_index], MCPToolItem)
             assert toggled == []
 
+    async def test_f2_hint_only_shows_on_server_row(self) -> None:
+        """The footer only advertises F2 when it can toggle a server."""
+        app = MCPViewerTestApp()
+        async with app.run_test() as pilot:
+            screen = MCPViewerScreen(server_info=_sample_info())
+            app.push_screen(screen)
+            await pilot.pause()
+            help_text = screen.query_one(".mcp-viewer-help", Static)
+
+            assert "F2 disable/enable" in _widget_text(help_text)
+
+            await pilot.press("down")
+            assert "F2 disable/enable" not in _widget_text(help_text)
+
+            await pilot.press("up")
+            assert "F2 disable/enable" in _widget_text(help_text)
+
     async def test_single_server_singular_labels(self) -> None:
         """Title uses singular forms for 1 server and 1 tool."""
         info = [

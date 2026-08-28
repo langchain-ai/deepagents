@@ -296,6 +296,7 @@ async def start_server_and_get_agent(
     *,
     assistant_id: str,
     model_name: str | None = None,
+    summarization_model: str | None = None,
     model_params: dict[str, Any] | None = None,
     cli_max_retries: int | None = None,
     profile_overrides: dict[str, Any] | None = None,
@@ -319,6 +320,8 @@ async def start_server_and_get_agent(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
@@ -328,6 +331,7 @@ async def start_server_and_get_agent(
     Args:
         assistant_id: Agent identifier.
         model_name: Model spec string.
+        summarization_model: Model spec used only for context-compaction summaries.
         model_params: Extra model kwargs.
         cli_max_retries: Explicit `--max-retries` value.
         profile_overrides: Model profile metadata overrides.
@@ -358,6 +362,8 @@ async def start_server_and_get_agent(
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
+        trust_project_extensions: Allow project extension execution.
+        extension_paths: Explicit one-run extension files or directories.
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
@@ -387,6 +393,7 @@ async def start_server_and_get_agent(
     config = ServerConfig.from_cli_args(
         project_context=project_context,
         model_name=model_name,
+        summarization_model=summarization_model,
         model_params=model_params,
         cli_max_retries=cli_max_retries,
         profile_overrides=profile_overrides,
@@ -412,6 +419,8 @@ async def start_server_and_get_agent(
         no_mcp=no_mcp,
         trust_project_mcp=trust_project_mcp,
         interactive=interactive,
+        trust_project_extensions=trust_project_extensions,
+        extension_paths=extension_paths,
     )
     _apply_server_config(config)
 
@@ -473,6 +482,7 @@ async def server_session(
     *,
     assistant_id: str,
     model_name: str | None = None,
+    summarization_model: str | None = None,
     model_params: dict[str, Any] | None = None,
     cli_max_retries: int | None = None,
     profile_overrides: dict[str, Any] | None = None,
@@ -496,6 +506,8 @@ async def server_session(
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
@@ -508,6 +520,7 @@ async def server_session(
     Args:
         assistant_id: Agent identifier.
         model_name: Model spec string.
+        summarization_model: Model spec used only for context-compaction summaries.
         model_params: Extra model kwargs.
         cli_max_retries: Explicit `--max-retries` value.
         profile_overrides: Model profile metadata overrides.
@@ -538,6 +551,8 @@ async def server_session(
         mcp_config_path: Path to MCP config.
         no_mcp: Disable MCP.
         trust_project_mcp: Trust project MCP servers.
+        trust_project_extensions: Allow project extension execution.
+        extension_paths: Explicit one-run extension files or directories.
         interactive: Whether the agent is interactive.
         host: Server host.
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
@@ -553,6 +568,7 @@ async def server_session(
         agent, server_proc, mcp_session_manager = await start_server_and_get_agent(
             assistant_id=assistant_id,
             model_name=model_name,
+            summarization_model=summarization_model,
             model_params=model_params,
             cli_max_retries=cli_max_retries,
             profile_overrides=profile_overrides,
@@ -576,6 +592,8 @@ async def server_session(
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=extension_paths,
             interactive=interactive,
             host=host,
             port=port,

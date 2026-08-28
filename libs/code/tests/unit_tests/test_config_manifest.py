@@ -297,10 +297,12 @@ def test_resolver_reads_emit_ranked_diagnostics() -> None:
     )
 
 
-# Six `app.py` display toggles plus `display.show_usage_stats` in
-# `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
-# so it is deliberately not counted. Exact, not a floor — see the test.
-_EXPECTED_LITERAL_CALL_SITES = 7
+# Seven `app.py` display toggles, plus `display.show_usage_stats` in
+# `_session_stats.py` and `display.show_reasoning` in `main.py` (the headless
+# path resolves it directly rather than through the app). The `app.py` wrapper
+# forwards variables, not literals, so it is deliberately not counted. Exact,
+# not a floor — see the test.
+_EXPECTED_LITERAL_CALL_SITES = 9
 
 
 def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
@@ -1812,6 +1814,20 @@ def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
     assert should_run_onboarding() is False
 
 
+def test_legacy_debug_file_remains_discoverable(monkeypatch) -> None:
+    option = get_option("debug.file")
+    assert option is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_FILE", "/tmp/legacy.log")
+    assert _resolve_manifest_option(option, toml_data={}) == (
+        "/tmp/legacy.log",
+        "env (DEEPAGENTS_CODE_DEBUG_FILE)",
+    )
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_FILE")
+    assert _resolve_manifest_option(
+        option, toml_data={"debug": {"file": "/tmp/configured.log"}}
+    ) == ("/tmp/configured.log", "config.toml")
+
+
 def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     """A synthetic option exercises the empty-fallback → `config.toml` path.
 
@@ -2564,6 +2580,19 @@ def test_display_value_truncates_long_values() -> None:
     rendered = _display_value(opt, is_set=True, value="a" * 100)
     assert len(rendered) == 60
     assert rendered.endswith("\N{HORIZONTAL ELLIPSIS}")
+
+
+def test_display_value_ascii_truncation_respects_limit(monkeypatch) -> None:
+    from deepagents_code.config import ASCII_GLYPHS
+
+    monkeypatch.setattr("deepagents_code.config.get_glyphs", lambda: ASCII_GLYPHS)
+    opt = ConfigOption(key="x", group="g", summary="s", kind=OptionKind.STR)
+
+    rendered = _display_value(opt, is_set=True, value="a" * 100)
+
+    assert len(rendered) == 60
+    assert rendered.endswith(ASCII_GLYPHS.ellipsis)
+    assert rendered.isascii()
 
 
 def test_config_text_survives_markup_in_value(monkeypatch) -> None:

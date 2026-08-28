@@ -14,6 +14,10 @@ import pytest
 
 from deepagents_code.config import parse_shell_allow_list
 from deepagents_code.main import apply_stdin_pipe, parse_args
+from deepagents_code.update_check import ExtraInstallOutcome
+
+_INSTALL_SUCCEEDED = ExtraInstallOutcome(True, "")
+"""Default `perform_install_extra` stub result for the install-subcommand tests."""
 
 MockArgvType = Callable[..., AbstractContextManager[object]]
 
@@ -1132,6 +1136,161 @@ class TestSkillFlagValidation:
         assert mock_run.await_args.kwargs["message"] == "review this repo"  # ty: ignore
 
 
+class TestSummarizationModelForwarding:
+    """The dedicated summary model reaches every headless input route."""
+
+    def test_cli_override_reaches_explicit_headless_mode(self) -> None:
+        from deepagents_code.main import cli_main
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        with (
+            patch.object(
+                sys,
+                "argv",
+                [
+                    "deepagents",
+                    "-n",
+                    "task",
+                    "--summarization-model",
+                    "openai:summary-model",
+                ],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            mock_run.await_args.kwargs["summarization_model"]  # ty: ignore
+            == "openai:summary-model"
+        )
+
+    def test_config_default_reaches_piped_stdin(self) -> None:
+        from deepagents_code.main import cli_main
+        from deepagents_code.model_config import ModelConfig
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = False
+        mock_stdin.read.return_value = "piped task"
+        config = ModelConfig(summarization_default_model="openai:config-summary")
+        with (
+            patch.object(sys, "argv", ["deepagents"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch.object(ModelConfig, "load", return_value=config),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch("os.open", side_effect=OSError("No tty in test sandbox")),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert (
+            mock_run.await_args.kwargs["summarization_model"]  # ty: ignore
+            == "openai:config-summary"
+        )
+
+    def test_blank_flag_overrides_the_configured_default(self) -> None:
+        """`--summarization-model ""` means "use the main model this launch".
+
+        The resolver tests `is not None`, so an explicitly blank flag outranks
+        `[models].summarization_default` -- the same escape hatch
+        `--auto-classifier-model` documents.
+        """
+        from deepagents_code.main import cli_main
+        from deepagents_code.model_config import ModelConfig
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        config = ModelConfig(summarization_default_model="openai:config-summary")
+        with (
+            patch.object(
+                sys,
+                "argv",
+                ["deepagents", "-n", "task", "--summarization-model", ""],
+            ),
+            patch.object(sys, "stdin", mock_stdin),
+            patch.object(ModelConfig, "load", return_value=config),
+            patch("deepagents_code.main.check_optional_tools", return_value=[]),
+            patch(
+                "deepagents_code.main._should_ensure_managed_ripgrep",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.run_non_interactive",
+                new_callable=AsyncMock,
+                return_value=0,
+            ) as mock_run,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        assert not mock_run.await_args.kwargs["summarization_model"]  # ty: ignore
+
+    def test_config_default_reaches_the_tui(self) -> None:
+        """Every launch mode gets the same resolved spec, the TUI included."""
+        from deepagents_code.main import cli_main
+        from deepagents_code.model_config import ModelConfig
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        config = ModelConfig(summarization_default_model="openai:config-summary")
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "-m", "hello"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch.object(ModelConfig, "load", return_value=config),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        assert run_tui.await_args is not None
+        assert (
+            run_tui.await_args.kwargs["summarization_model"] == "openai:config-summary"
+        )
+
+
 class TestMaxTurnsArgument:
     """Tests for --max-turns argument parsing and validation."""
 
@@ -1311,6 +1470,44 @@ def test_cli_main_forwards_recursion_limit_to_headless_server() -> None:
 
     assert exc_info.value.code == 0
     assert run_mock.await_args.kwargs["recursion_limit"] == 3000  # ty: ignore
+
+
+@pytest.mark.parametrize(
+    ("argv_extra", "expected"),
+    [
+        pytest.param([], False, id="default-off"),
+        pytest.param(["--show-reasoning"], True, id="flag-on"),
+    ],
+)
+def test_cli_main_forwards_show_reasoning_to_headless(
+    argv_extra: list[str], expected: bool
+) -> None:
+    """`--show-reasoning` must reach the headless runner, not just resolve.
+
+    The flag resolving correctly proves nothing on its own: `cli_main` reads the
+    preference and passes it as a separate kwarg, and dropping that kwarg leaves
+    the flag parsing, the manifest binding intact, and the feature dead.
+    """
+    from deepagents_code.main import cli_main
+
+    run_mock = AsyncMock(return_value=0)
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    with (
+        patch.object(sys, "argv", ["deepagents", "-n", "task", *argv_extra]),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=False,
+        ),
+        patch("deepagents_code.client.non_interactive.run_non_interactive", run_mock),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert run_mock.await_args.kwargs["show_reasoning"] is expected  # ty: ignore
 
 
 def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
@@ -2737,7 +2934,7 @@ class TestInstallExtraSubcommand:
         editable: bool = False,
         yes: bool = False,
         interactive: bool = False,
-        perform_return: tuple[bool, str] = (True, ""),
+        perform_return: ExtraInstallOutcome = _INSTALL_SUCCEEDED,
         command_side_effect: BaseException | None = None,
     ) -> tuple[int, MagicMock]:
         """Invoke `cli_main()` with `--install`; return exit code + mock."""
@@ -2844,7 +3041,7 @@ class TestInstallExtraSubcommand:
         editable: bool = False,
         yes: bool = False,
         interactive: bool = False,
-        perform_return: tuple[bool, str] = (True, ""),
+        perform_return: ExtraInstallOutcome = _INSTALL_SUCCEEDED,
         perform_side_effect: BaseException | None = None,
         command_side_effect: BaseException | None = None,
         command_return: str | None = None,
@@ -2949,7 +3146,7 @@ class TestInstallExtraSubcommand:
         """A failed install surfaces both the log path and manual script command."""
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
-            perform_return=(False, "resolver: conflict"),
+            perform_return=ExtraInstallOutcome(False, "resolver: conflict"),
         )
         assert code == 1
         text = self._printed_text(console_mock)
@@ -2965,7 +3162,7 @@ class TestInstallExtraSubcommand:
         command = "uv tool install -U 'deepagents-code[quickjs]'"
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
-            perform_return=(False, "resolver: conflict"),
+            perform_return=ExtraInstallOutcome(False, "resolver: conflict"),
             command_return=command,
         )
         assert code == 1
@@ -2980,7 +3177,7 @@ class TestInstallExtraSubcommand:
         resolved = "uv tool install -U 'deepagents-code[quickjs]'"
         code, _perform, console_mock = self._run_install_capture(
             "quickjs",
-            perform_return=(False, "resolver: conflict"),
+            perform_return=ExtraInstallOutcome(False, "resolver: conflict"),
             command_return=resolved,
             recovery_side_effect=ValueError("bad receipt"),
         )

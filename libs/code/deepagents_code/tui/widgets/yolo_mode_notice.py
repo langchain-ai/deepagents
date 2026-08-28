@@ -16,6 +16,7 @@ from textual.containers import Vertical
 from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets._links import open_checked_url_async
 
 if TYPE_CHECKING:
@@ -153,7 +154,8 @@ class YoloModeNoticeScreen(ModalScreen[YoloModeNoticeResult]):
                 open_links=False,
             )
             yield Static(
-                "Enter to enable YOLO · m for Manual · Esc to keep current mode",
+                f"Enter to enable YOLO {get_glyphs().separator} m for Manual "
+                f"{get_glyphs().separator} Esc to keep current mode",
                 classes="yolo-mode-notice-help",
                 markup=False,
             )

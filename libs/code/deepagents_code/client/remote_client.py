@@ -166,6 +166,78 @@ def _require_thread_id(config: Mapping[str, Any] | None) -> str:
     return thread_id
 
 
+def state_has_pending_work(state: object) -> bool:
+    """Return whether a checkpoint snapshot still holds unfinished graph work.
+
+    Single definition of "pending" shared by the app-side detector and the
+    post-recovery verification, so the two cannot drift apart.
+
+    Args:
+        state: A `StateSnapshot`-shaped object, or `None`.
+
+    Returns:
+        Whether the snapshot has a queued node, task, or interrupt.
+    """
+    if state is None:
+        return False
+    return bool(
+        getattr(state, "next", None)
+        or getattr(state, "tasks", None)
+        or getattr(state, "interrupts", None)
+    )
+
+
+def _cancelled_tool_messages(values: object) -> list[Any]:
+    """Build terminal results for tool calls left unanswered by a lost run.
+
+    Only the trailing turn is considered. The queued `tools` step is triggered
+    by the final `AIMessage`, and a provider requires every `tool_result` to
+    sit immediately after the `tool_use` it answers. Earlier unanswered calls
+    are left alone on purpose: interrupt recovery writes a partial `AIMessage`
+    with its in-flight `tool_calls` and then closes the turn with a following
+    message (`_build_interrupted_ai_message` in the TUI adapter), so those
+    calls stay dangling by design. Answering them here would append their
+    results at the tail, far from their `tool_use`, and the next model call --
+    the compaction summarizer that runs right after recovery -- would be
+    rejected.
+
+    Blocking and CPU-bound over the checkpoint history; async callers must
+    offload it with `asyncio.to_thread`.
+
+    Returns:
+        Error results for the trailing turn's unanswered tool calls.
+    """
+    if not isinstance(values, dict):
+        return []
+    from langchain_core.messages import AIMessage, ToolMessage, convert_to_messages
+
+    raw_messages = values.get("messages")
+    if not isinstance(raw_messages, list):
+        return []
+    messages = convert_to_messages(cast("list[Any]", raw_messages))
+    # Walk back over the results the lost run did manage to write, then stop at
+    # the message that owns them. Anything but an `AIMessage` there means the
+    # turn was already closed out and nothing is dangling.
+    answered: set[str] = set()
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            answered.add(message.tool_call_id)
+            continue
+        if not isinstance(message, AIMessage):
+            return []
+        return [
+            ToolMessage(
+                content="Tool call cancelled because the previous session ended.",
+                name=call["name"],
+                tool_call_id=call["id"],
+                status="error",
+            )
+            for call in message.tool_calls
+            if call["id"] not in answered
+        ]
+    return []
+
+
 def agent_error_type(exc: BaseException) -> str:
     """Best-effort error-type name for an exception from `RemoteAgent.astream`.
 
@@ -573,7 +645,7 @@ class RemoteAgent:
     async def aupdate_state(
         self,
         config: Mapping[str, Any],
-        values: dict[str, Any],
+        values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
     ) -> None:
@@ -633,6 +705,41 @@ class RemoteAgent:
                 exc_info=True,
             )
             raise
+
+    async def aabandon_pending_work(self, config: Mapping[str, Any]) -> None:
+        """Cancel active runs and discard checkpointed work without replaying it.
+
+        The state writes go through `aupdate_state` so they inherit its HTTP
+        409 recovery: this method runs on exactly the threads whose run was
+        cancelled out from under the client, which is when 409s occur.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            RuntimeError: If pending work remains after the state update.
+        """
+        thread_id = _require_thread_id(config)
+        prepared = _prepare_config(config)
+        await _cancel_active_runs(self._get_graph(), thread_id)
+        state = await self.aget_state(prepared)
+        cancelled = await asyncio.to_thread(
+            _cancelled_tool_messages, getattr(state, "values", None)
+        )
+        if cancelled:
+            # `create_agent` names the tool step "tools", but only adds the node
+            # when the agent has tools. A toolless graph therefore rejects this
+            # update with `InvalidUpdateError` -- and could not have produced a
+            # dangling tool call in the first place, so the branch is dead
+            # there. The caller reports the failure rather than compacting.
+            await self.aupdate_state(prepared, {"messages": cancelled}, as_node="tools")
+        await self.aupdate_state(prepared, None, as_node="__end__")
+        if state_has_pending_work(await self.aget_state(prepared)):
+            msg = (
+                f"Pending graph work remained on thread {thread_id} after "
+                "clearing checkpoint state"
+            )
+            raise RuntimeError(msg)
 
     async def aput_store_item(
         self,

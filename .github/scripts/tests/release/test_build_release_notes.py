@@ -1395,16 +1395,29 @@ def _fail(stderr: str, code: int = 1) -> subprocess.CompletedProcess[str]:
     )
 
 
-def _pr_handler(pr_number: str, payload: str):
-    """A `_run_gh` replacement for the common two-call contributor lookup.
+def _pr_handler(
+    pr_number: str, payload: str, issue_authors: dict[tuple[str, int], str] | None = None
+):
+    """A `_run_gh` replacement for the common contributor lookup.
 
     The commit-to-PR `gh api` call answers *pr_number*; the follow-up
     `gh pr view` answers *payload* verbatim, so a caller can hand over either
-    JSON or the raw string a `--jq` query would print.
+    JSON or the raw string a `--jq` query would print. The per-issue
+    `gh api repos/{owner}/{name}/issues/{n}` author lookup answers
+    *issue_authors* (`(repository, number)` to login), defaulting to no author
+    login. A bare issue number in *issue_authors* is treated as belonging to
+    the released repository.
     """
 
     def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
-        return _ok(pr_number) if args[0] == "api" else _ok(payload)
+        if args[0] == "api":
+            issue = re.search(r"/repos/([^/]+/[^/]+)/issues/(\d+)$", args[1])
+            if issue and "--jq" in args:
+                authors = issue_authors or {}
+                login = authors.get((issue.group(1), int(issue.group(2))), "")
+                return _ok(login)
+            return _ok(pr_number)
+        return _ok(payload)
 
     return handler
 
@@ -1464,9 +1477,54 @@ class TestGhRequestContract:
         )
         view = next(c for c in calls if c[0] == "pr")
         fields = view[view.index("--json") + 1].split(",")
-        # `labels` drives the internal/community split; `body` the socials.
-        assert set(fields) == {"author", "body", "labels"}
+        # `labels` drives the internal/community split; `body` the socials;
+        # `closingIssuesReferences` the special-thanks section.
+        assert set(fields) == {"author", "body", "labels", "closingIssuesReferences"}
         assert "--repo" in view and REPOSITORY in view
+
+    def test_closed_issue_authors_are_looked_up_per_issue(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`closingIssuesReferences` carries no nested `author`, so the login
+        comes from a follow-up issues-API call; dropping it would empty the
+        special-thanks section while every response stub kept passing."""
+        head = self._repo(tmp_path)
+        calls: list[list[str]] = []
+
+        def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            if args[0] == "api":
+                if "/issues/" in args[1]:
+                    return _ok("carol")
+                return _ok("7")
+            return _ok(
+                json.dumps(
+                    {
+                        "author": {"login": "alice"},
+                        "labels": [],
+                        "closingIssuesReferences": [
+                            {
+                                "number": 101,
+                                "url": (
+                                    f"https://github.com/{REPOSITORY}/issues/101"
+                                ),
+                            }
+                        ],
+                    }
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+        ]
+        issue = next(c for c in calls if c[0] == "api" and "/issues/" in c[1])
+        assert issue[1] == f"/repos/{REPOSITORY}/issues/101"
+        assert ".user.login // empty" in issue
 
     def test_merged_by_requests_the_merger_login(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1516,7 +1574,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, internal = self._run(
+        community, internal, _ = self._run(
             tmp_path,
             head,
             {
@@ -1536,7 +1594,7 @@ class TestCollectContributors:
     ) -> None:
         """A LinkedIn URL in prose is not the author's own profile."""
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1555,7 +1613,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1579,7 +1637,7 @@ class TestCollectContributors:
         the published link depend on commit order.
         """
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1604,7 +1662,7 @@ class TestCollectContributors:
         publishing a dead link under a real contributor's name.
         """
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {
@@ -1621,7 +1679,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, internal = self._run(
+        community, internal, _ = self._run(
             tmp_path,
             head,
             {
@@ -1639,7 +1697,7 @@ class TestCollectContributors:
     ) -> None:
         """A missing or renamed is_bot field must not promote a bot."""
         head = self._repo(tmp_path)
-        community, _ = self._run(
+        community, _, _ = self._run(
             tmp_path,
             head,
             {"author": {"login": "renovate[bot]"}, "body": "", "labels": []},
@@ -1651,7 +1709,7 @@ class TestCollectContributors:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         head = self._repo(tmp_path)
-        community, internal = self._run(
+        community, internal, _ = self._run(
             tmp_path,
             head,
             {
@@ -1710,7 +1768,7 @@ class TestCollectContributors:
             return _ok(json.dumps(payloads[args[2]]))
 
         monkeypatch.setattr(brn, "_run_gh", handler)
-        community, internal = brn.collect_contributors(
+        community, internal, _ = brn.collect_contributors(
             tmp_path,
             str(PACKAGE_PATH),
             head,
@@ -1730,7 +1788,7 @@ class TestCollectContributors:
             brn, "_run_gh", lambda _args: _fail("HTTP 403 rate limit", 1)
         )
         warnings: list[str] = []
-        community, internal = brn.collect_contributors(
+        community, internal, _ = brn.collect_contributors(
             tmp_path,
             str(PACKAGE_PATH),
             head,
@@ -1759,7 +1817,688 @@ class TestCollectContributors:
             REPOSITORY,
             offline=True,
             warnings=[],
-        ) == ([], [])
+        ) == ([], [], [])
+
+
+class TestIssueReporters:
+    """The `closingIssuesReferences` side of the contributor walk.
+
+    Reporters share the walk's range, dedupe, and failure accounting, so the
+    tests here pin only what is new: which payload fields credit whom, and
+    which reporters are dropped.
+    """
+
+    def _repo(self, tmp_path: Path) -> str:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        return _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one"
+        )
+
+    def _run(
+        self,
+        tmp_path: Path,
+        head: str,
+        pr_payload: dict,
+        monkeypatch: pytest.MonkeyPatch,
+        warnings: list[str] | None = None,
+    ) -> brn.Contributors:
+        monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", json.dumps(pr_payload)))
+        return brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings if warnings is not None else [],
+        )
+
+    def _payload(self, issues: list[dict] | None, **overrides) -> dict:
+        # Mirrors the shape observed from `gh pr view --json
+        # closingIssuesReferences` (gh 2.97.0): the owning repository is nested
+        # as `owner.login` + `name`, with no flat `nameWithOwner`.
+        owner, _, name = REPOSITORY.partition("/")
+        if isinstance(issues, list):
+            issues = [
+                (
+                    {
+                        "repository": {"name": name, "owner": {"login": owner}},
+                        **issue,
+                    }
+                    if isinstance(issue, dict)
+                    else issue
+                )
+                for issue in issues
+            ]
+        payload = {
+            "author": {"login": "alice", "is_bot": False},
+            "body": "",
+            "labels": [],
+            "closingIssuesReferences": issues,
+        }
+        payload.update(overrides)
+        return payload
+
+    def _run_with_authors(
+        self,
+        tmp_path: Path,
+        head: str,
+        pr_payload: dict,
+        issue_authors: dict[tuple[str, int], str],
+        monkeypatch: pytest.MonkeyPatch,
+        warnings: list[str] | None = None,
+    ) -> brn.Contributors:
+        """Collect with per-issue author stubs keyed by `(repository, number)`.
+
+        A bare issue number is shorthand for an issue in the released
+        repository, keeping the same-repo fixtures terse.
+        """
+        keyed = {
+            (key if isinstance(key, tuple) else (REPOSITORY, key)): login
+            for key, login in issue_authors.items()
+        }
+        monkeypatch.setattr(
+            brn, "_run_gh", _pr_handler("7", json.dumps(pr_payload), keyed)
+        )
+        return brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings if warnings is not None else [],
+        )
+
+    def test_reporter_is_credited_with_the_issue_they_filed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload([{"number": 101}]),
+            {101: "carol"},
+            monkeypatch,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+        ]
+        # The credit follows the issue's author, not the PR's: alice opened the
+        # PR, so she is a community contributor and not an issue reporter.
+        assert [c.login for c in result.community] == ["alice"]
+
+    def test_issues_are_deduped_and_sorted_ascending(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload([{"number": 220}, {"number": 101}, {"number": 220}]),
+            {101: "carol", 220: "carol"},
+            monkeypatch,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter(
+                "carol",
+                (brn.ClosedIssue(REPOSITORY, 101), brn.ClosedIssue(REPOSITORY, 220)),
+            )
+        ]
+
+    def test_issue_shared_by_two_prs_is_counted_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): two"
+        )
+
+        prs = iter(["1", "2"])
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _ok("carol")
+                return _ok(next(prs))
+            return _ok(json.dumps(self._payload([{"number": 101}])))
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+        ]
+
+    def test_cross_repository_issue_is_resolved_in_its_own_repo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reference's repository field names where the issue lives.
+
+        Querying the released repo for a foreign issue number 404s (or worse,
+        credits whoever filed the colliding local number), so the lookup must
+        follow the reference's own repository identity.
+        """
+        head = self._repo(tmp_path)
+        calls: list[list[str]] = []
+
+        def handler(args: list[str]) -> subprocess.CompletedProcess[str]:
+            calls.append(list(args))
+            if args[0] == "api":
+                if "/issues/" in args[1]:
+                    return _ok(
+                        "carol"
+                        if args[1].endswith("/langchain/issues/37576")
+                        else ""
+                    )
+                return _ok("7")
+            return _ok(
+                json.dumps(
+                    self._payload(
+                        [
+                            {
+                                "number": 37576,
+                                "repository": {
+                                    "nameWithOwner": "langchain-ai/langchain"
+                                },
+                            }
+                        ]
+                    )
+                )
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter(
+                "carol", (brn.ClosedIssue("langchain-ai/langchain", 37576),)
+            )
+        ]
+        issue = next(c for c in calls if c[0] == "api" and "/issues/" in c[1])
+        assert issue[1] == "/repos/langchain-ai/langchain/issues/37576"
+
+    def test_reference_url_supplies_the_repo_when_repository_is_malformed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(
+                [
+                    {
+                        "number": 37576,
+                        "repository": "https://github.com/langchain-ai/langchain",
+                        "url": "https://github.com/langchain-ai/langchain/issues/37576",
+                    }
+                ]
+            ),
+            {("langchain-ai/langchain", 37576): "carol"},
+            monkeypatch,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter(
+                "carol", (brn.ClosedIssue("langchain-ai/langchain", 37576),)
+            )
+        ]
+
+    def test_unresolvable_repository_is_dropped_rather_than_guessed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An entry with no usable repository is skipped, not blamed on this repo.
+
+        Assuming the released repo would query an unrelated issue that happens
+        to share the number and publicly thank whoever filed it, so the entry
+        is dropped with a warning instead.
+        """
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload([{"number": 101, "repository": None, "url": None}]),
+            {101: "carol"},
+            monkeypatch,
+            warnings,
+        )
+        assert result.issue_reporters == []
+        assert any(
+            "closes issue #101 with no resolvable repository" in w for w in warnings
+        )
+
+    def test_nested_owner_payload_resolves_without_the_url(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The real gh payload nests `owner.login` + `name` and carries no slug.
+
+        Pinned without a `url` so the nested-owner branch is what resolves the
+        repository, rather than the URL fallback masking a regression.
+        """
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(
+                [
+                    {
+                        "number": 37576,
+                        "repository": {
+                            "name": "langchain",
+                            "owner": {"login": "langchain-ai"},
+                        },
+                    }
+                ]
+            ),
+            {("langchain-ai/langchain", 37576): "carol"},
+            monkeypatch,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter(
+                "carol", (brn.ClosedIssue("langchain-ai/langchain", 37576),)
+            )
+        ]
+
+    def test_same_issue_number_in_two_repos_credits_both(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(
+                [
+                    {"number": 101},
+                    {
+                        "number": 101,
+                        "repository": {"nameWithOwner": "langchain-ai/langchain"},
+                    },
+                ]
+            ),
+            {
+                (REPOSITORY, 101): "carol",
+                ("langchain-ai/langchain", 101): "dave",
+            },
+            monkeypatch,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),)),
+            brn.IssueReporter(
+                "dave", (brn.ClosedIssue("langchain-ai/langchain", 101),)
+            ),
+        ]
+
+    def test_gated_pr_still_credits_the_issue_reporter(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Reporters are collected above the author and label gates.
+
+        This is the feature's primary case: a maintainer's `internal`-labeled
+        fix (or a bot's) closing an outside user's bug report. Both gates drop
+        the PR from the contributor lists, and the reporter must survive both.
+        """
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(
+                [{"number": 101}],
+                author={"login": "renovate[bot]", "is_bot": True},
+                labels=[{"name": "internal"}],
+            ),
+            {101: "carol"},
+            monkeypatch,
+        )
+        assert result.community == []
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+        ]
+
+    def test_empty_reference_list_is_silent(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Most PRs close nothing; that must not warn or every release is noise."""
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path, head, self._payload([]), {}, monkeypatch, warnings
+        )
+        assert result.issue_reporters == []
+        assert not any("closingIssuesReferences" in w for w in warnings)
+
+    @pytest.mark.parametrize("payload", ["oops", {"nodes": [{"number": 101}]}])
+    def test_non_list_reference_payload_warns(
+        self,
+        payload: object,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A truthy non-list survives the `or []` guard and must not be iterated.
+
+        Iterating a string would walk it character by character; the shapes here
+        are the plausible schema drift (a bare string, or the GraphQL
+        connection object) rather than hypotheticals.
+        """
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload(None, closingIssuesReferences=payload),
+            {101: "carol"},
+            monkeypatch,
+            warnings,
+        )
+        assert result.issue_reporters == []
+        assert any("unexpected closingIssuesReferences payload" in w for w in warnings)
+
+    def test_non_dict_reference_entry_warns_and_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A malformed entry is dropped loudly; its siblings are still credited."""
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload([101, {"number": 202}]),
+            {202: "carol"},
+            monkeypatch,
+            warnings,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 202),))
+        ]
+        assert any(
+            "unexpected closingIssuesReferences entry (int)" in w for w in warnings
+        )
+
+    def test_repeated_issue_is_looked_up_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The author cache keeps two PRs closing one issue to a single call."""
+        head = self._repo(tmp_path)
+        calls: list[list[str]] = []
+        inner = _pr_handler(
+            "7",
+            json.dumps(self._payload([{"number": 101}])),
+            {(REPOSITORY, 101): "carol"},
+        )
+
+        def recording(args: list[str]):
+            calls.append(args)
+            return inner(args)
+
+        monkeypatch.setattr(brn, "_run_gh", recording)
+        brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=[],
+        )
+        issue_calls = [c for c in calls if c[0] == "api" and "/issues/101" in c[1]]
+        assert len(issue_calls) == 1
+
+    def test_issue_author_lookups_respect_the_global_budget(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unusually large closing-reference list cannot fan out unboundedly."""
+        head = self._repo(tmp_path)
+        monkeypatch.setattr(brn, "MAX_ISSUE_AUTHOR_LOOKUPS", 2)
+        calls: list[list[str]] = []
+        inner = _pr_handler(
+            "7",
+            json.dumps(
+                self._payload([{"number": 101}, {"number": 102}, {"number": 103}])
+            ),
+            {
+                (REPOSITORY, 101): "carol",
+                (REPOSITORY, 102): "dave",
+                (REPOSITORY, 103): "eve",
+            },
+        )
+
+        def recording(args: list[str]):
+            calls.append(args)
+            return inner(args)
+
+        monkeypatch.setattr(brn, "_run_gh", recording)
+        warnings: list[str] = []
+        result = brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings,
+        )
+        issue_calls = [call for call in calls if call[0] == "api" and "/issues/" in call[1]]
+        assert len(issue_calls) == 2
+        assert [reporter.login for reporter in result.issue_reporters] == ["carol", "dave"]
+        assert any(
+            "stopped after 2 closed-issue author lookups" in warning
+            and "Special thanks section is INCOMPLETE" in warning
+            for warning in warnings
+        )
+
+    def test_failed_issue_lookups_are_reported_as_incomplete(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The aggregate carries INCOMPLETE so main()'s sort floats it.
+
+        GitHub renders only the first 10 warning annotations per step, so a
+        section that silently loses reporters needs a line that outranks the
+        per-issue ones.
+        """
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+
+        def failing(args: list[str]):
+            if args[0] == "api" and "/issues/" in args[1]:
+                return subprocess.CompletedProcess(args, 1, "", "boom")
+            return (
+                _ok("7")
+                if args[0] == "api"
+                else _ok(json.dumps(self._payload([{"number": 101}])))
+            )
+
+        monkeypatch.setattr(brn, "_run_gh", failing)
+        result = brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            warnings=warnings,
+        )
+        assert result.issue_reporters == []
+        assert any("Special thanks section is INCOMPLETE" in w for w in warnings)
+
+    def test_bot_reporter_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The per-issue lookup carries no is_bot field; the suffix is all we get."""
+        head = self._repo(tmp_path)
+        result = self._run_with_authors(
+            tmp_path,
+            head,
+            self._payload([{"number": 101}]),
+            {101: "dependabot[bot]"},
+            monkeypatch,
+        )
+        assert result.issue_reporters == []
+
+    def test_internal_reporter_is_filtered(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A maintainer in this release's internal set is not publicly thanked.
+
+        The filter reads the release's own `internal`-labeled PRs rather than
+        an org-membership API, so the fixture reporter must carry the label on
+        their own PR in range.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): two"
+        )
+
+        payloads = {
+            # Newest commit first: the feature PR closing carol's issue.
+            "1": self._payload([{"number": 101}]),
+            # carol's own internal-labeled PR puts her in the internal set.
+            "2": self._payload(
+                [],
+                author={"login": "carol", "is_bot": False},
+                labels=[{"name": "internal"}],
+            ),
+        }
+        prs = iter(["1", "2"])
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _ok("carol")
+                return _ok(next(prs))
+            return _ok(json.dumps(payloads[args[2]]))
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=[],
+        )
+        assert result.internal == ["carol"]
+        assert result.issue_reporters == []
+
+    @pytest.mark.parametrize("missing", ["absent", "null"])
+    def test_missing_field_warns_and_is_treated_as_empty(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, missing: str
+    ) -> None:
+        """Schema drift must not silently empty the section."""
+        head = self._repo(tmp_path)
+        payload = self._payload(None if missing == "null" else [])
+        if missing == "absent":
+            del payload["closingIssuesReferences"]
+        warnings: list[str] = []
+        result = self._run(tmp_path, head, payload, monkeypatch, warnings)
+        assert result.issue_reporters == []
+        assert any("no closingIssuesReferences field" in w for w in warnings)
+
+    @pytest.mark.parametrize(
+        ("issues", "issue_authors"),
+        [
+            ([{"number": 101}], {}),  # lookup resolves no login
+            ([{"number": 101}], {101: ""}),  # empty login
+            ([{"author": {"login": "carol"}}], {}),  # no number
+            ([{"number": "101", "author": {"login": "carol"}}], {}),  # non-int number
+        ],
+    )
+    def test_unusable_issue_entries_warn_and_are_skipped(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        issues: list[dict],
+        issue_authors: dict[int, str],
+    ) -> None:
+        head = self._repo(tmp_path)
+        warnings: list[str] = []
+        result = self._run_with_authors(
+            tmp_path, head, self._payload(issues), issue_authors, monkeypatch, warnings
+        )
+        assert result.issue_reporters == []
+        assert any("PR #7" in w for w in warnings)
+
+    def test_failed_issue_author_lookup_warns_and_is_skipped(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _fail("HTTP 502")
+                return _ok("7")
+            return _ok(json.dumps(self._payload([{"number": 101}])))
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        warnings: list[str] = []
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=warnings,
+        )
+        assert result.issue_reporters == []
+        assert any(
+            f"issue {REPOSITORY}#101 author lookup failed" in w for w in warnings
+        )
+
+    def test_offline_returns_no_reporters(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        head = self._repo(tmp_path)
+
+        def explode(_args):
+            raise AssertionError("gh must not run in offline mode")
+
+        monkeypatch.setattr(brn, "_run_gh", explode)
+        result = brn.collect_contributors(
+            tmp_path,
+            str(PACKAGE_PATH),
+            head,
+            "example==1.0.0",
+            REPOSITORY,
+            offline=True,
+            warnings=[],
+        )
+        assert result.issue_reporters == []
+
+    def test_failed_pr_view_leaves_thanks_incomplete_but_warned(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The thanks list reflects only the PRs that were actually read.
+
+        A failing `pr view` drops that PR's reporters along with its
+        contributor, and the existing INCOMPLETE warning is the only signal.
+        """
+        _init_repo(tmp_path)
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 0\n", "feat(example): base")
+        _git(tmp_path, "tag", "example==1.0.0")
+        _commit(tmp_path, PACKAGE_PATH / "module.py", "V = 1\n", "feat(example): one")
+        head = _commit(
+            tmp_path, PACKAGE_PATH / "module.py", "V = 2\n", "feat(example): two"
+        )
+
+        prs = iter(["1", "2"])
+
+        def handler(args: list[str]):
+            if args[0] == "api":
+                if re.search(r"/issues/101$", args[1]):
+                    return _ok("carol")
+                return _ok(next(prs))
+            if args[2] == "1":
+                return _ok(json.dumps(self._payload([{"number": 101}])))
+            return _fail("HTTP 502")
+
+        monkeypatch.setattr(brn, "_run_gh", handler)
+        warnings: list[str] = []
+        result = brn.collect_contributors(
+            tmp_path, str(PACKAGE_PATH), head, "example==1.0.0", REPOSITORY,
+            warnings=warnings,
+        )
+        assert result.issue_reporters == [
+            brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+        ]
+        assert any("INCOMPLETE" in w for w in warnings)
 
 
 class TestContributorEdgeCases:
@@ -1816,7 +2555,7 @@ class TestContributorEdgeCases:
 
         monkeypatch.setattr(brn, "_run_gh", handler)
         warnings: list[str] = []
-        community, _ = self._collect(tmp_path, tip, warnings)
+        community, _, _ = self._collect(tmp_path, tip, warnings)
         assert len(community) == 3
         assert any(
             "only the newest 3 were scanned" in w and "INCOMPLETE" in w
@@ -1838,7 +2577,7 @@ class TestContributorEdgeCases:
 
         monkeypatch.setattr(brn, "_run_gh", handler)
         warnings: list[str] = []
-        community, internal = self._collect(tmp_path, tip, warnings)
+        community, internal, _ = self._collect(tmp_path, tip, warnings)
         assert community == [] and internal == []
         assert calls == 3, "must stop at the failure threshold, not walk 20 commits"
         assert any("abandoned after 3 consecutive failures" in w for w in warnings)
@@ -1879,7 +2618,7 @@ class TestContributorEdgeCases:
             )
 
         monkeypatch.setattr(brn, "_run_gh", handler)
-        community, _ = self._collect(tmp_path, tip, [])
+        community, _, _ = self._collect(tmp_path, tip, [])
         assert views == 1
         assert [c.login for c in community] == ["alice"]
 
@@ -1910,7 +2649,7 @@ class TestContributorEdgeCases:
             )
 
         monkeypatch.setattr(brn, "_run_gh", handler)
-        community, _ = self._collect(tmp_path, tip, [])
+        community, _, _ = self._collect(tmp_path, tip, [])
         assert community == [
             brn.Contributor("alice", "firsthandle", "https://linkedin.com/in/alice")
         ]
@@ -1921,7 +2660,7 @@ class TestContributorEdgeCases:
         self._history(tmp_path, 1)
         monkeypatch.setattr(brn, "_run_gh", lambda args: _ok("1"))
         warnings: list[str] = []
-        community, internal = self._collect(tmp_path, "nope-nope-nope", warnings)
+        community, internal, _ = self._collect(tmp_path, "nope-nope-nope", warnings)
         assert community == [] and internal == []
         assert any("git rev-list failed" in w for w in warnings)
 
@@ -1944,7 +2683,7 @@ class TestContributorEdgeCases:
 
         monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
         warnings: list[str] = []
-        community, _ = self._collect(tmp_path, tip, warnings)
+        community, _, _ = self._collect(tmp_path, tip, warnings)
         assert community == []
         assert any(expected in w for w in warnings)
 
@@ -1957,7 +2696,7 @@ class TestContributorEdgeCases:
         payload = json.dumps({"author": author, "body": "", "labels": []})
         monkeypatch.setattr(brn, "_run_gh", _pr_handler("7", payload))
         warnings: list[str] = []
-        community, _ = self._collect(tmp_path, tip, warnings)
+        community, _, _ = self._collect(tmp_path, tip, warnings)
         assert community == []
         assert any("PR #7" in w for w in warnings)
 
@@ -2109,6 +2848,7 @@ class TestMissingGhVersusOffline:
         body, warnings = self._build(tmp_path, head, offline=False)
         assert "Released by: @mdrxy" in body
         assert "community contributors" not in body
+        assert "Special thanks" not in body
         assert any("gh executable not found" in w for w in warnings), warnings
 
     def test_offline_drops_the_releaser_line(self, tmp_path: Path) -> None:
@@ -2117,6 +2857,7 @@ class TestMissingGhVersusOffline:
         body, _ = self._build(tmp_path, head, offline=True)
         assert "Released by:" not in body
         assert "community contributors" not in body
+        assert "Special thanks" not in body
 
 
 class TestGitFailureIsFatalAndNamed:
@@ -2381,6 +3122,7 @@ class TestBuildBaseBody:
             "is_prerelease": False,
             "community": [],
             "internal": [],
+            "issue_reporters": [],
             "releaser": "",
             "base_branch": "main",
             "default_branch": "main",
@@ -2434,6 +3176,85 @@ class TestBuildBaseBody:
         assert "[LinkedIn](https://linkedin.com/in/user2)" in body
         assert "Internal maintainers: @maintainer1" in body
         assert "Released by: @releaser1" in body
+
+    def test_special_thanks_between_community_and_internal(self) -> None:
+        body = self._body(
+            community=[brn.Contributor("user1", "", "")],
+            issue_reporters=[
+                brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),)),
+                brn.IssueReporter(
+                    "dave",
+                    (brn.ClosedIssue(REPOSITORY, 201), brn.ClosedIssue(REPOSITORY, 202)),
+                ),
+            ],
+            internal=["maint"],
+            releaser="shipper",
+        )
+        thanks = "**Special thanks** to everyone who reported the issues"
+        assert thanks in body
+        assert body.index("community contributors") < body.index(thanks)
+        assert body.index(thanks) < body.index("Internal maintainers")
+        assert body.index("Internal maintainers") < body.index("Released by")
+        assert body.count("---") == 1
+        assert (
+            "@carol ([#101]"
+            f"(https://github.com/{REPOSITORY}/issues/101))"
+        ) in body
+        assert (
+            "@dave ([#201]"
+            f"(https://github.com/{REPOSITORY}/issues/201), "
+            f"[#202](https://github.com/{REPOSITORY}/issues/202))"
+        ) in body
+
+    def test_special_thanks_labels_cross_repository_issues(self) -> None:
+        """An issue closed in another repo links there, not to the released repo."""
+        body = self._body(
+            issue_reporters=[
+                brn.IssueReporter(
+                    "carol",
+                    (
+                        brn.ClosedIssue(REPOSITORY, 101),
+                        brn.ClosedIssue("langchain-ai/langchain", 37576),
+                    ),
+                )
+            ]
+        )
+        assert f"[#101](https://github.com/{REPOSITORY}/issues/101)" in body
+        assert (
+            "[langchain-ai/langchain#37576]"
+            "(https://github.com/langchain-ai/langchain/issues/37576)"
+        ) in body
+
+    def test_special_thanks_are_summarized_at_the_size_limit(self) -> None:
+        """A large closing-reference list cannot overflow the release body."""
+        reporters = [
+            brn.IssueReporter(
+                f"reporter-{number}",
+                (brn.ClosedIssue(REPOSITORY, number),) * 100,
+            )
+            for number in range(100)
+        ]
+        body = self._body(issue_reporters=reporters)
+
+        thanks_start = body.index("**Special thanks**")
+        thanks = body[thanks_start:]
+        assert len(thanks.encode()) <= brn.MAX_SPECIAL_THANKS_BYTES
+        assert "additional issue reporters" in thanks
+        assert "@reporter-99" not in thanks
+
+    def test_special_thanks_opens_the_separator_when_alone(self) -> None:
+        body = self._body(
+            issue_reporters=[
+                brn.IssueReporter("carol", (brn.ClosedIssue(REPOSITORY, 101),))
+            ]
+        )
+        assert body.count("---") == 1
+        assert "**Special thanks**" in body
+
+    def test_special_thanks_omitted_when_empty(self) -> None:
+        body = self._body(internal=["maint"])
+        assert "Special thanks" not in body
+        assert body.count("---") == 1
 
     def test_separator_added_once_for_internal_only(self) -> None:
         body = self._body(internal=["maint"])
@@ -2628,6 +3449,8 @@ class TestBuildReleaseNotesOnline:
 
         def handler(args: list[str]):
             if args[0] == "api":
+                if re.search(r"/issues/5310$", args[1]):
+                    return _ok("carol")
                 return _ok("11")
             if "mergedBy" in args:
                 return _ok("merger-person")
@@ -2637,6 +3460,14 @@ class TestBuildReleaseNotesOnline:
                         "author": {"login": "outside-dev", "is_bot": False},
                         "body": "Twitter: @outsidedev\n",
                         "labels": [],
+                        "closingIssuesReferences": [
+                            {
+                                "number": 5310,
+                                "url": (
+                                    f"https://github.com/{REPOSITORY}/issues/5310"
+                                ),
+                            }
+                        ],
                     }
                 )
             )
@@ -2662,6 +3493,8 @@ class TestBuildReleaseNotesOnline:
         )
         assert "Thanks to our community contributors: @outside-dev" in body
         assert "[Twitter](https://x.com/outsidedev)" in body
+        assert "**Special thanks**" in body
+        assert f"[#5310](https://github.com/{REPOSITORY}/issues/5310)" in body
         assert "Released by: @merger-person" in body
 
     def test_contributor_range_ends_at_the_release_commit(

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import sys
 import threading
 import time
@@ -26,15 +27,20 @@ if TYPE_CHECKING:
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_tools import (
+    _MCP_STDERR_DRAIN_JOIN_TIMEOUT,
+    _MCP_STDERR_LINE_LIMIT,
+    _MCP_STDERR_TRUNCATION_MARKER,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
     _apply_tool_filter,
     _check_remote_server,
     _check_stdio_server,
+    _create_mcp_session,
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
+    _MCPStderrSink,
     _normalize_mcp_arguments,
     _warm_mcp_adapter_imports,
     classify_discovered_configs,
@@ -75,6 +81,27 @@ def _make_tool_page(
     page.tools = tools
     page.nextCursor = next_cursor
     return page
+
+
+def _sole_mcp_failure_warning(
+    caplog: pytest.LogCaptureFixture,
+    detail: str,
+) -> logging.LogRecord:
+    """Return the one `mcp_tools` WARNING that reports `detail`, asserting it is alone.
+
+    Scoped to the failure detail rather than to logger and level alone: the
+    wrapper also warns when retry-session cleanup fails, and that warning must
+    not read as a duplicate of the tool failure.
+    """
+    records = [
+        record
+        for record in caplog.records
+        if record.name == "deepagents_code.mcp_tools"
+        and record.levelno == logging.WARNING
+        and detail in record.getMessage()
+    ]
+    assert len(records) == 1, f"expected exactly one warning reporting {detail!r}"
+    return records[0]
 
 
 @pytest.fixture
@@ -138,13 +165,13 @@ def fake_create_session() -> Generator[tuple[AsyncMock, list[dict[str, Any]]]]:
     async def _fake(
         connection: dict[str, Any],
         *,
-        _mcp_callbacks: object | None = None,
+        server_name: str,
     ) -> AsyncIterator[AsyncMock]:
         await asyncio.sleep(0)
         recorded.append(connection)
         yield session
 
-    with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+    with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
         yield session, recorded
 
 
@@ -859,10 +886,244 @@ class TestMCPServerInfoInvariants:
             )
 
 
+class TestMCPStderrCapture:
+    """Tests for stdio subprocess diagnostic capture."""
+
+    async def test_stderr_drain_forced_close_join_is_bounded(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A blocked drain thread cannot make forced teardown wait forever."""
+        sink = _MCPStderrSink("fake", encoding="utf-8")
+        reader_thread = sink._thread
+        blocked_thread = MagicMock()
+        blocked_thread.is_alive.return_value = True
+        sink._thread = blocked_thread
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+            await sink.wait_closed()
+
+        assert blocked_thread.join.call_args_list == [
+            ((_MCP_STDERR_DRAIN_JOIN_TIMEOUT,), {}),
+            ((_MCP_STDERR_DRAIN_JOIN_TIMEOUT,), {}),
+        ]
+        assert "stderr drain thread did not exit after forced pipe close" in caplog.text
+        await asyncio.to_thread(reader_thread.join)
+
+    @staticmethod
+    def _stderr_messages(caplog: pytest.LogCaptureFixture) -> list[str]:
+        """Return the captured stderr log lines, without the record prefix."""
+        marker = "stderr: "
+        return [
+            record.getMessage().split(marker, 1)[1]
+            for record in caplog.records
+            if marker in record.getMessage()
+        ]
+
+    async def test_malformed_bytes_do_not_discard_the_chunk(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A byte invalid for the declared encoding mangles one character only.
+
+        The capture decoder must not inherit the protocol's `strict` handler,
+        which would raise and drop the whole read chunk — losing the diagnostic
+        the capture exists to provide.
+        """
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            sink = _MCPStderrSink("fake", encoding="utf-8")
+            os.write(sink.fileno(), b"before \xff after\n")
+            await sink.wait_closed()
+
+        assert self._stderr_messages(caplog) == ["before \ufffd after"]
+
+    async def test_line_at_the_limit_is_not_truncated(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A line of exactly the limit keeps every character and no marker."""
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            sink = _MCPStderrSink("fake", encoding="utf-8")
+            os.write(sink.fileno(), b"a" * _MCP_STDERR_LINE_LIMIT + b"\n")
+            await sink.wait_closed()
+
+        assert self._stderr_messages(caplog) == ["a" * _MCP_STDERR_LINE_LIMIT]
+
+    async def test_drain_consumes_stderr_when_capture_is_off(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Below DEBUG the pipe is still drained, so the server cannot block.
+
+        Writing far more than a pipe buffer holds would block forever if the
+        drain thread skipped reading when capture is disabled.
+        """
+        with caplog.at_level(logging.INFO, logger="deepagents_code.mcp_tools"):
+            sink = _MCPStderrSink("fake", encoding="utf-8")
+            payload = b"x" * (1 << 20)
+            written = 0
+            while written < len(payload):
+                written += await asyncio.to_thread(
+                    os.write, sink.fileno(), payload[written:]
+                )
+            await sink.wait_closed()
+
+        assert self._stderr_messages(caplog) == []
+
+    async def test_stdio_stderr_is_buffered_decoded_and_bounded(
+        self,
+        tmp_path: Path,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Split encoded bytes become sanitized, bounded DEBUG records."""
+        first_written = tmp_path / "first-written"
+        release = tmp_path / "release"
+        long_line_size = _MCP_STDERR_LINE_LIMIT + 100
+        script = "\n".join(
+            [
+                "import os, sys, time",
+                "encoding = 'utf-16-le'",
+                "prefix = os.environ['MCP_CHILD_VALUE']",
+                "os.write(2, (prefix + ' caf').encode(encoding) + b'\\xe9')",
+                "open(sys.argv[1], 'w').close()",
+                "while not os.path.exists(sys.argv[2]):",
+                "    time.sleep(0.005)",
+                f"payload = '\\x1b[31m\\n' + 'x' * {long_line_size} + '\\nfinal'",
+                "os.write(2, b'\\x00' + payload.encode(encoding))",
+                "sys.stdin.buffer.read()",
+            ]
+        )
+        connection = cast(
+            "Connection",
+            {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-c", script, str(first_written), str(release)],
+                "env": {"MCP_CHILD_VALUE": "partial"},
+                "encoding": "utf-16-le",
+                "encoding_error_handler": "strict",
+            },
+        )
+
+        def stderr_messages() -> list[str]:
+            return [
+                record.getMessage()
+                for record in caplog.records
+                if record.name == "deepagents_code.mcp_tools"
+                and record.levelno == logging.DEBUG
+                and " stderr: " in record.getMessage()
+            ]
+
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.mcp_tools"):
+            async with _create_mcp_session(connection, server_name="fake"):
+                for _ in range(100):
+                    if await asyncio.to_thread(first_written.exists):
+                        break
+                    await asyncio.sleep(0.01)
+                assert first_written.exists()
+                assert stderr_messages() == []
+                await asyncio.to_thread(release.write_text, "")
+                for _ in range(100):
+                    if len(stderr_messages()) >= 2:
+                        break
+                    await asyncio.sleep(0.01)
+                # Exactly two: `final` has no trailing newline, so it stays
+                # buffered until the EOF flush. The child blocks on
+                # `sys.stdin.buffer.read()`, so EOF cannot arrive until the
+                # session context exits below.
+                assert len(stderr_messages()) == 2
+
+        messages = stderr_messages()
+        assert len(messages) == 3
+        assert messages[0] == "MCP server 'fake' stderr: partial café[31m"
+        long_line = messages[1].partition(" stderr: ")[2]
+        assert len(long_line) == _MCP_STDERR_LINE_LIMIT
+        assert long_line.endswith(_MCP_STDERR_TRUNCATION_MARKER)
+        assert messages[2] == "MCP server 'fake' stderr: final"
+        assert not any(
+            thread.name == "mcp-stderr-fake" and thread.is_alive()
+            for thread in threading.enumerate()
+        )
+
+    async def test_stderr_drain_does_not_hang_on_inherited_pipe(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        """A surviving descendant holding stderr cannot wedge session close.
+
+        The child keeps its stderr write end open after the server exits, so
+        the pipe never reaches EOF. `wait_closed` must give up on the bounded
+        join and force the drain thread closed rather than block forever.
+        """
+        started = tmp_path / "started"
+        # The child duplicates the inherited stderr fd and sleeps; the server
+        # exits as soon as its stdin closes, leaving the child holding the pipe.
+        spawn = (
+            "subprocess.Popen("
+            "[sys.executable, '-c', 'import time; time.sleep(60)'], "
+            "stderr=err, start_new_session=True)"
+        )
+        script = "\n".join(
+            [
+                "import os, subprocess, sys",
+                f"open({str(started)!r}, 'w').close()",
+                "err = os.dup(2)",
+                spawn,
+                "sys.stdin.buffer.read()",
+            ]
+        )
+        connection = cast(
+            "Connection",
+            {
+                "transport": "stdio",
+                "command": sys.executable,
+                "args": ["-c", script],
+            },
+        )
+        # Session teardown joins the drain thread twice with
+        # `_MCP_STDERR_DRAIN_JOIN_TIMEOUT` before abandoning it, so a
+        # regression to an unbounded join makes this timeout fire.
+        async with asyncio.timeout(4 * _MCP_STDERR_DRAIN_JOIN_TIMEOUT):
+            async with _create_mcp_session(connection, server_name="fake"):
+                for _ in range(100):
+                    if await asyncio.to_thread(started.exists):
+                        break
+                    await asyncio.sleep(0.01)
+                assert started.exists()
+        # The drain thread may outlive teardown here: on Linux, closing the
+        # read end does not wake a thread blocked in `os.read`, so it stays
+        # parked (as a daemon) until the leaked descendant exits. Teardown
+        # being bounded — not thread death — is the guarantee under test.
+
+    async def test_remote_session_delegates_to_adapter(self) -> None:
+        """Non-stdio transports retain the adapter's session handling."""
+        session = AsyncMock()
+        connection = cast(
+            "Connection",
+            {"transport": "streamable_http", "url": "https://example.com/mcp"},
+        )
+
+        @asynccontextmanager
+        async def fake_create_session(
+            received: Connection,
+            *,
+            mcp_callbacks: object | None = None,
+        ) -> AsyncIterator[AsyncMock]:
+            assert received is connection
+            assert mcp_callbacks is None
+            yield session
+
+        with patch(
+            "langchain_mcp_adapters.sessions.create_session", fake_create_session
+        ):
+            async with _create_mcp_session(connection, server_name="remote") as created:
+                assert created is session
+
+
 class TestMCPSessionManager:
     """Tests for lazy runtime session caching."""
 
-    @patch("langchain_mcp_adapters.sessions.create_session")
+    @patch("deepagents_code.mcp_tools._create_mcp_session")
     async def test_reuses_single_session_for_concurrent_first_use(
         self,
         mock_create_session: MagicMock,
@@ -875,7 +1136,7 @@ class TestMCPSessionManager:
         async def _fake_create_session(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0.01)
             yield session
@@ -901,7 +1162,7 @@ class TestMCPSessionManager:
         assert second is session
         mock_create_session.assert_called_once()
 
-    @patch("langchain_mcp_adapters.sessions.create_session")
+    @patch("deepagents_code.mcp_tools._create_mcp_session")
     async def test_cleanup_closes_cached_sessions_and_blocks_future_creation(
         self,
         mock_create_session: MagicMock,
@@ -953,7 +1214,7 @@ class TestMCPSessionManager:
         async def _fake(
             _conn: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield session
@@ -974,7 +1235,7 @@ class TestMCPSessionManager:
             )
 
         manager = MCPSessionManager(connections={"notion": _connection()})
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             await manager.get_session("notion")
 
         manager.configure({"notion": _connection()})
@@ -989,14 +1250,14 @@ class TestMCPSessionManager:
         async def _fake(
             _conn: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield session
 
         conn = {"filesystem": {"transport": "stdio", "command": "npx", "args": []}}
         manager = MCPSessionManager(connections=conn)  # ty: ignore
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             await manager.get_session("filesystem")
 
         with pytest.raises(RuntimeError, match="Cannot reconfigure"):
@@ -1027,7 +1288,7 @@ class TestMCPSessionManager:
                 "filesystem": {"transport": "stdio", "command": "x", "args": []}
             }
         )
-        with patch("langchain_mcp_adapters.sessions.create_session", return_value=cm):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", return_value=cm):
             cached = await manager.get_session("filesystem")
         assert cached is session_a
 
@@ -1059,7 +1320,7 @@ class TestMCPSessionManager:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             enter_task.append(asyncio.current_task())
             try:
@@ -1074,7 +1335,7 @@ class TestMCPSessionManager:
         )
 
         with (
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
             pytest.raises(asyncio.CancelledError),
         ):
             await manager.get_session("filesystem")
@@ -1107,7 +1368,7 @@ class TestMCPSessionManager:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             enter_task.append(asyncio.current_task())
             try:
@@ -1122,7 +1383,7 @@ class TestMCPSessionManager:
         )
 
         with (
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
             pytest.raises(_Boom),
         ):
             await manager.get_session("filesystem")
@@ -1146,7 +1407,7 @@ class TestMCPSessionManager:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             try:
                 yield session
@@ -1161,7 +1422,7 @@ class TestMCPSessionManager:
         )
 
         with (
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
             caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
             pytest.raises(asyncio.CancelledError),
         ):
@@ -1203,7 +1464,7 @@ class TestMCPSessionManager:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             try:
                 yield session
@@ -1217,7 +1478,7 @@ class TestMCPSessionManager:
         )
 
         with (
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
             caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"),
             pytest.raises(asyncio.CancelledError),
         ):
@@ -1346,7 +1607,7 @@ class TestGetMCPTools:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             await asyncio.sleep(0)
             msg = "boom"
@@ -1355,7 +1616,7 @@ class TestGetMCPTools:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, server_infos = await get_mcp_tools(path)
 
         assert tools == []
@@ -1721,13 +1982,13 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             recorded.append(connection)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1761,7 +2022,7 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             await asyncio.sleep(0)
             msg = "discovery failed"
@@ -1770,7 +2031,7 @@ class TestLoadToolsFromConfigOAuth:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1844,13 +2105,13 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             recorded.append(connection)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1859,11 +2120,14 @@ class TestLoadToolsFromConfigOAuth:
                     }
                 }
             }
-            tools, manager, _ = await _load_tools_from_config(config)
+            tools, manager, infos = await _load_tools_from_config(config)
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert isinstance(recorded[0].get("auth"), OAuthClientProvider)
+        # The TUI's re-auth affordance keys off this flag, so it must track
+        # provider attachment rather than being inferred from transport alone.
+        assert infos[0].uses_oauth is True
         await manager.cleanup()
 
     async def test_authorization_header_skips_stored_oauth_without_explicit_oauth(
@@ -1886,13 +2150,13 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             recorded.append(connection)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1902,12 +2166,15 @@ class TestLoadToolsFromConfigOAuth:
                     }
                 }
             }
-            tools, manager, _ = await _load_tools_from_config(config)
+            tools, manager, infos = await _load_tools_from_config(config)
 
         assert tools == []
         assert isinstance(manager, MCPSessionManager)
         assert recorded[0]["headers"] == {"Authorization": "Bearer tok-123"}
         assert "auth" not in recorded[0]
+        # No provider attached, so the TUI must not offer re-authentication:
+        # the static header would override anything OAuth stored.
+        assert infos[0].uses_oauth is False
         await manager.cleanup()
 
     async def test_discovery_401_challenge_marks_unauthenticated(
@@ -1932,7 +2199,7 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             await asyncio.sleep(0)
             raise challenge
@@ -1940,7 +2207,7 @@ class TestLoadToolsFromConfigOAuth:
 
         caplog.set_level(logging.DEBUG, logger="deepagents_code.mcp_tools")
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -1983,13 +2250,13 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             await asyncio.sleep(0)
             raise error
             yield
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -2019,13 +2286,13 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             await asyncio.sleep(0)
             raise error
             yield
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -2060,13 +2327,13 @@ class TestLoadToolsFromConfigOAuth:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             await asyncio.sleep(0)
             raise challenge
             yield
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             config = {
                 "mcpServers": {
                     "notion": {
@@ -2669,7 +2936,7 @@ class TestHealthChecks:
         async def _fail_discovery(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[None]:
             raise discovery_error
             yield
@@ -2681,7 +2948,7 @@ class TestHealthChecks:
                 new_callable=AsyncMock,
             ),
             patch(
-                "langchain_mcp_adapters.sessions.create_session",
+                "deepagents_code.mcp_tools._create_mcp_session",
                 _fail_discovery,
             ),
         ):
@@ -2815,12 +3082,12 @@ class TestToolOrdering:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [tool.name for tool in tools] == ["srv_alpha", "srv_mu", "srv_zeta"]
@@ -2872,7 +3139,7 @@ class TestLoadToolsConcurrency:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             stats["inflight"] += 1
             stats["max_inflight"] = max(stats["max_inflight"], stats["inflight"])
@@ -2914,7 +3181,7 @@ class TestLoadToolsConcurrency:
                 await asyncio.sleep(0.005)
             hold.set()
 
-        with patch("langchain_mcp_adapters.sessions.create_session", fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", fake):
             releaser = asyncio.create_task(_release_when_all_open())
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
             await releaser
@@ -2943,7 +3210,7 @@ class TestLoadToolsConcurrency:
             tool_by_server=tool_by_server, sleep_s=0.03
         )
 
-        with patch("langchain_mcp_adapters.sessions.create_session", fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", fake):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
         assert stats["max_inflight"] == 2
@@ -2968,7 +3235,7 @@ class TestLoadToolsConcurrency:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             server = (connection.get("args") or ["x"])[0].removesuffix(".js")
             session = AsyncMock()
@@ -2982,7 +3249,7 @@ class TestLoadToolsConcurrency:
             finished[server].set()
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
         assert finish_order == ["third", "second", "first"]
@@ -3003,7 +3270,7 @@ class TestLoadToolsConcurrency:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             server = (connection.get("args") or ["x"])[0].removesuffix(".js")
             await asyncio.sleep(0.01)
@@ -3017,7 +3284,7 @@ class TestLoadToolsConcurrency:
             )
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
         by_name = {i.name: i for i in infos}
@@ -3051,7 +3318,7 @@ class TestLoadToolsConcurrency:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             server = (connection.get("args") or ["x"])[0].removesuffix(".js")
             session = AsyncMock()
@@ -3064,7 +3331,7 @@ class TestLoadToolsConcurrency:
 
         with (
             patch("deepagents_code.mcp_tools._check_stdio_server", _check),
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
         ):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
 
@@ -3123,7 +3390,7 @@ class TestLoadToolsConcurrency:
             return server_tools
 
         with (
-            patch("langchain_mcp_adapters.sessions.create_session", fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", fake),
             patch("deepagents_code.mcp_tools._apply_tool_filter", _filter),
         ):
             tools, manager, infos = await _load_tools_from_config(self._config(*names))
@@ -3146,7 +3413,7 @@ class TestLoadToolsConcurrency:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             server = (connection.get("args") or ["x"])[0].removesuffix(".js")
             if server == "cancel":
@@ -3160,7 +3427,7 @@ class TestLoadToolsConcurrency:
             yield AsyncMock()  # pragma: no cover - never reached
 
         with (
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
             pytest.raises(asyncio.CancelledError),
         ):
             await _load_tools_from_config(self._config(*names))
@@ -3202,7 +3469,7 @@ class TestLoadToolsConcurrency:
         )
         with (
             patch("deepagents_code.mcp_tools._check_stdio_server", _slow_check),
-            patch("langchain_mcp_adapters.sessions.create_session", fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", fake),
         ):
             releaser = asyncio.create_task(_release())
             _tools, manager, infos = await _load_tools_from_config(self._config(*names))
@@ -3297,7 +3564,7 @@ class TestLoadToolsConcurrency:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             events.append(("discover", threading.get_ident()))
             session = AsyncMock()
@@ -3307,7 +3574,7 @@ class TestLoadToolsConcurrency:
 
         with (
             patch("deepagents_code.mcp_tools._warm_mcp_adapter_imports", _warm),
-            patch("langchain_mcp_adapters.sessions.create_session", _fake),
+            patch("deepagents_code.mcp_tools._create_mcp_session", _fake),
         ):
             _tools, manager, _infos = await _load_tools_from_config(
                 self._config("only")
@@ -3469,12 +3736,12 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield _new_session()
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
             result = await tools[0].ainvoke({})  # ty: ignore
 
@@ -3509,12 +3776,12 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield _new_session()
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
             await tools[0].ainvoke({})  # ty: ignore
             await tools[0].ainvoke({})  # ty: ignore
@@ -3558,13 +3825,13 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             call_counter["n"] += 1
             yield _new_session(dead=(call_counter["n"] == 2))
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
             await tools[0].ainvoke({})  # ty: ignore
 
@@ -3575,8 +3842,14 @@ class TestCachedSessionProxy:
     async def test_repeated_transient_error_surfaces_tool_message(
         self,
         write_config: Callable[..., str],
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """A second transient failure becomes a tool-local error message."""
+        """A second transient failure becomes a tool-local error message.
+
+        The failure must also be warning-logged exactly once, with a traceback.
+        `handle_tool_error` owns that log, so `coroutine` must not log before it
+        raises; the single-warning assertion guards against a duplicate.
+        """
         from anyio import ClosedResourceError
         from langchain_core.messages import ToolMessage
 
@@ -3600,30 +3873,41 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             call_counter["n"] += 1
             yield _new_session(dead=(call_counter["n"] >= 2))
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            result = await tools[0].ainvoke(
-                {"args": {}, "id": "call-1", "type": "tool_call"}
-            )  # ty: ignore
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+                result = await tools[0].ainvoke(
+                    {"args": {}, "id": "call-1", "type": "tool_call"}
+                )  # ty: ignore
 
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "failed after one retry" in result.content
         assert call_counter["n"] == 3
+        warning = _sole_mcp_failure_warning(caplog, "failed after one retry")
+        assert warning.exc_info is not None, (
+            "the failure must be logged with its traceback"
+        )
         await manager.cleanup()
 
     async def test_generic_oserror_is_not_retried(
         self,
         write_config: Callable[..., str],
         fake_tool_result: Any,  # noqa: ANN401
+        caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """Generic `OSError`s do not trigger session invalidation and retry."""
+        """Generic `OSError`s do not trigger session invalidation and retry.
+
+        The failure must also be warning-logged exactly once, with a traceback.
+        `handle_tool_error` owns that log, so `coroutine` must not log before it
+        raises; the single-warning assertion guards against a duplicate.
+        """
         from langchain_core.messages import ToolMessage
 
         path = write_config(
@@ -3648,22 +3932,29 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             call_counter["n"] += 1
             yield _new_session(fail=(call_counter["n"] >= 2))
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
-            result = await tools[0].ainvoke(
-                {"args": {}, "id": "call-1", "type": "tool_call"}
-            )  # ty: ignore
+            with caplog.at_level(logging.WARNING, logger="deepagents_code.mcp_tools"):
+                result = await tools[0].ainvoke(
+                    {"args": {}, "id": "call-1", "type": "tool_call"}
+                )  # ty: ignore
 
         assert isinstance(result, ToolMessage)
         assert result.status == "error"
         assert "socket glitch" in result.content
         assert call_counter["n"] == 2
+        warning = _sole_mcp_failure_warning(
+            caplog, "failed on server 'srv': OSError: socket glitch"
+        )
+        assert warning.exc_info is not None, (
+            "the failure must be logged with its traceback"
+        )
         await manager.cleanup()
 
     async def test_logical_tool_exception_is_not_retried(
@@ -3701,13 +3992,13 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             call_counter["n"] += 1
             yield _new_session()
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
             result = await tools[0].ainvoke(
                 {"args": {}, "id": "call-1", "type": "tool_call"}
@@ -3753,12 +4044,12 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield _new_session()
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
             result = await tools[0].ainvoke(
                 {"args": {}, "id": "call-1", "type": "tool_call"}
@@ -3813,13 +4104,13 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             call_counter["n"] += 1
             yield _new_session(reauth=(call_counter["n"] == 2))
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
             result = await tools[0].ainvoke(
                 {"args": {}, "id": "call-1", "type": "tool_call"}
@@ -3868,14 +4159,14 @@ class TestCachedSessionProxy:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[LoopBoundSession]:
             await asyncio.sleep(0)
             session = LoopBoundSession()
             sessions.append(session)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = asyncio.run(get_mcp_tools(path))
             result = asyncio.run(tools[0].ainvoke({}))  # ty: ignore
             assert manager is not None
@@ -4172,12 +4463,12 @@ class TestToolFilterEndToEnd:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, server_infos = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
@@ -4214,12 +4505,12 @@ class TestToolFilterEndToEnd:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["fs_read_file"]
@@ -4255,12 +4546,12 @@ class TestToolFilterEndToEnd:
         async def _fake(
             _connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             yield session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         assert [t.name for t in tools] == ["api_search"]
@@ -4312,7 +4603,7 @@ class TestToolFilterEndToEnd:
         async def _fake(
             connection: dict[str, Any],
             *,
-            _mcp_callbacks: object | None = None,
+            server_name: str,
         ) -> AsyncIterator[AsyncMock]:
             await asyncio.sleep(0)
             url = connection.get("url")
@@ -4322,7 +4613,7 @@ class TestToolFilterEndToEnd:
             else:
                 yield fs_session
 
-        with patch("langchain_mcp_adapters.sessions.create_session", _fake):
+        with patch("deepagents_code.mcp_tools._create_mcp_session", _fake):
             tools, manager, _ = await get_mcp_tools(path)
 
         names = sorted(t.name for t in tools)

@@ -335,6 +335,47 @@ async def test_windows_tree_termination_bounds_taskkill(
     process.kill.assert_called_once_with()
 
 
+async def test_runner_finishes_communication_after_timeout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    process = MagicMock()
+    launch = AsyncMock(return_value=process)
+    released = asyncio.Event()
+    communication_cancelled = False
+
+    async def communicate(
+        _process: object,
+        _payload: bytes,
+        _limit: int,
+    ) -> tuple[bytes, bytes, bool, bool]:
+        nonlocal communication_cancelled
+        try:
+            await released.wait()
+        except asyncio.CancelledError:
+            communication_cancelled = True
+            raise
+        return b"", b"", False, False
+
+    def terminate(_process: object) -> None:
+        released.set()
+
+    cleanup = AsyncMock(side_effect=terminate)
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_shell", launch)
+    monkeypatch.setattr(runner, "_communicate_bounded", communicate)
+    monkeypatch.setattr(runner, "_terminate", cleanup)
+
+    result = await run_command_handler(
+        _handler("hook", timeout=0.01),
+        b"{}",
+        cwd=tmp_path,
+    )
+
+    assert [item.code for item in result.diagnostics] == ["timeout"]
+    assert communication_cancelled is False
+    cleanup.assert_awaited_once_with(process)
+
+
 @pytest.mark.skipif(os.name != "posix", reason="process groups are POSIX-specific")
 async def test_runner_kills_process_group_on_timeout(tmp_path: Path) -> None:
     script = tmp_path / "hook.sh"

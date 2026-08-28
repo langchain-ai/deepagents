@@ -3,6 +3,10 @@ type: Engineering Workflow
 title: Evaluation, Harbor scorecards, CI, and releases
 description: How Deep Agents runs unit and live evaluations, aggregates unified Harbor scorecards, compares branches, and turns validated package releases into publications.
 tags: [evaluations, harbor, ci, release, langsmith]
+openwiki:
+  roles: [workflow, testing, operations]
+  change_kinds: [evaluation, release]
+  source_paths: [.github/workflows/unified_evals.yml, .github/scripts/evals/unified_prep.py, .github/scripts/evals/aggregate_unified.py]
 ---
 # Evaluation, Harbor scorecards, CI, and releases
 
@@ -20,7 +24,7 @@ Trials run sequentially locally because sharing provider/LangSmith work in paral
 
 ### Harbor unified scorecard
 
-`.github/workflows/unified_evals.yml` is a manually dispatched Harbor workflow. It accepts models, categories, harness configurations, profile/rollout/concurrency/sandbox controls, optional Harbor/judge configuration, and optional branch variants. It prepares full or frozen-lite task lists, builds a model × branch matrix, invokes the reusable `_harbor_run.yml`, downloads `harbor-*` artifacts, combines them with `.github/scripts/aggregate_unified.py`, uploads the combined result, and attempts radar-chart publication.
+`.github/workflows/unified_evals.yml` is a manually dispatched Harbor workflow. It accepts models, categories, harness configurations, profile/rollout/concurrency/sandbox controls, optional Harbor/judge configuration, and optional branch variants. It prepares full or frozen-lite task lists, builds a model × branch matrix, invokes the reusable `_harbor_run.yml`, downloads `harbor-*` artifacts, combines them with `.github/scripts/evals/aggregate_unified.py`, uploads the combined result, and attempts radar-chart publication.
 
 The aggregate is keyed by **model, branch, harness configuration, and category**. It computes macro/micro metrics and marks leaves missing or incomplete rather than silently ranking partial results. Current category mapping is autonomous → `harbor-index`, conversation → a Tau3 subset, and context → the local context-retrieval dataset.
 

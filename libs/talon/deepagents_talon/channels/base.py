@@ -13,15 +13,13 @@ import re
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, MessageHandler, SendResult
 from deepagents_talon.media import resolve_bounded_media_path
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
-
-_T = TypeVar("_T")
 
 MAX_TEXT_CHARS = 4096
 DEFAULT_MAX_MEDIA_BYTES = 1024 * 1024 * 1024
@@ -383,13 +381,13 @@ def parse_int(value: str | None, default: int) -> int:
     return _parse_number(int, value, default, label="integer")
 
 
-def _parse_number(
-    convert: Callable[[str], _T],
+def _parse_number[T](
+    convert: Callable[[str], T],
     value: str | None,
-    default: _T,
+    default: T,
     *,
     label: str,
-) -> _T:
+) -> T:
     if value is None:
         return default
     try:

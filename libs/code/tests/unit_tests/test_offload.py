@@ -2,20 +2,26 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import stat
 import tempfile
 from contextlib import nullcontext
 from pathlib import Path, PureWindowsPath
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
 
 import pytest
 from deepagents.backends.utils import validate_path
+from textual.worker import WorkerCancelled
 
 from deepagents_code import offload
 from deepagents_code._session_stats import format_token_count
-from deepagents_code.app import DeepAgentsApp
+from deepagents_code._tracing import RESUME_TRACE_TAG
+from deepagents_code.app import DeepAgentsApp, QueuedMessage
 from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.offload import (
@@ -24,6 +30,7 @@ from deepagents_code.offload import (
     _offload_fallback_root,
     delete_offloaded_history,
 )
+from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
 
 
@@ -129,23 +136,69 @@ class TestOffloadGuards:
             msgs = app.query(AppMessage)
             assert any("Nothing to offload" in str(w._content) for w in msgs)
 
-    async def test_agent_running_shows_error(self) -> None:
-        """Should show error when agent is currently running."""
+    async def test_offload_while_busy_queues_instead_of_overlapping(self) -> None:
+        """A `/offload` submitted while busy must queue, not start a second run.
+
+        `_handle_offload` reserves the turn (`_agent_running = True`) before its
+        first await, so by the time a same-tick duplicate submission is
+        processed `_submit_input` already sees the app busy and queues it. The
+        in-flight offload runs exactly once and the queued duplicate drains
+        afterward.
+        """
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._agent = MagicMock()
-            app._backend = MagicMock()
-            app._lc_thread_id = "test-thread"
-            app._agent_running = True
+            _setup_server_offload_app(app)
 
-            await app._handle_offload()
-            await pilot.pause()
+            before = _state_values(_make_dict_messages(6))
+            after = _state_values(_make_dict_messages(8), _summary_event(4))
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+            drive_calls = 0
 
-            msgs = app.query(AppMessage)
-            assert any(
-                "Cannot offload while agent is running" in str(w._content) for w in msgs
-            )
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                nonlocal drive_calls
+                drive_calls += 1
+                drive_started.set()
+                await release_drive.wait()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after, before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=block_drive,
+                ),
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                # The reservation is already in effect: a duplicate submission
+                # queues instead of entering `_handle_offload` concurrently.
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                assert drive_calls == 1
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The queued duplicate drained after the first offload completed;
+            # both ran sequentially, never concurrently.
+            assert drive_calls == 2
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
 
     async def test_nothing_to_compact_noop(self) -> None:
         """Show a no-op message when server-side compaction changed nothing.
@@ -309,7 +362,7 @@ class TestOffloadSuccess:
             )
 
     async def test_offload_shows_feedback_message(self) -> None:
-        """Should display feedback with message count and token change."""
+        """Should report message and turn counts for offloaded and kept slices."""
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -336,10 +389,244 @@ class TestOffloadSuccess:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            # Offloaded count is the new cutoff of four minus a prior cutoff of zero.
-            assert any("Offloaded 4 older messages" in str(w._content) for w in msgs)
-            # Kept count is the ten before-messages minus the new cutoff of four.
-            assert any("6 messages kept" in str(w._content) for w in msgs)
+            # Cutoff 4 against a prior cutoff of 0 over `_make_dict_messages(10)`,
+            # which alternates human/ai from index 0: 4 offloaded (humans at 0 and
+            # 2 -> 2 turns), 6 kept of the 10 before-messages (humans at 4, 6 and
+            # 8 -> 3 turns).
+            assert any(
+                "Offloaded 4 older messages (2 conversation turns)"
+                in str(widget._content)
+                for widget in msgs
+            )
+            assert any(
+                "6 messages (3 conversation turns) kept" in str(widget._content)
+                for widget in msgs
+            )
+            # No provider total was persisted, so the report is conversation-only.
+            assert any("Conversation: ~" in str(w._content) for w in msgs)
+
+    async def test_kept_turns_ignore_tools_and_internal_messages(self) -> None:
+        """Turn counts should skip AI/tool rows and internal humans on both sides."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = [
+                {"type": "human", "content": "Old prompt", "id": "old-human"},
+                {"type": "ai", "content": "", "id": "old-tool-call"},
+                {
+                    "type": "tool",
+                    "content": "Old result",
+                    "id": "old-tool",
+                    "tool_call_id": "old-call",
+                },
+                {"type": "ai", "content": "Old answer", "id": "old-ai"},
+                {"role": "user", "content": "Kept prompt", "id": "kept-human"},
+                {"role": "assistant", "content": "", "id": "kept-tool-call"},
+                {
+                    "type": "tool",
+                    "content": "Kept result",
+                    "id": "kept-tool",
+                    "tool_call_id": "kept-call",
+                },
+                {"role": "assistant", "content": "Kept answer", "id": "kept-ai"},
+                {
+                    "type": "human",
+                    "content": "Internal state",
+                    "id": "internal-human",
+                    "additional_kwargs": {"lc_source": "goal_state"},
+                },
+            ]
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(4)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            messages = app.query(AppMessage)
+            assert any(
+                "Offloaded 4 older messages (1 conversation turn)"
+                in str(widget._content)
+                for widget in messages
+            )
+            assert any(
+                "5 messages (1 conversation turn) kept" in str(widget._content)
+                for widget in messages
+            )
+
+    async def test_offloaded_turns_ignore_internal_messages(self) -> None:
+        """Offloaded turns apply the same internal filter as kept turns.
+
+        Goal-state notices and `[SYSTEM]`-prefixed humans accumulate over a long
+        thread, so they are likelier to fall in the offloaded slice than the kept
+        one. Both `is_internal_message` criteria are exercised here.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = [
+                {"type": "human", "content": "Old prompt", "id": "old-human"},
+                {
+                    "type": "human",
+                    "content": "Internal state",
+                    "id": "offloaded-internal",
+                    "additional_kwargs": {"lc_source": "goal_state"},
+                },
+                {
+                    "type": "human",
+                    "content": "[SYSTEM] Task interrupted by user.",
+                    "id": "offloaded-system-prefix",
+                },
+                {"type": "ai", "content": "Old answer", "id": "old-ai"},
+                {"type": "human", "content": "Kept prompt", "id": "kept-human"},
+                {"type": "ai", "content": "Kept answer", "id": "kept-ai"},
+            ]
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(4)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            messages = app.query(AppMessage)
+            # Four messages offloaded, but only "Old prompt" is a real turn.
+            assert any(
+                "Offloaded 4 older messages (1 conversation turn)"
+                in str(widget._content)
+                for widget in messages
+            )
+
+    async def test_singular_kept_message_and_zero_offloaded_turns(self) -> None:
+        """Kept singular and zero-turn plural render correctly.
+
+        A cutoff that leaves exactly one message covers `messages_kept == 1`, and
+        an offloaded slice of pure AI/tool traffic covers `turns_offloaded == 0` --
+        the plural-zero branch, which no other test renders.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = [
+                {"type": "ai", "content": "", "id": "old-tool-call"},
+                {
+                    "type": "tool",
+                    "content": "Old result",
+                    "id": "old-tool",
+                    "tool_call_id": "old-call",
+                },
+                {"type": "ai", "content": "Old answer", "id": "old-ai"},
+                {"type": "human", "content": "Kept prompt", "id": "kept-human"},
+            ]
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(3)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            messages = app.query(AppMessage)
+            # Three offloaded rows, none of them a human turn.
+            assert any(
+                "Offloaded 3 older messages (0 conversation turns)"
+                in str(widget._content)
+                for widget in messages
+            )
+            # Exactly one kept message, which is a human turn: both singulars.
+            assert any(
+                "1 message (1 conversation turn) kept" in str(widget._content)
+                for widget in messages
+            )
+
+    async def test_zero_kept_turns_when_cutoff_reaches_end(self) -> None:
+        """A cutoff past the last human renders `0 conversation turns` kept."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = [
+                {"type": "human", "content": "Old prompt", "id": "old-human"},
+                {"type": "ai", "content": "Old answer", "id": "old-ai"},
+                {"type": "ai", "content": "Trailing", "id": "trailing-ai"},
+            ]
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], _summary_event(2)
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            messages = app.query(AppMessage)
+            assert any(
+                "1 message (0 conversation turns) kept" in str(widget._content)
+                for widget in messages
+            )
 
     async def test_offload_updates_context_tokens(self) -> None:
         """Should update `_context_tokens` to the post-compaction count.
@@ -387,6 +674,170 @@ class TestOffloadSuccess:
                 await pilot.pause()
 
             assert app._context_tokens == expected
+
+    async def test_offload_preserves_fixed_overhead_in_context_report(self) -> None:
+        """Provider totals should keep fixed overhead in the post-offload estimate."""
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        from deepagents_code.app import _effective_conversation
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = _make_dict_messages(10)
+            after_event = _summary_event(4)
+            conversation_before = count_tokens_approximately(before_messages)
+            conversation_after = count_tokens_approximately(
+                _effective_conversation(before_messages, after_event)
+            )
+            fixed_tokens = 50_000
+            reported_before = conversation_before + fixed_tokens
+            expected_after = conversation_after + fixed_tokens
+            before = _state_values(before_messages)
+            before["_context_tokens"] = reported_before
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], after_event
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            expected_report = (
+                f"Context: {format_token_count(reported_before)} → "
+                f"~{format_token_count(expected_after)} tokens"
+            )
+            assert any(
+                expected_report in str(widget._content)
+                for widget in app.query(AppMessage)
+            )
+            assert app._context_tokens == expected_after
+            assert app._tokens_approximate is True
+
+    async def test_offload_report_stays_on_provider_scale_when_total_is_low(
+        self,
+    ) -> None:
+        """A provider total below the local estimate must not free fixed overhead.
+
+        When `_context_tokens` is stale (or the approximation overshoots), the
+        reported total can fall below `conversation_tokens_before`. The report must
+        still subtract only the conversation *delta*, keeping both figures on the
+        provider's scale -- rebuilding the after-figure as
+        `max(0, reported - conversation_before) + conversation_after` would collapse
+        the overhead to zero and credit the offload with freeing the whole system
+        prompt and tool schema.
+        """
+        from langchain_core.messages.utils import count_tokens_approximately
+
+        from deepagents_code.app import _effective_conversation
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = _make_dict_messages(10)
+            after_event = _summary_event(4)
+            conversation_before = count_tokens_approximately(before_messages)
+            conversation_after = count_tokens_approximately(
+                _effective_conversation(before_messages, after_event)
+            )
+            # Stale/low provider total: below the local conversation estimate.
+            reported_before = conversation_before // 2
+            expected_after = reported_before - (
+                conversation_before - conversation_after
+            )
+            assert expected_after > 0, "fixture should not exercise the zero floor"
+            before = _state_values(before_messages)
+            before["_context_tokens"] = reported_before
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], after_event
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            expected_report = (
+                f"Context: {format_token_count(reported_before)} → "
+                f"~{format_token_count(expected_after)} tokens"
+            )
+            assert any(expected_report in content for content in contents)
+            # The overhead was never treated as freed, so the reduction stays
+            # modest rather than approaching 100%.
+            assert not any("(100% decrease)" in content for content in contents)
+            assert app._context_tokens == expected_after
+
+    async def test_offload_reports_oversized_summary_as_increase(self) -> None:
+        """A summary larger than what it replaced is reported as an increase."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before_messages = _make_dict_messages(10)
+            # A summary far longer than the four messages it replaces, so
+            # `tokens_after` exceeds `tokens_before`.
+            after_event = _summary_event(4)
+            after_event["summary_message"]["content"] = "verbose summary " * 500
+            before = _state_values(before_messages)
+            after = _state_values(
+                [*before_messages, *_make_dict_messages(2)], after_event
+            )
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, after],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    return_value=None,
+                ),
+            ):
+                await app._handle_offload()
+                await pilot.pause()
+
+            contents = [str(widget._content) for widget in app.query(AppMessage)]
+            assert any("Offloaded " in content for content in contents)
+            assert any("(increase)" in content for content in contents)
+            assert not any(
+                "freeing up context window space" in content for content in contents
+            )
+            assert any("context increased" in content for content in contents)
 
     async def test_no_ui_clear_reload(self) -> None:
         """Should NOT clear/reload UI since messages stay in state."""
@@ -525,7 +976,13 @@ class TestOffloadEdgeCases:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            assert any("Offloaded 1 older messages" in str(w._content) for w in msgs)
+            # Anchored on both parens: each singular is a prefix of its plural, so
+            # "(" rules out "1 older messages" and ")" rules out "1 conversation
+            # turns". An unanchored substring would pass against hardcoded plurals.
+            assert any(
+                "Offloaded 1 older message (1 conversation turn)" in str(w._content)
+                for w in msgs
+            )
 
 
 class TestReOffload:
@@ -564,8 +1021,21 @@ class TestReOffload:
                 await pilot.pause()
 
             msgs = app.query(AppMessage)
-            # Offloaded count is the new cutoff of seven minus a prior cutoff of five.
-            assert any("Offloaded 2 older messages" in str(w._content) for w in msgs)
+            # Offloaded count is the new cutoff of seven minus a prior cutoff of
+            # five. The turn parenthetical is asserted too: `_make_dict_messages`
+            # puts humans on even indices, so the offloaded slice [5:7] holds
+            # exactly one. Dropping `prior_cutoff` (slicing [:7]) would report
+            # four, so this is the only assertion that pins the slice *start*.
+            assert any(
+                "Offloaded 2 older messages (1 conversation turn)" in str(w._content)
+                for w in msgs
+            )
+            # Kept: 15 before-messages minus the cutoff of seven, with humans at
+            # indices 8, 10, 12 and 14.
+            assert any(
+                "8 messages (4 conversation turns) kept" in str(w._content)
+                for w in msgs
+            )
 
     async def test_reoffload_noop_restores_prior_summary(self) -> None:
         """A summary-only re-offload restores the prior summarization event."""
@@ -687,6 +1157,223 @@ class TestAgentRunningGuard:
             assert app._agent_running is False
 
 
+class TestOffloadInterrupt:
+    """Test that Escape can cancel `/offload` through the real App dispatch."""
+
+    async def test_command_reserves_turn_before_worker_starts(self) -> None:
+        """Command dispatch should reserve busy state before scheduling offload."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            worker = MagicMock()
+            scheduled: list[Coroutine[Any, Any, None]] = []
+
+            def defer_worker(
+                work: Coroutine[Any, Any, None], **_kwargs: object
+            ) -> MagicMock:
+                scheduled.append(work)
+                return worker
+
+            with patch.object(app, "run_worker", side_effect=defer_worker):
+                await app._handle_command("/offload")
+
+            assert app._agent_running is True
+            assert app._offload_worker is worker
+            assert app._offload_task_started is False
+            assert len(scheduled) == 1
+
+            coroutine = scheduled[0]
+            try:
+                await app._submit_input("hello", "normal")
+                assert len(app._pending_messages) == 1
+                app._cancel_worker(worker)
+            finally:
+                coroutine.close()
+
+            worker.cancel.assert_called_once_with()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_cancels_offload_worker(self) -> None:
+        """Escape should reach and cancel an offload blocked in its stream."""
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            before = _state_values(_make_dict_messages(6))
+            reconciled = _state_values(_make_dict_messages(6))
+            drive_started = asyncio.Event()
+            drive_cancelled = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    drive_cancelled.set()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[before, reconciled],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    new_callable=AsyncMock,
+                    side_effect=block_drive,
+                ),
+                patch.object(
+                    app,
+                    "_remove_unanswered_offload_seed",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as cleanup,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                worker = app._offload_worker
+                assert worker is not None
+                assert app._agent_running is True
+
+                await pilot.press("escape")
+                await asyncio.wait_for(drive_cancelled.wait(), timeout=1)
+                with pytest.raises(WorkerCancelled):
+                    await worker.wait()
+
+            cleanup.assert_awaited_once()
+            assert worker.is_cancelled
+            assert app._agent_running is False
+            assert app._agent_quiescent.is_set()
+            assert app._loading_widget is None
+
+    async def test_offload_blocks_queued_prompt_until_done(self) -> None:
+        """A prompt submitted while offload is reserved must not overlap it.
+
+        Command dispatch sets `_agent_running` before scheduling the worker, so
+        a prompt queued before the worker starts stays queued until the offload
+        finishes and `_run_offload_task` drains the queue.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            # The drive blocks the offload so the reservation window stays
+            # open. It runs on the real loop (not a Mock) because pilot.pause
+            # must be able to yield between message-processing steps below.
+            drive_started = asyncio.Event()
+            release_drive = asyncio.Event()
+
+            async def block_drive(_config: object, _seed_id: object = None) -> None:
+                drive_started.set()
+                await release_drive.wait()
+
+            with (
+                patch.object(
+                    app,
+                    "_get_thread_state_values",
+                    new_callable=AsyncMock,
+                    side_effect=[
+                        _state_values(_make_dict_messages(6)),
+                        _state_values(_make_dict_messages(8), _summary_event(4)),
+                    ],
+                ),
+                patch.object(
+                    app,
+                    "_drive_server_side_compaction",
+                    side_effect=block_drive,
+                ),
+                # Spy on the queue drain itself: patching `_dispatch_queued_message`
+                # would let the drain's awaited dispatch return instantly, so the
+                # worker could complete before the test's own `pilot.pause()`s
+                # observe the mid-offload state.
+                patch.object(
+                    app,
+                    "_process_next_from_queue",
+                    wraps=app._process_next_from_queue,
+                ) as drain,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                await asyncio.wait_for(drive_started.wait(), timeout=1)
+
+                # The reservation is already in effect: a prompt submitted now
+                # queues instead of starting an agent turn concurrently.
+                assert app._agent_running is True
+                app.post_message(ChatInput.Submitted("hello", "prompt"))
+                await pilot.pause()
+                assert len(app._pending_messages) == 1
+
+                release_drive.set()
+                worker = app._offload_worker
+                assert worker is not None
+                await worker.wait()
+                await pilot.pause()
+
+            # The worker's teardown drained the queued prompt only after the
+            # offload completed.
+            drain.assert_called()
+            assert app._agent_running is False
+            assert app._offload_worker is None
+            assert not app._pending_messages
+
+    async def test_escape_before_offload_worker_step_recovers(self) -> None:
+        """Cancelling the worker mid-run releases it for later `Esc` presses.
+
+        `Esc` routes to `_cancel_worker(self._offload_worker)`. If the offload
+        worker then ends without clearing `_offload_worker` (the same wedge
+        `_recover_unstarted_agent_worker` covers for the agent worker when a
+        cancel lands before the worker's first step), every later `Esc` would
+        be consumed re-cancelling the dead worker instead of reaching the
+        double-`Esc` input-clear path.
+        """
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            _setup_server_offload_app(app)
+
+            # Hold the offload at its first await (the state read) so the
+            # cancel lands while the worker is in flight.
+            hold_state_read = asyncio.Event()
+
+            async def block_state_read(_thread_id: object) -> dict[str, Any]:
+                await hold_state_read.wait()
+                return _state_values(_make_dict_messages(6))
+
+            with patch.object(
+                app,
+                "_get_thread_state_values",
+                side_effect=block_state_read,
+            ):
+                app.post_message(ChatInput.Submitted("/offload", "command"))
+                await pilot.pause()
+                worker = app._offload_worker
+                assert worker is not None
+                # Command dispatch reserves the turn before the worker starts,
+                # so it is set even though compaction never got to run.
+                assert app._agent_running is True
+
+                await pilot.press("escape")
+                await pilot.pause()
+                await pilot.pause()
+
+                assert worker.is_cancelled
+                assert app._offload_worker is None
+                assert app._agent_running is False
+
+                # The next `Esc` is no longer consumed by a stale offload
+                # worker: it reaches the double-`Esc` clear-input path.
+                app._chat_input.value = "draft"
+                await pilot.press("escape")
+                assert app._clear_input_pending is True
+
+
 class TestOffloadErrorHandling:
     """Test error handling during offload."""
 
@@ -727,10 +1414,14 @@ class TestOffloadErrorHandling:
                 await pilot.pause()
 
             # Both the reduction and the archive-failure warning land in one
-            # ErrorMessage.
+            # ErrorMessage. The turn parenthetical and the trailing stats line are
+            # asserted too, so the error path cannot silently keep older wording.
             assert any(
-                "Offloaded 4 older messages" in str(widget._content)
+                "Offloaded 4 older messages (2 conversation turns), "
+                "freeing up context window space."
+                in str(widget._content)
                 and "could not be saved to storage" in str(widget._content)
+                and "conversation turns) kept." in str(widget._content)
                 for widget in app.query(ErrorMessage)
             )
             # No separate success line is emitted alongside the warning.
@@ -1627,12 +2318,19 @@ class TestDriveServerSideCompaction:
     @staticmethod
     def _fake_remote_agent(
         tool_content: str,
-    ) -> tuple[Any, list[Any], list[object]]:
+    ) -> tuple[Any, list[Any], list[object], list[Any]]:
         """Build a fake `RemoteAgent` that interrupts then returns a ToolMessage.
 
         First `astream(None)` surfaces a HITL approval interrupt; the resume
         stream (`Command(resume=...)`) yields a `ToolMessage` with the supplied
         content so callers can exercise both the success and failure branches.
+
+        Args:
+            tool_content: Body of the `ToolMessage` the resume stream yields.
+
+        Returns:
+            The agent plus one list per recorded `astream` keyword -- inputs,
+                contexts, and configs -- each appended to in call order.
         """
         from langchain_core.messages import ToolMessage
 
@@ -1640,6 +2338,7 @@ class TestDriveServerSideCompaction:
 
         astream_inputs: list[Any] = []
         astream_contexts: list[object] = []
+        astream_configs: list[Any] = []
 
         class _Interrupt:
             id = "interrupt-1"
@@ -1652,6 +2351,7 @@ class TestDriveServerSideCompaction:
         async def _astream(stream_input: object, **kwargs: object):  # noqa: RUF029, ANN202
             astream_inputs.append(stream_input)
             astream_contexts.append(kwargs.get("context"))
+            astream_configs.append(kwargs.get("config"))
             if stream_input is None:
                 yield ((), "updates", {"__interrupt__": [_Interrupt()]})
             else:
@@ -1665,7 +2365,7 @@ class TestDriveServerSideCompaction:
         agent.aensure_thread = AsyncMock()
         agent.aupdate_state = AsyncMock()
         agent.astream = _astream
-        return agent, astream_inputs, astream_contexts
+        return agent, astream_inputs, astream_contexts, astream_configs
 
     async def test_seeds_tool_call_and_resumes_interrupt(self) -> None:
         """Seeds a forced `compact_conversation` call and approves the interrupt."""
@@ -1676,8 +2376,11 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, astream_inputs, astream_contexts = self._fake_remote_agent(
-                "Conversation compacted. Summarized 2 messages into a concise summary."
+            agent, astream_inputs, astream_contexts, astream_configs = (
+                self._fake_remote_agent(
+                    "Conversation compacted. Summarized 2 messages into a "
+                    "concise summary."
+                )
             )
             app._agent = agent
             app._lc_thread_id = "test-thread"
@@ -1720,6 +2423,13 @@ class TestDriveServerSideCompaction:
                 assert isinstance(context, dict)
                 normalized = {str(key): value for key, value in context.items()}
                 assert {key: normalized[key] for key in expected} == expected
+
+            # Only the resume round is tagged, so LangSmith can tell the
+            # continuation apart from the run that opened the turn.
+            initial_config, resume_config = astream_configs
+            assert RESUME_TRACE_TAG not in initial_config.get("tags", [])
+            assert RESUME_TRACE_TAG in resume_config["tags"]
+            assert initial_config["configurable"] == resume_config["configurable"]
 
     async def test_records_summary_and_trailing_usage_in_cost_breakdown(self) -> None:
         """Manual offload usage reconciles by type and serving model."""
@@ -2062,7 +2772,7 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, _contexts = self._fake_remote_agent(
+            agent, _inputs, _contexts, _configs = self._fake_remote_agent(
                 f"{COMPACTION_FAILURE_PREFIX}: an error occurred during compaction."
             )
             app._agent = agent
@@ -2082,7 +2792,7 @@ class TestDriveServerSideCompaction:
         app = DeepAgentsApp()
         async with app.run_test() as pilot:
             await pilot.pause()
-            agent, _inputs, contexts = self._fake_remote_agent(
+            agent, _inputs, contexts, _configs = self._fake_remote_agent(
                 "Conversation compacted. Summarized 2 messages."
             )
             app._agent = agent

@@ -1051,13 +1051,40 @@ def test_format_execute_description_varies_by_workspace_binding() -> None:
     assert "Working Directory: /workspace/thread-b" in descriptions[1]
 
 
+def test_format_execute_description_sanitizes_workspace_binding() -> None:
+    """A workspace path cannot inject deceptive text into an approval."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "execute", "args": {"command": "pwd"}, "id": "call-8"},
+    )
+    runtime = cast(
+        "Runtime[Any]",
+        SimpleNamespace(
+            context={
+                "workspace": {
+                    "cwd": "/workspace/\u202eprod\nWorking Directory: /spoofed"
+                }
+            }
+        ),
+    )
+
+    description = _format_execute_description(
+        tool_call, cast("AgentState[Any]", None), runtime
+    )
+
+    assert description.splitlines() == [
+        "Execute Command: pwd",
+        "Working Directory: /workspace/prod Working Directory: /spoofed",
+    ]
+
+
 def test_format_execute_description_without_workspace_uses_existing_fallback(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A run without a workspace keeps the server and process CWD fallbacks."""
     tool_call = cast(
         "ToolCall",
-        {"name": "execute", "args": {"command": "pwd"}, "id": "call-8"},
+        {"name": "execute", "args": {"command": "pwd"}, "id": "call-9"},
     )
     runtime = cast("Runtime[Any]", SimpleNamespace(context={}))
     server_context = ProjectContext(user_cwd=Path("/workspace/server"))

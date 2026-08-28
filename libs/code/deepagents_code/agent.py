@@ -139,6 +139,7 @@ from deepagents_code.unicode_security import (
     detect_dangerous_unicode,
     format_warning_detail,
     render_with_unicode_markers,
+    sanitize_control_chars,
     strip_dangerous_unicode,
     summarize_issues,
 )
@@ -1821,7 +1822,8 @@ def _format_execute_description(
             if project_context is not None
             else str(Path.cwd())
         )
-    lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
+    display_cwd = sanitize_control_chars(str(effective_cwd), collapse_whitespace=False)
+    lines = [f"Execute Command: {command}", f"Working Directory: {display_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)
     if issues:

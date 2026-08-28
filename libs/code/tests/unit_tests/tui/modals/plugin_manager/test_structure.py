@@ -1566,7 +1566,7 @@ def test_installed_details_pending_reload_not_enabled() -> None:
 
     content = str(_installed_plugin_details_content(row))
 
-    assert "Status: Installed · pending /reload" in content
+    assert f"Status: Installed {get_glyphs().separator} pending /reload" in content
     assert "Run /reload" in content
     assert f"{get_glyphs().checkmark} Enabled" not in content
 

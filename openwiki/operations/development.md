@@ -3,9 +3,6 @@ type: operations-guide
 title: Development & Build Operations
 description: Practical development and CI-parity operations for independently versioned packages in the Deep Agents monorepo. Covers package-local uv and Make workflows, repository-wide checks, hooks, release fan-out, and the release-please lifecycle.
 tags: [development, build, monorepo, uv, makefile, ci, pre-commit, release-please]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-08-27T11:19:20.720Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -23,6 +20,8 @@ sources:
     resource: repo://AGENTS.md
   - id: openwiki-source-a2371d6362e5db4bc834ad03
     resource: repo://CLAUDE.md
+  - id: openwiki-source-18f01ea5159b63661c1c8b1c
+    resource: repo://libs/acp/Makefile
   - id: openwiki-source-006b62af9993da1b48c11de8
     resource: repo://libs/code/Makefile
   - id: openwiki-source-7ba50bd13eb62341a2061ef9
@@ -31,11 +30,16 @@ sources:
     resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-fb60ee46c55b974b8341651c
     resource: repo://libs/DEVELOPMENT.md
+  - id: openwiki-source-be7f6aa28551fac7310db803
+    resource: repo://libs/evals/Makefile
   - id: openwiki-source-49fbcc45434b619b68220bf9
     resource: repo://libs/Makefile
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-08-27T11:19:20.720Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-08-28T11:44:48.051Z
+generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
 ---
 
 # Development & Build Operations
@@ -69,18 +73,16 @@ Keep the package environment reproducible:
 3. Do not mix environments in a single session.
 4. Follow each package's `requires-python` instead of pinning a global interpreter.
 
-A package Makefile is authoritative for its supported commands; run `make help` rather than assuming every target exists everywhere. Its help output is generated from `##` target comments. The core SDK and Code package share the common loop below, while package-specific targets remain discoverable through that command.
+A package Makefile is authoritative for its supported commands; run `make help` rather than assuming every target exists everywhere. Its help output is generated from `##` target comments. `deepagents` and `code` share the fuller loop below, but targets and flags are package-local.
 
-| Command | Purpose |
-| --- | --- |
-| `make test` | Run unit tests, normally offline, parallelized, and with coverage output. Set `TEST_FILE=…` to narrow the target. |
-| `make integration_test` | Run the integration-test directory with network access and a timeout. |
-| `make lint` | Check Ruff rules and formatting, then run `ty`; Code also verifies its generated command catalog. |
-| `make format` | Apply Ruff formatting and safe Ruff fixes. |
-| `make type` | Run `ty` only. |
-| `make coverage` | Produce explicit coverage output, including XML where configured. |
+| Command | Where it applies | Purpose |
+| --- | --- | --- |
+| `make test` | All five first-party packages inspected | Run package tests. All disable network sockets and allow Unix sockets; `deepagents` and `code` also parallelize with `-n auto` and report coverage. Set `TEST_FILE=…` where the Makefile supports it. |
+| `make integration_test` | `deepagents`, `code` | Run their integration-test directory with network access and a timeout. |
+| `make lint` / `make format` / `make type` | All five first-party packages inspected | Check Ruff and formatting, type-check with `ty`, or apply Ruff formatting and safe fixes. `code` also checks its generated command catalog; `evals` checks its evaluation catalog. |
+| `make coverage` | `deepagents`, `code` | Produce explicit coverage output, including XML. |
 
-Makefiles run tools through `uv run` and export `UV_FROZEN = true`. Thus a stale lockfile is a failure, not an opportunity for a command to mutate dependency resolution. Unit-test targets use `--disable-socket` (with Unix sockets explicitly allowed), while integration tests are the networked boundary.
+Tools run through `uv run`. `deepagents`, `code`, and `talon` export `UV_FROZEN = true`, so a stale lockfile fails rather than being silently refreshed; do not infer that setting from the shared target names in `acp` or `evals`. Unit tests in each inspected first-party Makefile use `--disable-socket` with Unix sockets explicitly allowed. The `deepagents` and `code` integration targets are the networked boundary.
 
 ```mermaid
 flowchart TD
@@ -148,7 +150,7 @@ This is intentionally a local convenience rather than final enforcement. Through
 
 Release-please manages nine packages: `deepagents`, `deepagents-acp`, `deepagents-code`, `deepagents-talon`, `langchain-daytona`, `langchain-modal`, `langchain-runloop`, `langchain-vercel-sandbox`, and `langchain-quickjs`. The release configuration gives each package a Python release type, package name, component, changelog location, version-bearing extra files, and a test-directory exclusion. `separate-pull-requests: true` means each managed component gets an independent draft release PR rather than a repository version.
 
-The current manifest baselines are independent: `libs/deepagents` is `0.7.9`, `libs/acp` is `0.0.10`, `libs/code` is `0.1.63`, `libs/talon` is `0.0.5`, and the partner packages are at their own versions. Treat `.release-please-manifest.json` as release-please state: do not manually edit an existing baseline. When adding a managed package, add both configuration and manifest entries; a new package whose source is `0.0.1` normally needs a `0.0.0` manifest baseline so its first release is not incorrectly incremented to `0.0.2`.
+The current manifest baselines are independent: `libs/deepagents` is `0.7.10`, `libs/acp` is `0.0.11`, `libs/code` is `0.1.64`, `libs/talon` is `0.0.6`, and the partner packages are at their own versions. Treat `.release-please-manifest.json` as release-please state: do not manually edit an existing baseline. When adding a managed package, add both configuration and manifest entries; a new package whose source is `0.0.1` normally needs a `0.0.0` manifest baseline so its first release is not incorrectly incremented to `0.0.2`.
 
 A release-worthy commit is assigned by the paths it changes, not merely its Conventional Commit scope. `feat`, `fix`, `perf`, and `revert` are visible changelog types; the pre-1.0 configuration makes `feat` a patch bump and a breaking `feat!` a minor bump. Docs, chores, refactors, tests, CI, styles, and hotfixes are hidden and do not independently open a release PR.
 
@@ -167,7 +169,7 @@ flowchart TD
 
 Caption: release-please prepares a component release PR; the separate release workflow publishes only after the merged release commit is recognized.
 
-On a bump, release-please rewrites the package `pyproject.toml` and `_version.py`, and ignores changes only under that package's tests directory for release triggering. It uses component tags such as `deepagents==0.7.9` (`include-component-in-tag`, `==`, and no `v`). Although release-please is configured to skip creating a GitHub release itself, merging a recognized `release(<component>): <version>` commit with the component `CHANGELOG.md` changed dispatches `release.yml`; that workflow builds, runs pre-release validation, publishes to Test PyPI and then PyPI, and creates the GitHub release.
+On a bump, release-please rewrites the package `pyproject.toml` and `_version.py`, and ignores changes only under that package's tests directory for release triggering. It uses component tags such as `deepagents==0.7.10` (`include-component-in-tag`, `==`, and no `v`). Although release-please is configured to skip creating a GitHub release itself, merging a recognized `release(<component>): <version>` commit with the component `CHANGELOG.md` changed dispatches `release.yml`; that workflow builds, runs pre-release validation, publishes to Test PyPI and then PyPI, and creates the GitHub release.
 
 ### Avoid accidental release fan-out
 

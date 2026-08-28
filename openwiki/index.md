@@ -4,8 +4,8 @@ okf_version: "0.2"
 
 # Files
 
-- [Quickstart & Wiki Map](quickstart.md) - Orientation to the Deep Agents monorepo layout under libs/ and a task-routing map that sends common jobs (build an agent, run dcode, benchmark, host, sandbox) to the right wiki section.
-- [Runtime Behavior & Findings (LangSmith)](runtime-behavior.md) - Consolidated home for production-trace evidence that complements the static docs — run shape, hotspots, failures, and code-vs-production divergences — plus the code-anchored runtime checks (limits, assumptions, retry paths) an agent should evaluate against each fresh LangSmith sample.
+- [Quickstart & Wiki Map](quickstart.md) - Repository orientation for the independently versioned Deep Agents packages and a task-routing map for SDK work, dcode, ACP, evaluations, operations, and tests. Use this page to choose an owning package and detailed guide before changing behavior.
+- [Runtime Behavior & Findings](runtime-behavior.md) - Source-grounded operational behavior for dcode and the Deep Agents SDK, with explicit separation between code-derived checks and trace observations. Covers execution limits, recoverable tool behavior, accounting, context compaction, and model retries.
 
 # Directories
 

@@ -76,6 +76,13 @@ upstream.
     `diff.clamp_selection`. No upstream issue tracks per-widget selection
     masking; it stays until Textual grows one.
 
+7. ASCII border rendering. Textual border styles are global character tables,
+    while dcode's charset preference is process-wide. In ASCII mode this patch
+    makes every border style render with Textual's `ascii` characters, including
+    third-party and dynamically mounted widgets, without replacing edge styles
+    or their resolved colors. It stays until Textual supports an application-wide
+    border character policy.
+
 Imported for side effect from `app.py` before any `App()` is created.
 
 Not every Textual-internals workaround lives here: subclasses that shadow a
@@ -108,6 +115,20 @@ if TYPE_CHECKING:
     from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
+
+try:
+    from textual import _border  # noqa: PLC2701
+
+    from deepagents_code.config import is_ascii_mode
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning("Textual ASCII border patch skipped: %s", exc)
+else:
+    if is_ascii_mode():
+        ascii_border = _border.BORDER_CHARS["ascii"]
+        for edge_type in _border.BORDER_CHARS:
+            if edge_type not in {*_border.INVISIBLE_EDGE_TYPES, "blank"}:
+                _border.BORDER_CHARS[edge_type] = ascii_border
+        _border.get_box.cache_clear()
 
 _ESC_PREFIX_LEN = 2
 _DOUBLE_CLICK_CHAIN = 2

@@ -1249,7 +1249,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if not self._filtered_models:
             if not self._loaded:
-                empty_content: Content = Content.styled("Loading models…", "dim")
+                empty_content: Content = Content.styled(
+                    f"Loading models{get_glyphs().ellipsis}", "dim"
+                )
             else:
                 typed = self._filter_text.strip()
                 policy = ModelConfig.load()

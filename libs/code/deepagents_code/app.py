@@ -1991,6 +1991,13 @@ InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
 
+_CLEAR_TOKENS: frozenset[str] = frozenset({"clear", "--clear", "reset"})
+"""Spellings that reset a per-session override back to its default.
+
+Shared by every such command -- `/effort`, `/summarization-model` -- so the
+habit transfers and the accepted spellings cannot drift apart.
+"""
+
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
     """Parse the argument tail of `/mcp reconnect [force]`.
@@ -3751,6 +3758,9 @@ class DeepAgentsApp(App):
         """Per-turn model params override set via startup or `/model` params."""
 
         self._summarization_model_override: str | None = (
+            # An empty-string test, spelled the long way because ruff's
+            # `compare-to-empty-string` rejects `== ""` and the falsey
+            # shorthand it suggests would also catch `None`.
             INHERIT_SUMMARIZATION_MODEL
             if summarization_model is not None and not summarization_model
             else summarization_model
@@ -17619,7 +17629,7 @@ class DeepAgentsApp(App):
             without_effort_model_params,
         )
 
-        if effort.lower() in {"clear", "--clear", "reset"}:
+        if effort.lower() in _CLEAR_TOKENS:
             spec = self._effective_model_spec()
             if not spec:
                 await self._mount_message(
@@ -28743,8 +28753,7 @@ class DeepAgentsApp(App):
                 current = "the main agent model"
             await self._mount_message(AppMessage(f"Summarization model: {current}"))
             return
-        # Same spellings `/effort` accepts, so the habit transfers.
-        if argument.lower() in {"clear", "--clear", "reset"}:
+        if argument.lower() in _CLEAR_TOKENS:
             self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
             await self._mount_message(
                 AppMessage("Summarization model cleared; using the main agent model.")

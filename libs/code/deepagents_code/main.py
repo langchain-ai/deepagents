@@ -3108,12 +3108,11 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
-        summarization_model: Optional model spec for context-compaction summaries.
+        summarization_model: Model spec used only for context-compaction
+            summaries, already resolved by `_resolve_summarization_model`.
 
-            When `None`, `[models].summarization_default` is used, then the
-            effective main agent model. A blank string means the flag was
-            explicitly supplied with no value: it overrides any configured
-            default and falls back to the main model for this launch.
+            `None` reuses the effective main agent model, as does the blank
+            string a valueless `--summarization-model` produces.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
 
@@ -3215,8 +3214,6 @@ async def run_textual_cli_async(
         console.print(f"[bold red]Error:[/bold red] {escape(str(e))}", highlight=False)
         return AppResult(return_code=1, thread_id=None)
 
-    resolved_summarization_model = _resolve_summarization_model(summarization_model)
-
     if resolved_spec:
         parsed = ModelSpec.try_parse(resolved_spec)
         if parsed:
@@ -3283,7 +3280,7 @@ async def run_textual_cli_async(
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
-        "summarization_model": resolved_summarization_model,
+        "summarization_model": summarization_model,
         "model_params": model_params,
         "cli_max_retries": cli_max_retries,
         "profile_overrides": profile_override,
@@ -3326,7 +3323,7 @@ async def run_textual_cli_async(
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
-            summarization_model=resolved_summarization_model,
+            summarization_model=summarization_model,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
@@ -5196,6 +5193,12 @@ def cli_main() -> None:
 
         max_retries = getattr(args, "max_retries", None)
 
+        # Resolved once here rather than per launch mode, so every mode below
+        # receives the same already-resolved spec.
+        resolved_summarization_model = _resolve_summarization_model(
+            getattr(args, "summarization_model", None)
+        )
+
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)
         if raw_profile:
@@ -5277,9 +5280,7 @@ def cli_main() -> None:
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
-                    summarization_model=_resolve_summarization_model(
-                        getattr(args, "summarization_model", None)
-                    ),
+                    summarization_model=resolved_summarization_model,
                     cli_max_retries=max_retries,
                     profile_override=profile_override,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -6042,9 +6043,7 @@ def cli_main() -> None:
                             assistant_id=assistant_id,
                             model_name=getattr(args, "model", None),
                             model_params=model_params,
-                            summarization_model=_resolve_summarization_model(
-                                getattr(args, "summarization_model", None)
-                            ),
+                            summarization_model=resolved_summarization_model,
                             cli_max_retries=max_retries,
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
@@ -6219,7 +6218,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
-                        summarization_model=getattr(args, "summarization_model", None),
+                        summarization_model=resolved_summarization_model,
                         cli_max_retries=max_retries,
                         profile_override=profile_override,
                         thread_id=thread_id,

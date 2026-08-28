@@ -2875,7 +2875,13 @@ class TestRunTextualCliAsyncMcp:
             == "openai:flag-summary"
         )
 
-    async def test_resolves_configured_summarization_model(self) -> None:
+    async def test_forwards_no_summarization_model_when_unset(self) -> None:
+        """An unset spec reaches the app as `None`.
+
+        `cli_main` resolves `[models].summarization_default` before any launch
+        mode, so this entry point forwards whatever it is given rather than
+        consulting the config itself.
+        """
         app_result = AppResult(return_code=0, thread_id="thread-123")
         captured_kwargs: dict[str, Any] = {}
         config = ModelConfig(summarization_default_model="openai:config-summary")
@@ -2896,11 +2902,8 @@ class TestRunTextualCliAsyncMcp:
             await run_textual_cli_async("agent", model_name="openai:gpt-5.5")
 
         create_model.assert_not_called()
-        assert captured_kwargs["summarization_model"] == "openai:config-summary"
-        assert (
-            captured_kwargs["server_kwargs"]["summarization_model"]
-            == "openai:config-summary"
-        )
+        assert captured_kwargs["summarization_model"] is None
+        assert captured_kwargs["server_kwargs"]["summarization_model"] is None
 
     async def test_resolves_configured_auto_classifier_before_tui_launch(self) -> None:
         """The TUI and server receive the same effective env/TOML classifier."""

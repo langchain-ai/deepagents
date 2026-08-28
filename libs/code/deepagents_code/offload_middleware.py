@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from functools import partial
 from pathlib import Path
@@ -290,13 +291,16 @@ class _LazySummaryModel:
         self._lock = Lock()
         self._configured = False
         self._warned = False
-        # Main-model summary tuning, captured just before the override
-        # installs so `_degrade_to_main_model` can uninstall the override.
-        self._main_token_counter: Any = None
-        self._main_partial_token_counter: Any = None
-        self._main_trim_limit: Any = None
-        self._create_summary = summarization._lc_helper._create_summary
-        self._acreate_summary = summarization._lc_helper._acreate_summary
+        helper = summarization._lc_helper
+        # Main-model summary tuning, captured before any override installs so
+        # `_degrade_to_main_model` can uninstall the override.
+        self._main_summary_tuning = (
+            helper.token_counter,
+            helper._partial_token_counter,
+            helper.trim_tokens_to_summarize,
+        )
+        self._create_summary = helper._create_summary
+        self._acreate_summary = helper._acreate_summary
 
     def _configure(self) -> None:
         """Install the model once, degrading to the main model on failure.
@@ -335,10 +339,6 @@ class _LazySummaryModel:
                         exc_info=True,
                     )
                 return
-            helper = self._summarization._lc_helper
-            self._main_token_counter = helper.token_counter
-            self._main_partial_token_counter = helper._partial_token_counter
-            self._main_trim_limit = helper.trim_tokens_to_summarize
             _install_summary_model_retries(self._summarization, model)
             _install_summary_token_counter(self._summarization, model)
             _install_summary_trim_limit(self._summarization, model)
@@ -360,9 +360,11 @@ class _LazySummaryModel:
         with self._lock:
             _install_summary_model_retries(self._summarization)
             helper = self._summarization._lc_helper
-            helper.token_counter = self._main_token_counter
-            helper._partial_token_counter = self._main_partial_token_counter
-            helper.trim_tokens_to_summarize = self._main_trim_limit
+            (
+                helper.token_counter,
+                helper._partial_token_counter,
+                helper.trim_tokens_to_summarize,
+            ) = self._main_summary_tuning
             self._configured = False
             if not self._warned:
                 # Shared with the build-failure warning: either failure mode
@@ -1012,6 +1014,14 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         super().__init__(summarization, system_prompt=system_prompt)
         self._cli_max_retries = cli_max_retries
         self._summarization_model_spec = summarization_model_spec
+        # One-entry memo for `_summarization_for_runtime`. Every model call
+        # consults it, but the runtime model configuration only changes on
+        # `/model` or `/summarization-model`, so a single slot hits almost
+        # always and keeps `create_model`'s credential reads and client
+        # construction off the per-turn path. It also lets one
+        # `_LazySummaryModel` survive across compactions, which is what its
+        # `_configured` and `_warned` memos are sized for.
+        self._runtime_summarization: tuple[str, SummarizationMiddleware] | None = None
 
     @property
     def name(self) -> str:
@@ -1222,13 +1232,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         Returns:
             The compact tool's state command.
         """
-        # A throwaway host for the SDK's compact implementation, which reads
-        # `self._summarization`; handing it the request-local summarizer is the
-        # only way to redirect that. `system_prompt` is `None` because only
-        # `wrap_model_call` reads it and this instance never wraps a call.
-        tool = SummarizationToolMiddleware(
-            self._summarization_for_runtime(runtime), system_prompt=None
-        )
+        tool = self._compact_host(self._summarization_for_runtime(runtime))
         return tool._run_compact(runtime)
 
     async def _arun_compact(self, runtime: ToolRuntime[Any, Any]) -> Command:
@@ -1244,10 +1248,28 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             self._summarization_for_runtime, runtime
         )
         session_id = summarization._get_session_id(runtime.state)
-        # See `_run_compact` for why this throwaway host takes no prompt.
-        tool = SummarizationToolMiddleware(summarization, system_prompt=None)
+        tool = self._compact_host(summarization)
         async with _archive_lock(session_id):
             return await tool._arun_compact(runtime)
+
+    @staticmethod
+    def _compact_host(
+        summarization: SummarizationMiddleware,
+    ) -> SummarizationToolMiddleware:
+        """Host the SDK's compact implementation over a chosen summarizer.
+
+        The SDK's `_run_compact` reads `self._summarization`, so a throwaway
+        host is the only way to point it at the request-local summarizer.
+
+        Args:
+            summarization: Summarizer the compaction must run on.
+
+        Returns:
+            A middleware instance used only for its compact implementation.
+                `system_prompt` is `None` because only `wrap_model_call` reads
+                it and this instance never wraps a call.
+        """
+        return SummarizationToolMiddleware(summarization, system_prompt=None)
 
     def _create_compact_tool(self) -> StructuredTool:
         """Create the CLI variant of `compact_conversation`.
@@ -1298,6 +1320,21 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             summary_model_spec = self._summarization_model_spec
         if not config.model_spec and not summary_model_spec:
             return self._summarization
+
+        cache_key = json.dumps(
+            [
+                config.model_spec,
+                summary_model_spec,
+                config.model_params,
+                config.profile_overrides,
+                config.context_limit,
+            ],
+            sort_keys=True,
+            default=repr,
+        )
+        cached = self._runtime_summarization
+        if cached is not None and cached[0] == cache_key:
+            return cached[1]
 
         from deepagents_code.config import create_model
 
@@ -1361,7 +1398,8 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 self._cli_max_retries,
             )
         else:
-            _install_summary_model_retries(summarization, model)
+            _install_summary_model_retries(summarization)
+        self._runtime_summarization = (cache_key, summarization)
         return summarization
 
     async def _aplan_forced_compaction_update(

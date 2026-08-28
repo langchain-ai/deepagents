@@ -1244,6 +1244,48 @@ class TestSummarizationModelForwarding:
         assert exc_info.value.code == 0
         assert not mock_run.await_args.kwargs["summarization_model"]  # ty: ignore
 
+    def test_config_default_reaches_the_tui(self) -> None:
+        """Every launch mode gets the same resolved spec, the TUI included."""
+        from deepagents_code.main import cli_main
+        from deepagents_code.model_config import ModelConfig
+
+        mock_stdin = MagicMock()
+        mock_stdin.isatty.return_value = True
+        config = ModelConfig(summarization_default_model="openai:config-summary")
+
+        fake_result = MagicMock()
+        fake_result.return_code = 0
+        fake_result.thread_id = None
+        fake_result.update_available = (False, None)
+        fake_result.session_stats = MagicMock(request_count=0)
+        run_tui = AsyncMock(return_value=fake_result)
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "-m", "hello"]),
+            patch.object(sys, "stdin", mock_stdin),
+            patch.object(ModelConfig, "load", return_value=config),
+            patch("deepagents_code.main.run_textual_cli_async", run_tui),
+            patch("deepagents_code.main._run_startup_auto_update"),
+            patch("deepagents_code.main._resolve_agent_arg", return_value="agent"),
+            patch("deepagents_code.main._check_mcp_project_trust", return_value=False),
+            patch(
+                "deepagents_code.main._resolve_interpreter_enabled",
+                return_value=False,
+            ),
+            patch("deepagents_code.main._print_session_stats"),
+            patch(
+                "deepagents_code.main._should_check_teardown_thread",
+                return_value=False,
+            ),
+        ):
+            cli_main()
+
+        run_tui.assert_awaited_once()
+        assert run_tui.await_args is not None
+        assert (
+            run_tui.await_args.kwargs["summarization_model"] == "openai:config-summary"
+        )
+
 
 class TestMaxTurnsArgument:
     """Tests for --max-turns argument parsing and validation."""

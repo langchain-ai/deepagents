@@ -293,7 +293,7 @@ class TestBorder:
     async def test_ascii_mode_uses_ascii_border(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """ASCII mode replaces the default rounded border."""
+        """ASCII mode replaces the default solid border."""
         monkeypatch.setattr(welcome_module, "is_ascii_mode", lambda: True)
         banner = _make_banner(show_model=False)
         app = _BannerApp(banner)

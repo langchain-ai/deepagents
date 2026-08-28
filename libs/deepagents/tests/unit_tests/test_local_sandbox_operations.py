@@ -1741,7 +1741,9 @@ class TestExecuteCaptureOffload:
         result = await invoke(execute_tool, {"command": f"{_BIG_OUTPUT_CMD}; exit 0", "runtime": rt})
 
         assert "exceeded the capture size limit" in result.content
-        assert "succeeded with exit code 0" in result.content
+        # `_BIG_OUTPUT_CMD` is a `;`-separated loop, so the status line uses the
+        # masked-status wording; what this guards is that it still reports zero.
+        assert "exited 0" in result.content
         assert result.artifact == {"exit_code": 0}
         # The on-disk capture file is bounded at the cap regardless of total output.
         size = sandbox.execute(f"wc -c < {self._capture_path('c_cap')}").output.strip()

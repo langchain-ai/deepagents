@@ -10,7 +10,7 @@ import mimetypes
 import threading
 import uuid
 from binascii import Error as BinasciiError
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterator, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
@@ -1338,6 +1338,7 @@ Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
 - Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
+- Never pipe a command whose success you are checking (tests, linters, type checkers) into a filter such as head or tail: the reported exit code is then the filter's, not the command's. Run it unfiltered.
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
@@ -1362,6 +1363,104 @@ _EXECUTE_TOOL_DESCRIPTION_WITHOUT_SEARCH = _EXECUTE_TOOL_DESCRIPTION_TEMPLATE.fo
     glob_bad_example="",
     grep_bad_example="",
 )
+
+
+def _unquoted_indices(command: str) -> Iterator[int]:
+    """Yield the indices of `command` characters that the shell reads as syntax.
+
+    Characters inside single or double quotes are literal text, so an operator
+    there (`grep 'a|b'`) must not be read as a pipe. Quote characters and the
+    escapes that consume them are not yielded either, only the content they
+    leave unquoted.
+
+    Args:
+        command: Shell command string that ran.
+
+    Yields:
+        Indices into `command`, in order.
+    """
+    quote: str | None = None
+    escaped = False
+    for index, char in enumerate(command):
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote is not None:
+            if char == quote:
+                quote = None
+        elif char in "'\"":
+            quote = char
+        else:
+            yield index
+
+
+def _status_masking_construct(command: str) -> str | None:
+    """Name the construct that stops exit code 0 from covering the whole command.
+
+    A shell reports only the status of the last command it ran. So `pytest | tail`
+    reports `tail`, `pytest; echo done` reports `echo`, and `pytest || true`
+    reports `true`. Each of these turns a real failure into exit code 0. `&&` is
+    excluded because a failing stage short-circuits the chain, which keeps the
+    failure as the final status. A trailing `;` is excluded too, because no
+    command follows it to overwrite the status.
+
+    Args:
+        command: Shell command string that ran.
+
+    Returns:
+        A phrase that names the construct, or `None` when exit code 0 does cover
+        the whole command.
+    """
+    found: set[str] = set()
+    skip = -1
+    for index in _unquoted_indices(command):
+        if index == skip:
+            continue
+        char = command[index]
+        if char == "|":
+            if command[index + 1 : index + 2] == "|":
+                skip = index + 1
+                found.add("'||'")
+            else:
+                found.add("a pipeline")
+        elif char in ";\n" and command[index + 1 :].strip(" \t;\n"):
+            found.add("a ';' chain")
+    # Report the most misleading construct present: a filter pipeline is both the
+    # most common and the least likely to be a deliberate discard of the status.
+    for construct in ("a pipeline", "a ';' chain", "'||'"):
+        if construct in found:
+            return construct
+    return None
+
+
+def _execute_status_line(exit_code: int | None, command: str) -> str:
+    """Build the status line that closes an execute result.
+
+    Claiming success on a zero the shell attributed to a trailing filter is a
+    false signal on exactly the commands that gate work (`pytest ... | tail -15`,
+    a linter piped to `head`). So a masked zero reports what the status actually
+    covers instead of `succeeded`.
+
+    Args:
+        exit_code: Process exit status reported by the backend. A `None` reads as
+            a failure, matching the pre-existing treatment of an unknown status.
+        command: Shell command string that ran.
+
+    Returns:
+        The status line, without a surrounding newline.
+    """
+    if exit_code != 0:
+        return f"[Command failed with exit code {exit_code}]"
+    construct = _status_masking_construct(command)
+    if construct is None:
+        return "[Command succeeded with exit code 0]"
+    return (
+        f"[Command exited 0, but that is the status of the last stage of {construct} - an earlier "
+        "command may have failed. Check the output, then re-run the command whose status matters "
+        "on its own to confirm.]"
+    )
+
 
 FsToolName = Literal["ls", "read_file", "write_file", "edit_file", "delete", "glob", "grep", "execute"]
 """Names of the built-in filesystem tools that can be passed to `FilesystemMiddleware(tools=...)`."""
@@ -2817,12 +2916,20 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         return None
 
     @staticmethod
-    def _format_execute_output(output: str, exit_code: int | None, *, truncated: bool) -> str:
-        """Format raw command output with status and truncation notes for the model."""
+    def _format_execute_output(output: str, exit_code: int | None, *, truncated: bool, command: str) -> str:
+        """Format raw command output with status and truncation notes for the model.
+
+        Args:
+            output: Combined stdout/stderr reported by the backend.
+            exit_code: Process exit status, or `None` when the backend reports none.
+            truncated: Whether the backend clipped the output.
+            command: Shell command string that ran. Needed because exit code 0 only
+                covers the whole command when no construct masks an earlier failure
+                (see `_status_masking_construct`).
+        """
         parts = [output]
         if exit_code is not None:
-            cmd_status = "succeeded" if exit_code == 0 else "failed"
-            parts.append(f"\n[Command {cmd_status} with exit code {exit_code}]")
+            parts.append(f"\n{_execute_status_line(exit_code, command)}")
         if truncated:
             parts.append("\n[Output was truncated due to size limits]")
         return "".join(parts)
@@ -2838,13 +2945,12 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             return {}
         return {"exit_code": response.exit_code}
 
-    def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str) -> str:
+    def _interpret_capture_output(self, offload: ExecuteOffloadResult, capture_path: str, tool_call_id: str, command: str) -> str:
         """Build `ToolMessage` content from an `execute_with_offload` result."""
         response = offload.response
         if not offload.offloaded:
-            return self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
-        cmd_status = "succeeded" if response.exit_code == 0 else "failed"
-        status_line = f"[Command {cmd_status} with exit code {response.exit_code}]"
+            return self._format_execute_output(response.output, response.exit_code, truncated=response.truncated, command=command)
+        status_line = _execute_status_line(response.exit_code, command)
         if response.truncated:
             status_line += "\n[Output exceeded the capture size limit and was truncated; the saved file is incomplete]"
         content_sample = f"{status_line}\n{response.output}"
@@ -2923,10 +3029,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         timeout=timeout,
                     )
                     response = offload.response
-                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id), command)
                 else:
                     response = executable.execute(command, timeout=timeout) if timeout is not None else executable.execute(command)
-                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated, command=command)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",
@@ -3011,10 +3117,10 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                         timeout=timeout,
                     )
                     response = offload.response
-                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id))
+                    content = self._interpret_capture_output(offload, capture_path, cast("str", runtime.tool_call_id), command)
                 else:
                     response = await executable.aexecute(command, timeout=timeout) if timeout is not None else await executable.aexecute(command)
-                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated)
+                    content = self._format_execute_output(response.output, response.exit_code, truncated=response.truncated, command=command)
             except NotImplementedError as e:
                 return ToolMessage(
                     content=f"Error: Execution not available. {e}",

@@ -54,7 +54,9 @@ from deepagents.middleware.filesystem import (
     FilesystemPermission,
     FilesystemState,
     GrepSchema,
+    _execute_status_line,
     _format_glob_tool_result,
+    _status_masking_construct,
     supports_execution,
 )
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -3045,6 +3047,77 @@ class TestFilesystemMiddleware:
 
         assert "Very long output..." in result.content
         assert "truncated" in result.content
+
+    @pytest.mark.parametrize(
+        ("command", "construct"),
+        [
+            # The shell's final status belongs to the filter, not the command.
+            ("pytest tests/ 2>&1 | tail -15", "a pipeline"),
+            ("ruff check . | head -20", "a pipeline"),
+            ("false; echo done", "a ';' chain"),
+            ("pytest\nls", "a ';' chain"),
+            ("mypy . || true", "'||'"),
+            # `&&` short-circuits, so a failure survives as the final status.
+            ("ruff check . && mypy .", None),
+            ("pytest tests/", None),
+            # Operators inside quotes are literal text, not shell syntax.
+            ("grep 'a|b' file.txt", None),
+            ("awk -F';' '{print $1}' f.csv", None),
+            ('echo "a;b"', None),
+            ("printf 'a\\|b'", None),
+            # Nothing follows a trailing separator, so nothing overwrites the status.
+            ("pytest tests/;", None),
+            ("pytest tests/ ; ", None),
+        ],
+    )
+    def test_status_masking_construct_detection(self, command, construct):
+        """Only constructs that can overwrite a failing status are reported."""
+        assert _status_masking_construct(command) == construct
+
+    def test_execute_status_line_warns_instead_of_claiming_success(self):
+        """A masked zero must not be reported as an unqualified success."""
+        line = _execute_status_line(0, "pytest tests/ 2>&1 | tail -15")
+
+        assert "succeeded" not in line
+        assert "exited 0" in line
+        assert "a pipeline" in line
+
+    def test_execute_status_line_unchanged_for_plain_commands(self):
+        """Commands whose status covers the whole command keep the plain wording."""
+        assert _execute_status_line(0, "pytest tests/") == "[Command succeeded with exit code 0]"
+        assert _execute_status_line(1, "pytest tests/") == "[Command failed with exit code 1]"
+        assert _execute_status_line(1, "pytest | tail -5") == "[Command failed with exit code 1]"
+
+    def test_execute_tool_flags_failure_masked_by_a_filter(self):
+        """A failing command piped to a filter is not reported as a success."""
+
+        class MaskedFailureSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                # `tail` succeeds, so the shell reports 0 even though pytest failed.
+                return ExecuteResponse(output="2 failed, 10 passed", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "masked-failure-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_masked",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+        middleware = FilesystemMiddleware(backend=MaskedFailureSandboxBackend())
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "pytest tests/ 2>&1 | tail -15", "runtime": rt})
+
+        assert "2 failed, 10 passed" in result.content
+        assert "succeeded" not in result.content
+        assert "an earlier command may have failed" in result.content
+        # The raw exit code stays available for callers that key off it.
+        assert result.artifact == {"exit_code": 0}
 
     def testsupports_execution_helper_with_composite_backend(self):
         """Test supports_execution correctly identifies CompositeBackend capabilities."""

@@ -943,6 +943,36 @@ class TestFilesystemMiddlewareAsync:
         assert "exit code 0" in result.content
         assert result.artifact == {"exit_code": 0}
 
+    async def test_aexecute_tool_flags_failure_masked_by_a_filter(self):
+        """The async path must warn on a masked zero, like the sync path."""
+
+        class MaskedFailureMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                # `tail` succeeds, so the shell reports 0 even though pytest failed.
+                return ExecuteResponse(output="2 failed, 10 passed", exit_code=0, truncated=False)
+
+            @property
+            def id(self):
+                return "async-masked-failure-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_async_masked",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+        middleware = FilesystemMiddleware(backend=MaskedFailureMockSandboxBackend())
+
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = await execute_tool.ainvoke({"command": "pytest tests/ 2>&1 | tail -15", "runtime": rt})
+
+        assert "2 failed, 10 passed" in result.content
+        assert "succeeded" not in result.content
+        assert "an earlier command may have failed" in result.content
+        assert result.artifact == {"exit_code": 0}
+
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
 

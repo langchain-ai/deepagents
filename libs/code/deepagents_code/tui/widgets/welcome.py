@@ -189,7 +189,7 @@ class WelcomeBanner(Static):
     DEFAULT_CSS = """
     WelcomeBanner {
         height: auto;
-        border: round $primary;
+        border: solid $primary;
         padding: 0 2;
         margin-bottom: 1;
     }

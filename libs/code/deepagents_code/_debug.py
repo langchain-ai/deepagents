@@ -28,6 +28,7 @@ if os.name == "nt":
 from deepagents_code._env_vars import (
     DEBUG,
     DEBUG_DIRECTORY,
+    DEBUG_FILE,
     DEFAULT_DEBUG_DIRECTORY,
     LOG_LEVEL,
     is_env_truthy,
@@ -373,16 +374,36 @@ def configure_debug_logging(target: logging.Logger) -> None:
         bind_debug_logging_to_thread(_ACTIVE_THREAD_ID)
 
 
+def _debug_directory() -> Path:
+    """Return the configured directory, preserving legacy path overrides."""
+    if directory := os.environ.get(DEBUG_DIRECTORY):
+        return Path(directory)
+    if legacy_file := os.environ.get(DEBUG_FILE):
+        return Path(legacy_file).parent
+
+    from deepagents_code.config_manifest import load_config_toml
+
+    debug = load_config_toml().get("debug")
+    if isinstance(debug, dict):
+        if (directory := debug.get("directory")) and isinstance(directory, str):
+            return Path(directory)
+        if (legacy_file := debug.get("file")) and isinstance(legacy_file, str):
+            return Path(legacy_file).parent
+    return Path(DEFAULT_DEBUG_DIRECTORY)
+
+
 def bind_debug_logging_to_thread(thread_id: str) -> None:
     """Route configured debug loggers to the active thread's log file."""
     global _ACTIVE_THREAD_ID  # noqa: PLW0603  # process-wide logging destination
     _ACTIVE_THREAD_ID = thread_id
     if not is_env_truthy(DEBUG):
         return
-    directory = Path(os.environ.get(DEBUG_DIRECTORY, DEFAULT_DEBUG_DIRECTORY))
+    directory = _debug_directory()
     try:
         _prepare_debug_directory(directory)
     except OSError as exc:
+        for target in list(_CONFIGURED_LOGGERS):
+            _remove_debug_handlers(target, except_path=None)
         message = f"could not secure debug log directory {directory}: {exc}"
         print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
         logger.warning("%s", message)

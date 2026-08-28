@@ -338,6 +338,66 @@ class TestConfigureDebugLogging:
                 h.close()
                 logger.removeHandler(h)
 
+    def test_failed_thread_rotation_removes_stale_handler(
+        self, tmp_path, capsys
+    ) -> None:
+        logger = logging.getLogger("test.debug.failed_rotation")
+        directory = tmp_path / "debug"
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(directory),
+            },
+        ):
+            configure_debug_logging(logger)
+            bind_debug_logging_to_thread("first")
+            assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+            with patch.object(
+                _debug, "_prepare_debug_directory", side_effect=OSError("nope")
+            ):
+                bind_debug_logging_to_thread("second")
+
+        assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
+        logger.warning("must not reach the first thread")
+        assert (
+            "must not reach the first thread"
+            not in (directory / "first.log").read_text()
+        )
+        assert "Warning" in capsys.readouterr().err
+
+    def test_legacy_debug_file_uses_parent_directory(self, tmp_path) -> None:
+        legacy_file = tmp_path / "legacy" / "debug.log"
+        with patch.dict(
+            os.environ,
+            {"DEEPAGENTS_CODE_DEBUG_FILE": str(legacy_file)},
+            clear=True,
+        ):
+            assert _debug._debug_directory() == legacy_file.parent
+
+    def test_debug_directory_overrides_legacy_file(self, tmp_path) -> None:
+        directory = tmp_path / "current"
+        with patch.dict(
+            os.environ,
+            {
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(directory),
+                "DEEPAGENTS_CODE_DEBUG_FILE": str(tmp_path / "legacy" / "debug.log"),
+            },
+            clear=True,
+        ):
+            assert _debug._debug_directory() == directory
+
+    def test_legacy_debug_file_config_uses_parent_directory(self, tmp_path) -> None:
+        legacy_file = tmp_path / "legacy" / "debug.log"
+        with (
+            patch.dict(os.environ, {}, clear=True),
+            patch(
+                "deepagents_code.config_manifest.load_config_toml",
+                return_value={"debug": {"file": str(legacy_file)}},
+            ),
+        ):
+            assert _debug._debug_directory() == legacy_file.parent
+
     def test_untagged_handler_does_not_block_configuration(self, tmp_path) -> None:
         """A foreign FileHandler on the same path must not suppress our handler."""
         logger = logging.getLogger("test.debug.untagged")

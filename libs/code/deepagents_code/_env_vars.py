@@ -183,8 +183,11 @@ Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 DEBUG_DIRECTORY = "DEEPAGENTS_CODE_DEBUG_DIRECTORY"
 """Directory for per-thread debug logs (default: `DEFAULT_DEBUG_DIRECTORY`)."""
 
+DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
+"""Deprecated debug file path; its parent is used when `DEBUG_DIRECTORY` is unset."""
+
 DEFAULT_DEBUG_DIRECTORY = "/tmp/deepagents_debug"  # noqa: S108  # opt-in debug logs
-"""Default directory for debug logs when `DEBUG_DIRECTORY` is unset."""
+"""Default directory for debug logs when no debug path override is set."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.

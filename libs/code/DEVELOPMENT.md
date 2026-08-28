@@ -103,6 +103,7 @@ uv run deepagents-code
 | --- | --- |
 | `DEEPAGENTS_CODE_DEBUG` | Master switch. Preserves the server subprocess log on exit (printing its path to stderr) and attaches the client `DEBUG` file handler. Truthy: `1`/`true`/`yes`/`on` (case-insensitive). Falsy: `0`/`false`/`no`/`off`/empty/unset. |
 | `DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>` | Overrides the client log directory (default `/tmp/deepagents_debug`). Each thread writes to `<thread-id>.log`. **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy**; does **not** affect the server subprocess log. |
+| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Deprecated compatibility override. When `DEEPAGENTS_CODE_DEBUG_DIRECTORY` and `[debug].directory` are unset, per-thread logs use this path's parent directory. Existing `[debug].file` config works the same way. |
 
 Then pick the log you need by symptom:
 

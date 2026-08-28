@@ -24,7 +24,6 @@ from typing import (
     Any,
     Literal,
     NotRequired,
-    cast,
 )
 
 from langchain.agents import create_agent
@@ -593,7 +592,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         self._model_label = _configured_model_label(model)
         self._system_prompt = system_prompt or GRADER_SYSTEM_PROMPT
         self._tools: list[BaseTool] = list(tools) if tools else []
-        self._grader_middleware = list(grader_middleware or ())
+        self._grader_middleware = grader_middleware or ()
         self._grader_context_schema = grader_context_schema
         self._grader_state_schema = grader_state_schema
         self._prepare_messages_for_grader = prepare_messages_for_grader
@@ -1003,7 +1002,7 @@ class RubricMiddleware(AgentMiddleware[RubricState, ContextT, ResponseT]):
         """
         grader_state = state
         if self._prepare_messages_for_grader:
-            grader_state = cast("RubricState", dict(state))
+            grader_state = RubricState(**state)
             grader_state["messages"] = self._prepare_messages_for_grader(list(state.get("messages", [])))
         payload = self._build_grader_payload(grader_state, iteration, correction)
         grader_input = dict(self._build_grader_state(grader_state, iteration)) if self._build_grader_state else {}

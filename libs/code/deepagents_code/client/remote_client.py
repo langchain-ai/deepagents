@@ -727,6 +727,11 @@ class RemoteAgent:
             _cancelled_tool_messages, getattr(state, "values", None)
         )
         if cancelled:
+            # `create_agent` names the tool step "tools", but only adds the node
+            # when the agent has tools. A toolless graph therefore rejects this
+            # update with `InvalidUpdateError` -- and could not have produced a
+            # dangling tool call in the first place, so the branch is dead
+            # there. The caller reports the failure rather than compacting.
             await self.aupdate_state(prepared, {"messages": cancelled}, as_node="tools")
         await self.aupdate_state(prepared, None, as_node="__end__")
         if state_has_pending_work(await self.aget_state(prepared)):

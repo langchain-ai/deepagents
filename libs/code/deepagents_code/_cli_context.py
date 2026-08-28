@@ -9,7 +9,7 @@ middleware stack.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any, TypedDict, cast
 
 INHERIT_CLASSIFIER_MODEL = "__dcode_inherit_classifier__"
 """Per-run `classifier_model` value meaning "review with the main agent model".
@@ -75,6 +75,79 @@ class CLIContextSchema:
     hooks_server_events: list[str] = field(default_factory=list)
 
     prompt_id: str | None = None
+
+    @classmethod
+    def from_payload(cls, payload: object) -> CLIContextSchema | None:
+        """Coerce a run's `context=` payload into this schema.
+
+        In-process LangGraph coerces the payload before consumers see it, so a
+        schema instance is returned unchanged. Over the API server (RemoteGraph)
+        the payload is JSON and arrives as a plain dict, which this rebuilds
+        field by field. Single conversion point for every consumer: a second
+        hand-rolled copy drifts field by field, and the copy that forgets a
+        field drops it silently.
+
+        Args:
+            payload: The value read from `runtime.context`.
+
+        Returns:
+            The coerced schema, or `None` when the payload is neither a
+            `CLIContextSchema` nor a dict.
+        """
+        if isinstance(payload, cls):
+            return payload
+        if not isinstance(payload, dict):
+            return None
+        data = cast("dict[str, Any]", payload)
+
+        def _str(key: str) -> str | None:
+            value = data.get(key)
+            return value if isinstance(value, str) else None
+
+        def _mapping(key: str) -> dict[str, Any]:
+            # `dict(...)` on a non-mapping (`"x"`, `7`, ...) raises
+            # `TypeError`/`ValueError`, which would abort the request before the
+            # model handler runs — even when the malformed field is unrelated to
+            # model selection. Fall back to empty instead.
+            value = data.get(key)
+            return dict(value) if isinstance(value, dict) else {}
+
+        # `bool` is an `int` subclass, so exclude it explicitly.
+        raw_limit = data.get("model_context_limit")
+        limit = (
+            raw_limit
+            if isinstance(raw_limit, int) and not isinstance(raw_limit, bool)
+            else None
+        )
+        approval_mode = _str("approval_mode")
+        raw_auto_approve = data.get("auto_approve")
+        # Only a real list is safe to iterate: `7` raises `TypeError`, and a
+        # bare string (`"PreToolUse"`) would explode into per-character events.
+        raw_events = data.get("hooks_server_events")
+        events = (
+            [event for event in raw_events if isinstance(event, str)]
+            if isinstance(raw_events, list)
+            else []
+        )
+        return cls(
+            model=_str("model"),
+            model_params=_mapping("model_params"),
+            profile_overrides=_mapping("profile_overrides"),
+            model_context_limit=limit,
+            classifier_model=_str("classifier_model"),
+            approval_mode=approval_mode or "manual",
+            # Fail closed for malformed remote payloads. In particular,
+            # `bool("false")` is `True` and would enable legacy YOLO mode.
+            auto_approve=(
+                raw_auto_approve if isinstance(raw_auto_approve, bool) else False
+            ),
+            approval_mode_key=_str("approval_mode_key"),
+            thread_id=_str("thread_id"),
+            turn_id=_str("turn_id"),
+            hooks_snapshot_id=_str("hooks_snapshot_id"),
+            hooks_server_events=events,
+            prompt_id=_str("prompt_id"),
+        )
 
 
 class CLIContext(TypedDict, total=False):

@@ -1,6 +1,15 @@
 <!-- Optional: Replace this comment with `Fixes #` / `Closes #` / or `Resolves #` with the issue number to auto-close the issue when this PR is merged. If applicable, add separate `Depends on #` or `Related: #` lines. -->
 
-<!-- For a net new feature or behavior-changing bugfix: replace this comment with one plain-English sentence on the user-visible change. Usually not needed for chores/refactors/test-only PRs. -->
+<!-- For a net new feature or behavior-changing bugfix: replace this comment with one plain-English sentence on the user-visible change, keeping the `---` divider below it. For chores, refactors, and test-only PRs, no summary is needed — delete the `---` divider along with this comment so the body starts with the rationale below.
+
+With a summary, the body should look like:
+
+    One plain-English sentence on the user-visible change.
+
+    ---
+
+    Why this change, and why this approach.
+-->
 
 ---
 

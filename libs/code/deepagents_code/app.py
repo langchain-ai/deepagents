@@ -586,6 +586,7 @@ def _warn_discarded_goal_channels(state_values: dict[str, Any]) -> list[str]:
     for channel in (
         "rubric",
         "_sticky_rubric",
+        "_rubric_model_spec",
         "_goal_objective",
         "_goal_status",
         "_goal_rubric",
@@ -2196,6 +2197,14 @@ class _ThreadHistoryPayload:
     pending_goal_completion_note: str | None = None
     """Persisted agent-provided completion evidence awaiting final grading."""
 
+    rubric_model_spec: str | None = None
+    """Thread-scoped rubric model spec. `None` means inherit the main model
+    *or* nothing recorded -- read it with `rubric_model_recorded`."""
+
+    rubric_model_recorded: bool = False
+    """Whether `_rubric_model_spec` held a usable string. A malformed value
+    (blank or not a string) reads as unrecorded."""
+
     rubric_status: str | None = None
     """Latest rubric grading status from `RubricMiddleware`, if any."""
 
@@ -2680,6 +2689,9 @@ class TextualSessionState:
         # Assign the backing field directly: the setter reads `self._thread_id`
         # to detect a thread change, and it isn't set yet.
         self._thread_id = thread_id or _new_thread_id()
+        from deepagents_code._debug import bind_debug_logging_to_thread
+
+        bind_debug_logging_to_thread(self._thread_id)
 
         from deepagents_code.hooks.manager import HooksManager
 
@@ -2733,6 +2745,9 @@ class TextualSessionState:
             self.turn_number = 0
             self.turn_id = None
         self._thread_id = value
+        from deepagents_code._debug import bind_debug_logging_to_thread
+
+        bind_debug_logging_to_thread(value)
 
     def advance_turn(self) -> tuple[str, int]:
         """Begin a new user turn, advancing the per-thread turn markers.
@@ -3066,13 +3081,11 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
-        Binding("ctrl+t", "toggle_auto_approve", "Toggle Approval Mode", show=False),
-        Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
+        Binding("ctrl+t", "toggle_subagent_panel", "Toggle Subagents", show=False),
         # `check_action` steps this binding aside (returns `False`) while a
         # `DebugConsoleScreen` is active so the console's own `shift+tab`
         # reverse-focus traversal runs instead; keep the action name in sync
-        # there. That branch keys on the `toggle_auto_approve` action, so it also
-        # steps aside the `ctrl+t` binding above while the console is open.
+        # there.
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -3088,7 +3101,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding(
-            "ctrl+x",
+            "ctrl+g",
             "open_editor",
             "Open Editor",
             show=False,
@@ -3739,9 +3752,9 @@ class DeepAgentsApp(App):
         ) or (model_kwargs or {}).get("model_spec")
         """Chat model captured when the rubric middleware is constructed.
 
-        Unlike `_effective_model_spec`, this does not follow per-turn `/model`
-        overrides because those only affect `ConfigurableModelMiddleware`; the
-        rubric middleware keeps using its construction-time model.
+        The grader follows runtime `/model` overrides, so this is not what it
+        grades with. It survives only as a display fallback in
+        `_grader_display_values` when no runtime spec resolves.
         """
 
         self._model_params_override: dict[str, Any] | None = (
@@ -3785,8 +3798,17 @@ class DeepAgentsApp(App):
         Reset on the next successful refresh so the warning is not repeated every
         turn while a transient read failure persists."""
 
-        self._rubric_model: str | None = (server_kwargs or {}).get("rubric_model")
-        """Optional grader model spec for rubric evaluation."""
+        self._rubric_startup_model: str | None = (server_kwargs or {}).get(
+            "rubric_model"
+        )
+        """Construction-time dedicated grader model, if configured."""
+
+        self._rubric_model: str | None = self._rubric_startup_model
+        """Thread-scoped grader model; `None` follows the active main model."""
+
+        self._rubric_model_recorded: bool = False
+        """Whether the active thread has a recorded grader selection, including
+        an explicit clear (which selects inheritance, not a model)."""
 
         self._rubric_max_iterations: int | None = (server_kwargs or {}).get(
             "rubric_max_iterations"
@@ -13009,6 +13031,79 @@ class DeepAgentsApp(App):
             AppMessage(render_context_doctor_report(report), markdown=False)
         )
 
+    async def _handle_extensions_command(self, command: str) -> None:
+        await self._mount_message(UserMessage(command))
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            await self._mount_message(
+                AppMessage(
+                    "Python extensions require `DEEPAGENTS_CODE_EXPERIMENTAL=1` "
+                    "before starting dcode."
+                )
+            )
+            return
+        if self._server_proc is None:
+            await self._mount_message(
+                AppMessage("Extension provenance is unavailable for this agent.")
+            )
+            return
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{self._server_proc.url}/extensions")
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            logger.exception("Failed to query extension provenance")
+            await self._mount_message(
+                AppMessage("Could not retrieve extension provenance from the server.")
+            )
+            return
+        await self._mount_message(
+            AppMessage(self._render_extensions(payload), markdown=True)
+        )
+
+    @staticmethod
+    def _render_extensions(payload: object) -> str:
+        """Render untrusted endpoint data as escaped markdown.
+
+        Returns:
+            A markdown provenance table or validation error.
+        """
+        if not isinstance(payload, dict):
+            return "The server returned invalid extension metadata."
+        raw = payload.get("registrations")
+        rows: list[list[str]] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                source = item.get("source")
+                if not isinstance(source, dict):
+                    continue
+                rows.append(
+                    [
+                        str(item.get("kind", "")),
+                        str(item.get("name", "")),
+                        str(source.get("scope", "")),
+                        str(source.get("path", "")),
+                    ]
+                )
+        body = (
+            _markdown_table(("Kind", "Name", "Scope", "Source"), rows)
+            if rows
+            else "No extensions are loaded."
+        )
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            details = "\n".join(f"- {_escape_markdown(str(error))}" for error in errors)
+            body = f"{body}\n\nLoad failures:\n{details}"
+        if payload.get("restart_required") is True:
+            body = f"{body}\n\nRun `/restart` to apply graph-bound extension changes."
+        return body
+
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
         """Return MCP metadata matching the tools bound to the running agent.
 
@@ -13119,6 +13214,8 @@ class DeepAgentsApp(App):
         Returns:
             State update dict for the current goal/rubric metadata.
         """
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
         # Goal-derived fields (`_goal_status`, `_goal_status_note`, `_goal_rubric`)
         # are gated on an active objective so the persisted dict can never
         # express a status or note without the goal they describe.
@@ -13135,6 +13232,15 @@ class DeepAgentsApp(App):
                 else self._active_rubric
             ),
             "_sticky_rubric": self._active_rubric,
+            # Omitted entirely while the thread has no selection, so a resume
+            # falls back to the startup grader model. An explicit clear writes
+            # the sentinel rather than `None`, which would be indistinguishable
+            # from absence on read.
+            **(
+                {"_rubric_model_spec": self._rubric_model or INHERIT_RUBRIC_MODEL}
+                if self._rubric_model_recorded
+                else {}
+            ),
             "_goal_objective": self._active_goal,
             "_goal_status": self._goal_status if self._active_goal else None,
             "_goal_rubric": self._active_rubric if self._active_goal else None,
@@ -13224,6 +13330,16 @@ class DeepAgentsApp(App):
             )
             return False
         return True
+
+    async def _carry_rubric_model_to_fresh_thread(self) -> None:
+        """Persist the current grader selection after a thread reset."""
+        if not self._rubric_model_recorded:
+            return
+        async with self._goal_state_mutation_boundary():
+            carried = await self._persist_goal_rubric_state()
+        if not carried:
+            self._rubric_model = self._rubric_startup_model
+            self._rubric_model_recorded = False
 
     async def _ensure_goal_state_notice(
         self,
@@ -13509,8 +13625,10 @@ class DeepAgentsApp(App):
             Payload with goal/rubric channels coerced to known types.
         """
         from deepagents_code.resume_state import (
+            INHERIT_RUBRIC_MODEL,
             coerce_goal_proposal_kind,
             coerce_goal_status,
+            coerce_model_spec,
         )
 
         def _as_str(value: object) -> str | None:
@@ -13521,6 +13639,10 @@ class DeepAgentsApp(App):
 
         session_cost_usd = _coerce_session_cost_usd(
             state_values.get("_session_cost_usd")
+        )
+        raw_rubric_model = coerce_model_spec(state_values.get("_rubric_model_spec"))
+        rubric_model = (
+            None if raw_rubric_model == INHERIT_RUBRIC_MODEL else raw_rubric_model
         )
 
         raw_pending_kind = state_values.get("_pending_goal_kind")
@@ -13576,6 +13698,8 @@ class DeepAgentsApp(App):
             pending_goal_completion_note=_as_str(
                 state_values.get("_pending_goal_completion_note")
             ),
+            rubric_model_spec=rubric_model,
+            rubric_model_recorded=raw_rubric_model is not None,
             rubric_status=_as_str(state_values.get("_rubric_status")),
             rubric_grading_run_id=_as_nonblank_str(
                 state_values.get("_current_grading_run_id")
@@ -13640,6 +13764,12 @@ class DeepAgentsApp(App):
             self._goal_status = payload.goal_status
         self._goal_status_note = payload.goal_status_note
         self._pending_goal_completion_note = payload.pending_goal_completion_note
+        self._rubric_model = (
+            payload.rubric_model_spec
+            if payload.rubric_model_recorded
+            else self._rubric_startup_model
+        )
+        self._rubric_model_recorded = payload.rubric_model_recorded
         if payload.goal_rubric:
             self._active_rubric = payload.goal_rubric
         elif payload.sticky_rubric_recorded:
@@ -14148,30 +14278,23 @@ class DeepAgentsApp(App):
             return
         await self._set_rubric_max_iterations(value)
 
-    def _startup_chat_model_label(self) -> str:
-        """Return the construction-time chat model label used as the grader default.
-
-        Uses `_rubric_default_model` (not per-turn `/model` overrides) because the
-        rubric middleware keeps the model chosen when the graph was built. A
-        failed-startup retry rebuilds the graph and re-captures this value; a
-        `/model` override on a live server does not touch it. Falls back to a bare
-        "startup chat model" when that value is unknown.
-        """
-        chat_model = self._rubric_default_model
-        if chat_model:
-            return f"startup chat model ({chat_model})"
-        return "startup chat model"
-
     def _grader_display_values(self) -> tuple[str, str]:
         """Return display strings for the shared grader model and iteration cap.
 
-        When no explicit grader model is set, the model string reports the
-        construction-time startup chat model label. An unset iteration cap
-        reports the concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`)
-        rather than the word "default". Shared by `/goal show` and
-        `/rubric show` so the default wording stays in sync.
+        A dedicated grader model is reported as-is. Otherwise the model string
+        reports the active main model, falling back to the construction-time
+        model and then to the literal "active model" when no runtime spec
+        resolves (credentials unconfigured). An unset iteration cap reports the
+        concrete SDK default (`SDK_DEFAULT_RUBRIC_MAX_ITERATIONS`) rather than
+        the word "default". Shared by `/goal show` and `/rubric show` so the
+        default wording stays in sync.
         """
-        model = self._rubric_model or self._startup_chat_model_label()
+        model = (
+            self._rubric_model
+            or self._effective_model_spec()
+            or self._rubric_default_model
+            or "active model"
+        )
         iterations = (
             str(self._rubric_max_iterations)
             if self._rubric_max_iterations is not None
@@ -15472,7 +15595,11 @@ class DeepAgentsApp(App):
         if not lines:
             # Grader settings can exist without criteria; still teach how to set
             # a rubric when nothing is grading yet.
-            if self._rubric_model or self._rubric_max_iterations is not None:
+            if (
+                self._rubric_model_recorded
+                or self._rubric_model
+                or self._rubric_max_iterations is not None
+            ):
                 grader_model, grader_iterations = self._grader_display_values()
                 await self._mount_message(
                     AppMessage(
@@ -15551,14 +15678,14 @@ class DeepAgentsApp(App):
         source: Literal["goal", "rubric"] = "rubric",
     ) -> None:
         """Open the model selector for choosing a grader model."""
-        from deepagents_code.config import runtime_state
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
-        current_provider = runtime_state.model_provider
-        current_model = runtime_state.model_name
-        if self._rubric_model:
-            parsed = ModelSpec.try_parse(self._rubric_model)
+        current_provider = None
+        current_model = None
+        current_spec = self._rubric_model or self._effective_model_spec()
+        if current_spec:
+            parsed = ModelSpec.try_parse(current_spec)
             if parsed:
                 current_provider = parsed.provider
                 current_model = parsed.model
@@ -15585,18 +15712,17 @@ class DeepAgentsApp(App):
             if self._chat_input:
                 self._chat_input.focus_input()
 
-        startup_model = self._startup_chat_model_label()
         if source == "goal":
             title = "Choose grader model for goal"
             description = (
                 "Pick the model used to grade goal acceptance criteria. Clear it "
-                f"with `/goal model clear` to reuse the {startup_model}."
+                "with `/goal model clear` to follow the active model."
             )
         else:
             title = "Choose grader model for rubric"
             description = (
                 "Pick the model used to grade rubric criteria. Clear it with "
-                f"`/rubric model clear` to reuse the {startup_model}."
+                "`/rubric model clear` to follow the active model."
             )
         screen = ModelSelectorScreen(
             current_model=current_model,
@@ -15704,10 +15830,19 @@ class DeepAgentsApp(App):
         *,
         source: Literal["goal", "rubric"] = "rubric",
     ) -> None:
-        """Set the grader model used by `RubricMiddleware`."""
+        """Set the thread's grader model without rebuilding the graph.
+
+        The selection is written to thread state. A failed write rolls both
+        `_rubric_model` and `_rubric_model_recorded` back and reports an error,
+        so the reported model always matches what grading uses.
+
+        Args:
+            model_spec: Model spec to grade with, or `None` to follow the
+                active main model.
+            source: Which command invoked this, for wording and `show` hints.
+        """
         from functools import partial
 
-        from deepagents_code._env_vars import SERVER_ENV_PREFIX
         from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
@@ -15723,15 +15858,6 @@ class DeepAgentsApp(App):
             self.notify(f"{label} model will switch after current work finishes.")
             return
 
-        if self._server_kwargs is None and self._server_proc is None:
-            await self._mount_message(
-                ErrorMessage(
-                    f"{label} model switching is unavailable in this session "
-                    "because it does not own a restartable server."
-                )
-            )
-            return
-
         display: str | None = None
         if model_spec is not None:
             model_spec = model_spec.removeprefix(":")
@@ -15741,90 +15867,92 @@ class DeepAgentsApp(App):
             display = (
                 model_spec if parsed or not provider else f"{provider}:{model_name}"
             )
-            if display == self._rubric_model:
+            if display == self._rubric_model and self._rubric_model_recorded:
                 await self._mount_message(
                     AppMessage(f"{label} model already set to {display}.")
                 )
                 return
-            auth_status = get_provider_auth_status(provider) if provider else None
-            if auth_status is not None and auth_status.blocks_start:
-                await self._mount_message(
-                    ErrorMessage(
-                        f"Missing credentials: {auth_status.missing_detail()}\n\n"
-                        f"Run `/auth` for the '{auth_status.provider}' provider, "
-                        f"then set the grader model again.",
-                    ),
-                )
-                return
-            try:
-                await asyncio.to_thread(
-                    _create_model_with_deepagents_import_lock,
-                    display,
-                    profile_overrides=self._profile_override,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "Failed to resolve %s model %s",
-                    label.lower(),
-                    display,
-                )
-                await self._mount_message(
-                    ErrorMessage(_build_model_switch_error_body(exc))
-                )
-                return
-        elif self._rubric_model is None:
+            # An external graph owns its provider packages, credentials, and
+            # model allowlist. Persist the spec and let that server validate it.
+            if self._remote_agent() is None or self._server_proc is not None:
+                auth_status = get_provider_auth_status(provider) if provider else None
+                if auth_status is not None and auth_status.blocks_start:
+                    await self._mount_message(
+                        ErrorMessage(
+                            f"Missing credentials: {auth_status.missing_detail()}\n\n"
+                            f"Run `/auth` for the '{auth_status.provider}' provider, "
+                            f"then set the grader model again.",
+                        ),
+                    )
+                    return
+                try:
+                    await asyncio.to_thread(
+                        _create_model_with_deepagents_import_lock,
+                        display,
+                        profile_overrides=self._profile_override,
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "Failed to resolve %s model %s",
+                        label.lower(),
+                        display,
+                    )
+                    await self._mount_message(
+                        ErrorMessage(_build_model_switch_error_body(exc))
+                    )
+                    return
+        elif self._rubric_model is None and self._rubric_model_recorded:
             await self._mount_message(
-                AppMessage(
-                    f"{label} model already uses the "
-                    f"{self._startup_chat_model_label()}."
+                AppMessage(f"{label} model already follows the active model.")
+            )
+            return
+
+        # The selection is only effective once it reaches thread state, and
+        # `_persist_goal_rubric_state` reports success when there is nothing to
+        # write to. Refuse rather than confirm a change that is then discarded
+        # by the next restore.
+        if self._agent is None or not self._lc_thread_id:
+            await self._mount_message(
+                ErrorMessage(
+                    f"{label} model cannot be set until the session is "
+                    "connected to a thread."
                 )
             )
             return
 
         previous = self._rubric_model
+        previous_recorded = self._rubric_model_recorded
         self._rubric_model = display
-        if self._server_kwargs is not None:
-            self._server_kwargs["rubric_model"] = display
-
-        if self._server_proc is not None:
-            env_key = f"{SERVER_ENV_PREFIX}RUBRIC_MODEL"
-            env_value = display or ""
-            self._server_proc.update_env(
-                **{env_key: env_value},
+        self._rubric_model_recorded = True
+        persisted = False
+        try:
+            async with self._goal_state_mutation_boundary():
+                persisted = await self._persist_goal_rubric_state()
+        except Exception:
+            logger.exception(
+                "Failed to persist %s model %r for thread %s",
+                label.lower(),
+                display,
+                self._lc_thread_id,
             )
-            restart_result = await self._respawn_server(
-                log_message=(
-                    f"Server restart failed while changing {label.lower()} model"
-                ),
-                mcp_failure_log=(
-                    f"MCP metadata preload after {label.lower()} model change failed"
-                ),
-                mcp_failure_toast=(
-                    "MCP tool metadata could not be refreshed. Use /mcp to check."
-                ),
-            )
-            if not restart_result.restarted:
-                self._rubric_model = previous
-                if self._server_kwargs is not None:
-                    self._server_kwargs["rubric_model"] = previous
-                # A failed restart keeps the new value staged in the server's
-                # one-shot env overrides (retained for retry). Re-stage
-                # `previous` so a later restart cannot resurrect the model this
-                # command just rolled back.
-                self._server_proc.update_env(
-                    **{env_key: previous or ""},
+        if not persisted:
+            self._rubric_model = previous
+            self._rubric_model_recorded = previous_recorded
+            await self._mount_message(
+                ErrorMessage(
+                    f"{label} model could not be saved to the thread and was "
+                    f"reverted; grading still uses "
+                    f"{previous or 'the active model'}. Retry, or run "
+                    f"`/{source} show` to confirm."
                 )
-                return
-            self._server_proc.persist_env(**{env_key: env_value})
+            )
+            return
 
         if display:
             await self._mount_message(AppMessage(f"{label} model set to {display}."))
         else:
             await self._mount_message(
-                AppMessage(
-                    f"{label} model cleared; using the "
-                    f"{self._startup_chat_model_label()}."
-                ),
+                AppMessage(f"{label} model cleared; following the active model."),
             )
 
     async def _handle_command(self, command: str) -> None:
@@ -15859,10 +15987,11 @@ class DeepAgentsApp(App):
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
-                f"  Ctrl+X          {editor_help}\n"
+                f"  Ctrl+G          {editor_help}\n"
                 "  Ctrl+R          Search and reuse submitted prompts\n"
                 "                  (press again for the full-screen view)\n"
                 "  Ctrl+N          Review pending notifications\n"
+                "  Ctrl+T          Toggle the subagent panel\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
@@ -15932,6 +16061,12 @@ class DeepAgentsApp(App):
             if self._session_state:
                 new_thread_id = self._session_state.reset_thread()
                 self._lc_thread_id = new_thread_id
+                # `_rubric_model` deliberately survives `/clear`, but the
+                # grader reads its selection from thread state -- which the
+                # fresh thread does not have yet. Carry it over, and on a
+                # failed write fall back to what the grader will actually use
+                # so `/rubric show` cannot report a model that is not in use.
+                await self._carry_rubric_model_to_fresh_thread()
                 try:
                     banner = self.query_one("#welcome-banner", WelcomeBanner)
                     banner.update_thread_id(new_thread_id)
@@ -16140,6 +16275,8 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(self._format_cost_summary()))
         elif cmd == "/tools":
             await self._handle_tools_command(command)
+        elif cmd == "/extensions":
+            await self._handle_extensions_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
@@ -16402,6 +16539,7 @@ class DeepAgentsApp(App):
         await self._send_to_agent(
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
+            skill_name=envelope.skill_name,
         )
 
     async def _prompt_skill_trust_and_retry(
@@ -17366,6 +17504,7 @@ class DeepAgentsApp(App):
         message: str,
         *,
         message_kwargs: dict[str, Any] | None = None,
+        skill_name: str | None = None,
     ) -> None:
         """Send a message to the agent and start execution.
 
@@ -17377,6 +17516,7 @@ class DeepAgentsApp(App):
             message: The prompt to send to the agent.
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
+            skill_name: Invoked skill name for trace attribution, or `None`.
         """
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
@@ -17441,6 +17581,7 @@ class DeepAgentsApp(App):
                     self._run_agent_task,
                     message,
                     message_kwargs=message_kwargs,
+                    skill_name=skill_name,
                     goal_notice_current=resuming_blocked,
                 )
                 # Cast because Textual's `WorkType` alias admits both a
@@ -17841,6 +17982,7 @@ class DeepAgentsApp(App):
         message: str,
         *,
         message_kwargs: dict[str, Any] | None = None,
+        skill_name: str | None = None,
         graph_input: dict[str, Any] | None = None,
         goal_notice_current: bool = False,
     ) -> None:
@@ -17852,6 +17994,7 @@ class DeepAgentsApp(App):
             message: The prompt to send to the agent.
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
+            skill_name: Invoked skill name for trace attribution, or `None`.
             graph_input: Prepared non-conversation input for a server operation.
             goal_notice_current: Whether the caller just persisted the current notice.
         """
@@ -17925,7 +18068,7 @@ class DeepAgentsApp(App):
             if self._approval_mode_blocked:
                 await self._mount_message(
                     ErrorMessage(
-                        "Manual approval mode has not been persisted. Press Ctrl+T "
+                        "Manual approval mode has not been persisted. Press Shift+Tab "
                         "to retry before starting another run."
                     )
                 )
@@ -18033,6 +18176,7 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
+                skill_name=skill_name,
                 graph_input=graph_input,
                 rubric=rubric,
                 goal_active=goal_backed_grading,
@@ -22327,7 +22471,7 @@ class DeepAgentsApp(App):
         focused = self.focused
         # Ancestor (not identity) check: unlike goal-review's single `_edit_input`,
         # a menu owns two possible inputs (free-text vs "Other"), and this also
-        # rejects a stale menu's still-focused field from hijacking Ctrl+X.
+        # rejects a stale menu's still-focused field from hijacking Ctrl+G.
         if (
             not isinstance(focused, AskUserTextArea)
             or menu not in focused.ancestors
@@ -23804,6 +23948,10 @@ class DeepAgentsApp(App):
                     exc_info=True,
                 )
             self._sync_status_connection()
+            if resume_thread_id is None and self._session_state is not None:
+                # A picker swap starts a fresh thread whose checkpoint does not
+                # yet contain the selection still shown by `/rubric show`.
+                await self._carry_rubric_model_to_fresh_thread()
             from deepagents_code.hooks.models.domain import SessionStartCause
 
             await self._reload_hooks()
@@ -24046,9 +24194,7 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. Note this keys on the action, and `toggle_auto_approve`
-            is also bound to `ctrl+t`, so that binding is stepped aside under
-            the console for either chord.
+            swallowed.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
         - `interrupt` (`escape`): while the prompt-search query has focus,

@@ -356,6 +356,87 @@ class TestProjectDotenvDeniedKeys:
         finally:
             config_mod._dotenv_loaded_values.clear()
 
+    def test_project_dotenv_cannot_set_langgraph_recursion_default(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A repo cannot bypass the bounded Deep Agents recursion setting."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        upstream_env = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{upstream_env}=0\nDEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv(upstream_env, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            assert upstream_env not in os.environ
+            assert upstream_env not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_project_dotenv_cannot_set_langgraph_recursion_default_lowercase(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A lowercase spelling cannot bypass the project denial on Windows."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        upstream_env = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            "langgraph_default_recursion_limit=0\n"
+            "deepagents_code_test_project_value=allowed\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv(upstream_env, raising=False)
+        monkeypatch.delenv("deepagents_code_test_project_value", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            # On POSIX the lowercase key is a distinct, inert variable; on
+            # Windows the same assignment would activate the real one. Either
+            # way the denied spelling must not reach the environment.
+            assert upstream_env not in os.environ
+            assert upstream_env not in preview
+            assert "langgraph_default_recursion_limit" not in os.environ
+            assert "langgraph_default_recursion_limit" not in preview
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
     def test_project_dotenv_cannot_set_term_program(
         self,
         tmp_path: Path,
@@ -8262,3 +8343,91 @@ class TestAgentDirStaysOffTheHeavyImportPath:
         )
 
         assert result.stdout.strip() == ""
+
+
+class TestBuildStreamConfigRecursionLimit:
+    """`build_stream_config` carries the resolved graph step budget."""
+
+    def test_omitted_when_nothing_is_configured(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """No configured limit leaves the server default in force.
+
+        Sending an explicit value here would override `langgraph_api`'s own
+        default, so the key must be absent rather than `None`.
+        """
+        import deepagents_code.config as config_mod
+        from deepagents_code import _env_vars, model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            assert "recursion_limit" not in config_mod.build_stream_config(
+                "thread-123", assistant_id=None
+            )
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+    def test_resolved_limit_reaches_the_run_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A configured limit rides in the run config, not just the binding.
+
+        The graph runs inside the `langgraph dev` server, which stamps its own
+        `recursion_limit` over whatever `create_cli_agent` bound onto the
+        compiled graph. The run config is the only channel that survives, so a
+        regression here silently restores the server default.
+        """
+        import deepagents_code.config as config_mod
+        from deepagents_code import _env_vars, model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "3000")
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            config = config_mod.build_stream_config("thread-123", assistant_id=None)
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        assert config["recursion_limit"] == 3000
+
+    def test_inherited_langgraph_limit_reaches_the_run_config(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The upstream environment fallback is sent with each run."""
+        import deepagents_code.config as config_mod
+        from deepagents_code import _env_vars, model_config
+        from deepagents_code.configuration import service
+
+        monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+        monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+        empty = tmp_path / "config.toml"
+        empty.write_text("", encoding="utf-8")
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", empty)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            config = config_mod.build_stream_config("thread-123", assistant_id=None)
+        finally:
+            service.invalidate_config_sources()
+            model_config.clear_caches()
+
+        assert config["recursion_limit"] == 12_000

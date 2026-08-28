@@ -62,7 +62,7 @@ on:
         description: "Release package whose dependency minimums to raise"
         required: true
         type: choice
-        default: "deepagents-code"
+        default: "all"
         options:
           - "deepagents-code"
           - "all"
@@ -212,10 +212,11 @@ jobs:
             pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
             echo "Open PR already exists for $BRANCH; skipping."
             echo "::notice::Open dependency minimums PR already exists: $pr_url"
-            # The "Raise dependency minimums" step already wrote its raised-bounds
-            # summary; append the outcome link so it is visible without digging
-            # through the step log for the ::notice:: annotation.
-            printf '\n**PR:** %s (already open; no new PR created)\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+            # Record the outcome for the `if: always()` summary step below:
+            # `GITHUB_STEP_SUMMARY` is a per-step file uploaded when the step
+            # ends, so the only way the link can lead the table is for one
+            # later step to emit both.
+            printf '**PR:** %s (already open; no new PR created)\n' "$pr_url" > .minimums-pr-line
           fi
 
       - name: Generate GitHub App token
@@ -341,7 +342,23 @@ jobs:
             --body-file "$body_file")
           echo "Opened dependency minimums PR: $pr_url"
           echo "::notice::Opened dependency minimums PR: $pr_url"
-          printf '\n**PR:** %s\n' "$pr_url" >> "$GITHUB_STEP_SUMMARY"
+          printf '**PR:** %s\n' "$pr_url" > .minimums-pr-line
+
+      - name: Write the job summary
+        # Runs even when an intermediate step failed (e.g. `uv lock`), so the
+        # raised-bounds table is never lost: the raise step holds it back in
+        # its `summary` output, and this step replays it — after the PR link
+        # when an outcome step recorded one.
+        if: always() && steps.raise.outputs.changed == 'true'
+        env:
+          SUMMARY: ${{ steps.raise.outputs.summary }}
+        run: |
+          set -euo pipefail
+          if [ -f .minimums-pr-line ]; then
+            cat .minimums-pr-line >> "$GITHUB_STEP_SUMMARY"
+            printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '%s\n' "$SUMMARY" >> "$GITHUB_STEP_SUMMARY"
 
       - name: File a tracking issue on failure
         # Nobody watches a green cron, and nobody watches a red one either

@@ -180,11 +180,14 @@ unset.
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
-DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+DEBUG_DIRECTORY = "DEEPAGENTS_CODE_DEBUG_DIRECTORY"
+"""Directory for per-thread debug logs (default: `DEFAULT_DEBUG_DIRECTORY`)."""
 
-DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
-"""Default path for the debug log when `DEBUG_FILE` is unset."""
+DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
+"""Deprecated debug file path; its parent is used when `DEBUG_DIRECTORY` is unset."""
+
+DEFAULT_DEBUG_DIRECTORY = "/tmp/deepagents_debug"  # noqa: S108  # opt-in debug logs
+"""Default directory for debug logs when no debug path override is set."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.
@@ -493,10 +496,9 @@ repo file, so a project `.env` cannot disable itself.
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
-Parsed as an integer by the config manifest. Values below the LangGraph floor
-(`25`) or above the manifest ceiling are ignored with a logged warning, falling
-back to `config.toml` then the default. See `[runtime].recursion_limit` and the
-`--recursion-limit` CLI flag.
+Parsed as an integer by the config manifest. Values outside the accepted range
+are ignored with a logged warning, falling back to `config.toml`. See
+`[runtime].recursion_limit` and the `--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"

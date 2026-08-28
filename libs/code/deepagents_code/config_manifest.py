@@ -100,20 +100,11 @@ effectively remove it. A resolved value above the ceiling is rejected and falls
 through to the next layer / default.
 """
 
-RECURSION_LIMIT_DEFAULT = 2000
-"""Default LangGraph `recursion_limit` for the main agent.
-
-Single source of truth shared by the `runtime.recursion_limit` option, the
-`config.config` runnable-config default, and `resolve_recursion_limit`. Raised
-above the LangGraph/SDK default (`25`) to accommodate deeply nested agent graphs
-in long-running sessions without hitting `GRAPH_RECURSION_LIMIT`.
-"""
-
 RECURSION_LIMIT_FLOOR = 25
-"""Smallest accepted `recursion_limit`; matches the LangGraph default ceiling.
+"""Smallest `recursion_limit` accepted from managed config, the env var, or TOML.
 
-A value below this would break otherwise-valid runs, so a resolved value under
-the floor is rejected and falls through to the next layer / default.
+Lower values are rejected and resolution falls through to the next layer. The
+`--recursion-limit` flag is exempt and accepts any value `>= 1`.
 """
 
 RECURSION_LIMIT_CEILING = 100_000
@@ -123,6 +114,9 @@ Bounds the graph step budget so a mistyped or hostile override cannot request
 effectively unbounded traversal. A resolved value above the ceiling is rejected
 and falls through to the next layer / default.
 """
+
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+"""Upstream recursion default inherited when no Deep Agents override wins."""
 
 COMPACT_ON_RESUME_THRESHOLD_DEFAULT = 400_000
 """Context size above which a resumed thread is offered compaction.
@@ -1753,7 +1747,11 @@ def option_accepts_toml(
 
 
 def is_valid_recursion_limit(value: object) -> TypeIs[int]:
-    """Return whether `value` is an accepted main-agent `recursion_limit`.
+    """Return whether `value` is in bounds for a managed, env, or TOML tier.
+
+    The `--recursion-limit` flag does not go through this predicate: it uses the
+    looser `_is_valid_cli_recursion_limit` (`>= 1`), so a CLI value this function
+    rejects is still honored.
 
     Narrows so callers need no `cast`. `bool` is rejected at runtime but is a
     subclass of `int`, so the negative branch is not narrowed for it -- no
@@ -1771,18 +1769,25 @@ def _is_valid_cli_recursion_limit(value: object) -> TypeIs[int]:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 1
 
 
+def _inherited_langgraph_recursion_limit() -> int | None:
+    """Return LangGraph's environment default when one is configured."""
+    raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
+    return int(raw) if raw is not None else None
+
+
 def resolve_recursion_limit(
     *,
     toml_data: dict[str, Any] | None = None,
     managed_toml_data: dict[str, Any] | None = None,
-) -> int:
+) -> int | None:
     """Resolve the effective main-agent `recursion_limit`.
 
     Resolves `runtime.recursion_limit` through the standard managed → CLI → env →
-    `config.toml` → default precedence. Explicit CLI values retain the
-    documented `>= 1` contract. Other out-of-range values (below
-    `RECURSION_LIMIT_FLOOR` or above `RECURSION_LIMIT_CEILING`) are discarded
-    with a logged warning and the next lower-precedence layer is tried.
+    `config.toml` precedence, then inherits LangGraph's environment default when
+    no Deep Agents override wins. Explicit CLI values retain the documented
+    `>= 1` contract. Other out-of-range values (below `RECURSION_LIMIT_FLOOR` or
+    above `RECURSION_LIMIT_CEILING`) are discarded with a logged warning and the
+    next lower-precedence layer is tried.
 
     Managed values remain subject to the launch-time managed-health gate.
 
@@ -1793,14 +1798,14 @@ def resolve_recursion_limit(
             described in `_resolve_option`.
 
     Returns:
-        The resolved recursion limit. CLI values are positive; values from all
-            other tiers are within
-            `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
+        The resolved recursion limit, or `None` when nothing valid is configured.
+            CLI values are `>= 1`; Deep Agents managed, env, and TOML values are
+            within `[RECURSION_LIMIT_FLOOR, RECURSION_LIMIT_CEILING]`.
     """
     data = toml_data
     option = get_option("runtime.recursion_limit")
     if option is None:
-        return RECURSION_LIMIT_DEFAULT
+        return None
 
     resolver = _resolver_for_option_sources(
         toml_data=data,
@@ -1840,15 +1845,6 @@ def resolve_recursion_limit(
         )
         excluded.update(rejected_ranks)
 
-    if settled is None and source != "default":
-        logger.warning(
-            "Ignoring %s recursion_limit %r (expected int in [%d, %d]); using %d",
-            source,
-            value,
-            RECURSION_LIMIT_FLOOR,
-            RECURSION_LIMIT_CEILING,
-            RECURSION_LIMIT_DEFAULT,
-        )
     # Emitted once the loop settles, against the first resolution: only now is
     # it known whether the flag actually lost. `resolved` here is the winning
     # tier, so the masked CLI entry is not on it -- the first resolution is the
@@ -1859,7 +1855,9 @@ def resolve_recursion_limit(
         and CLI_RANK in first_resolved.masked_ranks
     ):
         _emit_ranked_diagnostics(option, first_resolved)
-    return RECURSION_LIMIT_DEFAULT if settled is None else settled
+    if settled is not None:
+        return settled
+    return _inherited_langgraph_recursion_limit()
 
 
 # --- Option definitions -----------------------------------------------------
@@ -2849,7 +2847,6 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         group="Runtime",
         summary="Main agent LangGraph recursion_limit (graph step budget).",
         kind=OptionKind.INT,
-        default=RECURSION_LIMIT_DEFAULT,
         env_var=_env_vars.RECURSION_LIMIT,
         toml_keys=("runtime", "recursion_limit"),
         cli_flag="--recursion-limit",
@@ -2944,12 +2941,21 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.DEBUG,
     ),
     ConfigOption(
+        key="debug.directory",
+        group="Debug",
+        summary="Directory for per-thread debug log files.",
+        kind=OptionKind.STR,
+        default="/tmp/deepagents_debug",  # noqa: S108  # documents the app default, not a write target
+        env_var=_env_vars.DEBUG_DIRECTORY,
+        toml_keys=("debug", "directory"),
+    ),
+    ConfigOption(
         key="debug.file",
         group="Debug",
-        summary="Path for the debug log file.",
+        summary="Deprecated debug log file override; its parent directory is used.",
         kind=OptionKind.STR,
-        default="/tmp/deepagents_debug.log",  # noqa: S108  # documents the app default, not a write target
         env_var=_env_vars.DEBUG_FILE,
+        toml_keys=("debug", "file"),
     ),
     ConfigOption(
         key="debug.log_level",

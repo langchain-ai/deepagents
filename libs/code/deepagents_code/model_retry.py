@@ -25,6 +25,7 @@ import logging
 import math
 import random
 import time
+import uuid
 from contextlib import contextmanager
 from copy import copy
 from datetime import UTC, datetime
@@ -56,10 +57,15 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "DEFAULT_MODEL_RETRIES",
+    "INTERRUPTED_TOOL_OUTPUT",
     "CodeModelRetryMiddleware",
     "aretry_model_call",
+    "build_attempt_event",
     "build_retry_event",
     "format_retry_status",
+    "legacy_retry_index",
+    "model_attempt_from_event",
+    "model_retry_from_event",
     "retry_model_call",
     "retry_status_from_event",
 ]
@@ -71,25 +77,64 @@ _MAX_DELAY_SECONDS = 10.0
 _MAX_RETRY_AFTER_SECONDS = 60.0
 _JITTER_FRACTION = 0.1
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
+# Provider-SDK error classes that name a transient failure, keyed by the root
+# package that owns the name. The package is part of the key on purpose: these
+# are generic words, and matching a bare class name would classify any
+# dependency's identically-named error as transient -- the same rigor the
+# httpcore/aiohttp checks in `_is_http_transport_error` already apply.
 _TRANSIENT_SDK_EXC_NAMES = frozenset(
     {
-        "APITimeoutError",
-        "APIConnectionError",
-        "APIConnectionTimeoutError",
-        "Aborted",
-        "ConnectTimeoutError",
-        "ConnectionClosedError",
-        "DeadlineExceeded",
-        "EndpointConnectionError",
-        "ReadTimeoutError",
-        "ResourceExhausted",
-        "ServiceUnavailable",
+        ("anthropic", "APIConnectionError"),
+        ("anthropic", "APIConnectionTimeoutError"),
+        ("anthropic", "APITimeoutError"),
+        ("botocore", "ConnectionClosedError"),
+        ("botocore", "ConnectTimeoutError"),
+        ("botocore", "EndpointConnectionError"),
+        ("botocore", "ReadTimeoutError"),
+        # `google.api_core` statuses are read by `_google_api_core_status_code`
+        # first; these cover the subclasses raised without a numeric code.
+        ("google", "Aborted"),
+        ("google", "DeadlineExceeded"),
+        ("google", "ResourceExhausted"),
+        ("google", "ServiceUnavailable"),
+        ("openai", "APIConnectionError"),
+        ("openai", "APITimeoutError"),
+        ("urllib3", "ConnectTimeoutError"),
+        ("urllib3", "ReadTimeoutError"),
+        ("websockets", "ConnectionClosedError"),
     }
 )
 
 _HTTP_SERVER_ERROR_FLOOR = 500
 _HTTP_SERVER_ERROR_CEILING = 600
 _RETRY_STATUS_FALLBACK = "Retrying model request"
+# Total sleep the interactive model node may spend across one call's retries.
+# Per-delay caps bound nothing (see `_delay_budget_guard`): five honoured
+# `Retry-After` hints of `_MAX_RETRY_AFTER_SECONDS` each would stall a turn for
+# five minutes behind a spinner. One full honoured hint still fits.
+_MAX_INTERACTIVE_TOTAL_DELAY_SECONDS = 60.0
+# What the product says when an attempt is superseded. Every surface renders
+# some part of this set, so the wording lives with the event builders rather
+# than being spelled once per client.
+INTERRUPTED_TOOL_OUTPUT = "Model response interrupted before tool execution"
+"""Synthetic tool output for a call superseded before the tool ran."""
+RETRY_BOUNDARY_LINE = (
+    "--- connection dropped; the output above is incomplete — retrying ---"
+)
+"""Rule printed between a failed attempt's partial output and its replay."""
+RETRY_MARKER_FALLBACK = (
+    "Connection dropped; the partial response above is incomplete. Retrying."
+)
+"""Retry marker for a payload whose attempt counts are unusable."""
+TERMINAL_ATTEMPT_MARKER = (
+    "The model request failed; the partial response above is incomplete."
+)
+"""Marker for partial output left behind by an exhausted retry budget."""
+_ATTEMPT_PHASES = frozenset({"start", "complete"})
+_CALL_ID_MAX_LENGTH = 64
+_CALL_ID_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_"
+)
 
 
 def _google_api_core_status_code(exc: Exception) -> int | None:
@@ -116,7 +161,8 @@ class _MessageStreamTracker:
 
         def forward(source: StreamMessagesHandler, chunk: StreamChunk) -> None:
             # Flag first: a writer that raises part-way through has still put
-            # the chunk beyond our control, so a replay would double-render it.
+            # the chunk beyond our control, so the client must be told output
+            # may have escaped even though the consumer never saw the chunk.
             self.has_streamed = True
             source.stream(chunk)
 
@@ -152,20 +198,41 @@ class _MessageStreamTracker:
 def _track_message_streams(
     tracker: _MessageStreamTracker,
 ) -> Iterator[_MessageStreamTracker]:
+    # Every early return below leaves `tracker.has_streamed` permanently
+    # `False`, which makes `output_may_have_started` permanently `False` and
+    # silently disables the supersession marking this module exists to provide:
+    # a retried attempt's partial output is then appended with no boundary. Say
+    # so, at a level matched to how expected the cause is.
     try:
         from langgraph.config import get_config
 
         config = get_config()
     except RuntimeError:
+        logger.debug(
+            "No runnable config in scope; model attempts cannot detect streamed "
+            "output, so a retry may append after unmarked partial output",
+            exc_info=True,
+        )
         yield tracker
         return
 
     callbacks = config.get("callbacks")
     if not isinstance(callbacks, BaseCallbackManager):
+        logger.warning(
+            "Runnable config carries %s under 'callbacks' rather than a "
+            "BaseCallbackManager; retry supersession cannot be detected",
+            type(callbacks).__name__,
+        )
         yield tracker
         return
     tracked_callbacks = tracker.callbacks_with_tracked_messages(callbacks)
     if tracked_callbacks is None:
+        # Routine when nothing consumes the `messages` stream mode; also what a
+        # renamed or restructured `StreamMessagesHandler` would look like.
+        logger.debug(
+            "No message-stream handler attached; retry supersession cannot be "
+            "detected for this model call"
+        )
         yield tracker
         return
 
@@ -218,10 +285,20 @@ def _retry_after_seconds(exc: Exception) -> float | None:
     if headers is None:
         return None
     try:
+        # httpx/requests headers are case-insensitive; a plain dict is not, so
+        # fall back to the canonical casing rather than miss the hint.
         raw = headers.get("retry-after")
+        if raw is None:
+            raw = headers.get("Retry-After")
     except (AttributeError, TypeError):
+        logger.debug("Retry-After lookup failed on %s headers", type(exc).__name__)
+        return None
+    if raw is None:
         return None
     if not isinstance(raw, str) or not raw.strip():
+        # Ignoring a provider's pacing hint can escalate a rate limit into a
+        # ban, so an unusable value is worth a trace.
+        logger.debug("Ignoring unusable Retry-After value %r", raw)
         return None
 
     raw = raw.strip()
@@ -231,6 +308,7 @@ def _retry_after_seconds(exc: Exception) -> float | None:
         try:
             retry_at = parsedate_to_datetime(raw)
         except (TypeError, ValueError):
+            logger.debug("Ignoring unparseable Retry-After value %r", raw)
             return None
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=UTC)
@@ -292,7 +370,11 @@ def _model_max_retries(model: object, fallback: int) -> int:
 
 
 def _is_transient_sdk_error(exc: Exception) -> bool:
-    return any(base.__name__ in _TRANSIENT_SDK_EXC_NAMES for base in type(exc).__mro__)
+    """Return whether any base class is a known transient provider-SDK error."""
+    return any(
+        (base.__module__.partition(".")[0], base.__name__) in _TRANSIENT_SDK_EXC_NAMES
+        for base in type(exc).__mro__
+    )
 
 
 def _is_http_transport_error(exc: BaseException) -> bool:
@@ -375,10 +457,19 @@ def _direct_model_error_retryability(
         return True
 
     # Stdlib transport faults raised directly (rare, but cheap to cover). This
-    # heuristic is deliberately confined to the raised exception: Python sets
-    # `__context__` on anything raised inside an `except` block, so honouring it
-    # here would make a permanent failure that merely surfaced while handling a
-    # timeout look transient and burn the whole budget on it.
+    # heuristic alone is deliberately confined to the raised exception: Python
+    # sets `__context__` on anything raised inside an `except` block, so
+    # honouring it here would make a permanent failure that merely surfaced
+    # while handling a timeout look transient and burn the whole budget on it.
+    #
+    # The checks above are not confined that way, and the asymmetry is chosen,
+    # not an oversight. `TimeoutError`/`ConnectionError` are broad -- every
+    # `asyncio.wait_for` deadline and every socket fault in the process is one
+    # -- whereas a package-qualified SDK class or an httpx transport error is
+    # narrow enough that finding one in the context chain really does mean the
+    # call died in transport and an SDK re-raised inside its `except`. That
+    # wrap-and-reraise shape is the common one, so those stay trusted through
+    # `__context__` (see `test_predicate_retries_transport_error_in_context_chain`).
     if raised and isinstance(exc, (TimeoutError, ConnectionError)):
         return True
     return None
@@ -437,7 +528,11 @@ def format_retry_status(attempt: int, max_retries: int) -> str:
 def _log_give_up(exc: Exception, attempts: int, max_retries: int) -> None:
     """Log why the retry loop stopped before re-raising."""
     if not _is_retryable_model_error(exc):
-        logger.debug(
+        # `info`, not `debug`: a fault in this module's own instrumentation
+        # (a `StreamMessagesHandler` signature change, say) surfaces here
+        # classified as non-transient, and would otherwise reach the user as an
+        # unexplained provider error with no traceback at default log levels.
+        logger.info(
             "Model call failed with a non-transient %s; not retrying",
             type(exc).__name__,
             exc_info=exc,
@@ -481,10 +576,10 @@ def _retry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
-            # Settle eligibility before consulting the guard. A guard that
-            # ran first would blame the streaming scope or the caller deadline
-            # for an error that was never going to be retried, and would skip
-            # the exhausted-budget log entirely.
+            # Settle eligibility before consulting the guard. A guard that ran
+            # first would blame the delay budget for an error that was never
+            # going to be retried, and would skip the exhausted-budget log
+            # entirely.
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 # Re-raise, don't convert to an `AIMessage`: a dead provider
@@ -527,10 +622,10 @@ async def _aretry_call[ResultT](
         except GraphBubbleUp:
             raise
         except Exception as exc:  # classified by _is_retryable_model_error
-            # Settle eligibility before consulting the guard. A guard that
-            # ran first would blame the streaming scope or the caller deadline
-            # for an error that was never going to be retried, and would skip
-            # the exhausted-budget log entirely.
+            # Settle eligibility before consulting the guard. A guard that ran
+            # first would blame the delay budget for an error that was never
+            # going to be retried, and would skip the exhausted-budget log
+            # entirely.
             if not _is_retryable_model_error(exc) or attempt >= max_retries:
                 _log_give_up(exc, attempt + 1, max_retries)
                 # Always re-raise (see `_retry_call`).
@@ -564,23 +659,6 @@ def _log_auxiliary_retry(attempt: int, max_retries: int, exc: Exception) -> None
     )
 
 
-def _allow_retry_after_stream(
-    tracker: _MessageStreamTracker,
-    exc: Exception,
-    attempt: int,
-    *,
-    stream_output_is_visible: bool,
-) -> bool:
-    if not tracker.has_streamed or not stream_output_is_visible:
-        return True
-    logger.warning(
-        "Model stream failed after output began; not retrying attempt %d",
-        attempt,
-        exc_info=exc,
-    )
-    return False
-
-
 def _auxiliary_max_retries(model: object) -> int:
     """Return the auxiliary retry budget for `model`, defaulting when unstamped.
 
@@ -609,6 +687,8 @@ def _auxiliary_max_retries(model: object) -> int:
 
 def _delay_budget_guard(
     max_total_delay: float | None,
+    *,
+    label: str = "Auxiliary model",
 ) -> Callable[[Exception, int, float], bool]:
     """Build a guard that keeps total retry sleep within `max_total_delay`.
 
@@ -623,6 +703,12 @@ def _delay_budget_guard(
     which is exactly how a 20s classifier deadline was overrun by the retries
     meant to fit inside it.
 
+    Args:
+        max_total_delay: Cumulative sleep ceiling, or `None` to honour the full
+            policy.
+        label: Sentence-leading subject for the refusal log, so an interactive
+            stall reads differently from an auxiliary one.
+
     Returns:
         A `retry_guard` callable for the shared retry loops.
     """
@@ -636,8 +722,9 @@ def _delay_budget_guard(
             spent += delay
             return True
         logger.warning(
-            "Auxiliary model retries would wait %.1fs past the caller deadline "
-            "budget of %.1fs; surfacing %s instead",
+            "%s retries would wait %.1fs past the total delay budget of "
+            "%.1fs; surfacing %s instead",
+            label,
             spent + delay - max_total_delay,
             max_total_delay,
             type(exc).__name__,
@@ -699,18 +786,20 @@ async def aretry_model_call[ResultT](
     )
 
 
-def retry_status_from_event(event: Mapping[Any, object]) -> str:
-    """Return retry status text for an untrusted `model_retry` payload.
+def retry_counts_from_event(
+    event: Mapping[Any, object],
+) -> tuple[int, int] | None:
+    """Validate the attempt counters of an untrusted `model_retry` payload.
 
-    Both the TUI and the headless client render this event, so the validation
-    lives with the producer rather than being written twice with different
-    strictness.
+    Every surface that renders a retry needs the same two numbers under the
+    same range, so the check lives once with the producer rather than being
+    re-derived per surface with drifting strictness.
 
     Args:
         event: Custom-stream payload, not trusted to hold sane numbers.
 
     Returns:
-        The validated status line, or a cause-free fallback for malformed data.
+        The `(attempt, max_retries)` pair, or `None` when either is unusable.
     """
     attempt = event.get("attempt")
     max_retries = event.get("max_retries")
@@ -721,31 +810,232 @@ def retry_status_from_event(event: Mapping[Any, object]) -> str:
         and not isinstance(max_retries, bool)
         and 1 <= attempt <= max_retries
     ):
-        return format_retry_status(attempt, max_retries)
-    logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
-    return _RETRY_STATUS_FALLBACK
+        return (attempt, max_retries)
+    return None
 
 
-def build_retry_event(attempt: int, max_retries: int) -> dict[str, object]:
+def retry_status_from_event(event: Mapping[Any, object]) -> str:
+    """Return retry status text for an untrusted `model_retry` payload.
+
+    Both the TUI and the headless client render this status line, so its
+    validation lives with the producer rather than being written twice with
+    different strictness.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The validated status line, or a cause-free fallback for malformed data.
+    """
+    counts = retry_counts_from_event(event)
+    if counts is None:
+        logger.warning("Ignoring malformed model_retry payload: %r", dict(event))
+        return _RETRY_STATUS_FALLBACK
+    return format_retry_status(*counts)
+
+
+def retry_marker_from_event(event: Mapping[Any, object]) -> str:
+    """Build the in-chat retry marker from validated numeric fields only.
+
+    The event's own `message` field is untrusted render text, so the marker is
+    re-derived from `attempt`/`max_retries` and never parses markup out of it.
+
+    Always returns a marker. By the time this is called the partial reply has
+    already been finalized and detached from the stream, so returning nothing
+    would leave a truncated answer in the chat that reads as a complete one,
+    followed by a second full answer, with nothing saying the first was cut off.
+    Unusable numbers cost the "1/5" suffix, not the marker -- the same way
+    `retry_status_from_event` degrades to a cause-free status line.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The marker line, counted when the numbers allow it.
+    """
+    counts = retry_counts_from_event(event)
+    if counts is None:
+        logger.warning(
+            "Unusable retry counts in model_retry payload; marking the "
+            "superseded reply without them"
+        )
+        return RETRY_MARKER_FALLBACK
+    attempt, max_retries = counts
+    return (
+        "Connection dropped; the partial response above is incomplete. "
+        f"Retrying {attempt}/{max_retries}."
+    )
+
+
+def legacy_retry_index(event: Mapping[Any, object]) -> int:
+    """Identity fallback for a `model_retry` payload that names no attempt.
+
+    A producer that predates attempt lifecycle events carries no `call_id`, so
+    a consumer cannot tell a second retry of one call from a redelivery of the
+    same event by correlation. The retry counter it does carry is enough: two
+    retries of one call always differ, while a redelivery does not.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane numbers.
+
+    Returns:
+        The payload's retry counter when it is a usable int, else `-1`.
+    """
+    attempt = event.get("attempt")
+    if isinstance(attempt, int) and not isinstance(attempt, bool):
+        return attempt
+    return -1
+
+
+def build_retry_event(
+    attempt: int,
+    max_retries: int,
+    *,
+    call_id: str | None = None,
+    failed_attempt: int | None = None,
+    output_may_have_started: bool = False,
+) -> dict[str, object]:
     """Build the custom-stream payload announcing a model retry.
 
     Args:
         attempt: The 1-indexed retry number about to be attempted.
         max_retries: The configured maximum retry count.
+        call_id: Opaque ID correlating every attempt of one model call. Omit
+            for producers that predate attempt lifecycle events.
+        failed_attempt: The 0-indexed attempt being superseded. Required to
+            carry `call_id`.
+        output_may_have_started: Whether the superseded attempt may have put
+            message output beyond server control. Conservative by design: the
+            tracker flags before forwarding a chunk.
 
     Returns:
         A stream-writer payload consumed by the client renderers.
+
+    Raises:
+        ValueError: If only one of `call_id` and `failed_attempt` is given.
     """
-    return {
+    if (call_id is None) != (failed_attempt is None):
+        msg = "call_id and failed_attempt must be provided together"
+        raise ValueError(msg)
+    event: dict[str, object] = {
         "type": "model_retry",
         "attempt": attempt,
         "max_retries": max_retries,
         "message": format_retry_status(attempt, max_retries),
     }
+    if call_id is not None:
+        event["call_id"] = call_id
+        event["failed_attempt"] = failed_attempt
+        event["output_may_have_started"] = output_may_have_started
+    return event
+
+
+def build_attempt_event(call_id: str, attempt: int, *, phase: str) -> dict[str, object]:
+    """Build the custom-stream payload marking one model attempt boundary.
+
+    Args:
+        call_id: Opaque ID shared by every attempt of one model call.
+        attempt: The 0-indexed attempt whose boundary is marked.
+        phase: `"start"` before the handler runs, `"complete"` after it
+            returns successfully.
+
+    Returns:
+        A stream-writer payload consumed by the client renderers.
+
+    Raises:
+        ValueError: If `phase` is not a known lifecycle phase.
+    """
+    if phase not in _ATTEMPT_PHASES:
+        msg = f"phase must be one of {sorted(_ATTEMPT_PHASES)}, got {phase!r}"
+        raise ValueError(msg)
+    return {
+        "type": "model_attempt",
+        "phase": phase,
+        "call_id": call_id,
+        "attempt": attempt,
+    }
+
+
+def _validated_call_id(value: object) -> str | None:
+    """Return `value` as a correlation ID, or `None` when it is untrusted."""
+    if (
+        not isinstance(value, str)
+        or not 1 <= len(value) <= _CALL_ID_MAX_LENGTH
+        or any(char not in _CALL_ID_CHARS for char in value)
+    ):
+        return None
+    return value
+
+
+def model_retry_from_event(event: Mapping[Any, object]) -> dict[str, object] | None:
+    """Return validated retry-correlation fields from an untrusted event."""
+    call_id = _validated_call_id(event.get("call_id"))
+    failed_attempt = event.get("failed_attempt")
+    visible = event.get("output_may_have_started")
+    if call_id is None and failed_attempt is None and visible is None:
+        return None
+    if (
+        call_id is None
+        or not isinstance(failed_attempt, int)
+        or isinstance(failed_attempt, bool)
+        or failed_attempt < 0
+        or not isinstance(visible, bool)
+    ):
+        logger.warning("Ignoring malformed model_retry correlation fields")
+        return None
+    return {
+        "call_id": call_id,
+        "failed_attempt": failed_attempt,
+        "output_may_have_started": visible,
+    }
+
+
+def model_attempt_from_event(
+    event: Mapping[Any, object],
+) -> dict[str, object] | None:
+    """Return a validated `model_attempt` payload from an untrusted event.
+
+    Remote and local consumers receive lifecycle events from the same custom
+    stream as provider-shaped data, so every field is structurally validated
+    before use. Unknown fields are ignored and unknown phases are dropped, so
+    a newer server never breaks an older client.
+
+    Args:
+        event: Custom-stream payload, not trusted to hold sane values.
+
+    Returns:
+        A dict with `type`, `phase`, `call_id`, and `attempt`, or `None` for
+        malformed data.
+    """
+    phase = event.get("phase")
+    call_id = _validated_call_id(event.get("call_id"))
+    attempt = event.get("attempt")
+    if (
+        not isinstance(phase, str)
+        or phase not in _ATTEMPT_PHASES
+        or call_id is None
+        or not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or attempt < 0
+    ):
+        logger.warning("Ignoring malformed model_attempt lifecycle fields")
+        return None
+    return {
+        "type": "model_attempt",
+        "phase": phase,
+        "call_id": call_id,
+        "attempt": attempt,
+    }
 
 
 class CodeModelRetryMiddleware(AgentMiddleware):
-    """Retry transient model-node failures without replaying completed tools."""
+    """Retry transient model-node failures without replaying completed tools.
+
+    Emits `model_attempt` start/complete lifecycle events around every handler
+    invocation, correlated by one `call_id` per model call, so clients can
+    reconcile output from a superseded attempt when a transient failure is
+    retried after streaming began.
+    """
 
     def __init__(
         self,
@@ -760,8 +1050,10 @@ class CodeModelRetryMiddleware(AgentMiddleware):
                 call. `0` disables retries unless the request's runtime-selected
                 model carries a different provider-specific budget.
             stream_output_is_visible: Whether message-stream chunks emitted by
-                this model reach a user-visible consumer. Keep `True` unless the
-                entire nested stream is filtered before rendering.
+                this model reach a user-visible consumer; it decides the
+                `output_may_have_started` supersession flag on retry events.
+                Keep `True` unless the entire nested stream is filtered before
+                rendering.
 
         Raises:
             TypeError: If `max_retries` or `stream_output_is_visible` has the
@@ -786,10 +1078,39 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         self.stream_output_is_visible = stream_output_is_visible
 
     @staticmethod
+    def _emit_stream_event(request: ModelRequest, event: dict[str, object]) -> None:
+        writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
+        if writer is None:
+            return
+        try:
+            writer(event)
+        except GraphBubbleUp:
+            # LangGraph control flow must not be mistaken for a writer fault.
+            raise
+        except Exception:
+            # These events are the only signal that a pause is a retry and the
+            # only correlation a client has between chunks and attempts, so
+            # losing one must be visible in the logs without failing the run.
+            logger.warning(
+                "Failed to emit %s stream event", event["type"], exc_info=True
+            )
+
     def _emit_retry_status(
-        request: ModelRequest, attempt: int, max_retries: int, exc: Exception
+        self,
+        request: ModelRequest,
+        attempt: int,
+        max_retries: int,
+        exc: Exception,
+        call_id: str,
+        has_streamed: bool,
     ) -> None:
-        event = build_retry_event(attempt, max_retries)
+        event = build_retry_event(
+            attempt,
+            max_retries,
+            call_id=call_id,
+            failed_attempt=attempt - 1,
+            output_may_have_started=has_streamed and self.stream_output_is_visible,
+        )
         # The user-facing event stays deliberately vague, but the log must name
         # the cause: only the last exception is re-raised, so an attempt logged
         # without its type and status leaves no way to tell a run of rate
@@ -801,18 +1122,7 @@ class CodeModelRetryMiddleware(AgentMiddleware):
             event["message"],
             exc_info=exc,
         )
-        writer = getattr(getattr(request, "runtime", None), "stream_writer", None)
-        if writer is None:
-            return
-        try:
-            writer(event)
-        except GraphBubbleUp:
-            # LangGraph control flow must not be mistaken for a writer fault.
-            raise
-        except Exception:
-            # This event is the only signal that the coming pause is a retry,
-            # so losing it leaves the user watching an unexplained stall.
-            logger.warning("Failed to emit model_retry stream event", exc_info=True)
+        self._emit_stream_event(request, event)
 
     def _request_max_retries(self, request: ModelRequest) -> int:
         # A `/model` switch stamps its own budget on the constructed model;
@@ -824,31 +1134,43 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], ModelResponse],
     ) -> ModelResponse:
-        """Retry a synchronous model-node call without replaying visible output.
+        """Retry a synchronous model-node call, even after streamed output.
 
         Returns:
             The successful model response.
         """
         max_retries = self._request_max_retries(request)
         stream_tracker = _MessageStreamTracker()
+        call_id = uuid.uuid4().hex
+        current_attempt = 0
 
         def call() -> ModelResponse:
             nonlocal stream_tracker
             stream_tracker = _MessageStreamTracker()
+            self._emit_stream_event(
+                request, build_attempt_event(call_id, current_attempt, phase="start")
+            )
             with _track_message_streams(stream_tracker):
-                return handler(request)
+                result = handler(request)
+            self._emit_stream_event(
+                request,
+                build_attempt_event(call_id, current_attempt, phase="complete"),
+            )
+            return result
+
+        def on_retry(attempt: int, budget: int, exc: Exception) -> None:
+            nonlocal current_attempt
+            self._emit_retry_status(
+                request, attempt, budget, exc, call_id, stream_tracker.has_streamed
+            )
+            current_attempt = attempt
 
         return _retry_call(
             call,
             max_retries=max_retries,
-            on_retry=lambda attempt, budget, exc: self._emit_retry_status(
-                request, attempt, budget, exc
-            ),
-            retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
-                stream_tracker,
-                exc,
-                attempt,
-                stream_output_is_visible=self.stream_output_is_visible,
+            on_retry=on_retry,
+            retry_guard=_delay_budget_guard(
+                _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
             ),
         )
 
@@ -857,30 +1179,42 @@ class CodeModelRetryMiddleware(AgentMiddleware):
         request: ModelRequest,
         handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
     ) -> ModelResponse:
-        """Retry an asynchronous model-node call without replaying visible output.
+        """Retry an asynchronous model-node call, even after streamed output.
 
         Returns:
             The successful model response.
         """
         max_retries = self._request_max_retries(request)
         stream_tracker = _MessageStreamTracker()
+        call_id = uuid.uuid4().hex
+        current_attempt = 0
 
         async def call() -> ModelResponse:
             nonlocal stream_tracker
             stream_tracker = _MessageStreamTracker()
+            self._emit_stream_event(
+                request, build_attempt_event(call_id, current_attempt, phase="start")
+            )
             with _track_message_streams(stream_tracker):
-                return await handler(request)
+                result = await handler(request)
+            self._emit_stream_event(
+                request,
+                build_attempt_event(call_id, current_attempt, phase="complete"),
+            )
+            return result
+
+        def on_retry(attempt: int, budget: int, exc: Exception) -> None:
+            nonlocal current_attempt
+            self._emit_retry_status(
+                request, attempt, budget, exc, call_id, stream_tracker.has_streamed
+            )
+            current_attempt = attempt
 
         return await _aretry_call(
             call,
             max_retries=max_retries,
-            on_retry=lambda attempt, budget, exc: self._emit_retry_status(
-                request, attempt, budget, exc
-            ),
-            retry_guard=lambda exc, attempt, _delay: _allow_retry_after_stream(
-                stream_tracker,
-                exc,
-                attempt,
-                stream_output_is_visible=self.stream_output_is_visible,
+            on_retry=on_retry,
+            retry_guard=_delay_budget_guard(
+                _MAX_INTERACTIVE_TOTAL_DELAY_SECONDS, label="Interactive model"
             ),
         )

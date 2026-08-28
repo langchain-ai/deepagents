@@ -398,7 +398,10 @@ def _display_value(option: ConfigOption[object], *, is_set: bool, value: object)
         text = _with_availability(option, text)
     max_len = 60
     if len(text) > max_len:
-        return text[: max_len - 1] + "\N{HORIZONTAL ELLIPSIS}"
+        from deepagents_code.config import get_glyphs
+
+        ellipsis = get_glyphs().ellipsis
+        return text[: max_len - len(ellipsis)] + ellipsis
     return text
 
 

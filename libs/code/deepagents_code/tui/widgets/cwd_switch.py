@@ -10,6 +10,7 @@ from textual.content import Content
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.sessions import format_path
 
 if TYPE_CHECKING:
@@ -153,7 +154,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
 
     def _help_text(self) -> str:
         """Return the help line text, naming the mode's abort action if offered."""
-        help_text = "Enter: switch · Esc: stay in cwd"
+        help_text = f"Enter: switch {get_glyphs().separator} Esc: stay in cwd"
         if self._abort is None:
             return help_text
         if self._abort == "resume":
@@ -162,7 +163,7 @@ class CwdSwitchPromptScreen(ModalScreen[CwdSwitchChoice]):
             abort_help = "A: don't switch"
         else:
             assert_never(self._abort)
-        return f"{help_text} · {abort_help}"
+        return f"{help_text} {get_glyphs().separator} {abort_help}"
 
     def compose(self) -> ComposeResult:
         """Compose the confirmation dialog.
@@ -299,7 +300,8 @@ class HookTrustScreen(ModalScreen[HookTrustChoice]):
                 markup=False,
             )
             yield Static(
-                "Enter: allow once · A: always allow · Esc: deny",
+                f"Enter: allow once {get_glyphs().separator} A: always allow "
+                f"{get_glyphs().separator} Esc: deny",
                 classes="cwd-switch-help",
                 markup=False,
             )

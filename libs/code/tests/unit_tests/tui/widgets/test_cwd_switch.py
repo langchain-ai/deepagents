@@ -9,6 +9,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.cwd_switch import (
     CwdSwitchAbortMode,
     CwdSwitchChoice,
@@ -172,13 +173,14 @@ class TestCwdSwitchAbortOption:
                 current_cwd="/a", thread_cwd="/b", abort=abort
             )._help_text()
 
+        separator = get_glyphs().separator
         assert help_line("resume") == (
-            "Enter: switch · Esc: stay in cwd · A: don't resume"
+            f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't resume"
         )
         assert help_line("thread_switch") == (
-            "Enter: switch · Esc: stay in cwd · A: don't switch"
+            f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't switch"
         )
-        assert help_line(None) == "Enter: switch · Esc: stay in cwd"
+        assert help_line(None) == f"Enter: switch {separator} Esc: stay in cwd"
 
     def test_abort_mode_tokens_disjoint_from_choice(self) -> None:
         """Abort-mode tokens never collide with prompt-outcome tokens.

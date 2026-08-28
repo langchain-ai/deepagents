@@ -8,6 +8,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.diff_utils import DiffStats
 from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.message_store import (
@@ -447,12 +448,14 @@ class TestMessageData:
 
         data = MessageData.from_widget(original)
         assert data.type == MessageType.SUMMARIZATION
-        assert data.content == "✓ Conversation offloaded"
+        assert data.content == f"{get_glyphs().checkmark} Conversation offloaded"
         assert data.id == "test-summary-1"
 
         restored = data.to_widget()
         assert isinstance(restored, SummarizationMessage)
-        assert str(restored._content) == "✓ Conversation offloaded"
+        assert (
+            str(restored._content) == f"{get_glyphs().checkmark} Conversation offloaded"
+        )
         assert restored.id == "test-summary-1"
 
     def test_message_data_defaults(self):

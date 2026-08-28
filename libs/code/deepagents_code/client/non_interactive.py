@@ -72,6 +72,8 @@ from deepagents_code.config import (
     SHELL_ALLOW_ALL,
     build_langsmith_thread_url,
     create_model,
+    get_glyphs,
+    is_ascii_mode,
     is_shell_command_allowed,
     runtime_state,
 )
@@ -197,7 +199,7 @@ def _make_stdio_encoding_safe() -> None:
     """Prevent `UnicodeEncodeError` from killing a non-interactive run.
 
     Legacy Windows consoles default to a locale code page (e.g. cp1252) that
-    cannot encode glyphs like "✓"; the first `console.print()` containing one
+    cannot encode decorative Unicode glyphs; the first `console.print()` containing one
     then crashes the whole run. Reconfiguring the streams with
     `errors="replace"` degrades unencodable characters to "?" instead. The
     stream encoding itself is left untouched.
@@ -283,11 +285,14 @@ class _ConsoleSpinner:
 
     @staticmethod
     def _build_spinner(message: str) -> RichSpinner:
-        return RichSpinner(
+        spinner = RichSpinner(
             "dots",
             text=Text(f" {message}", style="dim"),
             style="dim",
         )
+        if is_ascii_mode():
+            spinner.frames = list(get_glyphs().spinner_frames)
+        return spinner
 
 
 async def _terminate_startup_process(proc: Process) -> None:
@@ -749,6 +754,7 @@ def _process_ai_message(
     if not hasattr(message_obj, "content_blocks"):
         logger.debug("AIMessage missing content_blocks attribute, skipping")
         return
+    glyphs = get_glyphs()
     for block in message_obj.content_blocks:
         if not isinstance(block, dict):
             continue
@@ -801,7 +807,8 @@ def _process_ai_message(
                             _write_newline()
                             state.text_line_open = False
                         console.print(
-                            f"[dim]🔧 Calling tool: {escape_markup(buffer_name)}[/dim]",
+                            f"[dim]{glyphs.tool} Calling tool: "
+                            f"{escape_markup(buffer_name)}[/dim]",
                             highlight=False,
                         )
                 elif not state.quiet:
@@ -811,7 +818,7 @@ def _process_ai_message(
                     # Stage the line and flush it on attempt completion; the
                     # terminal flush prints whatever survives reconciliation.
                     state.pending_tool_status_lines.append(
-                        f"🔧 Calling tool: {buffer_name}"
+                        f"{glyphs.tool} Calling tool: {buffer_name}"
                     )
                 buffer.displayed = True
                 if isinstance(buffer_id, str):
@@ -945,7 +952,8 @@ def _process_message_chunk(
                 state.spinner.stop()
             if not state.quiet:
                 console.print(
-                    f"[dim]📝 {escape_markup(record.display_path)}[/dim]",
+                    f"[dim]{get_glyphs().file} "
+                    f"{escape_markup(record.display_path)}[/dim]",
                     highlight=False,
                 )
             if caveat:
@@ -1028,6 +1036,7 @@ def _process_rubric_event(
     if event_type not in {"rubric_evaluation_start", "rubric_evaluation_end"}:
         return
 
+    glyphs = get_glyphs()
     if state.spinner:
         state.spinner.stop()
 
@@ -1043,7 +1052,8 @@ def _process_rubric_event(
             else ""
         )
         console.print(
-            f"[dim]⏳ Checking acceptance criteria{label}…[/dim]",
+            f"[dim]{glyphs.hourglass} Checking acceptance criteria{label}"
+            f"{glyphs.ellipsis}[/dim]",
             highlight=False,
         )
         if state.spinner:
@@ -1053,11 +1063,15 @@ def _process_rubric_event(
     result = data.get("result")
     explanation = (data.get("explanation") or "").strip()
     if result == "satisfied":
-        console.print("[green]✓ Acceptance criteria satisfied[/green]", highlight=False)
+        console.print(
+            f"[green]{glyphs.checkmark} Acceptance criteria satisfied[/green]",
+            highlight=False,
+        )
     elif result == "needs_revision":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]↻ Acceptance criteria not yet satisfied{suffix}[/yellow]",
+            f"[yellow]{glyphs.retry} Acceptance criteria not yet satisfied"
+            f"{suffix}[/yellow]",
             highlight=False,
         )
         for criterion in data.get("criteria", []):
@@ -1065,11 +1079,14 @@ def _process_rubric_event(
                 name = escape_markup(str(criterion.get("name", "criterion")))
                 gap = escape_markup(str(criterion.get("gap", "")).strip())
                 detail = f" — {gap}" if gap else ""
-                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
+                console.print(
+                    f"[yellow]  {glyphs.error} {name}{detail}[/yellow]",
+                    highlight=False,
+                )
     elif result == "max_iterations_reached":
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            "[yellow]⚠ Acceptance criteria not yet satisfied "
+            f"[yellow]{glyphs.warning} Acceptance criteria not yet satisfied "
             f"(iteration limit reached){suffix}[/yellow]",
             highlight=False,
         )
@@ -1078,7 +1095,10 @@ def _process_rubric_event(
                 name = escape_markup(str(criterion.get("name", "criterion")))
                 gap = escape_markup(str(criterion.get("gap", "")).strip())
                 detail = f" — {gap}" if gap else ""
-                console.print(f"[yellow]  ✗ {name}{detail}[/yellow]", highlight=False)
+                console.print(
+                    f"[yellow]  {glyphs.error} {name}{detail}[/yellow]",
+                    highlight=False,
+                )
     elif result in {"failed", "grader_error"}:
         label = (
             "Rubric is invalid or cannot be evaluated"
@@ -1086,7 +1106,7 @@ def _process_rubric_event(
             else "Acceptance criteria check failed"
         )
         suffix = f": {escape_markup(explanation)}" if explanation else ""
-        console.print(f"[red]⚠ {label}{suffix}[/red]", highlight=False)
+        console.print(f"[red]{glyphs.warning} {label}{suffix}[/red]", highlight=False)
     elif result is not None:
         # A `rubric_evaluation_end` with an unrecognized result is still a
         # terminal grading event; surface it rather than letting the run go
@@ -1094,7 +1114,8 @@ def _process_rubric_event(
         # interactive fallback in `textual_adapter._format_rubric_event`.
         suffix = f": {escape_markup(explanation)}" if explanation else ""
         console.print(
-            f"[yellow]⚠ Acceptance criteria check ended{suffix}[/yellow]",
+            f"[yellow]{glyphs.warning} Acceptance criteria check ended"
+            f"{suffix}[/yellow]",
             highlight=False,
         )
 
@@ -1719,7 +1740,10 @@ def _make_hitl_decision(
         command = action_request.get("args", {}).get("command", "")
 
         if is_shell_command_allowed(command, shell_allow_list):
-            console.print(f"[dim]✓ Auto-approved: {escape_markup(command)}[/dim]")
+            console.print(
+                f"[dim]{get_glyphs().checkmark} Auto-approved: "
+                f"{escape_markup(command)}[/dim]"
+            )
             return {"type": "approve"}
 
         allowed_list_str = ", ".join(shell_allow_list)
@@ -1736,7 +1760,10 @@ def _make_hitl_decision(
             ),
         }
 
-    console.print(f"[dim]✓ Auto-approved action: {escape_markup(action_name)}[/dim]")
+    console.print(
+        f"[dim]{get_glyphs().checkmark} Auto-approved action: "
+        f"{escape_markup(action_name)}[/dim]"
+    )
     return {"type": "approve"}
 
 
@@ -2381,7 +2408,7 @@ async def _run_agent_loop(
                 style=Style(dim=True, link=thread_url_lookup.url),
             )
             console.print(link_text)
-        console.print("[green]✓ Task completed[/green]")
+        console.print(f"[green]{get_glyphs().checkmark} Task completed[/green]")
         # Inside `if not quiet:` on purpose — `--quiet` suppresses the table
         # regardless of the option. `usage_table_enabled` fails open rather
         # than raising here, because an escape would skip the
@@ -2922,13 +2949,14 @@ async def run_non_interactive(
                         if tool_count:
                             label = "MCP tool" if tool_count == 1 else "MCP tools"
                             console.print(
-                                f"[green]✓ Loaded {tool_count} {label}[/green]"
+                                f"[green]{get_glyphs().checkmark} "
+                                f"Loaded {tool_count} {label}[/green]"
                             )
                 except Exception:
                     logger.warning("MCP metadata preload failed", exc_info=True)
 
             if not quiet:
-                console.print("[green]✓ Server ready[/green]")
+                console.print(f"[green]{get_glyphs().checkmark} Server ready[/green]")
 
             file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
 

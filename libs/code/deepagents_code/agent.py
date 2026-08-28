@@ -48,6 +48,7 @@ if TYPE_CHECKING:
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
+    ToolErrorMiddleware,
 )
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -143,6 +144,17 @@ from deepagents_code.unicode_security import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _format_task_error(error: Exception, request: ToolCallRequest) -> str | None:
+    from langgraph.errors import NodeCancelledError
+
+    if isinstance(error, NodeCancelledError):
+        return None
+    subagent_type = request.tool_call.get("args", {}).get("subagent_type")
+    subagent_name = subagent_type if isinstance(subagent_type, str) else "unknown"
+    logger.debug("Subagent %r failed", subagent_name, exc_info=error)
+    return f"Subagent {subagent_name!r} failed. You may retry this task."
 
 
 _MEMORY_READONLY_SYSTEM_PROMPT = (
@@ -3241,7 +3253,12 @@ def create_cli_agent(
     # with a non-zero request-time budget.
     from deepagents_code.model_retry import CodeModelRetryMiddleware
 
-    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
+    agent_middleware.extend(
+        [
+            CodeModelRetryMiddleware(max_retries=model_retries),
+            ToolErrorMiddleware(_format_task_error, tools=["task"]),
+        ]
+    )
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()

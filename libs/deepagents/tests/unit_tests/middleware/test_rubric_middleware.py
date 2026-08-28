@@ -1984,6 +1984,10 @@ class TestGraderExtensionContract:
         state = self._state(messages=[visible, internal])
         seen: dict[str, Any] = {}
 
+        def prepare_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
+            messages.pop()
+            return messages
+
         def build_grader_state(prepared: RubricState, iteration: int) -> dict[str, str]:
             seen["messages"] = prepared["messages"]
             return {"operation_id": f"op:{iteration}"}
@@ -1991,7 +1995,7 @@ class TestGraderExtensionContract:
         mw = RubricMiddleware(
             model=_STUB_MODEL,
             grader_state_schema=GraderState,
-            prepare_messages_for_grader=lambda messages: [messages[0]],
+            prepare_messages_for_grader=prepare_messages,
             build_grader_state=build_grader_state,
         )
 

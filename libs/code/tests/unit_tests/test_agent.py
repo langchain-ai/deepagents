@@ -3217,11 +3217,11 @@ class TestMiddlewareStackConformance:
         This prevents runtime errors like 'has no attribute wrap_tool_call'
         when the agent framework iterates over the middleware list.
         """
-        from deepagents.middleware.rubric import RubricMiddleware
         from langchain.agents.middleware.types import AgentMiddleware
 
         from deepagents_code.cost_tracking import CostTrackingMiddleware
         from deepagents_code.goal_tools import GoalToolsMiddleware
+        from deepagents_code.reliable_rubric import ReliableRubricMiddleware
         from deepagents_code.resume_state import ResumeStateMiddleware
 
         agent_dir = tmp_path / "agent"
@@ -3294,7 +3294,7 @@ class TestMiddlewareStackConformance:
         # session's final turn. The two are registered ~460 lines apart in
         # different functions, so nothing but this assertion pins the order.
         assert middleware_types.index(CostTrackingMiddleware) < middleware_types.index(
-            RubricMiddleware
+            ReliableRubricMiddleware
         )
         # The main agent owns the thread's cumulative cost; only nested
         # instances opt out of writing it.
@@ -3373,20 +3373,115 @@ class TestEnableAskUser:
         middleware = self._capture_middleware(tmp_path, enable_ask_user=False)
         assert not any(isinstance(mw, AskUserMiddleware) for mw in middleware)
 
-    def test_no_tool_error_middleware(self, tmp_path: Path) -> None:
-        """The stack must not install `ToolErrorMiddleware` for `ask_user`.
-
-        Argument validation lives on the tool schema (pydantic), and `ToolNode`
-        already converts bad `ask_user` arguments to an error `ToolMessage`. A
-        `ToolErrorMiddleware` here would be dead weight — and, sitting outermost
-        in the stack, would risk reporting an internal `ValueError` (e.g.
-        `ServerHooksMiddleware`'s "client answered a different request") to the
-        model as its own bad tool input.
-        """
+    def test_tool_error_middleware_only_handles_task(self, tmp_path: Path) -> None:
         from langchain.agents.middleware import ToolErrorMiddleware
 
         middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
-        assert not any(isinstance(mw, ToolErrorMiddleware) for mw in middleware)
+        handlers = [mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)]
+        assert len(handlers) == 1
+        assert handlers[0]._tool_filter == ["task"]
+
+    def test_task_failure_is_sanitized(self, tmp_path: Path) -> None:
+        from langchain.agents.middleware import ToolErrorMiddleware
+        from langchain_core.messages import ToolMessage
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        handler = next(mw for mw in middleware if isinstance(mw, ToolErrorMiddleware))
+        request = ToolCallRequest(
+            tool_call={
+                "name": "task",
+                "args": {"subagent_type": "researcher"},
+                "id": "call-1",
+                "type": "tool_call",
+            },
+            tool=None,
+            state={},
+            runtime=Mock(),
+        )
+
+        def fail(_request: ToolCallRequest) -> ToolMessage:
+            msg = "secret provider detail"
+            raise RuntimeError(msg)
+
+        result = handler.wrap_tool_call(request, fail)
+        assert isinstance(result, ToolMessage)
+        assert result.status == "error"
+        assert result.tool_call_id == "call-1"
+        assert result.content == (
+            "Subagent 'researcher' failed. You may retry this task."
+        )
+        assert "secret provider detail" not in result.content
+
+    async def test_parallel_task_failure_is_isolated(self, tmp_path: Path) -> None:
+        from langchain.agents.middleware import ToolErrorMiddleware
+        from langchain_core.messages import ToolMessage
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        error_handler = next(
+            mw for mw in middleware if isinstance(mw, ToolErrorMiddleware)
+        )
+
+        def request(call_id: str, subagent_type: str) -> ToolCallRequest:
+            return ToolCallRequest(
+                tool_call={
+                    "name": "task",
+                    "args": {"subagent_type": subagent_type},
+                    "id": call_id,
+                    "type": "tool_call",
+                },
+                tool=None,
+                state={},
+                runtime=Mock(),
+            )
+
+        async def run(call: ToolCallRequest) -> ToolMessage:
+            await asyncio.sleep(0)
+            if call.tool_call["id"] == "call-2":
+                msg = "provider failed"
+                raise RuntimeError(msg)
+            return ToolMessage("done", tool_call_id=call.tool_call["id"])
+
+        results = await asyncio.gather(
+            error_handler.awrap_tool_call(request("call-1", "researcher"), run),
+            error_handler.awrap_tool_call(request("call-2", "coder"), run),
+            error_handler.awrap_tool_call(request("call-3", "reviewer"), run),
+        )
+
+        assert [result.tool_call_id for result in results] == [
+            "call-1",
+            "call-2",
+            "call-3",
+        ]
+        assert [result.status for result in results] == ["success", "error", "success"]
+
+    def test_task_cancellation_propagates(self, tmp_path: Path) -> None:
+        from langchain.agents.middleware import ToolErrorMiddleware
+        from langchain_core.messages import ToolMessage
+        from langgraph.errors import NodeCancelledError
+        from langgraph.prebuilt.tool_node import ToolCallRequest
+
+        middleware = self._capture_middleware(tmp_path, enable_ask_user=True)
+        handler = next(mw for mw in middleware if isinstance(mw, ToolErrorMiddleware))
+        request = ToolCallRequest(
+            tool_call={
+                "name": "task",
+                "args": {"subagent_type": "researcher"},
+                "id": "call-1",
+                "type": "tool_call",
+            },
+            tool=None,
+            state={},
+            runtime=Mock(),
+        )
+
+        def cancel(_request: ToolCallRequest) -> ToolMessage:
+            node = "tools"
+            raise NodeCancelledError(node)
+
+        with pytest.raises(NodeCancelledError):
+            handler.wrap_tool_call(request, cancel)
 
 
 class TestLoadAsyncSubagents:

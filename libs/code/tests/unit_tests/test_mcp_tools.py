@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -46,6 +47,7 @@ from deepagents_code.mcp_tools import (
     _gather_bounded,
     _json_error_snippet,
     _load_tools_from_config,
+    _mcp_tool_name,
     _MCPStderrSink,
     _normalize_mcp_arguments,
     _same_config_location,
@@ -216,6 +218,31 @@ def fake_tool_result() -> Any:  # noqa: ANN401
     from mcp.types import CallToolResult, TextContent
 
     return CallToolResult(content=[TextContent(type="text", text="ok")])
+
+
+class TestMCPToolName:
+    """Provider-safe names for MCP tools."""
+
+    def test_short_name_is_unchanged(self) -> None:
+        assert _mcp_tool_name("filesystem", "read_file") == "filesystem_read_file"
+
+    def test_long_names_are_bounded_and_collision_resistant(self) -> None:
+        first = _mcp_tool_name("s" * 50, "tool-one" * 10)
+        second = _mcp_tool_name("s" * 50, "tool-two" * 10)
+
+        assert len(first) == 64
+        assert len(second) == 64
+        assert first != second
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", first)
+
+    def test_reported_plugin_name_is_bounded(self) -> None:
+        server = "plugin__langchain-mcp_langchain-plugins_4431c345__langchain-docs"
+
+        name = _mcp_tool_name(server, "query_docs_filesystem_docs_by_lang_chain")
+
+        assert len(name) == 64
+        assert name.startswith("plugin__langchain-mcp_l")
+        assert "query_docs_filesystem" in name
 
 
 class TestLoadMCPConfig:
@@ -1644,6 +1671,67 @@ class TestGetMCPTools:
             )
         ]
         await manager.cleanup()
+
+    async def test_long_tool_name_is_bounded_but_calls_original(
+        self,
+        write_config: Callable[..., str],
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        fake_tool_result: Any,  # noqa: ANN401
+    ) -> None:
+        path = write_config(
+            {"mcpServers": {"server" * 10: {"command": "node", "args": []}}}
+        )
+        session, _recorded = fake_create_session
+        original_name = "query_docs_filesystem_docs_by_lang_chain"
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page([_make_mcp_tool(original_name)])
+        )
+        session.call_tool = AsyncMock(return_value=fake_tool_result)
+
+        tools, manager, server_infos = await get_mcp_tools(path)
+        await tools[0].ainvoke({})
+
+        assert len(tools[0].name) == 64
+        assert server_infos[0].tools[0].name == tools[0].name
+        session.call_tool.assert_awaited_once_with(original_name, {})
+        await manager.cleanup()  # ty: ignore
+
+    async def test_stateless_long_tool_name_is_bounded(
+        self,
+        fake_create_session: tuple[AsyncMock, list[dict[str, Any]]],
+        fake_tool_result: Any,  # noqa: ANN401
+    ) -> None:
+        session, _recorded = fake_create_session
+        original_name = "tool" * 20
+        session.list_tools = AsyncMock(
+            return_value=_make_tool_page([_make_mcp_tool(original_name)])
+        )
+        runtime_session = AsyncMock()
+        runtime_session.initialize = AsyncMock()
+        runtime_session.call_tool = AsyncMock(return_value=fake_tool_result)
+
+        tools, manager, _server_infos = await _load_tools_from_config(
+            {"mcpServers": {"server" * 10: {"command": "node"}}}, stateless=True
+        )
+
+        @asynccontextmanager
+        async def _runtime_session(
+            _connection: dict[str, Any], *, mcp_callbacks: object | None = None
+        ) -> AsyncIterator[AsyncMock]:
+            yield runtime_session
+
+        with patch("langchain_mcp_adapters.tools.create_session", _runtime_session):
+            await tools[0].ainvoke({})
+
+        assert manager is None
+        assert len(tools[0].name) == 64
+        metadata = tools[0].metadata
+        assert metadata is not None
+        assert metadata["_deepagents_code_mcp_server"] == "server" * 10
+        assert metadata["_deepagents_code_mcp_tool"] == original_name
+        runtime_session.call_tool.assert_awaited_once_with(
+            original_name, {}, progress_callback=None
+        )
 
     async def test_discovery_failure_marks_server_error(
         self,
@@ -4468,6 +4556,16 @@ class TestApplyToolFilter:
             tools, "fs", {"command": "node", "allowedTools": ["fs_read"]}
         )
         assert [t.name for t in result] == ["fs_read"]
+
+    def test_allowed_matches_original_name_after_truncation(self) -> None:
+        tool = _make_prefixed_tool("server_" + "a" * 44 + "_0123456789ab")
+        tool.metadata = {"_deepagents_code_mcp_tool": "read_file"}
+
+        result = _apply_tool_filter(
+            [tool], "server", {"command": "node", "allowedTools": ["read_*"]}
+        )
+
+        assert result == [tool]
 
     def test_allowed_unknown_name_logs_warning(
         self, caplog: pytest.LogCaptureFixture

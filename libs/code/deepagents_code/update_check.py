@@ -3728,7 +3728,10 @@ def removable_extras(
     """Return the selected extras this install can actually remove.
 
     Shared by the CLI and TUI `uninstall` help so both list the same set:
-    receipt-selected extras minus the base dependencies removal refuses.
+    receipt-selected extras minus targets removal refuses.
+
+    A directly selected extra is excluded when a selected composite also supplies
+    it, because removing its selector would leave its packages installed.
 
     Args:
         distribution_name: Name of the installed distribution to inspect.
@@ -3739,10 +3742,17 @@ def removable_extras(
     Propagates `ToolRequirementIntrospectionError` if the uv tool receipt cannot
     be read or does not safely describe the selected extras.
     """
-    from deepagents_code.extras_info import BASE_DEPENDENCY_EXTRAS
+    from deepagents_code.extras_info import (
+        BASE_DEPENDENCY_EXTRAS,
+        composite_extras_providing,
+    )
 
     selected = _uv_tool_selected_extras(distribution_name=distribution_name)
-    return sorted(selected - BASE_DEPENDENCY_EXTRAS)
+    return sorted(
+        extra
+        for extra in selected - BASE_DEPENDENCY_EXTRAS
+        if not composite_extras_providing(extra) & selected
+    )
 
 
 def uninstall_extra_command(

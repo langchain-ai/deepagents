@@ -33,6 +33,7 @@ from deepagents_code.update_check import (
     ToolRequirementIntrospectionError,
     _install_extra_uv_tool_command,
     perform_uninstall_extra,
+    removable_extras,
     uninstall_extra_command,
     upgrade_install_command,
 )
@@ -218,6 +219,14 @@ class TestUninstallExtraCommand:
             match=r"also provided by all-providers.*cannot be removed independently",
         ):
             uninstall_extra_command("ollama", version=__version__)
+
+    def test_removable_extras_excludes_composite_supplied_direct_selection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _write_receipt(tmp_path, ("all-providers", "ollama", "media"))
+        monkeypatch.setattr(sys, "prefix", str(tmp_path))
+
+        assert removable_extras() == ["all-providers", "media"]
 
     def test_absent_extra_lists_what_is_selected(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

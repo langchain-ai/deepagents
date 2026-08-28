@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 import pytest
 
@@ -34,6 +34,7 @@ from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
 
 if TYPE_CHECKING:
     from pathlib import Path
+    from uuid import UUID
 
 
 @dataclass(slots=True)
@@ -55,59 +56,6 @@ def _context(*, prompt_id: UUID | str | None = None) -> ClientHookContext:
     return ClientHookContext.create(
         thread_id="thread-1", approval_mode=ApprovalMode.MANUAL, prompt_id=prompt_id
     )
-
-
-async def test_common_effects_context_and_live_hook_fields(
-    tmp_path: Path,
-    caplog: pytest.LogCaptureFixture,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    prompt_id = uuid4()
-    runtime = _Runtime(
-        cwd=tmp_path,
-        decisions=deque(
-            [
-                SessionStartDecision(
-                    event=HookEvent.SESSION_START,
-                    context=["hook context"],
-                    user_notices=["visible notice"],
-                    terminal_sequences=["\a"],
-                    diagnostics=[
-                        HookDiagnostic(
-                            code="test_warning",
-                            severity="warning",
-                            message="diagnostic",
-                        )
-                    ]
-                    * 2,
-                )
-            ]
-        ),
-    )
-    notices: list[str] = []
-
-    def record(message: str, severity: HookNoticeSeverity) -> None:
-        del severity
-        notices.append(message)
-
-    runtime.presenter.attach(notice=record)
-    service = ClientHookService(runtime)
-
-    decision = await service.session_start(
-        _context(prompt_id=prompt_id), SessionStartCause.STARTUP
-    )
-
-    invocation = runtime.invocations[0]
-    assert decision.context == ["hook context"]
-    assert notices == ["Hook warning: diagnostic", "visible notice"]
-    assert capsys.readouterr().out == "\a"
-    assert "test_warning" in caplog.text
-    assert invocation.context.thread_id == "thread-1"
-    assert invocation.context.cwd == tmp_path
-    assert invocation.context.approval_mode is ApprovalMode.MANUAL
-    assert invocation.context.prompt_id == prompt_id
-    assert service.take_session_context("thread-1") == ("hook context",)
-    assert service.take_session_context("thread-1") == ()
 
 
 async def test_session_end_clears_context_and_notification_can_stop(

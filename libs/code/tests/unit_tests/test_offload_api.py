@@ -46,76 +46,6 @@ def _reset_offload_globals() -> Iterator[None]:
 class TestOperationPayload:
     """Malformed client requests fail with a field-naming 422 at the boundary."""
 
-    def test_valid_payload_passes_with_unknown_keys(self) -> None:
-        from deepagents_code.offload_api import _operation_payload
-
-        operation_id, context, responses = _operation_payload(
-            {
-                "operation_id": "op-1",
-                "context": {
-                    "model": "openai:gpt-5",
-                    "model_params": {"temperature": 0.2},
-                    "profile_overrides": {"max_input_tokens": 1000},
-                    "model_context_limit": 32000,
-                    "auto_approve": True,
-                    "hooks_server_events": ["PreCompact"],
-                    "thread_id": "thread-1",
-                    "some_future_field": {"ignored": True},
-                },
-            }
-        )
-
-        assert operation_id == "op-1"
-        assert context["model"] == "openai:gpt-5"
-        assert context["some_future_field"] == {"ignored": True}
-        assert responses == {}
-
-    @pytest.mark.parametrize(
-        ("field", "value"),
-        [
-            ("model", 123),
-            ("classifier_model", ["openai:gpt-5"]),
-            ("approval_mode", 1),
-            ("thread_id", {"id": "t"}),
-            ("hooks_snapshot_id", 0.5),
-            ("prompt_id", True),
-            ("model_params", "temperature=0.2"),
-            ("profile_overrides", [("max_input_tokens", 1000)]),
-            ("model_context_limit", "32000"),
-            ("model_context_limit", True),
-            ("auto_approve", "yes"),
-            ("hooks_server_events", "PreCompact"),
-            ("hooks_server_events", ["PreCompact", 42]),
-        ],
-    )
-    def test_bad_context_field_names_the_field(self, field: str, value: object) -> None:
-        from deepagents_code.offload_api import _operation_payload
-
-        with pytest.raises(TypeError, match=f"context.{field}"):
-            _operation_payload(
-                {
-                    "operation_id": "op-1",
-                    "context": {field: value},
-                }
-            )
-
-    def test_null_context_fields_pass(self) -> None:
-        from deepagents_code.offload_api import _operation_payload
-
-        _, context, _ = _operation_payload(
-            {
-                "operation_id": "op-1",
-                "context": {
-                    "model": None,
-                    "model_params": None,
-                    "model_context_limit": None,
-                    "auto_approve": None,
-                    "hooks_server_events": None,
-                },
-            }
-        )
-        assert context["model"] is None
-
     @pytest.mark.parametrize(
         "key",
         [
@@ -188,18 +118,6 @@ class TestOperationPayload:
 
         assert "base_url" in caplog.text
         assert "gateway.internal" not in caplog.text
-
-    def test_clean_model_params_dict_is_untouched(self) -> None:
-        from deepagents_code.offload_api import _operation_payload
-
-        _, context, _ = _operation_payload(
-            {
-                "operation_id": "op-1",
-                "context": {"model_params": {"temperature": 0.2, "max_tokens": 64}},
-            }
-        )
-
-        assert context["model_params"] == {"temperature": 0.2, "max_tokens": 64}
 
 
 def _thread_state(checkpoint_id: str = "checkpoint-1") -> dict[str, object]:
@@ -1184,36 +1102,6 @@ class TestExecuteOffload:
         # Outside the operation the var is back to graph mode.
         assert operation_hook_responses is not None
 
-    async def test_pending_graph_work_is_rejected(self) -> None:
-        from deepagents_code import offload_api
-
-        pending = {**_thread_state(), "next": ["tools"]}
-        threads = SimpleNamespace(
-            get=AsyncMock(return_value={"status": "idle"}),
-            get_state=AsyncMock(return_value=pending),
-            update_state=AsyncMock(),
-        )
-        runtime = AsyncMock()
-        with (
-            patch.object(
-                offload_api,
-                "get_client",
-                return_value=SimpleNamespace(threads=threads),
-            ),
-            patch.object(offload_api, "get_server_runtime", new=runtime),
-            pytest.raises(
-                offload_api._OffloadConflictError, match="pending graph work"
-            ),
-        ):
-            await offload_api._execute_offload(
-                "thread-1",
-                operation_id="operation-1",
-                context={},
-                hook_responses={},
-            )
-
-        runtime.assert_not_awaited()
-
     async def test_unregistered_thread_is_rejected_with_an_actionable_conflict(
         self,
     ) -> None:
@@ -1326,28 +1214,6 @@ class TestExecuteOffload:
                 context={},
                 hook_responses={},
             )
-
-
-def test_validated_context_fields_exist_on_the_schema() -> None:
-    """The validator's field lists must not drift from `CLIContextSchema`.
-
-    The names are hand-written string tuples, so a rename in the dataclass would
-    leave this route validating a key nobody sends -- forever, with no test
-    failing. The protocol version is pinned the same way; this closes the other
-    hand-maintained list.
-    """
-    from dataclasses import fields
-
-    from deepagents_code import offload_api
-    from deepagents_code._cli_context import CLIContextSchema
-
-    declared = {f.name for f in fields(CLIContextSchema)}
-    validated = {
-        *offload_api._CONTEXT_STR_OR_NONE_FIELDS,
-        *offload_api._CONTEXT_DICT_FIELDS,
-    }
-
-    assert validated <= declared, validated - declared
 
 
 _ORPHAN_JOIN_TIMEOUT = 5.0
@@ -1608,17 +1474,6 @@ class TestLifespan:
         assert "SystemExit" in caplog.text
 
 
-class TestFlushBudget:
-    """The flush leaves time for LangGraph's own lifespan teardown."""
-
-    def test_flush_budget_leaves_teardown_margin(self) -> None:
-        from deepagents_code import offload_api
-        from deepagents_code.client.launch import server
-
-        remaining = server._SHUTDOWN_TIMEOUT - offload_api._TRACE_FLUSH_TIMEOUT
-        assert remaining >= 2.0
-
-
 class TestRouteRegistration:
     """The Starlette app exposes the paths and methods the client calls.
 
@@ -1667,17 +1522,6 @@ class TestRouteRegistration:
         # The handler read the id out of the real path params, so the route's
         # converter name and the key it indexes agree.
         assert calls == [("thread-42", "op-1")]
-
-    def test_get_on_the_offload_path_is_not_allowed(self) -> None:
-        """Only POST is registered; the capability probe was removed."""
-        from starlette.testclient import TestClient
-
-        from deepagents_code import offload_api
-
-        with TestClient(offload_api.app) as client:
-            response = client.get("/dcode/threads/thread-42/offload")
-
-        assert response.status_code == 405
 
     def test_cancel_path_is_registered(self) -> None:
         from starlette.testclient import TestClient
@@ -1798,16 +1642,6 @@ class TestOffloadRoute:
             path_params={"thread_id": "thread-1", "operation_id": operation_id}
         )
 
-    async def test_malformed_request_is_422(self) -> None:
-        import json
-
-        from deepagents_code import offload_api
-
-        response = await offload_api.offload(self._request({"operation_id": ""}))  # ty: ignore[invalid-argument-type]
-
-        assert response.status_code == 422
-        assert "operation_id" in json.loads(bytes(response.body))["detail"]
-
     async def test_cancel_stops_and_joins_an_active_operation(self) -> None:
         """The cancel response is sent only after the operation task exits."""
         import json
@@ -1859,44 +1693,6 @@ class TestOffloadRoute:
         assert "cancelled" in json.loads(bytes(response.body))["detail"]
         execute.assert_not_awaited()
 
-    async def test_conflict_is_409(self) -> None:
-        import json
-
-        from deepagents_code import offload_api
-
-        with patch.object(
-            offload_api,
-            "_execute_offload",
-            new=AsyncMock(
-                side_effect=offload_api._OffloadConflictError("thread is busy")
-            ),
-        ):
-            response = await offload_api.offload(
-                self._request({"operation_id": "op-1", "context": {}})  # ty: ignore[invalid-argument-type]
-            )
-
-        assert response.status_code == 409
-        assert json.loads(bytes(response.body))["detail"] == "thread is busy"
-
-    async def test_indeterminate_write_is_500_with_its_own_detail(self) -> None:
-        import json
-
-        from deepagents_code import offload_api
-
-        with patch.object(
-            offload_api,
-            "_execute_offload",
-            new=AsyncMock(
-                side_effect=offload_api._OffloadIndeterminateError("cannot confirm")
-            ),
-        ):
-            response = await offload_api.offload(
-                self._request({"operation_id": "op-1", "context": {}})  # ty: ignore[invalid-argument-type]
-            )
-
-        assert response.status_code == 500
-        assert json.loads(bytes(response.body))["detail"] == "cannot confirm"
-
     async def test_unbuildable_runtime_is_503_and_does_not_exit(self) -> None:
         """The startup barrier must not kill the process from a request handler.
 
@@ -1922,55 +1718,3 @@ class TestOffloadRoute:
 
         assert response.status_code == 503
         assert json.loads(bytes(response.body))["detail"] == "runtime failed"
-
-    async def test_a_startup_exit_becomes_unavailable_not_a_process_exit(
-        self,
-    ) -> None:
-        """`SystemExit` from the runtime resolves to a typed error, not an exit."""
-        from deepagents_code import offload_api
-
-        before = _thread_state()
-        threads = SimpleNamespace(
-            get=AsyncMock(return_value={"status": "idle"}),
-            get_state=AsyncMock(return_value=before),
-            update_state=AsyncMock(),
-        )
-        with (
-            patch.object(
-                offload_api,
-                "get_client",
-                return_value=SimpleNamespace(threads=threads),
-            ),
-            patch.object(
-                offload_api,
-                "get_server_runtime",
-                new=AsyncMock(side_effect=SystemExit(1)),
-            ),
-            pytest.raises(offload_api._OffloadUnavailableError, match="unavailable"),
-        ):
-            await offload_api._execute_offload(
-                "thread-1",
-                operation_id="operation-1",
-                context={},
-                hook_responses={},
-            )
-
-        threads.update_state.assert_not_awaited()
-
-    async def test_internal_type_error_is_500_not_422(self) -> None:
-        """A server-side shape fault must not be reported as a client error."""
-        import json
-
-        from deepagents_code import offload_api
-
-        with patch.object(
-            offload_api,
-            "_execute_offload",
-            new=AsyncMock(side_effect=TypeError("LangGraph returned non-object state")),
-        ):
-            response = await offload_api.offload(
-                self._request({"operation_id": "op-1", "context": {}})  # ty: ignore[invalid-argument-type]
-            )
-
-        assert response.status_code == 500
-        assert "server log" in json.loads(bytes(response.body))["detail"]

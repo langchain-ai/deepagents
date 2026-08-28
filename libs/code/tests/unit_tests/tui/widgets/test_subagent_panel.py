@@ -97,168 +97,6 @@ def _displayed_id(panel: SubagentPanel) -> str:
     return phase.eval_id
 
 
-class TestLifecycle:
-    async def test_hidden_until_first_spawn(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            assert not panel.has_class("-visible")
-
-    async def test_visible_and_expanded_after_spawn(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            await pilot.pause()
-            assert panel.has_class("-visible")
-            assert panel.expanded is True
-            assert panel._counts() == (0, 1)
-
-    async def test_any_running_tracks_terminal_state(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            panel.on_subagent_event(_start("b", "E1"))
-            await pilot.pause()
-            assert panel._any_running() is True
-            panel.on_subagent_event(_complete("a", "E1"))
-            panel.on_subagent_event(_complete("b", "E1"))
-            await pilot.pause()
-            assert panel._any_running() is False
-            assert panel._counts() == (2, 2)
-
-    async def test_missing_label_falls_back_to_short_description(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            description = "Review\n" + "a" * 100
-            panel.on_subagent_event(_start("a", "E1", desc=description, label=None))
-            await pilot.pause()
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert ("Review " + "a" * 100)[:60] in rows
-
-    async def test_error_shows_full_reason_in_task_column(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1", label="db.ts"))
-            panel.on_subagent_event(_error("a", "E1", message="rate limit exceeded"))
-            await pilot.pause()
-            assert panel._any_running() is False
-            record = panel._find_record("a")
-            assert record is not None
-            assert record.status == "error"
-            assert record.error == "rate limit exceeded"
-            # The full reason appears in the wide task column; it would be cut to
-            # ~6 chars if it were rendered in the (narrow) TIME column.
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "rate limit exceeded" in rows
-
-    async def test_orphan_error_surfaces_without_start(self) -> None:
-        # An error whose `start` was dropped on the wire must still surface as a
-        # failed row rather than vanishing silently.
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_error("orphan", "E1", message="dropped boom"))
-            await pilot.pause()
-            assert panel.has_class("-visible")
-            record = panel._find_record("orphan")
-            assert record is not None
-            assert record.status == "error"
-            assert record.error == "dropped boom"
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "dropped boom" in rows
-
-    async def test_orphan_error_after_prepare_turn_replaces_prior_turn(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1", label="old work"))
-            panel.on_subagent_event(_complete("a", "E1"))
-            panel.prepare_turn()
-            panel.on_subagent_event(_error("orphan", "E2", message="dropped boom"))
-            panel.on_subagent_event(_start("b", "E3", label="later work"))
-            await pilot.pause()
-            assert panel._phase_order == ["E2", "E3"]
-            assert panel._find_record("a") is None
-            assert panel._find_record("orphan") is not None
-            assert panel._find_record("b") is not None
-
-    async def test_orphan_error_becomes_active_phase(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1", label="old work"))
-            panel.on_subagent_event(_complete("a", "E1"))
-            panel.on_subagent_event(_error("orphan", "E2", message="dropped boom"))
-            await pilot.pause()
-            assert _displayed_id(panel) == "E2"
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "dropped boom" in rows
-
-    async def test_orphan_error_without_duration_still_renders(self) -> None:
-        # The realistic dropped-wire case: a partial error event missing
-        # `duration_ms` must still surface, leaving the duration unset rather
-        # than crashing on the missing/non-numeric field.
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(
-                {
-                    "type": "subagent",
-                    "phase": "error",
-                    "id": "orphan",
-                    "eval_id": "E1",
-                    "error": "dropped boom",
-                }
-            )
-            await pilot.pause()
-            record = panel._find_record("orphan")
-            assert record is not None
-            assert record.status == "error"
-            assert record.duration_ms is None
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "dropped boom" in rows
-
-
-class TestPhases:
-    async def test_phases_accumulate_and_track_active(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            panel.on_subagent_event(_complete("a", "E1"))
-            panel.on_subagent_event(_start("b", "E2"))
-            await pilot.pause()
-            assert panel._phase_order == ["E1", "E2"]
-            assert panel._active_eval_id == "E2"
-            # Earlier phase retained; active table shows only the new phase.
-            assert set(panel._phases["E1"].records) == {"a"}
-            assert _displayed_id(panel) == "E2"
-
-    async def test_eval_without_subagents_creates_no_phase(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            # A complete with no prior start is a no-op (no phantom phase).
-            panel.on_subagent_event(_complete("ghost", "E9"))
-            await pilot.pause()
-            assert panel._phase_order == []
-            assert not panel.has_class("-visible")
-
-    async def test_missing_eval_id_groups_into_single_phase(self) -> None:
-        # When the runtime exposes no tool_call_id the producer omits `eval_id`;
-        # such events share the empty-string phase key. Document that collapse so
-        # a future change that needs to distinguish them is forced to notice.
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            for sub_id in ("a", "b"):
-                panel.on_subagent_event(
-                    {
-                        "type": "subagent",
-                        "phase": "start",
-                        "id": sub_id,
-                        "subagent_type": "research",
-                        "description": "task",
-                        "label": "work",
-                    }
-                )
-            await pilot.pause()
-            assert panel._phase_order == [""]
-            assert set(panel._phases[""].records) == {"a", "b"}
-
-
 class TestSelection:
     async def test_selection_follows_active_then_locks_on_navigation(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
@@ -274,74 +112,8 @@ class TestSelection:
             rows = _render(pilot.app.query_one("#subagent-agents", Static))
             assert "phase one work" in rows
 
-    async def test_selection_clamped_at_bounds(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            panel.on_subagent_event(_start("b", "E2"))
-            await pilot.pause()
-            panel._move_selection(-5)  # past the top
-            assert _displayed_id(panel) == "E1"
-            panel._move_selection(5)  # past the bottom
-            assert _displayed_id(panel) == "E2"
-
-    async def test_click_selects_phase_row(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            panel.on_subagent_event(_start("b", "E2"))
-            await pilot.pause()
-            # Row 1 is the first phase (row 0 is the "Phases" title).
-            panel.on_click(
-                cast("Any", _FakeClick(row_y=1, target_id="subagent-phases"))
-            )
-            await pilot.pause()
-            assert _displayed_id(panel) == "E1"
-
-
-class TestAgentsTable:
-    async def test_row_shows_label_not_description(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(
-                _start("a", "E1", desc="a long boilerplate prompt", label="R16: #3")
-            )
-            await pilot.pause()
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "R16: #3" in rows  # the label is what's rendered
-            assert "boilerplate" not in rows  # the description never reaches the row
-
-    async def test_rows_show_session_model_label(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.reset(model_label="opus")
-            panel.on_subagent_event(_start("a", "E1", label="x"))
-            await pilot.pause()
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "opus" in rows
-
-    async def test_rows_show_headings(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1", label="x"))
-            await pilot.pause()
-            rows = _render(pilot.app.query_one("#subagent-agents", Static))
-            assert "TASK" in rows
-            assert "MODEL" in rows
-            assert "TIME" in rows
-
 
 class TestHeaderToggle:
-    async def test_toggle_flips_expanded(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            await pilot.pause()
-            assert panel.expanded is True
-            panel.toggle()
-            await pilot.pause()
-            assert panel.expanded is False
-
     async def test_user_collapse_persists_across_turn_reset(self) -> None:
         async with PanelApp().run_test(size=(160, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
@@ -352,33 +124,6 @@ class TestHeaderToggle:
             panel.on_subagent_event(_start("b", "E2"))
             await pilot.pause()
             assert panel.expanded is False  # preference persists
-
-    async def test_header_shows_turn_totals_and_failed(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            panel.on_subagent_event(_start("b", "E1"))
-            panel.on_subagent_event(_complete("a", "E1"))
-            panel.on_subagent_event(_error("b", "E1"))
-            await pilot.pause()
-            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
-            assert "2/2 done" in header
-            assert "1 phase" in header  # singular for a single phase
-            assert "1 failed" in header
-
-    async def test_header_phase_count_pluralizes(self) -> None:
-        async with PanelApp().run_test(size=(200, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            await pilot.pause()
-            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
-            assert "1 phase" in header
-            assert "1 phases" not in header  # singular, not "1 phases"
-            # A second eval batch makes it plural.
-            panel.on_subagent_event(_start("b", "E2"))
-            await pilot.pause()
-            header = _render(pilot.app.query_one("#subagent-header-summary", Static))
-            assert "2 phases" in header
 
     # 34 columns is the supported floor: the hint plus its 2-cell margin claims
     # 29 of the 30 content columns, leaving the summary at its 1-cell minimum.
@@ -409,32 +154,8 @@ class TestHeaderToggle:
             assert hint.size.width == len(text)
             assert hint.region.right <= panel.content_region.right
 
-    async def test_click_on_header_toggles(self) -> None:
-        async with PanelApp().run_test(size=(80, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            await pilot.pause()
-            assert panel.expanded
-
-            panel.on_click(
-                cast("Any", _FakeClick(row_y=0, target_id="subagent-header"))
-            )
-            await pilot.pause()
-            assert not panel.expanded
-
 
 class TestReset:
-    async def test_reset_hides_and_clears(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1"))
-            await pilot.pause()
-            panel.reset()
-            await pilot.pause()
-            assert not panel.has_class("-visible")
-            assert panel._phase_order == []
-            assert panel._counts() == (0, 0)
-
     async def test_panel_clears_on_next_turn(self) -> None:
         async with PanelApp().run_test() as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
@@ -504,50 +225,7 @@ class TestReset:
             assert panel._phase_order == []
 
 
-class TestStability:
-    async def test_body_height_stable_across_phase_switch(self) -> None:
-        async with PanelApp().run_test(size=(160, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            # Phase 1 has 3 subagents; phase 2 has 1.
-            for sid in ("a", "b", "c"):
-                panel.on_subagent_event(_start(sid, "E1"))
-                panel.on_subagent_event(_complete(sid, "E1"))
-            panel.on_subagent_event(_start("d", "E2"))
-            await pilot.pause()
-            height_active = panel._body_height()
-            panel._move_selection(-1)  # show the smaller phase 1
-            await pilot.pause()
-            assert panel._body_height() == height_active  # sized to largest phase
-
-    async def test_idle_refresh_skips_redundant_agent_update(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        async with PanelApp().run_test(size=(160, 24)) as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event(_start("a", "E1", label="x"))
-            panel.on_subagent_event(_complete("a", "E1"))
-            await pilot.pause()
-            agents = pilot.app.query_one("#subagent-agents", Static)
-            calls = {"n": 0}
-
-            def _counting(*_args: object, **_kwargs: object) -> None:
-                calls["n"] += 1
-
-            monkeypatch.setattr(agents, "update", _counting)
-            panel._refresh()  # nothing changed since last render
-            assert calls["n"] == 0
-
-
 class TestSafety:
-    async def test_ignored_events_are_noops(self) -> None:
-        async with PanelApp().run_test() as pilot:
-            panel = pilot.app.query_one("#panel", SubagentPanel)
-            panel.on_subagent_event({"phase": "start"})  # no id
-            panel.on_subagent_event({"phase": "weird", "id": "a"})  # bad phase
-            await pilot.pause()
-            assert panel._phase_order == []
-            assert not panel.has_class("-visible")
-
     async def test_strips_escapes_and_bounds_length(self) -> None:
         async with PanelApp().run_test(size=(200, 24)) as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)

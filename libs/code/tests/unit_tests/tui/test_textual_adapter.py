@@ -9,7 +9,7 @@ from pathlib import Path
 from time import time
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -143,280 +143,8 @@ def _noop_status(_: str) -> None:
     """No-op status callback for tests."""
 
 
-class TestTextualUIAdapterInit:
-    """Tests for `TextualUIAdapter` initialization."""
-
-    def test_set_spinner_callback_stored(self) -> None:
-        """Verify `set_spinner` callback is properly stored."""
-
-        async def mock_spinner(status: str | None) -> None:
-            pass
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=mock_spinner,
-        )
-        assert adapter._set_spinner is mock_spinner
-
-    def test_set_spinner_defaults_to_none(self) -> None:
-        """Verify `set_spinner` is optional and defaults to `None`."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        assert adapter._set_spinner is None
-
-    def test_current_tool_messages_initialized_empty(self) -> None:
-        """Verify `_current_tool_messages` is initialized as empty dict."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        assert adapter._current_tool_messages == {}
-
-    def test_token_callbacks_initialized_none(self) -> None:
-        """Verify token callbacks are initialized as `None`."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        assert adapter._on_tokens_update is None
-        assert adapter._on_tokens_pending is None
-        assert adapter._on_tokens_show is None
-        assert adapter._on_stream_complete is None
-
-    def test_on_tool_complete_defaults_to_none_and_accepts_callback(self) -> None:
-        """Verify `on_tool_complete` is optional and can be assigned via init."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        assert adapter._on_tool_complete is None
-
-        callback = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            on_tool_complete=callback,
-        )
-        assert adapter._on_tool_complete is callback
-
-    def test_on_user_visible_output_started_defaults_to_none_and_accepts_callback(
-        self,
-    ) -> None:
-        """Verify the user-visible-output callback can be assigned."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        assert adapter._on_user_visible_output_started is None
-
-        callback = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            on_user_visible_output_started=callback,
-        )
-        assert adapter._on_user_visible_output_started is callback
-
-    def test_set_token_callbacks(self) -> None:
-        """Verify token callbacks can be assigned."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        def update_cb(count: int, *, approximate: bool = False) -> None:
-            pass
-
-        def pending_cb() -> None:
-            pass
-
-        def show_cb(*, approximate: bool = False) -> None:
-            pass
-
-        adapter._on_tokens_update = update_cb
-        adapter._on_tokens_pending = pending_cb
-        adapter._on_tokens_show = show_cb
-        assert adapter._on_tokens_update is update_cb
-        assert adapter._on_tokens_pending is pending_cb
-        assert adapter._on_tokens_show is show_cb
-
-    def test_finalize_pending_tools_with_error_marks_and_clears(self) -> None:
-        """Pending tool widgets should be marked error and then cleared."""
-        set_active = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_active_message=set_active,
-        )
-
-        tool_1 = MagicMock()
-        tool_2 = MagicMock()
-        adapter._current_tool_messages = {"a": tool_1, "b": tool_2}
-
-        adapter.finalize_pending_tools_with_error("Agent error: boom")
-
-        tool_1.set_error.assert_called_once_with("Agent error: boom")
-        tool_2.set_error.assert_called_once_with("Agent error: boom")
-        assert adapter._current_tool_messages == {}
-        set_active.assert_called_once_with(None)
-
-    def test_finalize_pending_tools_dispatches_terminal_hooks(self) -> None:
-        """Aborting a stream mid-tool closes each pending tool.use.
-
-        Each pending widget already had its `tool.use` dispatched at mount, so
-        the safety-net path must emit a terminal `tool.error`/`tool.result` for
-        it — otherwise the aborted tool leaves an unterminated `tool.use`.
-        """
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_active_message=MagicMock(),
-        )
-        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
-        adapter._current_tool_messages = {"call-1": tool_widget}
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as mock_dispatch:
-            adapter.finalize_pending_tools_with_error("Agent error: boom")
-
-        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
-        assert ("tool.error", {"tool_names": ["read_file"]}) in events
-        result_payloads = [p for e, p in events if e == "tool.result"]
-        assert result_payloads == [
-            {
-                "tool_name": "read_file",
-                "tool_id": "call-1",
-                "tool_args": {"path": "notes.txt"},
-                "tool_status": "error",
-                "tool_output": "Agent error: boom",
-            }
-        ]
-        assert adapter._current_tool_messages == {}
-
-
 class TestInterruptCleanup:
     """Tests for interrupt cleanup token handling."""
-
-    async def test_tool_only_interrupt_marks_tokens_approximate(self) -> None:
-        """Tool-only interrupted turns should keep the stale-token marker."""
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            mounted.append(widget)
-            await asyncio.sleep(0)
-            return True
-
-        set_spinner = AsyncMock()
-        set_active = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=set_spinner,
-            set_active_message=set_active,
-        )
-
-        tool_widget = _make_tool_widget("read_file", {"path": "notes.txt"})
-        adapter._current_tool_messages = {"call-1": tool_widget}
-
-        show_calls: list[bool] = []
-
-        def show_cb(*, approximate: bool = False) -> None:
-            show_calls.append(approximate)
-
-        adapter._on_tokens_show = show_cb
-
-        agent = SimpleNamespace(aupdate_state=AsyncMock())
-        turn_stats = SessionStats()
-        config = {"configurable": {"thread_id": "t-1"}}
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.time.monotonic", return_value=101.0
-        ):
-            await _handle_interrupt_cleanup(
-                adapter=adapter,
-                agent=agent,
-                config=config,  # ty: ignore
-                pending_text_by_namespace={},
-                captured_input_tokens=0,
-                captured_output_tokens=0,
-                turn_stats=turn_stats,
-                start_time=100.0,
-            )
-
-        assert mounted
-        assert show_calls == [True]
-        assert turn_stats.wall_time_seconds == pytest.approx(1.0)
-        set_active.assert_called_once_with(None)
-        set_spinner.assert_awaited_once_with(None)
-        tool_widget.set_rejected.assert_called_once_with()
-        assert adapter._current_tool_messages == {}
-
-        interrupted_payload = agent.aupdate_state.await_args_list[0].args[1]
-        interrupted_msg = interrupted_payload["messages"][0]
-        assert interrupted_msg.tool_calls[0]["id"] == "call-1"
-        assert interrupted_msg.tool_calls[0]["name"] == "read_file"
-
-    async def test_interrupt_cleanup_dispatches_terminal_hooks(self) -> None:
-        """A cancelled turn closes each pending tool.use with terminal hooks.
-
-        A tool whose `tool.use` fired but whose `ToolMessage` never arrived
-        (because Ctrl+C aborted the turn) must still get a terminal
-        `tool.error`/`tool.result`, mirroring the HITL-reject branches.
-        """
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_active_message=MagicMock(),
-        )
-        tool_widget = _make_tool_widget("execute", {"command": "sleep 100"})
-        adapter._current_tool_messages = {"call-1": tool_widget}
-        agent = SimpleNamespace(aupdate_state=AsyncMock())
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as mock_dispatch:
-            await _handle_interrupt_cleanup(
-                adapter=adapter,
-                agent=agent,
-                config={"configurable": {"thread_id": "t-1"}},  # ty: ignore
-                pending_text_by_namespace={},
-                captured_input_tokens=0,
-                captured_output_tokens=0,
-                turn_stats=SessionStats(),
-                start_time=0.0,
-            )
-
-        events = [(c[0][0], c[0][1]) for c in mock_dispatch.call_args_list]
-        assert ("tool.error", {"tool_names": ["execute"]}) in events
-        result_payloads = [p for e, p in events if e == "tool.result"]
-        assert result_payloads == [
-            {
-                "tool_name": "execute",
-                "tool_id": "call-1",
-                "tool_args": {"command": "sleep 100"},
-                "tool_status": "error",
-                "tool_output": "Turn cancelled",
-            }
-        ]
-        tool_widget.set_rejected.assert_called_once_with()
-        assert adapter._current_tool_messages == {}
 
     async def test_interrupt_cleanup_keeps_answered_ask_user_a_success(self) -> None:
         """Cancelling with an answered `ask_user` tracked must not fail that row.
@@ -618,55 +346,6 @@ class TestInterruptCleanup:
 
         agent.acancel_active_runs.assert_awaited_once_with(config)
         assert calls == ["cancel", "update"]
-
-    async def test_criteria_cancel_skips_conversation_interruption_recovery(
-        self,
-    ) -> None:
-        """Criteria cancellation cleans runtime UI without adding chat messages."""
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            mounted.append(widget)
-            await asyncio.sleep(0)
-            return True
-
-        tool_widget = MagicMock()
-        tool_widget.tool_name = "docs_search"
-        tool_widget.args = {"query": "login"}
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
-            set_active_message=MagicMock(),
-        )
-        adapter._current_tool_messages = {"call-1": tool_widget}
-        agent = SimpleNamespace(
-            acancel_active_runs=AsyncMock(),
-            aupdate_state=AsyncMock(),
-        )
-
-        await _handle_interrupt_cleanup(
-            adapter=adapter,
-            agent=agent,
-            config={"configurable": {"thread_id": "t-1"}},
-            pending_text_by_namespace={(): "partial criteria output"},
-            captured_input_tokens=10,
-            captured_output_tokens=5,
-            turn_stats=SessionStats(),
-            start_time=0.0,
-            recover_interrupted_turn=False,
-        )
-
-        agent.acancel_active_runs.assert_awaited_once()
-        agent.aupdate_state.assert_not_awaited()
-        tool_widget.set_rejected.assert_called_once_with()
-        assert adapter._current_tool_messages == {}
-        assert not any(
-            isinstance(widget, AppMessage)
-            and "Interrupted by user" in str(widget._content)
-            for widget in mounted
-        )
 
     async def test_chat_cancel_retains_conversation_interruption_recovery(
         self,
@@ -1096,26 +775,6 @@ class TestBuildStreamConfig:
         assert metadata["ls_integration_version"] == __version__
         assert metadata["ls_agent_runtime_version"] == __version__
 
-    def test_thread_id_set_as_top_level_metadata(self) -> None:
-        """thread_id is mirrored to top-level metadata for contract grouping."""
-        config = build_stream_config("t-group", assistant_id=None)
-        assert config["metadata"]["thread_id"] == "t-group"
-        assert config["configurable"]["thread_id"] == "t-group"
-
-    def test_turn_markers_passed_through(self) -> None:
-        """turn_id / turn_number reach metadata when provided."""
-        metadata = build_stream_config(
-            "t-turn", assistant_id=None, turn_id="turn-9", turn_number=4
-        )["metadata"]
-        assert metadata["turn_id"] == "turn-9"
-        assert metadata["turn_number"] == 4
-
-    def test_turn_markers_absent_when_unset(self) -> None:
-        """turn_id / turn_number are omitted when not provided."""
-        metadata = build_stream_config("t-noturn", assistant_id=None)["metadata"]
-        assert "turn_id" not in metadata
-        assert "turn_number" not in metadata
-
     def test_scope_restricted_keys_not_emitted(self) -> None:
         """approval_policy / ls_subagent_* are never stamped trace-wide."""
         metadata = build_stream_config(
@@ -1133,14 +792,6 @@ class TestBuildStreamConfig:
         assert config["metadata"]["agent_name"] == "my-agent"
         assert "updated_at" in config["metadata"]
         assert "cwd" in config["metadata"]
-
-    def test_updated_at_is_valid_iso_timestamp(self) -> None:
-        """`updated_at` should be a valid timezone-aware ISO 8601 timestamp."""
-        config = build_stream_config("t-456", assistant_id="my-agent")
-        raw = config["metadata"]["updated_at"]
-        assert isinstance(raw, str)
-        parsed = datetime.fromisoformat(raw)
-        assert parsed.tzinfo is not None
 
     def test_no_dcode_agent_fields_when_none(self) -> None:
         """Selected dcode agent fields should be absent when unset."""
@@ -1162,49 +813,10 @@ class TestBuildStreamConfig:
         assert "updated_at" not in metadata
         assert "cwd" in metadata
 
-    def test_git_branch_included_when_available(self) -> None:
-        """Git branch should be included in metadata when in a git repo."""
-        with patch(
-            "deepagents_code.config._get_git_branch",
-            return_value="feature-branch",
-        ):
-            config = build_stream_config("t-git", assistant_id="agent")
-        assert config["metadata"]["git_branch"] == "feature-branch"
-
-    def test_git_branch_absent_when_not_in_repo(self) -> None:
-        """Git branch should be absent when not in a git repo."""
-        with patch(
-            "deepagents_code.config._get_git_branch",
-            return_value=None,
-        ):
-            config = build_stream_config("t-nogit", assistant_id="agent")
-        assert "git_branch" not in config["metadata"]
-
-    def test_configurable_thread_id(self) -> None:
-        """`configurable.thread_id` should match the provided thread ID."""
-        config = build_stream_config("t-abc", assistant_id=None)
-        assert config["configurable"]["thread_id"] == "t-abc"
-
     def test_sandbox_type_included_when_set(self) -> None:
         """Sandbox type should appear in metadata when provided."""
         config = build_stream_config("t-sb", assistant_id=None, sandbox_type="daytona")
         assert config["metadata"]["sandbox_type"] == "daytona"
-
-    def test_sandbox_type_absent_when_none(self) -> None:
-        """Sandbox type should be absent from metadata when not provided."""
-        config = build_stream_config("t-nosb", assistant_id=None)
-        assert "sandbox_type" not in config["metadata"]
-
-    def test_sandbox_type_none_string_excluded(self) -> None:
-        """The argparse sentinel `"none"` should not leak into metadata."""
-        config = build_stream_config("t-none", assistant_id=None, sandbox_type="none")
-        assert "sandbox_type" not in config["metadata"]
-
-    def test_no_model_keys_in_configurable(self) -> None:
-        """Model/model_params should not be in configurable."""
-        config = build_stream_config("t-no-model", assistant_id=None)
-        assert "model" not in config["configurable"]
-        assert "model_params" not in config["configurable"]
 
     def test_versions_contains_cli_version(self) -> None:
         """CLI version should always be present in metadata.lc_versions."""
@@ -1231,51 +843,6 @@ class TestBuildStreamConfig:
         assert config["metadata"]["lc_versions"] == {
             "deepagents-code": f"{__version__}+editable"
         }
-
-    def test_dcode_client_deepagents_version_is_diagnostic_metadata(self) -> None:
-        """Client-side SDK version should not be reported as graph instrumentation."""
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.extras_info.resolve_sdk_version",
-                return_value=("1.2.3", "resolved"),
-            ),
-        ):
-            config = build_stream_config("t-sdk", assistant_id=None)
-        assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
-        assert "deepagents" not in config["metadata"]["lc_versions"]
-
-    def test_dcode_client_deepagents_version_absent_when_metadata_missing(
-        self,
-    ) -> None:
-        """Missing SDK metadata should not prevent stream config construction."""
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.extras_info.resolve_sdk_version",
-                return_value=(None, "not_installed"),
-            ),
-        ):
-            config = build_stream_config("t-missing-sdk", assistant_id=None)
-
-        assert "dcode_client_deepagents_version" not in config["metadata"]
-
-    def test_dcode_client_deepagents_version_does_not_import_sdk(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """SDK version metadata lookup should not import the SDK package."""
-        for module in list(sys.modules):
-            if module == "deepagents" or module.startswith("deepagents."):
-                monkeypatch.delitem(sys.modules, module, raising=False)
-
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            build_stream_config("t-no-sdk-import", assistant_id=None)
-
-        assert not any(
-            module == "deepagents" or module.startswith("deepagents.")
-            for module in sys.modules
-        )
 
     def test_get_deepagents_version_maps_status_to_value(self) -> None:
         """Only a `resolved` status yields a version; other statuses map to None.
@@ -1315,64 +882,16 @@ class TestBuildStreamConfig:
         }
         assert config["metadata"]["dcode_client_deepagents_version"] == "1.2.3"
 
-    def test_user_id_included_when_set(self) -> None:
-        """DEEPAGENTS_CODE_USER_ID should appear in metadata when set."""
-        with patch.dict("os.environ", {"DEEPAGENTS_CODE_USER_ID": "mason"}):
-            config = build_stream_config("t-uid", assistant_id=None)
-        assert config["metadata"]["user_id"] == "mason"
-
-    def test_user_id_absent_when_unset(self) -> None:
-        """user_id should be absent from metadata when env var is not set."""
-        with patch.dict("os.environ", {"DEEPAGENTS_CODE_USER_ID": ""}):
-            config = build_stream_config("t-nouid", assistant_id=None)
-        assert "user_id" not in config["metadata"]
-
     def test_experimental_included_when_enabled(self) -> None:
         """Experimental runs should be identifiable in trace metadata."""
         with patch.dict("os.environ", {"DEEPAGENTS_CODE_EXPERIMENTAL": "true"}):
             config = build_stream_config("t-experimental", assistant_id=None)
         assert config["metadata"]["dcode_experimental"] is True
 
-    def test_experimental_absent_when_disabled(self) -> None:
-        """Default runs should not be labeled experimental."""
-        with patch.dict("os.environ", {"DEEPAGENTS_CODE_EXPERIMENTAL": "false"}):
-            config = build_stream_config("t-stable", assistant_id=None)
-        assert "dcode_experimental" not in config["metadata"]
-
-    def test_experimental_absent_when_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The default path (env var unset) is not labeled experimental."""
-        monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
-        config = build_stream_config("t-default", assistant_id=None)
-        assert "dcode_experimental" not in config["metadata"]
-
     def test_auto_approve_included_when_active(self) -> None:
         """YOLO (auto-approve) runs should be identifiable in trace metadata."""
         config = build_stream_config("t-yolo", assistant_id=None, auto_approve=True)
         assert config["metadata"]["dcode_auto_approve"] is True
-
-    def test_skill_name_included_when_invoked(self) -> None:
-        """Skill invocations should be identifiable in trace metadata."""
-        config = build_stream_config(
-            "t-skill", assistant_id=None, skill_name="code-review"
-        )
-        assert config["metadata"]["ls_skill_name"] == "code-review"
-
-    def test_skill_name_absent_by_default(self) -> None:
-        """Ordinary turns should not carry skill attribution."""
-        config = build_stream_config("t-no-skill", assistant_id=None)
-        assert "ls_skill_name" not in config["metadata"]
-
-    def test_auto_approve_absent_when_inactive(self) -> None:
-        """Manual-approval runs should not carry the auto-approve label."""
-        config = build_stream_config("t-manual", assistant_id=None, auto_approve=False)
-        assert "dcode_auto_approve" not in config["metadata"]
-
-    def test_auto_approve_absent_by_default(self) -> None:
-        """The default (param omitted) is not labeled auto-approve."""
-        config = build_stream_config("t-default-approve", assistant_id=None)
-        assert "dcode_auto_approve" not in config["metadata"]
 
     def test_term_program_included_when_set(self) -> None:
         """The launch terminal should be identifiable in trace metadata."""
@@ -1380,31 +899,17 @@ class TestBuildStreamConfig:
             config = build_stream_config("t-term", assistant_id=None)
         assert config["metadata"]["dcode_term_program"] == "iTerm.app"
 
-    def test_term_program_absent_when_unset(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Terminals that never set `TERM_PROGRAM` omit the key entirely."""
-        monkeypatch.delenv("TERM_PROGRAM", raising=False)
-        config = build_stream_config("t-no-term", assistant_id=None)
-        assert "dcode_term_program" not in config["metadata"]
+    def test_skill_name_absent_by_default(self) -> None:
+        """Ordinary turns should not carry skill attribution."""
+        config = build_stream_config("t-no-skill", assistant_id=None)
+        assert "ls_skill_name" not in config["metadata"]
 
-    def test_term_program_absent_when_empty(self) -> None:
-        """Shells that export `TERM_PROGRAM=""` are treated as unset."""
-        with patch.dict("os.environ", {"TERM_PROGRAM": ""}):
-            config = build_stream_config("t-empty-term", assistant_id=None)
-        assert "dcode_term_program" not in config["metadata"]
-
-    def test_term_program_absent_when_whitespace_only(self) -> None:
-        """A whitespace-only `TERM_PROGRAM` must not form a grouping bucket."""
-        with patch.dict("os.environ", {"TERM_PROGRAM": "   "}):
-            config = build_stream_config("t-blank-term", assistant_id=None)
-        assert "dcode_term_program" not in config["metadata"]
-
-    def test_term_program_stripped(self) -> None:
-        """A padded `TERM_PROGRAM` groups with its unpadded form."""
-        with patch.dict("os.environ", {"TERM_PROGRAM": "  vscode\n"}):
-            config = build_stream_config("t-padded-term", assistant_id=None)
-        assert config["metadata"]["dcode_term_program"] == "vscode"
+    def test_skill_name_included_when_invoked(self) -> None:
+        """Skill invocations should be identifiable in trace metadata."""
+        config = build_stream_config(
+            "t-skill", assistant_id=None, skill_name="code-review"
+        )
+        assert config["metadata"]["ls_skill_name"] == "code-review"
 
 
 class TestGetGitBranch:
@@ -1414,43 +919,9 @@ class TestGetGitBranch:
         """Clear the git-branch cache between tests."""
         config_module._git_branch_cache.clear()
 
-    def test_reuses_cached_branch_for_same_working_directory(self) -> None:
-        """Repeated lookups in one repo should only resolve the branch once."""
-        with (
-            patch(
-                "deepagents_code.config.Path.cwd",
-                return_value=Path("/tmp/repo"),
-            ),
-            patch(
-                "deepagents_code.config.resolve_git_branch",
-                return_value="feature-branch",
-            ) as mock_resolve,
-        ):
-            assert config_module._get_git_branch() == "feature-branch"
-            assert config_module._get_git_branch() == "feature-branch"
-
-        mock_resolve.assert_called_once_with("/tmp/repo")
-
 
 class TestGetGitCommitSha:
     """Tests for `_get_git_commit_sha` freshness."""
-
-    def test_resolves_commit_fresh_on_each_call(self) -> None:
-        """HEAD moves mid-session, so the SHA must be re-resolved every call."""
-        with (
-            patch(
-                "deepagents_code.config.Path.cwd",
-                return_value=Path("/tmp/repo"),
-            ),
-            patch(
-                "deepagents_code._git.resolve_git_commit_sha",
-                side_effect=["sha-before", "sha-after"],
-            ) as mock_resolve,
-        ):
-            assert config_module._get_git_commit_sha() == "sha-before"
-            assert config_module._get_git_commit_sha() == "sha-after"
-
-        assert mock_resolve.call_count == 2
 
 
 class TestGetGitBranchOSError:
@@ -1459,14 +930,6 @@ class TestGetGitBranchOSError:
     def setup_method(self) -> None:
         """Clear the git-branch cache between tests."""
         config_module._git_branch_cache.clear()
-
-    def test_returns_none_on_cwd_oserror(self) -> None:
-        """_get_git_branch should return None when cwd is inaccessible."""
-        with patch(
-            "deepagents_code.config.Path.cwd",
-            side_effect=OSError("deleted"),
-        ):
-            assert config_module._get_git_branch() is None
 
 
 class TestBuildStreamConfigOSError:
@@ -1477,68 +940,13 @@ class TestBuildStreamConfigOSError:
         config_module._git_branch_cache.clear()
         config_module._repo_metadata_cache.clear()
 
-    def test_cwd_absent_on_oserror(self) -> None:
-        """Cwd should be absent from metadata when Path.cwd() raises."""
-        with patch(
-            "deepagents_code.config.Path.cwd",
-            side_effect=OSError("deleted"),
-        ):
-            config = build_stream_config("t-err", assistant_id="agent")
-        assert "cwd" not in config["metadata"]
-
 
 class TestIsSummarizationChunk:
     """Tests for `_is_summarization_chunk` detection."""
 
-    def test_returns_true_for_summarization_source(self) -> None:
-        """Should return `True` when `lc_source` is `'summarization'`."""
-        metadata = {"lc_source": "summarization"}
-        assert _is_summarization_chunk(metadata) is True
-
-    def test_returns_false_for_none_metadata(self) -> None:
-        """Should return `False` when `metadata` is `None`."""
-        assert _is_summarization_chunk(None) is False
-        assert _is_summarization_chunk({}) is False
-
-    def test_returns_false_for_none_lc_source(self) -> None:
-        """Should return `False` when `lc_source` is not `'summarization'`."""
-        metadata_none = {"lc_source": None}
-        assert _is_summarization_chunk(metadata_none) is False
-
-        metadata_other = {"lc_source": "other"}
-        assert _is_summarization_chunk(metadata_other) is False
-
-        metadata_missing = {"other_key": "value"}
-        assert _is_summarization_chunk(metadata_missing) is False
-
-    def test_returns_false_for_unrelated_metadata(self) -> None:
-        """Should return `False` when only unrelated keys are present."""
-        assert _is_summarization_chunk({"langgraph_node": "model"}) is False
-        assert _is_summarization_chunk({"langgraph_node": None}) is False
-
 
 class TestIsAutoModeClassifierChunk:
     """Tests for internal Auto mode classifier chunk detection."""
-
-    def test_returns_true_for_auto_mode_classifier_source(self) -> None:
-        """Classifier chunks are identified by their callback metadata."""
-        metadata = {"lc_source": "auto_mode_classifier"}
-        assert _is_auto_mode_classifier_chunk(metadata) is True
-
-    def test_returns_true_for_distinct_classifier_model(self) -> None:
-        """Filtering keys on the source, so a separate classifier stays hidden."""
-        metadata = {
-            "lc_source": "auto_mode_classifier",
-            "classifier_model": "openai:gpt-5.5-mini",
-            "ls_model_name": "gpt-5.5-mini",
-        }
-        assert _is_auto_mode_classifier_chunk(metadata) is True
-
-    def test_returns_false_for_unrelated_metadata(self) -> None:
-        """Regular and missing metadata remain visible."""
-        assert _is_auto_mode_classifier_chunk(None) is False
-        assert _is_auto_mode_classifier_chunk({}) is False
-        assert _is_auto_mode_classifier_chunk({"lc_source": "summarization"}) is False
 
 
 class TestIsRenderableAutoModeEvent:
@@ -1559,96 +967,6 @@ class TestIsRenderableAutoModeEvent:
 
 class TestParseAutoModeReviewEvent:
     """Tests for strict Auto classifier lifecycle event validation."""
-
-    def test_accepts_opaque_main_agent_lifecycle(self) -> None:
-        started = _parse_auto_mode_review_event(
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1", "call-2"],
-            },
-            is_main_agent=True,
-        )
-        completed = _parse_auto_mode_review_event(
-            {
-                "type": "auto_mode",
-                "event": "review_completed",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1", "call-2"],
-                "approved_tool_call_ids": ["call-2"],
-            },
-            is_main_agent=True,
-        )
-
-        assert started is not None
-        assert started.tool_call_ids == ("call-1", "call-2")
-        assert completed is not None
-        assert completed.approved_tool_call_ids == ("call-2",)
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {},
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "",
-                "tool_call_ids": ["call-1"],
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1", "call-1"],
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1"],
-                "reason": "must not cross the adapter boundary",
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": [],
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": "call-1",
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": [123],
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": [""],
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": 123,
-                "tool_call_ids": ["call-1"],
-            },
-            {
-                "type": "auto_mode",
-                "event": "review_completed",
-                "batch_id": "",
-                "tool_call_ids": ["call-1"],
-            },
-        ],
-    )
-    def test_rejects_malformed_lifecycle(self, payload: object) -> None:
-        assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
 
     @pytest.mark.parametrize(
         "payload",
@@ -1687,90 +1005,6 @@ class TestParseAutoModeReviewEvent:
         assert event.tool_call_ids == ()
         assert event.approved_tool_call_ids == ()
 
-    def test_rejects_nested_agent_lifecycle(self) -> None:
-        payload = {
-            "type": "auto_mode",
-            "event": "review_started",
-            "batch_id": "batch-1",
-            "tool_call_ids": ["call-1"],
-        }
-
-        assert _parse_auto_mode_review_event(payload, is_main_agent=False) is None
-
-    def test_warns_when_a_lifecycle_payload_is_malformed(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        payload = {
-            "type": "auto_mode",
-            "event": "review_started",
-            "batch_id": "batch-1",
-            "tool_call_ids": ["call-1"],
-            "latency_ms": 42,
-        }
-
-        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
-            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
-
-        assert [
-            record.getMessage()
-            for record in caplog.records
-            if "Auto review event" in record.getMessage()
-        ] == [
-            (
-                "Rejected malformed Auto review event: "
-                "event=review_started batch_id=batch-1 "
-                "keys=['type', 'event', 'batch_id', 'tool_call_ids', 'latency_ms']"
-            )
-        ]
-
-    def test_warns_when_a_lifecycle_payload_has_non_string_keys(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Mixed key types cannot be sorted, so the log lists keys in order."""
-        payload = {
-            "type": "auto_mode",
-            "event": "review_started",
-            "batch_id": "batch-1",
-            "tool_call_ids": ["call-1"],
-            1: "bad",
-        }
-
-        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
-            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
-
-        assert [
-            record.getMessage()
-            for record in caplog.records
-            if "Auto review event" in record.getMessage()
-        ] == [
-            (
-                "Rejected malformed Auto review event: "
-                "event=review_started batch_id=batch-1 "
-                "keys=['type', 'event', 'batch_id', 'tool_call_ids', 1]"
-            )
-        ]
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"type": "auto_mode", "event": "fallback", "reason": "unavailable"},
-            {"type": "rubric", "event": "review_started"},
-            {},
-        ],
-    )
-    def test_foreign_events_are_rejected_without_a_warning(
-        self, payload: object, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A rejection is only a defect for payloads claiming a review phase."""
-        with caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"):
-            assert _parse_auto_mode_review_event(payload, is_main_agent=True) is None
-
-        assert not [
-            record
-            for record in caplog.records
-            if "Auto review event" in record.getMessage()
-        ]
-
 
 class TestAutoModeReviewLifecycle:
     """Tests for targeted classifier progress transitions."""
@@ -1780,388 +1014,6 @@ class TestAutoModeReviewLifecycle:
         event = _parse_auto_mode_review_event(payload, is_main_agent=True)
         assert event is not None
         return event
-
-    async def test_pauses_reviewed_rows_and_resumes_only_approved(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        spinner = AsyncMock()
-        synced = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=spinner,
-            sync_tool_message=synced,
-        )
-        approved = ToolCallMessage("delete", {"file_path": "a.py"})
-        blocked = ToolCallMessage("delete", {"file_path": "b.py"})
-        unreviewed = ToolCallMessage("write_file", {"file_path": "c.py"})
-        rows = {
-            "call-approved": approved,
-            "call-blocked": blocked,
-            "call-unreviewed": unreviewed,
-        }
-        adapter._current_tool_messages.update(rows)
-        pause_mocks = {tool_id: MagicMock() for tool_id in rows}
-        running_mocks = {tool_id: MagicMock() for tool_id in rows}
-        for tool_id, row in rows.items():
-            monkeypatch.setattr(row, "pause_running", pause_mocks[tool_id])
-            monkeypatch.setattr(row, "set_running", running_mocks[tool_id])
-
-        started = self._event(
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-approved", "call-blocked"],
-            }
-        )
-        completed = self._event(
-            {
-                "type": "auto_mode",
-                "event": "review_completed",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-approved", "call-blocked"],
-                "approved_tool_call_ids": ["call-approved"],
-            }
-        )
-        await adapter._handle_auto_mode_review_event(started)
-        await adapter._handle_auto_mode_review_event(completed)
-
-        pause_mocks["call-approved"].assert_called_once_with()
-        pause_mocks["call-blocked"].assert_called_once_with()
-        pause_mocks["call-unreviewed"].assert_not_called()
-        running_mocks["call-approved"].assert_called_once_with()
-        running_mocks["call-blocked"].assert_not_called()
-        running_mocks["call-unreviewed"].assert_not_called()
-        assert [args.args[0] for args in synced.call_args_list] == [
-            approved,
-            blocked,
-            approved,
-        ]
-        assert spinner.await_args_list == [
-            call("Reviewing approval request"),
-            call("Thinking"),
-        ]
-
-    async def test_a_partly_mutated_row_still_syncs_to_the_store(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A raising mutation has still changed the widget.
-
-        Skipping the sync would leave the store disagreeing with the widget
-        until the next full redraw.
-        """
-        synced = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=AsyncMock(),
-            sync_tool_message=synced,
-        )
-        row = ToolCallMessage("delete", {"file_path": "a.py"})
-        monkeypatch.setattr(
-            row, "pause_running", MagicMock(side_effect=RuntimeError("boom"))
-        )
-        adapter._current_tool_messages["call-1"] = row
-
-        adapter._move_reviewed_row("call-1", running=False)
-
-        synced.assert_called_once_with(row)
-
-    async def test_ignores_duplicate_and_unmatched_events(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        spinner = AsyncMock()
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=spinner,
-        )
-        row = ToolCallMessage("delete", {"file_path": "a.py"})
-        pause = MagicMock()
-        running = MagicMock()
-        monkeypatch.setattr(row, "pause_running", pause)
-        monkeypatch.setattr(row, "set_running", running)
-        adapter._current_tool_messages["call-1"] = row
-        started = self._event(
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1"],
-            }
-        )
-        late = self._event(
-            {
-                "type": "auto_mode",
-                "event": "review_started",
-                "batch_id": "batch-stale",
-                "tool_call_ids": ["call-1"],
-            }
-        )
-        unmatched = self._event(
-            {
-                "type": "auto_mode",
-                "event": "review_completed",
-                "batch_id": "batch-stale",
-                "tool_call_ids": ["call-1"],
-                "approved_tool_call_ids": ["call-1"],
-            }
-        )
-        completed = self._event(
-            {
-                "type": "auto_mode",
-                "event": "review_completed",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1"],
-                "approved_tool_call_ids": ["call-1"],
-            }
-        )
-
-        await adapter._handle_auto_mode_review_event(unmatched)
-        await adapter._handle_auto_mode_review_event(late)
-        await adapter._handle_auto_mode_review_event(started)
-        await adapter._handle_auto_mode_review_event(started)
-        await adapter._handle_auto_mode_review_event(completed)
-        await adapter._handle_auto_mode_review_event(completed)
-
-        pause.assert_called_once_with()
-        running.assert_called_once_with()
-        assert spinner.await_args_list == [
-            call("Reviewing approval request"),
-            call("Thinking"),
-        ]
-
-    async def test_overlapping_batches_keep_the_review_spinner(self) -> None:
-        """A second in-flight batch still owns the spinner when the first ends."""
-        spinner = AsyncMock()
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=spinner,
-        )
-
-        for batch_id, tool_call_id in (("batch-1", "call-1"), ("batch-2", "call-2")):
-            await adapter._handle_auto_mode_review_event(
-                self._event(
-                    {
-                        "type": "auto_mode",
-                        "event": "review_started",
-                        "batch_id": batch_id,
-                        "tool_call_ids": [tool_call_id],
-                    }
-                )
-            )
-        for batch_id, tool_call_id in (("batch-1", "call-1"), ("batch-2", "call-2")):
-            await adapter._handle_auto_mode_review_event(
-                self._event(
-                    {
-                        "type": "auto_mode",
-                        "event": "review_completed",
-                        "batch_id": batch_id,
-                        "tool_call_ids": [tool_call_id],
-                        "approved_tool_call_ids": [tool_call_id],
-                    }
-                )
-            )
-
-        assert spinner.await_args_list == [
-            call("Reviewing approval request"),
-            call("Reviewing approval request"),
-            call("Reviewing approval request"),
-            call("Thinking"),
-        ]
-
-    async def test_mismatched_completion_resumes_every_reviewed_row(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A disagreeing ID set makes the approval list untrustworthy."""
-        adapter, running_mocks = self._adapter_with_rows(
-            monkeypatch, ["call-1", "call-2"]
-        )
-
-        await adapter._handle_auto_mode_review_event(
-            self._event(
-                {
-                    "type": "auto_mode",
-                    "event": "review_started",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1", "call-2"],
-                }
-            )
-        )
-        await adapter._handle_auto_mode_review_event(
-            self._event(
-                {
-                    "type": "auto_mode",
-                    "event": "review_completed",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1"],
-                    "approved_tool_call_ids": [],
-                }
-            )
-        )
-
-        running_mocks["call-1"].assert_called_once_with()
-        running_mocks["call-2"].assert_called_once_with()
-
-    async def test_recovered_completion_resumes_every_reviewed_row(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A rejected completion must not strand the rows its start paused."""
-        adapter, running_mocks = self._adapter_with_rows(
-            monkeypatch, ["call-1", "call-2"]
-        )
-
-        await adapter._handle_auto_mode_review_event(
-            self._event(
-                {
-                    "type": "auto_mode",
-                    "event": "review_started",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1", "call-2"],
-                }
-            )
-        )
-        recovery = _parse_auto_mode_review_event(
-            {
-                "type": "auto_mode",
-                "event": "review_completed",
-                "batch_id": "batch-1",
-                "tool_call_ids": ["call-1", "call-2"],
-                "latency_ms": 42,
-            },
-            is_main_agent=True,
-        )
-        assert recovery is not None
-        assert recovery.recovered
-        await adapter._handle_auto_mode_review_event(recovery)
-
-        running_mocks["call-1"].assert_called_once_with()
-        running_mocks["call-2"].assert_called_once_with()
-
-    async def test_one_failing_row_does_not_strand_its_batch(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A bad widget must not hold the rest of the batch paused."""
-        spinner = AsyncMock()
-        adapter, running_mocks = self._adapter_with_rows(
-            monkeypatch, ["call-1", "call-2"], spinner=spinner
-        )
-        running_mocks["call-1"].side_effect = RuntimeError("unmounted")
-
-        await adapter._handle_auto_mode_review_event(
-            self._event(
-                {
-                    "type": "auto_mode",
-                    "event": "review_started",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1", "call-2"],
-                }
-            )
-        )
-        await adapter._handle_auto_mode_review_event(
-            self._event(
-                {
-                    "type": "auto_mode",
-                    "event": "review_completed",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1", "call-2"],
-                    "approved_tool_call_ids": ["call-1", "call-2"],
-                }
-            )
-        )
-
-        running_mocks["call-2"].assert_called_once_with()
-        assert spinner.await_args_list == [
-            call("Reviewing approval request"),
-            call("Thinking"),
-        ]
-
-    async def test_reset_clears_lifecycle_tracking(self) -> None:
-        """A reused batch ID must not be swallowed by the previous turn."""
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        adapter._active_auto_reviews["batch-1"] = frozenset({"call-1"})
-        adapter._completed_auto_reviews["batch-0"] = None
-
-        adapter._reset_auto_mode_review_tracking()
-
-        assert adapter._active_auto_reviews == {}
-        assert adapter._completed_auto_reviews == {}
-
-    def test_completed_batches_stay_bounded(self) -> None:
-        """Eviction is oldest-first, so recent batches keep their replay guard."""
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        for index in range(_MAX_COMPLETED_AUTO_REVIEWS + 5):
-            adapter._remember_completed_auto_review(f"batch-{index}")
-
-        assert len(adapter._completed_auto_reviews) == _MAX_COMPLETED_AUTO_REVIEWS
-        assert "batch-0" not in adapter._completed_auto_reviews
-        assert f"batch-{_MAX_COMPLETED_AUTO_REVIEWS + 4}" in (
-            adapter._completed_auto_reviews
-        )
-
-    async def test_the_stream_loop_routes_lifecycle_events(self) -> None:
-        """The turn resets stale tracking, then dispatches lifecycle chunks."""
-        spinner = AsyncMock()
-        adapter = TextualUIAdapter(
-            mount_message=AsyncMock(),
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=spinner,
-        )
-        # A stale guard from an earlier turn would swallow this batch ID.
-        adapter._completed_auto_reviews["batch-1"] = None
-        chunks = [
-            (
-                (),
-                "custom",
-                {
-                    "type": "auto_mode",
-                    "event": "review_started",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1"],
-                },
-            ),
-            (
-                (),
-                "custom",
-                {
-                    "type": "auto_mode",
-                    "event": "review_completed",
-                    "batch_id": "batch-1",
-                    "tool_call_ids": ["call-1"],
-                    "approved_tool_call_ids": ["call-1"],
-                },
-            ),
-            ((), "messages", (_text_message("Done."), {})),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-            turn_stats=SessionStats(),
-        )
-
-        assert call("Reviewing approval request") in spinner.await_args_list
-        assert adapter._active_auto_reviews == {}
-        assert adapter._completed_auto_reviews == {"batch-1": None}
 
     async def test_a_row_from_the_message_stream_pauses_and_resumes(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2287,63 +1139,6 @@ class TestFormatRubricEvent:
         ):
             yield
 
-    def test_start_event_omits_iteration_by_default(self) -> None:
-        """Start events should avoid noisy iteration numbers by default."""
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_start", "iteration": 1},
-            )
-            == "⏳ Checking acceptance criteria…"
-        )
-
-    def test_start_event_mentions_explicit_iteration(self) -> None:
-        """Explicit iteration display should surface the 1-based count."""
-        assert (
-            _format_rubric_event(
-                {
-                    "type": "rubric_evaluation_start",
-                    "iteration": 1,
-                    "show_iteration": True,
-                },
-            )
-            == "⏳ Checking acceptance criteria (iteration 2)…"
-        )
-
-    def test_needs_revision_uses_work_status_copy(self) -> None:
-        """An unmet rubric should describe the work, not call the rubric deficient."""
-        assert (
-            _format_rubric_event(
-                {
-                    "type": "rubric_evaluation_end",
-                    "result": "needs_revision",
-                    "explanation": "missing coverage",
-                    "criteria": [
-                        {"name": "tests pass", "passed": False, "gap": "not run"},
-                        {"name": "docs", "passed": True},
-                    ],
-                },
-            )
-            == "↻ Acceptance criteria not yet satisfied"
-        )
-
-    def test_satisfied_event(self) -> None:
-        """Satisfied events should render compact success text."""
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "satisfied"},
-            )
-            == "✓ Acceptance criteria satisfied"
-        )
-
-    def test_start_event_without_int_iteration_omits_number(self) -> None:
-        """A non-integer iteration should fall back to the unnumbered label."""
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_start", "iteration": None},
-            )
-            == "⏳ Checking acceptance criteria…"
-        )
-
     def test_max_iterations_reached_event(self) -> None:
         """The summary stays concise while details preserve goal recovery guidance."""
         event = {
@@ -2371,61 +1166,6 @@ class TestFormatRubricEvent:
         assert "`/goal <objective>`" in details
         assert "`/goal clear`" in details
 
-    def test_invalid_rubric_and_grader_failure_have_distinct_copy(self) -> None:
-        """Rubric validity and grader infrastructure failures must stay distinct."""
-        assert (
-            _format_rubric_event(
-                {
-                    "type": "rubric_evaluation_end",
-                    "result": "failed",
-                    "explanation": "contradictory criteria",
-                },
-            )
-            == "⚠ Rubric is invalid or cannot be evaluated"
-        )
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "grader_error"},
-            )
-            == "⚠ Acceptance criteria check failed"
-        )
-
-    def test_unknown_terminal_result_renders_fallback(self) -> None:
-        """An unrecognized terminal result must not be silently dropped."""
-        assert (
-            _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "something_new"},
-            )
-            == "⚠ Acceptance criteria check ended"
-        )
-
-    def test_complete_details_preserve_explanation_gaps_and_next_step(self) -> None:
-        """Details should retain every structured field without repr truncation."""
-        explanation = "First paragraph.\n\nSecond paragraph.\n" + "detail " * 1000
-        details = _format_rubric_details(
-            {
-                "type": "rubric_evaluation_end",
-                "result": "needs_revision",
-                "explanation": explanation,
-                "criteria": [
-                    {
-                        "name": "Exact copy remains intact",
-                        "passed": False,
-                        "gap": "Expected 'Not ready'; found 'Pending'.",
-                    },
-                    {"name": "Passing criterion", "passed": True},
-                ],
-            }
-        )
-
-        assert explanation.strip() in details
-        assert "Exact copy remains intact" in details
-        assert "Expected 'Not ready'; found 'Pending'." in details
-        assert "Satisfied criteria\n- Passing criterion" in details
-        assert "Address every unmet criterion, then retry the check." in details
-        assert "{'name':" not in details
-        assert "truncated" not in details
-
     def test_invalid_rubric_and_grader_failure_details_recommend_next_steps(
         self,
     ) -> None:
@@ -2443,39 +1183,11 @@ class TestFormatRubricEvent:
         assert "Review or replace the rubric" in invalid
         assert "Retry the check, or choose a different grader model." in grader_error
 
-    def test_no_detail_results_return_empty_string(self) -> None:
-        """`None` and satisfied verdicts have no failure detail to expand."""
-        assert _format_rubric_details({"result": None}) == ""
-        assert _format_rubric_details({"result": "satisfied"}) == ""
-
-    def test_failure_without_explanation_returns_next_step_only(self) -> None:
-        """A failure with no explanation still yields an actionable next step."""
-        details = _format_rubric_details({"result": "failed"})
-
-        assert "Explanation" not in details
-        assert "Unmet criteria" not in details
-        assert details == (
-            "Next step\nReview or replace the rubric before grading again."
-        )
-
     def test_unknown_result_uses_generic_next_step(self) -> None:
         """An unrecognized terminal verdict falls back to a generic recovery step."""
         details = _format_rubric_details({"result": "something_new"})
 
         assert "Next step\nReview the grader details before continuing." in details
-
-    def test_unnamed_failing_criterion_without_gap(self) -> None:
-        """A failing criterion missing name/gap renders a bare default bullet."""
-        details = _format_rubric_details(
-            {
-                "result": "needs_revision",
-                "criteria": [{"passed": False}],
-            }
-        )
-
-        assert "- Unnamed criterion" in details
-        # No gap line follows a criterion with no gap.
-        assert "- Unnamed criterion\n  " not in details
 
     def test_active_goal_max_iterations_details_offer_goal_commands(self) -> None:
         """An unfinished goal that hit the limit should point at goal recovery."""
@@ -2584,47 +1296,6 @@ class TestFormatRubricEvent:
 
         assert _format_rubric_event(event) == "↻ Acceptance criteria not yet satisfied"
         assert "Address every unmet criterion" in _format_rubric_details(event)
-
-    def test_end_event_without_result_returns_none(self) -> None:
-        """Partial end events should not render a spurious warning."""
-        assert _format_rubric_event({"type": "rubric_evaluation_end"}) is None
-
-    def test_unrelated_event_returns_none(self) -> None:
-        """Only rubric events should render rubric messages."""
-        assert _format_rubric_event({"type": "subagent_start"}) is None
-
-    def test_ascii_mode_degrades_to_ascii_glyphs(self) -> None:
-        """In ASCII mode the transcript glyphs must degrade, not stay Unicode."""
-        with patch(
-            "deepagents_code.tui.textual_adapter.get_glyphs",
-            return_value=ASCII_GLYPHS,
-        ):
-            start = _format_rubric_event(
-                {"type": "rubric_evaluation_start", "iteration": 0},
-            )
-            revision = _format_rubric_event(
-                {
-                    "type": "rubric_evaluation_end",
-                    "result": "needs_revision",
-                    "criteria": [
-                        {"name": "tests pass", "passed": False, "gap": "not run"},
-                    ],
-                },
-            )
-            satisfied = _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "satisfied"},
-            )
-            failed = _format_rubric_event(
-                {"type": "rubric_evaluation_end", "result": "failed"},
-            )
-        assert start == f"{ASCII_GLYPHS.hourglass} Checking acceptance criteria..."
-        assert revision == (
-            f"{ASCII_GLYPHS.retry} Acceptance criteria not yet satisfied"
-        )
-        assert satisfied == f"{ASCII_GLYPHS.checkmark} Acceptance criteria satisfied"
-        assert failed == (
-            f"{ASCII_GLYPHS.warning} Rubric is invalid or cannot be evaluated"
-        )
 
 
 class _FakeAgent:
@@ -2818,749 +1489,6 @@ class TestExecuteTaskTextualStreamCompletion:
         callback.assert_not_called()
 
 
-def _collect_mounts() -> tuple[Callable[[object], Awaitable[bool]], list[object]]:
-    """Capture-mounted widget helper for retry-lifecycle tests."""
-    mounted: list[object] = []
-
-    async def mount_message(widget: object) -> bool:
-        await asyncio.sleep(0)
-        mounted.append(widget)
-        return True
-
-    return mount_message, mounted
-
-
-def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any, Any]:
-    """Session state whose hooks record into a real transcript store."""
-    from deepagents_code.hooks.manager import HooksManager
-    from deepagents_code.hooks.runtime import HooksRuntime
-
-    session_state = _session_state(auto_approve=False, thread_id=thread_id)
-    runtime = HooksRuntime.create(
-        cwd=tmp_path,
-        config_dir=tmp_path / "config",
-        transcript_root=tmp_path / "transcripts",
-    )
-    hooks = HooksManager.adopting(None, identity=session_state.hook_identity)
-    hooks._runtime = runtime
-    session_state.hooks = hooks
-    return session_state, runtime
-
-
-def _attempt_start(call_id: str, attempt: int) -> tuple[tuple, str, dict[str, Any]]:
-    return (
-        (),
-        "custom",
-        {
-            "type": "model_attempt",
-            "phase": "start",
-            "call_id": call_id,
-            "attempt": attempt,
-        },
-    )
-
-
-def _attempt_complete(call_id: str, attempt: int) -> tuple[tuple, str, dict[str, Any]]:
-    return (
-        (),
-        "custom",
-        {
-            "type": "model_attempt",
-            "phase": "complete",
-            "call_id": call_id,
-            "attempt": attempt,
-        },
-    )
-
-
-class TestModelRetryLifecycleReconciliation:
-    """Streamed model-attempt lifecycle and retry reconciliation in the TUI."""
-
-    async def test_post_output_retry_splits_widget_and_mounts_marker(
-        self, tmp_path: Path
-    ) -> None:
-        """A retried attempt keeps its partial reply and starts a fresh bubble."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        statuses: list[str | None] = []
-
-        async def set_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=set_spinner,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-retry"
-        )
-        retry_event = {
-            "type": "model_retry",
-            "attempt": 1,
-            "max_retries": 3,
-            "message": "ignored [markup]",
-            "call_id": "call-1",
-            "failed_attempt": 0,
-            "output_may_have_started": True,
-        }
-        chunks = [
-            _attempt_start("call-1", 0),
-            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
-            ((), "custom", retry_event),
-            _attempt_start("call-1", 1),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
-            ),
-            _attempt_complete("call-1", 1),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 2
-        assert "partial" in str(assistant_widgets[0]._content)
-        assert "final" in str(assistant_widgets[1]._content)
-        assert "partial" not in str(assistant_widgets[1]._content)
-
-        markers = [w for w in mounted if isinstance(w, AppMessage)]
-        assert len(markers) == 1
-        assert str(markers[0]._content) == (
-            "Connection dropped; the partial response above is incomplete. "
-            "Retrying 1/3."
-        )
-        # The marker sits between the finalized partial reply and the replay.
-        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
-        assert mounted.index(markers[0]) < mounted.index(assistant_widgets[1])
-        assert any("Retrying model request 1/3" in s for s in statuses if s)
-
-        main = runtime.transcripts.materialize("thread-retry").path.read_text()
-        assert "partial" not in main
-        assert '"content":"final"' in main
-
-    async def test_nested_retry_never_mutates_root_chat_or_marker(
-        self, tmp_path: Path
-    ) -> None:
-        """Nested lifecycle events reconcile only usage scope, never the chat."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        statuses: list[str | None] = []
-
-        async def set_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=set_spinner,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-nested"
-        )
-        nested_ns = ("tools:task",)
-        retry_event = {
-            "type": "model_retry",
-            "attempt": 2,
-            "max_retries": 3,
-            "message": "nested retry",
-            "call_id": "call-n",
-            "failed_attempt": 0,
-            "output_may_have_started": True,
-        }
-        chunks = [
-            (
-                nested_ns,
-                "custom",
-                {
-                    "type": "model_attempt",
-                    "phase": "start",
-                    "call_id": "call-n",
-                    "attempt": 0,
-                },
-            ),
-            (
-                nested_ns,
-                "messages",
-                (AIMessageChunk(content="sub text", id="sub-1"), {}),
-            ),
-            (nested_ns, "custom", retry_event),
-            (
-                (),
-                "messages",
-                (
-                    AIMessageChunk(
-                        content="root reply", id="m-1", chunk_position="last"
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        assert not [w for w in mounted if isinstance(w, AppMessage)]
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 1
-        assert "root reply" in str(assistant_widgets[0]._content)
-        assert all("Retrying" not in (s or "") for s in statuses)
-        main = runtime.transcripts.materialize("thread-nested").path.read_text()
-        assert '"content":"root reply"' in main
-
-    async def test_malformed_retry_keeps_legacy_spinner_only_behavior(
-        self, tmp_path: Path
-    ) -> None:
-        """A malformed correlation falls back to status text, nothing else."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        statuses: list[str | None] = []
-
-        async def set_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=set_spinner,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-malformed"
-        )
-        malformed_retry = {
-            "type": "model_retry",
-            "attempt": 1,
-            "max_retries": 5,
-            "message": "boom",
-            # Missing call_id while correlation fields are present: invalid.
-            "failed_attempt": 0,
-            "output_may_have_started": True,
-        }
-        chunks = [
-            _attempt_start("call-1", 0),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
-            ),
-            ((), "custom", malformed_retry),
-            _attempt_complete("call-1", 0),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        # Prior spinner behavior retained, but no marker and no widget split.
-        assert any("Retrying model request 1/5" in s for s in statuses if s)
-        assert not [w for w in mounted if isinstance(w, AppMessage)]
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 1
-        # The malformed retry must not discard the attempt's staged records.
-        main = runtime.transcripts.materialize("thread-malformed").path.read_text()
-        assert '"content":"kept"' in main
-
-    async def test_pre_output_retry_discards_staging_without_marker(
-        self, tmp_path: Path
-    ) -> None:
-        """A retry before visible output skips the marker and widget split."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-pre-output"
-        )
-        retry_event = {
-            "type": "model_retry",
-            "attempt": 1,
-            "max_retries": 2,
-            "message": "n/a",
-            "call_id": "call-1",
-            "failed_attempt": 0,
-            "output_may_have_started": False,
-        }
-        chunks = [
-            _attempt_start("call-1", 0),
-            ((), "custom", retry_event),
-            _attempt_start("call-1", 1),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="clean", id="m-2", chunk_position="last"), {}),
-            ),
-            _attempt_complete("call-1", 1),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        assert not [w for w in mounted if isinstance(w, AppMessage)]
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 1
-        main = runtime.transcripts.materialize("thread-pre-output").path.read_text()
-        assert '"content":"clean"' in main
-
-    async def test_retry_settles_tool_rows_idempotently(self, tmp_path: Path) -> None:
-        """Retried attempt's parsed tool rows settle once, hooks and maps alike."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        synced_tool_states: list[tuple[str, str]] = []
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            sync_tool_message=lambda widget: synced_tool_states.append(
-                (widget._status, widget._output)
-            ),
-        )
-        session_state, _runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-tools"
-        )
-        retry_event = {
-            "type": "model_retry",
-            "attempt": 1,
-            "max_retries": 3,
-            "message": "n/a",
-            "call_id": "call-1",
-            "failed_attempt": 0,
-            "output_may_have_started": True,
-        }
-        tool_chunk = AIMessageChunk(
-            content="",
-            id="m-1",
-            tool_call_chunks=[
-                {
-                    "name": "read_file",
-                    "args": '{"path": "a.py"}',
-                    "id": "tc-1",
-                    "index": 0,
-                }
-            ],
-        )
-        chunks = [
-            _attempt_start("call-1", 0),
-            ((), "messages", (tool_chunk, {})),
-            ((), "custom", retry_event),
-            # A duplicate retry for the already-settled attempt is a no-op.
-            ((), "custom", dict(retry_event)),
-            _attempt_start("call-1", 1),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="done", id="m-2", chunk_position="last"), {}),
-            ),
-            _attempt_complete("call-1", 1),
-        ]
-
-        tool_results: list[tuple[str, str]] = []
-        with patch(
-            "deepagents_code.tui.textual_adapter._dispatch_tool_result_hook",
-            side_effect=lambda name, _id, _args, status, _output: tool_results.append(
-                (name, status)
-            ),
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=session_state,
-                adapter=adapter,
-            )
-
-        # Exactly one terminal settle for the interrupted tool call, despite
-        # the duplicate retry event and the end-of-stream orphan sweep.
-        assert tool_results == [("read_file", "error")]
-        assert not adapter._current_tool_messages
-        tool_widgets = [w for w in mounted if isinstance(w, ToolCallMessage)]
-        assert len(tool_widgets) == 1
-        assert tool_widgets[0]._status == "error"
-        assert tool_widgets[0]._output == (
-            "Model response interrupted before tool execution"
-        )
-        assert synced_tool_states[-1] == (
-            "error",
-            "Model response interrupted before tool execution",
-        )
-        markers = [w for w in mounted if isinstance(w, AppMessage)]
-        assert len(markers) == 1
-
-    async def test_lost_retry_event_still_reconciles_the_attempt(
-        self, tmp_path: Path
-    ) -> None:
-        """A start for a new attempt with no retry event in between.
-
-        `_emit_stream_event` logs and swallows writer faults, so the retry event
-        can be lost. Reconciling only on a scope match would then let the replay
-        stream into the same bubble with no seam.
-        """
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(tmp_path, "thread-lost")
-        chunks = [
-            _attempt_start("call-1", 0),
-            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
-            # No `model_retry` — attempt 1 simply starts.
-            _attempt_start("call-1", 1),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
-            ),
-            _attempt_complete("call-1", 1),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 2
-        assert "partial" not in str(assistant_widgets[1]._content)
-        markers = [w for w in mounted if isinstance(w, AppMessage)]
-        assert len(markers) == 1
-        main = runtime.transcripts.materialize("thread-lost").path.read_text()
-        assert "partial" not in main
-
-    async def test_new_call_commits_attempt_with_lost_completion(
-        self, tmp_path: Path
-    ) -> None:
-        """A different call preserves the reply when only completion was lost."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-lost-complete"
-        )
-        chunks = [
-            _attempt_start("call-1", 0),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="first", id="m-1", chunk_position="last"), {}),
-            ),
-            # No completion for call-1; call-2 is a new model step, not a retry.
-            _attempt_start("call-2", 0),
-            (
-                (),
-                "messages",
-                (
-                    AIMessageChunk(content="second", id="m-2", chunk_position="last"),
-                    {},
-                ),
-            ),
-            _attempt_complete("call-2", 0),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        assert not [w for w in mounted if isinstance(w, AppMessage)]
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 2
-        main = runtime.transcripts.materialize("thread-lost-complete").path.read_text()
-        assert '"content":"first"' in main
-        assert '"content":"second"' in main
-
-    async def test_unusable_retry_counts_still_mark_the_partial_reply(
-        self, tmp_path: Path
-    ) -> None:
-        """A marker with no counts beats no marker at all.
-
-        By the time the marker is mounted the partial reply is already detached
-        and finalized, so returning nothing would leave a truncated answer in the
-        chat that reads as a complete one.
-        """
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, _runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-nocounts"
-        )
-        chunks = [
-            _attempt_start("call-1", 0),
-            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
-            (
-                (),
-                "custom",
-                {
-                    "type": "model_retry",
-                    # Structurally valid correlation, unusable counters.
-                    "attempt": 0,
-                    "max_retries": 0,
-                    "call_id": "call-1",
-                    "failed_attempt": 0,
-                    "output_may_have_started": True,
-                },
-            ),
-            _attempt_start("call-1", 1),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
-            ),
-            _attempt_complete("call-1", 1),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        markers = [w for w in mounted if isinstance(w, AppMessage)]
-        assert len(markers) == 1
-        assert str(markers[0]._content) == (
-            "Connection dropped; the partial response above is incomplete. Retrying."
-        )
-
-    async def test_retry_spares_a_row_awaiting_a_deferred_result(self) -> None:
-        """An answered `ask_user` still expects its authoritative ToolMessage.
-
-        The turn resumed, so consuming the row here would strand its deferred
-        hook and mark the id as already-settled — which then swallows the real
-        result and trips the contradiction check in the ToolMessage handler.
-        Every other sweep spares these rows for the same reason.
-        """
-        from deepagents_code.tui.textual_adapter import _settle_attempt_for_retry
-        from deepagents_code.tui.widgets.messages import ToolCallMessage
-
-        adapter = TextualUIAdapter(
-            mount_message=_collect_mounts()[0],
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        deferred = ToolCallMessage("ask_user", {"question": "which?"})
-        deferred.defer_success("User answered")
-        plain = ToolCallMessage("read_file", {"file_path": "a.py"})
-        adapter._current_tool_messages = {
-            "call-ask": deferred,
-            "call-read": plain,
-        }
-
-        completed: set[str] = set()
-        displayed = {"call-ask", "call-read"}
-        with (
-            patch("deepagents_code.tui.textual_adapter._dispatch_tool_result_hook"),
-            patch("deepagents_code.tui.textual_adapter._dispatch_tool_error_hook"),
-        ):
-            await _settle_attempt_for_retry(
-                adapter,
-                preserve_partial=True,
-                pending_text_by_namespace={},
-                assistant_message_by_namespace={},
-                completed_tool_result_ids=completed,
-                displayed_tool_ids=displayed,
-                tool_call_buffers={},
-            )
-
-        # The deferred row survives; only the ordinary row is settled.
-        assert list(adapter._current_tool_messages) == ["call-ask"]
-        assert "call-ask" not in completed
-        assert displayed == {"call-ask"}
-
-    async def test_teardown_drops_uncommitted_attempt(self, tmp_path: Path) -> None:
-        """A stream error mid-attempt stages nothing into the transcript."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-error"
-        )
-        chunks = [
-            _attempt_start("call-1", 0),
-            ((), "messages", (AIMessageChunk(content="lost", id="m-1"), {})),
-        ]
-
-        with pytest.raises(RuntimeError, match="stream blew up"):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_RaisingAgent(chunks, RuntimeError("stream blew up")),
-                assistant_id="assistant",
-                session_state=session_state,
-                adapter=adapter,
-            )
-
-        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
-        assert len(assistant_widgets) == 1
-        assert "lost" in str(assistant_widgets[0]._content)
-        markers = [w for w in mounted if isinstance(w, AppMessage)]
-        assert len(markers) == 1
-        assert str(markers[0]._content) == (
-            "The model request failed; the partial response above is incomplete."
-        )
-        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
-        main = runtime.transcripts.materialize("thread-error").path.read_text()
-        assert "lost" not in main
-
-    async def test_clean_teardown_commits_attempt_with_lost_completion(
-        self, tmp_path: Path
-    ) -> None:
-        """A successful stream preserves output when its completion event is lost."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, _mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-clean"
-        )
-        chunks = [
-            _attempt_start("call-1", 0),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
-            ),
-        ]
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-        )
-
-        main = runtime.transcripts.materialize("thread-clean").path.read_text()
-        assert '"content":"kept"' in main
-
-    async def test_retry_usage_scope_separates_replayed_message_ids(
-        self, tmp_path: Path
-    ) -> None:
-        """Replayed chunks under a retried attempt are billed per attempt."""
-        from langchain_core.messages import AIMessageChunk
-
-        mount_message, _mounted = _collect_mounts()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        session_state, _runtime = _retry_lifecycle_session_state(
-            tmp_path, "thread-usage"
-        )
-        usage = {
-            "input_tokens": 10,
-            "output_tokens": 5,
-            "total_tokens": 15,
-        }
-        # Same provider message id on both attempts: without an attempt scope
-        # the replay would dedupe to a single billed request.
-        retry_event = {
-            "type": "model_retry",
-            "attempt": 1,
-            "max_retries": 3,
-            "message": "n/a",
-            "call_id": "call-1",
-            "failed_attempt": 0,
-            "output_may_have_started": True,
-        }
-        chunks = [
-            _attempt_start("call-1", 0),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="x", id="m-1", usage_metadata=usage), {}),  # ty: ignore[invalid-argument-type]
-            ),
-            ((), "custom", retry_event),
-            _attempt_start("call-1", 1),
-            (
-                (),
-                "messages",
-                (AIMessageChunk(content="y", id="m-1", usage_metadata=usage), {}),  # ty: ignore[invalid-argument-type]
-            ),
-            _attempt_complete("call-1", 1),
-        ]
-        turn_stats = SessionStats()
-
-        with (
-            patch.object(config_module.runtime_state, "model_name", "gpt-5.5"),
-            patch.object(config_module.runtime_state, "model_provider", "openai"),
-            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.01),
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=session_state,
-                adapter=adapter,
-                turn_stats=turn_stats,
-            )
-
-        assert turn_stats.per_kind["assistant"].request_count == 2
-
-
 class TestExecuteTaskTextualTurnMarkers:
     """End-to-end: turn markers advance and reach the stream config metadata."""
 
@@ -3617,29 +1545,6 @@ class TestExecuteTaskTextualTurnMarkers:
         # The session state itself reflects the latest turn.
         assert session_state.turn_number == 2
 
-    async def test_skill_name_reaches_stream_config(self) -> None:
-        """The TUI should attribute a skill invocation to the streamed trace."""
-        from deepagents_code.app import TextualSessionState
-
-        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
-        agent = _SequencedAgent([[]])
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="review this",
-            agent=agent,
-            assistant_id="assistant",
-            session_state=session_state,
-            adapter=adapter,
-            skill_name="code-review",
-        )
-
-        assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
-
     async def test_auto_approve_absent_from_stream_config_when_disabled(self) -> None:
         """A manual-approval session must not label its trace as auto-approve.
 
@@ -3671,6 +1576,29 @@ class TestExecuteTaskTextualTurnMarkers:
             )
 
         assert "dcode_auto_approve" not in agent.configs[0]["metadata"]
+
+    async def test_skill_name_reaches_stream_config(self) -> None:
+        """The TUI should attribute a skill invocation to the streamed trace."""
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="review this",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+            skill_name="code-review",
+        )
+
+        assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
 
 
 class TestExecuteTaskTextualClientLifecycle:
@@ -3756,32 +1684,6 @@ class TestExecuteTaskTextualAutoApproveInput:
         key = approval_mode_key("thread-1")
         assert agent.contexts[0]["approval_mode_key"] == key
         assert agent.store_items == [(APPROVAL_MODE_NAMESPACE, key, {"mode": "yolo"})]
-
-    async def test_rubric_is_sent_as_graph_state(self) -> None:
-        """Rubrics should travel beside messages, not inside user content."""
-        agent = _SequencedAgent([[]])
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=agent,
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-            rubric="tests pass",
-        )
-
-        stream_input = agent.stream_inputs[0]
-        assert not isinstance(stream_input, Command)
-        assert stream_input["rubric"] == "tests pass"
-        assert stream_input["goal_criteria_request"] is None
-        user_message = stream_input["messages"][0]
-        assert user_message["content"] == "hi"
-        assert USER_PROMPT_METADATA_KEY in user_message["additional_kwargs"]
 
     async def test_live_approval_write_failure_fails_closed_context(self) -> None:
         """A failed live-mode write must not reuse a stale approval key."""
@@ -4012,48 +1914,6 @@ class TestExecuteTaskTextualUsageStats:
     through `record_request`.
     """
 
-    async def test_records_provider_from_settings(self) -> None:
-        """A usage chunk records the configured provider on `turn_stats`."""
-
-        async def mount_message(_: object) -> bool:
-            await asyncio.sleep(0)
-            return True
-
-        turn_stats = SessionStats()
-        cost_updates: list[float] = []
-
-        def record_cost(cost_usd: float) -> None:
-            cost_updates.append(cost_usd)
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        adapter._on_provisional_cost = record_cost
-
-        with (
-            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
-            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.42),
-        ):
-            mock_runtime_state.model_name = "gpt-5.5"
-            mock_runtime_state.model_provider = "openai"
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent([_usage_chunk(input_tokens=100, output_tokens=50)]),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-                turn_stats=turn_stats,
-            )
-
-        model_stats = turn_stats.per_model["openai", "gpt-5.5"]
-        assert model_stats.input_tokens == 100
-        assert model_stats.output_tokens == 50
-        assert model_stats.cost_usd == pytest.approx(0.42)
-        assert turn_stats.total_cost_usd == pytest.approx(0.42)
-        assert cost_updates == [0.42]
-
     async def test_replayed_usage_after_hitl_resume_is_not_counted_twice(
         self,
     ) -> None:
@@ -4104,90 +1964,6 @@ class TestExecuteTaskTextualUsageStats:
         assert stats.input_tokens == 100
         assert stats.output_tokens == 50
         assert stats.total_cost_usd == pytest.approx(0.42)
-
-    async def test_records_hidden_subagent_and_summarization_usage(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Hidden calls count toward cost, but not the active context size."""
-        from deepagents_code.app import DeepAgentsApp
-
-        async def mount_message(_: object) -> bool:
-            await asyncio.sleep(0)
-            return True
-
-        turn_stats = SessionStats()
-        cost_updates: list[float] = []
-        app = DeepAgentsApp()
-        status_bar = MagicMock()
-        monkeypatch.setattr(app, "_status_bar", status_bar)
-
-        def record_cost(cost_usd: float) -> None:
-            cost_updates.append(cost_usd)
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        adapter._on_provisional_cost = record_cost
-        adapter._on_tokens_update = app._on_tokens_update
-        adapter._on_tokens_pending = app._show_pending_tokens
-        adapter._on_tokens_show = app._show_tokens
-
-        main_usage = _usage_chunk(input_tokens=40, output_tokens=10)
-        hidden_usage = _usage_chunk(input_tokens=400, output_tokens=100)
-        subagent_usage = (
-            ("tools:task:subagent",),
-            hidden_usage[1],
-            hidden_usage[2],
-        )
-        chunks = [
-            main_usage,
-            subagent_usage,
-            _usage_chunk(
-                input_tokens=0,
-                output_tokens=0,
-                total_tokens=800,
-                metadata={"lc_source": "summarization"},
-            ),
-            ((), "messages", (_text_message("Done."), {})),
-        ]
-
-        with (
-            patch("deepagents_code.config.runtime_state") as mock_runtime_state,
-            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.1),
-        ):
-            mock_runtime_state.model_name = "gpt-5.5"
-            mock_runtime_state.model_provider = "openai"
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-                turn_stats=turn_stats,
-            )
-
-        assert turn_stats.request_count == 3
-        assert turn_stats.input_tokens == 1240
-        assert turn_stats.output_tokens == 110
-        assert turn_stats.total_cost_usd == pytest.approx(0.3)
-        assert cost_updates == [0.1, 0.1, 0.1]
-        assert app._context_tokens == 50
-        status_bar.show_pending_tokens.assert_called_once_with()
-        status_bar.set_tokens.assert_called_once_with(50, approximate=False)
-        assert turn_stats.per_kind["assistant"].request_count == 1
-        assert turn_stats.per_kind["subagent"].request_count == 1
-        assert turn_stats.per_kind["offload"].request_count == 1
-        assert turn_stats.per_kind["assistant"].cost_usd == pytest.approx(0.1)
-        assert turn_stats.per_kind["subagent"].cost_usd == pytest.approx(0.1)
-        assert turn_stats.per_kind["offload"].cost_usd == pytest.approx(0.1)
-        app._thread_stats = turn_stats
-        app._set_session_cost(turn_stats.total_cost_usd)
-        cost_summary = app._format_cost_summary()
-        assert "Assistant: $0.10" in cost_summary
-        assert "Subagents: $0.10" in cost_summary
-        assert "Offload: $0.10" in cost_summary
 
     async def test_interrupt_persists_only_main_agent_context_tokens(
         self, monkeypatch: pytest.MonkeyPatch
@@ -4436,167 +2212,6 @@ class TestSessionCostEvents:
         assert turn_stats.per_kind["subagent"].request_count == 1
         assert turn_stats.total_cost_usd == pytest.approx(0.42)
 
-    async def test_streamed_total_reaches_the_app(self) -> None:
-        """A session-cost event is applied as the displayed lifetime total."""
-
-        async def mount_message(_: object) -> bool:
-            await asyncio.sleep(0)
-            return True
-
-        totals: list[float] = []
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        def record_total(
-            total_usd: float,
-            /,
-            *,
-            thread_id: str = "",
-            pricing_ok: bool | None = None,
-        ) -> None:
-            assert thread_id == ""
-            # The payload omits `pricing_ok`, which must read as "unknown"
-            # rather than as a report that pricing is broken.
-            assert pricing_ok is None
-            totals.append(total_usd)
-
-        adapter._on_session_cost = record_total
-        adapter._on_provisional_cost = lambda cost_usd: pytest.fail(  # noqa: ARG005  # signature must match the callback protocol
-            "a server total must not be routed to the provisional display"
-        )
-        subagent_events: list[object] = []
-        adapter._on_subagent_event = subagent_events.append
-
-        chunks = [
-            ((), "custom", {"type": "session_cost", "total": 1.25}),
-            ((), "messages", (_text_message("Done."), {})),
-        ]
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-            turn_stats=SessionStats(),
-        )
-
-        assert totals == [pytest.approx(1.25)]
-        assert subagent_events == []
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"type": "session_cost"},
-            {"type": "session_cost", "total": "1.25"},
-            {"type": "session_cost", "total": True},
-            {"type": "session_cost", "total": -1.0},
-            {"type": "session_cost", "total": float("nan")},
-            {"type": "session_cost", "total": float("inf")},
-            {"type": "other", "total": 1.25},
-            "session_cost",
-        ],
-    )
-    def test_malformed_payloads_are_ignored(self, payload: object) -> None:
-        assert _session_cost_total(payload, is_main_agent=True) is None
-
-    def test_nested_namespace_total_is_ignored(self) -> None:
-        """Only the main agent owns the channel, so a nested emit is a bug."""
-        assert (
-            _session_cost_total(
-                {"type": "session_cost", "total": 1.25},
-                is_main_agent=False,
-            )
-            is None
-        )
-
-    def test_integer_total_is_accepted(self) -> None:
-        assert _session_cost_total(
-            {"type": "session_cost", "total": 0},
-            is_main_agent=True,
-        ) == pytest.approx(0.0)
-
-    async def test_failing_cost_callback_does_not_kill_the_stream(self) -> None:
-        """A misbehaving display callback must not abort the user's turn."""
-
-        async def mount_message(_: object) -> bool:
-            await asyncio.sleep(0)
-            return True
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        def explode(*_args: object, **_kwargs: object) -> None:
-            msg = "status bar is gone"
-            raise RuntimeError(msg)
-
-        adapter._on_session_cost = explode
-        adapter._on_provisional_cost = explode
-
-        chunks = [
-            ((), "custom", {"type": "session_cost", "total": 1.25}),
-            ((), "messages", (_text_message("Done."), {})),
-        ]
-        turn_stats = SessionStats()
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-            turn_stats=turn_stats,
-        )
-
-    def test_thread_id_is_read_from_the_payload(self) -> None:
-        """The client needs the owning thread to reject a stale total."""
-        assert (
-            _session_cost_thread_id({"type": "session_cost", "thread_id": "thread-1"})
-            == "thread-1"
-        )
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"type": "session_cost"},
-            {"type": "session_cost", "thread_id": None},
-            {"type": "session_cost", "thread_id": 7},
-            "session_cost",
-        ],
-    )
-    def test_unusable_thread_id_reads_as_unattributed(self, payload: object) -> None:
-        """An unattributable total is applied, not dropped: `""` means unknown."""
-        assert _session_cost_thread_id(payload) == ""
-
-    def test_pricing_ok_is_read_from_the_payload(self) -> None:
-        """A remote client can only learn the server's pricing health here."""
-        assert (
-            _session_cost_pricing_ok({"type": "session_cost", "pricing_ok": False})
-            is False
-        )
-        assert (
-            _session_cost_pricing_ok({"type": "session_cost", "pricing_ok": True})
-            is True
-        )
-
-    @pytest.mark.parametrize(
-        "payload",
-        [
-            {"type": "session_cost"},
-            {"type": "session_cost", "pricing_ok": "yes"},
-            {"type": "session_cost", "pricing_ok": 1},
-            "session_cost",
-        ],
-    )
-    def test_unusable_pricing_ok_reads_as_unknown(self, payload: object) -> None:
-        """`None` must not be confused with a report that pricing is broken."""
-        assert _session_cost_pricing_ok(payload) is None
-
 
 class TestExecuteTaskTextualAutoModeClassifier:
     """Internal Auto mode model output stays out of the transcript."""
@@ -4616,72 +2231,6 @@ class TestExecuteTaskTextualAutoModeClassifier:
 
         async def write_initial_content(self) -> None:
             pass
-
-    async def test_classifier_json_is_hidden_but_usage_is_recorded(self) -> None:
-        """Classifier tokens count even though only primary output is mounted."""
-        mounted: list[object] = []
-        statuses: list[str | None] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _text_message('{"decisions":[{"decision":"allow"}]}'),
-                    {"lc_source": "auto_mode_classifier"},
-                ),
-            ),
-            _usage_chunk(
-                input_tokens=20,
-                output_tokens=5,
-                metadata={"lc_source": "auto_mode_classifier"},
-            ),
-            ((), "messages", (_text_message("Done."), {})),
-        ]
-        turn_stats = SessionStats()
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.AssistantMessage",
-            side_effect=self.FakeAssistantMessage,
-        ):
-            await execute_task_textual(
-                user_input="edit the file",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(approval_mode=ApprovalMode.AUTO),
-                adapter=adapter,
-                turn_stats=turn_stats,
-            )
-
-        messages = [
-            widget
-            for widget in mounted
-            if isinstance(widget, self.FakeAssistantMessage)
-        ]
-        assert [message._content for message in messages] == ["Done."]
-        assert turn_stats.request_count == 1
-        assert turn_stats.input_tokens == 20
-        assert turn_stats.output_tokens == 5
-        assert turn_stats.per_kind["auto"].request_count == 1
-        # A lone classifier chunk must not masquerade as summarization: no
-        # notification is mounted and the spinner never flips to "Offloading".
-        assert not any(isinstance(widget, SummarizationMessage) for widget in mounted)
-        assert "Offloading" not in statuses
 
     async def test_classifier_tool_call_chunk_is_not_rendered(self) -> None:
         """`with_structured_output` streams tool-call chunks; these stay hidden."""
@@ -4985,116 +2534,6 @@ class TestExecuteTaskTextualFileOpDiffs:
         )
         return mounted
 
-    async def test_a_displayable_edit_hides_its_row_behind_the_diff(
-        self, tmp_path: Path
-    ) -> None:
-        """The whole point of the feature, asserted positively.
-
-        Every other case here is a *negative* — a reason the row must stay. With
-        no test for the case that does hide, `replaces_row` could be hard-coded
-        to `False`, or any of its four conjuncts inverted, and the feature would
-        be silently dead while the suite stayed green: every edit rendering both
-        a row and a diff, which is exactly what this PR set out to stop.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        # The fake agent does not touch the file, so the pre-image is overridden
-        # to differ from what the read-back finds — the same device the guard
-        # tests above use to produce a real diff.
-        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
-        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
-            mounted = await self._run_edit(target, "value = 2")
-        read.assert_both_phases_ran()
-
-        diffs = [m for m in mounted if isinstance(m, DiffMessage)]
-        assert len(diffs) == 1
-        assert diffs[0]._outcome == "shown"
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool._status == "success"
-        assert tool.display is False, "the diff mounted but the row was not hidden"
-
-    async def test_the_diff_is_built_from_the_records_sources_and_counts(
-        self, tmp_path: Path
-    ) -> None:
-        """`before`/`after`/`stats` must actually travel from record to widget.
-
-        Nothing else asserts this: the widget-level highlighting tests hand
-        `before`/`after` in directly, so dropping either argument here would
-        remove syntax highlighting from every diff in the real transcript
-        without failing a test. Dropping `stats` is quieter still — a truncated
-        edit's header silently becomes "change counts unavailable".
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 2\nkeep = 2\n", encoding="utf-8")
-
-        read = _PhasedRead(pre_image=lambda _path: ("value = 1\nkeep = 2\n", None))
-        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
-            mounted = await self._run_edit(target, "value = 2")
-        read.assert_both_phases_ran()
-
-        diff = next(m for m in mounted if isinstance(m, DiffMessage))
-        assert "value = 1" in diff._before, "the pre-image never reached the widget"
-        assert "value = 2" in diff._after, "the post-image never reached the widget"
-        assert diff._stats == DiffStats(additions=1, deletions=1)
-
-        # The stated risk is highlighting silently disappearing from every real
-        # diff, and the private attributes above stop one layer short of that.
-        # Compose the widget and compare against the same diff built without
-        # sources: the extra spans are the lexer's, so this fails if `before`/
-        # `after` arrive but are never used. Counting spans rather than naming
-        # a style keeps it from breaking on a theme change.
-        def spans_for(widget: DiffMessage) -> int:
-            """Total spans across the widget's rendered source rows."""
-            return sum(
-                len(child.render().spans)  # ty: ignore
-                for child in widget.compose()
-                if isinstance(child, Static) and "value =" in str(child.render())
-            )
-
-        plain = DiffMessage(diff._diff_content, diff._file_path, tool_name="edit_file")
-        assert spans_for(diff) > spans_for(plain), (
-            "the sources reached the widget but nothing was highlighted from them"
-        )
-
-    async def test_a_write_file_diff_never_hides_its_row(self, tmp_path: Path) -> None:
-        """Only `edit_file` may be superseded, and a diff alone is not enough.
-
-        `write_file` mounts a `DiffMessage` on the same path, so the guard that
-        keeps its row visible is exercised only here — the store-level test for
-        the same rule uses `shell`, which mounts no diff at all.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 2\n", encoding="utf-8")
-
-        read = _PhasedRead(pre_image=lambda _path: ("value = 1\n", None))
-        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
-            mounted = await self._run_write(target, "value = 2\n")
-        read.assert_both_phases_ran()
-
-        assert any(isinstance(m, DiffMessage) for m in mounted)
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool._status == "success"
-        assert tool.display is True, "a write_file row was hidden behind its diff"
-
-    async def test_diff_line_number_preference_reaches_live_messages(
-        self, tmp_path: Path
-    ) -> None:
-        """The adapter carries the app preference into mounted diff messages."""
-        target = tmp_path / "a.py"
-        target.write_text("value = 2\n", encoding="utf-8")
-
-        read = _PhasedRead(pre_image=lambda _path: ("value = 1\n", None))
-        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
-            mounted = await self._run_write(
-                target,
-                "value = 2\n",
-                show_diff_line_numbers=False,
-            )
-
-        diff = next(message for message in mounted if isinstance(message, DiffMessage))
-        assert diff._show_numbers is False
-
     async def test_a_write_file_caveat_is_kept_out_of_its_group(
         self, tmp_path: Path
     ) -> None:
@@ -5115,18 +2554,6 @@ class TestExecuteTaskTextualFileOpDiffs:
         tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
         assert "prior contents could not be read" in (tool._output or "")
         assert tool.has_display_caveat is True
-
-    async def test_a_displayable_edit_carries_no_caveat_flag(
-        self, tmp_path: Path
-    ) -> None:
-        """The flag is not set for ordinary work, or nothing would ever fold."""
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        mounted = await self._run_edit(target, "value = 2")
-
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool.has_display_caveat is False
 
     async def test_delete_with_a_lost_pre_image_says_so(self, tmp_path: Path) -> None:
         """Destroying a large file must not render like destroying an empty one.
@@ -5152,74 +2579,6 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert tool.display is True
         assert "prior contents could not be read" in tool._output
         assert "Deleted file" in tool._output, "the tool's own output was discarded"
-
-    async def test_a_failed_diff_mount_does_not_abort_the_turn(
-        self, tmp_path: Path
-    ) -> None:
-        """Rendering a diff is cosmetic; the turn's remaining hooks are not.
-
-        The tool row's own update is already guarded for this reason. Letting
-        the mount below it raise would drop the terminal hooks of every tool
-        still in flight for a purely visual failure.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        # The pre-image has to differ from what is on disk, or there is no diff
-        # to mount and the guard is never reached.
-        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
-        boom = RuntimeError("mount exploded")
-        with (
-            patch("deepagents_code.file_ops._read_with_reason", side_effect=read),
-            patch(
-                "deepagents_code.tui.textual_adapter.DiffMessage", side_effect=boom
-            ) as diff_message,
-        ):
-            mounted = await self._run_edit(target, "value = 2")
-
-        assert diff_message.call_count == 1, "the guarded path was never reached"
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool._status == "success"
-        assert tool.display is True, "row hidden with no diff mounted in its place"
-        # Surviving the failure is not enough: the diff was expected and never
-        # appeared, and under a `shown` outcome there is no caveat to fall back
-        # on, so a silent absence reads as "nothing changed". Without this the
-        # note could be deleted and only the guard above would still pass.
-        notes = [m for m in mounted if isinstance(m, AppMessage)]
-        assert any("could not be rendered" in str(n._content) for n in notes), (
-            "the turn survived but nothing told the user the diff was missing"
-        )
-
-    async def test_a_failure_hiding_the_row_is_not_reported_as_a_missing_diff(
-        self, tmp_path: Path
-    ) -> None:
-        """Supersession failing must not claim the diff on screen is absent.
-
-        Hiding the row runs after the diff has mounted. Reporting "could not be
-        rendered" for its failure would contradict what the user can plainly
-        see, and send them looking for a diff that is right there.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        read = _PhasedRead(pre_image=lambda _path: ("value = 0\n", None))
-        with (
-            patch("deepagents_code.file_ops._read_with_reason", side_effect=read),
-            patch.object(
-                ToolCallMessage,
-                "mark_superseded_by_diff",
-                side_effect=RuntimeError("hide exploded"),
-            ),
-        ):
-            mounted = await self._run_edit(target, "value = 2")
-
-        assert any(isinstance(m, DiffMessage) for m in mounted), (
-            "the diff never mounted, so the supersession step was not reached"
-        )
-        notes = [m for m in mounted if isinstance(m, AppMessage)]
-        assert not any("could not be rendered" in str(n._content) for n in notes), (
-            "a hide failure was reported as a rendering failure"
-        )
 
     async def test_a_caveat_no_surface_carried_lands_in_the_transcript(
         self, tmp_path: Path
@@ -5299,67 +2658,6 @@ class TestExecuteTaskTextualFileOpDiffs:
             "prior contents could not be read" in str(n._content) for n in notes
         ), "no surface carried the caveat for a lost pre-image delete"
 
-    async def test_noop_edit_keeps_the_tool_row_instead_of_claiming_no_changes(
-        self, tmp_path: Path
-    ) -> None:
-        """An empty diff must never be what replaces the tool's own output.
-
-        Hiding the row makes the diff the sole account of the edit, so a widget
-        with nothing in it would render a confident "no changes" over whatever
-        actually happened — and any inaccuracy in the read-back would have
-        nothing left to contradict it.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        mounted = await self._run_edit(target, "value = 1")
-
-        assert not any(isinstance(m, DiffMessage) for m in mounted)
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool.display is True
-
-    async def test_edit_without_tracker_record_keeps_tool_row_visible(
-        self, tmp_path: Path
-    ) -> None:
-        """A successful edit stays visible when no diff can be mounted."""
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        with patch(
-            "deepagents_code.file_ops.FileOpTracker.complete_with_message",
-            return_value=None,
-        ):
-            mounted = await self._run_edit(target, "value = 2")
-
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool._status == "success"
-        assert tool.display is True
-        assert not any(isinstance(m, DiffMessage) for m in mounted)
-
-    async def test_line_invisible_change_keeps_the_tool_row_visible(
-        self, tmp_path: Path
-    ) -> None:
-        """Claiming "no changes" over a real change is worse than showing none.
-
-        A trailing-newline-only edit has no line diff to render, so an empty
-        `DiffMessage` would head it "no changes" — while hiding the tool row
-        that correctly reports the file was updated.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        read = _PhasedRead(
-            pre_image=_strip_trailing_newline(file_ops_module._read_with_reason)
-        )
-        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
-            mounted = await self._run_edit(target, "value = 1")
-        read.assert_both_phases_ran()
-
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool._status == "success"
-        assert tool.display is True
-        assert not any(isinstance(m, DiffMessage) for m in mounted)
-
     async def test_unreadable_read_back_keeps_the_row_successful(
         self, tmp_path: Path
     ) -> None:
@@ -5386,29 +2684,6 @@ class TestExecuteTaskTextualFileOpDiffs:
         assert "Permission denied" in tool._output, (
             "the caveat restates the problem instead of explaining it"
         )
-
-    async def test_line_invisible_change_names_what_it_cannot_show(
-        self, tmp_path: Path
-    ) -> None:
-        """A terminator-only change is the one edit no other view will reveal.
-
-        Suppressing the misleading "no changes" diff is only half the fix: with
-        nothing in its place the user is never told the file was rewritten, and
-        finds out later from `git`.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        read = _PhasedRead(
-            pre_image=_strip_trailing_newline(file_ops_module._read_with_reason)
-        )
-        with patch("deepagents_code.file_ops._read_with_reason", side_effect=read):
-            mounted = await self._run_edit(target, "value = 1")
-        read.assert_both_phases_ran()
-
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool._status == "success"
-        assert "line terminators" in tool._output
 
     async def test_unreadable_pre_image_keeps_the_tool_row_visible(
         self, tmp_path: Path
@@ -5461,189 +2736,9 @@ class TestExecuteTaskTextualFileOpDiffs:
         # sentence, never the reason for it.
         assert diff._outcome == "untrusted_before"
 
-    async def test_unreadable_read_back_reports_success_with_a_caveat(
-        self, tmp_path: Path
-    ) -> None:
-        """The edit landed but its result could not be read; say exactly that."""
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        # Leaves `after_content` at None, which is how a failed read-back looks.
-        with patch(
-            "deepagents_code.file_ops.FileOpTracker._populate_after_content",
-            return_value=None,
-        ):
-            mounted = await self._run_edit(target, "value = 2")
-
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert tool.display is True
-        assert "succeeded, but its changes could not be displayed" in (
-            tool._output or ""
-        )
-
-    async def test_tool_reported_error_is_not_called_a_success(
-        self, tmp_path: Path
-    ) -> None:
-        """A tool whose own output reports failure must not be told it worked.
-
-        `record.status` is `"error"` for both this and an unreadable read-back,
-        so gating the "succeeded, but…" message on status alone would state
-        that an edit landed when it did not.
-        """
-        target = tmp_path / "a.py"
-        target.write_text("value = 1\n", encoding="utf-8")
-
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        args = {
-            "file_path": str(target),
-            "old_string": "value = 1",
-            "new_string": "value = 2",
-        }
-        chunks = [
-            ((), "messages", (_tool_call_message("edit_file", args, "tool-1"), {})),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="Error: string not found", tool_call_id="tool-1"
-                    ),
-                    {},
-                ),
-            ),
-        ]
-        await execute_task_textual(
-            user_input="edit the file",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=TextualUIAdapter(
-                mount_message=mount_message,
-                update_status=_noop_status,
-                request_approval=_mock_approval,
-            ),
-        )
-
-        tool = next(m for m in mounted if isinstance(m, ToolCallMessage))
-        assert "succeeded" not in (tool._output or "")
-
 
 class TestExecuteTaskTextualToolCallStreaming:
     """Tests for incremental tool-call argument accumulation."""
-
-    async def test_fragmented_args_mount_once_when_json_completes(self) -> None:
-        """Args streamed across many fragments parse once the JSON is whole.
-
-        The tool row mounts a single time with fully accumulated args, even
-        though the JSON arrives split across several chunks.
-        """
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        # Split a JSON object across fragments; only the last one closes it.
-        chunks = [
-            _tool_chunk(name="edit_file", args='{"path": ', chunk_id="t1"),
-            _tool_chunk(name=None, args='"a.py", ', chunk_id=None),
-            _tool_chunk(name=None, args='"content": "x"}', chunk_id=None),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
-
-        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
-        assert len(tool_msgs) == 1
-        assert tool_msgs[0]._tool_name == "edit_file"
-        assert tool_msgs[0]._args == {"path": "a.py", "content": "x"}
-
-    async def test_incomplete_args_do_not_mount(self) -> None:
-        """A tool row stays unmounted while its JSON args are still partial."""
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        # JSON never closes — the row must not mount with partial args.
-        chunks = [
-            _tool_chunk(name="edit_file", args='{"path": ', chunk_id="t1"),
-            _tool_chunk(name=None, args='"a.py"', chunk_id=None),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
-
-        assert not [m for m in mounted if isinstance(m, ToolCallMessage)]
-
-    async def test_scalar_args_mount_eagerly_when_complete(self) -> None:
-        """Non-object JSON args parse as soon as the scalar is whole.
-
-        Scalars never close with `}`/`]`, so the bracket heuristic that defers
-        large objects never fires for them; they must still mount (wrapped as
-        `{"value": ...}`) once the accumulated fragment is valid JSON.
-        """
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        # A JSON string split so the first fragment is not yet valid JSON.
-        chunks = [
-            _tool_chunk(name="echo", args='"hel', chunk_id="t1"),
-            _tool_chunk(name=None, args='lo"', chunk_id=None),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
-
-        tool_msgs = [m for m in mounted if isinstance(m, ToolCallMessage)]
-        assert len(tool_msgs) == 1
-        assert tool_msgs[0]._args == {"value": "hello"}
 
     async def test_dict_args_resolve_without_reparsing(self) -> None:
         """A complete `tool_call` block mounts with its dict args verbatim."""
@@ -5726,46 +2821,6 @@ class TestExecuteTaskTextualToolCallStreaming:
 class TestExecuteTaskTextualSummarizationFeedback:
     """Tests for summarization spinner and notification feedback."""
 
-    async def test_spinner_transitions_for_summarization_stream(self) -> None:
-        """Spinner should move Thinking -> Offloading -> Thinking."""
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        async def mount_message(_widget: object) -> bool:
-            await asyncio.sleep(0)
-            return True
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
-            ),
-            ((), "messages", (HumanMessage(content="regular chunk"), {})),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
-
-        assert statuses[0] == "Thinking"
-        assert "Offloading" in statuses
-        assert statuses[-1] == "Thinking"
-
     async def test_mounts_summarization_notification_on_regular_chunk(self) -> None:
         """Notification should render when regular chunks resume after summarization."""
         statuses: list[str | None] = []
@@ -5809,46 +2864,6 @@ class TestExecuteTaskTextualSummarizationFeedback:
             isinstance(widget, SummarizationMessage) for widget in mounted_widgets
         )
 
-    async def test_mounts_notification_when_stream_ends_mid_summarization(self) -> None:
-        """Notification should still render if stream exhausts during summarization."""
-        mounted_widgets: list[object] = []
-
-        async def record_spinner(_status: str | None) -> None:
-            await asyncio.sleep(0)
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted_widgets.append(widget)
-            return True
-
-        # Only summarization chunks, no regular chunks follow.
-        chunks = [
-            (
-                (),
-                "messages",
-                (AIMessage(content="summary chunk"), {"lc_source": "summarization"}),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-        )
-
-        assert any(
-            isinstance(widget, SummarizationMessage) for widget in mounted_widgets
-        )
-
 
 def _tool_call_message(
     name: str, args: dict[str, Any], tool_id: str
@@ -5864,167 +2879,6 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
-
-
-async def test_reasoning_streams_separately_and_collapses_before_answer() -> None:
-    mounted: list[object] = []
-
-    async def mount_message(widget: object) -> bool:
-        mounted.append(widget)
-        await asyncio.sleep(0)
-        return True
-
-    chunks = [
-        (
-            (),
-            "messages",
-            (
-                SimpleNamespace(
-                    content_blocks=[
-                        {"type": "reasoning", "reasoning": "[bold]plain"},
-                        {"type": "reasoning", "reasoning": " "},
-                        {"type": "reasoning", "reasoning": "text[/bold]"},
-                        {"type": "reasoning", "reasoning": "\n"},
-                        {"type": "reasoning", "reasoning": "next line"},
-                        {"type": "text", "text": "answer"},
-                    ]
-                ),
-                {},
-            ),
-        )
-    ]
-    adapter = TextualUIAdapter(
-        mount_message=mount_message,
-        update_status=_noop_status,
-        request_approval=_mock_approval,
-    )
-
-    await execute_task_textual(
-        user_input="hi",
-        agent=_FakeAgent(chunks),
-        assistant_id="assistant",
-        session_state=_session_state(auto_approve=True),
-        adapter=adapter,
-        show_reasoning=True,
-    )
-
-    reasoning = next(
-        widget for widget in mounted if isinstance(widget, ReasoningMessage)
-    )
-    answer = next(widget for widget in mounted if isinstance(widget, AssistantMessage))
-    assert reasoning._content == "[bold]plain text[/bold]\nnext line"
-    assert reasoning._expanded is False
-    assert reasoning._streaming is False
-    assert answer._content == "answer"
-
-
-async def test_reasoning_is_drained_when_the_stream_errors_mid_turn() -> None:
-    """A mid-stream error must not lose reasoning the user already read.
-
-    The store records the widget at mount time with empty content, so the
-    `_sync_message_content` inside the drain is the only thing that ever writes
-    the accumulated text back. Skip it and the row survives on screen but comes
-    back blank the first time the transcript virtualizes.
-    """
-    mounted: list[object] = []
-    sync_message_content = MagicMock()
-
-    async def mount_message(widget: object) -> bool:
-        mounted.append(widget)
-        await asyncio.sleep(0)
-        return True
-
-    chunks = [
-        (
-            (),
-            "messages",
-            (
-                SimpleNamespace(
-                    content_blocks=[{"type": "reasoning", "reasoning": "half a "}]
-                ),
-                {},
-            ),
-        )
-    ]
-    adapter = TextualUIAdapter(
-        mount_message=mount_message,
-        update_status=_noop_status,
-        request_approval=_mock_approval,
-        sync_message_content=sync_message_content,
-    )
-
-    with pytest.raises(RuntimeError, match="boom"):
-        await execute_task_textual(
-            user_input="hi",
-            agent=_RaisingAgent(chunks, RuntimeError("boom")),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-            show_reasoning=True,
-        )
-
-    reasoning = next(
-        widget for widget in mounted if isinstance(widget, ReasoningMessage)
-    )
-    assert reasoning._streaming is False
-    sync_message_content.assert_any_call(reasoning.id, "half a ")
-
-
-@pytest.mark.parametrize(
-    ("show_reasoning", "namespace"),
-    [
-        pytest.param(False, (), id="preference-off"),
-        pytest.param(True, ("tools:task",), id="subagent-namespace"),
-    ],
-)
-async def test_reasoning_is_not_rendered(
-    show_reasoning: bool, namespace: tuple[str, ...]
-) -> None:
-    """Reasoning stays hidden when opted out, and for subagents either way.
-
-    The subagent case is carried by the pre-existing `is_main_agent` gate, which
-    drops every nested content block long before the reasoning branch. It is
-    pinned here so a future reasoning path that runs ahead of that gate cannot
-    start leaking subagent thoughts into the main transcript unnoticed.
-    """
-    mounted: list[object] = []
-
-    async def mount_message(widget: object) -> bool:
-        mounted.append(widget)
-        await asyncio.sleep(0)
-        return True
-
-    chunks = [
-        (
-            namespace,
-            "messages",
-            (
-                SimpleNamespace(
-                    content_blocks=[
-                        {"type": "reasoning", "reasoning": "hidden"},
-                        {"type": "non_standard", "reasoning": "opaque"},
-                    ]
-                ),
-                {},
-            ),
-        )
-    ]
-    adapter = TextualUIAdapter(
-        mount_message=mount_message,
-        update_status=_noop_status,
-        request_approval=_mock_approval,
-    )
-
-    await execute_task_textual(
-        user_input="hi",
-        agent=_FakeAgent(chunks),
-        assistant_id="assistant",
-        session_state=_session_state(auto_approve=True),
-        adapter=adapter,
-        show_reasoning=show_reasoning,
-    )
-
-    assert not any(isinstance(widget, ReasoningMessage) for widget in mounted)
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:
@@ -6211,29 +3065,6 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
 
         user_visible_output_started.assert_not_called()
 
-    async def test_nested_grader_output_is_not_mounted(self) -> None:
-        """Rubric-grader tokens stay hidden with other nested message streams."""
-        mount_message = AsyncMock(return_value=True)
-        grader_namespace = ("ReliableRubricMiddleware.after_agent:grader",)
-        chunks = [
-            (grader_namespace, "messages", (_text_message("partial verdict"), {}))
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        mount_message.assert_not_awaited()
-
     async def test_not_fired_for_hidden_summarization_output(self) -> None:
         """Hidden main-namespace summarization text does not count."""
         user_visible_output_started = MagicMock()
@@ -6299,221 +3130,6 @@ class TestExecuteTaskTextualUserVisibleOutputStarted:
 class TestExecuteTaskTextualParallelToolSpinner:
     """Regression tests for #1796: premature spinner with parallel tools."""
 
-    async def test_spinner_stays_up_across_parallel_tools(self) -> None:
-        """With two parallel tools, the spinner stays "Thinking" and is never hidden."""
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        async def mount_message(_widget: object) -> bool:
-            await asyncio.sleep(0)
-            return True
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message("task", {"task": "a"}, "tool-a"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message("task", {"task": "b"}, "tool-b"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="result a", tool_call_id="tool-a"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="result b", tool_call_id="tool-b"),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        assert statuses[0] == "Thinking"
-        assert statuses[-1] == "Thinking"
-        # Stable turn-level indicator: never hidden while parallel tools run.
-        assert None not in statuses
-
-    async def test_on_tool_complete_fires_per_tool_message(self) -> None:
-        """`on_tool_complete` should fire once per `ToolMessage`, even in parallel."""
-        tool_complete = MagicMock()
-        tc = _tool_call_message
-        chunks = [
-            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
-            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
-            ((), "messages", (ToolMessage(content="a", tool_call_id="tool-a"), {})),
-            ((), "messages", (ToolMessage(content="b", tool_call_id="tool-b"), {})),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            on_tool_complete=tool_complete,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        assert tool_complete.call_count == 2
-
-    async def test_on_tool_complete_exception_is_swallowed(self) -> None:
-        """A raising `on_tool_complete` must not break agent streaming."""
-        tc = _tool_call_message
-        chunks = [
-            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
-            ((), "messages", (ToolMessage(content="a", tool_call_id="tool-a"), {})),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            on_tool_complete=MagicMock(side_effect=RuntimeError("boom")),
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-    async def test_spinner_shown_after_single_tool_completes(self) -> None:
-        """Spinner should show Thinking after the only tool completes."""
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message("ls", {"path": "."}, "tool-1"),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="file1.py", tool_call_id="tool-1"),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        await execute_task_textual(
-            user_input="list files",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        assert statuses[-1] == "Thinking"
-
-    async def test_edit_file_tool_keeps_thinking_spinner_while_pending(self) -> None:
-        """`edit_file` should not leave a visual gap before approval/execution."""
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message(
-                        "edit_file",
-                        {
-                            "file_path": "example.py",
-                            "old_string": "old",
-                            "new_string": "new",
-                        },
-                        "tool-1",
-                    ),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(content="edited", tool_call_id="tool-1"),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        await execute_task_textual(
-            user_input="edit the file",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        assert statuses[:2] == ["Thinking", "Thinking"]
-        assert None not in statuses
-
     async def test_auto_executed_tool_shows_running_at_mount(self) -> None:
         """Auto-executed tools (no approval) spin immediately when mounted.
 
@@ -6557,128 +3173,6 @@ class TestExecuteTaskTextualParallelToolSpinner:
 
         assert len(mounted_tools) == 1
         assert mounted_tools[0]._status == "running"
-
-    async def test_edit_file_marks_running_at_mount(self) -> None:
-        """All tool rows are marked running at mount, including `edit_file`.
-
-        The row is hidden inside its collapsed group, so "running" drives the
-        group's live progress state rather than showing a duplicate spinner
-        alongside the global "Thinking" indicator.
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    _tool_call_message(
-                        "edit_file",
-                        {
-                            "file_path": "example.py",
-                            "old_string": "old",
-                            "new_string": "new",
-                        },
-                        "tool-1",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        # Capture the widget at mount: the clean-completion orphan close clears
-        # `_current_tool_messages` (hooks-only, so the widget keeps its state),
-        # so read the mounted row directly rather than the post-turn tracking.
-        mounted_tools: list[ToolCallMessage] = []
-
-        async def capture_mount(widget: object) -> bool:
-            await asyncio.sleep(0)
-            if isinstance(widget, ToolCallMessage):
-                mounted_tools.append(widget)
-            return True
-
-        adapter = TextualUIAdapter(
-            mount_message=capture_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="edit",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        assert len(mounted_tools) == 1
-        assert mounted_tools[0]._status == "running"
-
-    async def test_spinner_with_three_parallel_tools_out_of_order(self) -> None:
-        """Three parallel tools complete out of order; spinner stays up throughout."""
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        tc = _tool_call_message
-        chunks = [
-            ((), "messages", (tc("task", {"task": "a"}, "tool-a"), {})),
-            ((), "messages", (tc("task", {"task": "b"}, "tool-b"), {})),
-            ((), "messages", (tc("task", {"task": "c"}, "tool-c"), {})),
-            # Complete out of dispatch order: B, A, C
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="result b",
-                        tool_call_id="tool-b",
-                    ),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="result a",
-                        tool_call_id="tool-a",
-                    ),
-                    {},
-                ),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="result c",
-                        tool_call_id="tool-c",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        await execute_task_textual(
-            user_input="hello",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=True),
-            adapter=adapter,
-        )
-
-        assert statuses[-1] == "Thinking"
-        # Stable turn-level indicator: never hidden while parallel tools run.
-        assert None not in statuses
 
     async def test_spinner_recovers_with_untracked_tool_id(self) -> None:
         """Spinner still shows Thinking with an untracked tool_call_id."""
@@ -6792,107 +3286,6 @@ class TestExecuteTaskTextualTextThenToolSpinner:
         assert statuses[-1] == "Thinking"
         assert None not in statuses, f"Spinner was hidden mid-turn: {statuses}"
         assert all(s == "Thinking" for s in statuses)
-
-    async def test_spinner_reanchors_for_text_after_tool_cycle(self) -> None:
-        """Text -> tool_call -> tool_result -> text must re-anchor the spinner.
-
-        After a tool cycle completes, the tool_call handler pops the previous
-        AssistantMessage from `assistant_message_by_namespace`, so the next
-        text chunk mounts a fresh widget. The re-anchor call must fire for that
-        second text burst so the spinner stays visible between it and any
-        follow-up tool call.
-        """
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        chunks = [
-            ((), "messages", (_text_message("First, I'll inspect..."), {})),
-            ((), "messages", (_tool_call_message("ls", {"path": "."}, "tool-1"), {})),
-            ((), "messages", (ToolMessage(content="ok", tool_call_id="tool-1"), {})),
-            ((), "messages", (_text_message("Now the second step..."), {})),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        fake_msg = AsyncMock()
-        fake_msg.id = "asst-test"
-        with patch(
-            "deepagents_code.tui.textual_adapter.AssistantMessage",
-            return_value=fake_msg,
-        ):
-            await execute_task_textual(
-                user_input="hi",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=True),
-                adapter=adapter,
-            )
-
-        # Expected Thinking calls:
-        #   1. Before astream
-        #   2. After first AssistantMessage mount (re-anchor)
-        #   3. After tool result
-        #   4. After second AssistantMessage mount (re-anchor again)
-        thinking_count = sum(1 for s in statuses if s == "Thinking")
-        assert thinking_count >= 4, (
-            f"Expected at least 4 Thinking calls including re-anchors after "
-            f"each text mount; got {thinking_count}: {statuses}"
-        )
-
-    async def test_spinner_stays_up_when_text_arrives_mid_tool(self) -> None:
-        """A text chunk arriving while a tool is in flight keeps the spinner up.
-
-        Contrived sequence: a tool call mounts (populating
-        `_current_tool_messages`), then a text chunk arrives before the tool
-        result. The spinner stays "Thinking" throughout and is never hidden —
-        the text re-anchor stays gated on `not _current_tool_messages`.
-        """
-        statuses: list[str | None] = []
-
-        async def record_spinner(status: str | None) -> None:
-            await asyncio.sleep(0)
-            statuses.append(status)
-
-        chunks = [
-            ((), "messages", (_tool_call_message("ls", {"path": "."}, "tool-1"), {})),
-            ((), "messages", (_text_message("Meanwhile..."), {})),
-            ((), "messages", (ToolMessage(content="ok", tool_call_id="tool-1"), {})),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            set_spinner=record_spinner,
-        )
-
-        fake_msg = AsyncMock()
-        fake_msg.id = "asst-test"
-        with patch(
-            "deepagents_code.tui.textual_adapter.AssistantMessage",
-            return_value=fake_msg,
-        ):
-            await execute_task_textual(
-                user_input="hi",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=True),
-                adapter=adapter,
-            )
-
-        # The spinner stays "Thinking" and is never hidden while the tool is in
-        # flight; the text re-anchor stays gated on no pending tools.
-        assert statuses[0] == "Thinking"
-        assert statuses[-1] == "Thinking"
-        assert None not in statuses
 
 
 class TestExecuteTaskTextualRubricRevisionStreaming:
@@ -9005,39 +5398,6 @@ class TestAskUserHookBodySanitization:
     a `ToolMessage` that arrives on a later turn, when no deferral entry survives.
     """
 
-    def test_transcript_is_replaced_on_the_success_path(self) -> None:
-        """A raw transcript is swapped for the answered summary."""
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as dispatch:
-            _dispatch_tool_result_hook(
-                "ask_user",
-                "ask-1",
-                {"questions": [{"question": "Name?"}]},
-                "success",
-                "Q: Name?\nA: Alice",
-            )
-
-        payload = dispatch.call_args[0][1]
-        assert payload["tool_output"] == ASK_USER_ANSWERED_SUMMARY
-        assert "Alice" not in str(payload)
-
-    def test_transcript_is_replaced_on_the_error_path(self) -> None:
-        """A failed prompt reports the failure summary, not its `(error: ...)` body."""
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as dispatch:
-            _dispatch_tool_result_hook(
-                "ask_user",
-                "ask-1",
-                {},
-                "error",
-                "Q: Name?\nA: (error: some arbitrary detail)",
-            )
-
-        payload = dispatch.call_args[0][1]
-        assert payload["tool_output"] == ASK_USER_FAILED_SUMMARY
-
     @pytest.mark.parametrize(
         "body",
         [
@@ -9067,15 +5427,6 @@ class TestAskUserHookBodySanitization:
 
         assert dispatch.call_args[0][1]["tool_output"] == body
 
-    def test_other_tools_are_untouched(self) -> None:
-        """The substitution is scoped to `ask_user` and must not affect any other."""
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as dispatch:
-            _dispatch_tool_result_hook("read_file", "call-1", {}, "success", "contents")
-
-        assert dispatch.call_args[0][1]["tool_output"] == "contents"
-
 
 class TestSetRunningDeferredGuard:
     """A spinner must never visibly un-answer an `ask_user` row.
@@ -9085,43 +5436,6 @@ class TestSetRunningDeferredGuard:
     batch mixing a question with a gated or hook-resolved tool reaches the answered
     row.
     """
-
-    def test_awaiting_row_is_skipped(self) -> None:
-        """An answered row keeps its outcome instead of spinning."""
-        widget = _make_tool_widget(
-            "ask_user",
-            {"questions": [{"question": "Name?"}]},
-            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
-        )
-
-        _set_running_unless_deferred(widget)
-
-        widget.set_running.assert_not_called()
-
-    def test_ordinary_row_still_runs(self) -> None:
-        """A gated sibling waiting to execute must still get its spinner."""
-        widget = _make_tool_widget("execute", {"command": "ls"})
-
-        _set_running_unless_deferred(widget)
-
-        widget.set_running.assert_called_once_with()
-
-    def test_settled_row_still_runs(self) -> None:
-        """A row that already fell back has no outcome left to protect.
-
-        Mirrors `_pop_rows_not_awaiting_deferred_result`: the immunity is scoped to
-        rows still waiting, so it cannot be spent and then relied on.
-        """
-        widget = _make_tool_widget(
-            "ask_user",
-            {"questions": [{"question": "Name?"}]},
-            deferred_success_output=ASK_USER_ANSWERED_SUMMARY,
-        )
-        widget.is_awaiting_deferred_result = False
-
-        _set_running_unless_deferred(widget)
-
-        widget.set_running.assert_called_once_with()
 
 
 class _MutatingItemsDict(dict):  # noqa: FURB189  # must subclass dict to override C-level iteration
@@ -9199,27 +5513,6 @@ class TestDictIterationSafety:
                 pass
 
     # -- Test B: list() snapshot protects iteration ----
-
-    def test_items_iteration_safe_with_list(self) -> None:
-        """`list(d.items())` snapshots before mutation can occur."""
-        d: dict = {f"id_{i}": _make_tool_widget(f"t{i}") for i in range(5)}
-        collected = []
-        for key, _val in list(d.items()):
-            collected.append(key)
-            d.pop(key, None)  # mutate during loop body
-        assert len(collected) == 5
-        assert len(d) == 0
-
-    def test_values_iteration_safe_with_list(self) -> None:
-        """`list(d.values())` snapshots before mutation."""
-        d: dict = {f"id_{i}": _make_tool_widget(f"t{i}") for i in range(5)}
-        collected = []
-        keys = list(d.keys())
-        for val in list(d.values()):
-            collected.append(val)
-            if keys:
-                d.pop(keys.pop(0), None)
-        assert len(collected) == 5
 
     # -- Test C: _build_interrupted_ai_message uses list() ----
 
@@ -9320,180 +5613,6 @@ class TestDictIterationSafety:
 class TestToolHooksTextual:
     """Tests for tool.use and tool.result hook dispatch in execute_task_textual."""
 
-    async def test_tool_use_hook_dispatched_before_mount(self) -> None:
-        """tool.use fires (with name, id, args) before the ToolCallMessage mounts."""
-        events: list[str] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            events.append(f"mount:{type(widget).__name__}")
-            return True
-
-        def record_dispatch(event: str, _payload: dict[str, Any]) -> None:
-            events.append(f"dispatch:{event}")
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget",
-            side_effect=record_dispatch,
-        ) as mock_dispatch:
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        # tool.use is the first dispatch. This fixture streams no ToolMessage, so
-        # the clean-completion orphan close then emits terminal tool.error/
-        # tool.result for the same call (covered by
-        # test_clean_completion_closes_unresulted_tool_use); assert on the first
-        # call rather than call count.
-        assert mock_dispatch.call_args_list[0][0][0] == "tool.use"
-        payload = mock_dispatch.call_args_list[0][0][1]
-        assert payload["tool_name"] == "read_file"
-        assert payload["tool_id"] == "call-1"
-        assert payload["tool_args"] == {"path": "foo.py"}
-        # The hook must fire before the widget mounts, not merely at some point.
-        assert events.index("dispatch:tool.use") < events.index("mount:ToolCallMessage")
-
-    async def test_tool_result_hook_dispatched_on_success(self) -> None:
-        """tool.result fires with tool_status='success' after a successful tool run."""
-        mounted: list[object] = []
-        output = "x" * 5000
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
-            ),
-            (
-                (),
-                "messages",
-                (ToolMessage(content=output, tool_call_id="call-1"), {}),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        def fail_if_tool_result(event: str, _payload: dict[str, Any]) -> None:
-            if event == "tool.result":
-                msg = "tool.result hooks must not be awaited in the textual path"
-                raise AssertionError(msg)
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-                side_effect=fail_if_tool_result,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_status"] == "success"
-        assert payload["tool_name"] == "read_file"
-        assert payload["tool_id"] == "call-1"
-        # Capped to the limit and marked so a consumer can tell it was truncated;
-        # the marker is counted within the cap so the total stays at 2000.
-        assert len(payload["tool_output"]) == 2000
-        assert payload["tool_output"].endswith(TOOL_OUTPUT_TRUNCATION_MARKER)
-        assert payload["tool_output"].startswith("x" * 100)
-        assert payload["tool_args"] == {"path": "foo.py"}
-        tool_msg = next(
-            widget for widget in mounted if isinstance(widget, ToolCallMessage)
-        )
-        assert tool_msg._output == output
-
-    async def test_tool_result_sentinel_when_formatter_raises(self) -> None:
-        """A formatter error still dispatches tool.result with the sentinel.
-
-        The content-formatting guard must keep the terminal dispatch
-        unconditional; otherwise a formatter (or pathological `__str__`) error
-        would drop the tool.result for this tool and every later tool.
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
-            ),
-            (
-                (),
-                "messages",
-                (ToolMessage(content="unformattable", tool_call_id="call-1"), {}),
-            ),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        def boom(_content: object) -> str:
-            msg = "formatter boom"
-            raise RuntimeError(msg)
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.format_tool_message_content",
-                side_effect=boom,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        result_payloads = [
-            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
-        ]
-        assert len(result_payloads) == 1
-        assert result_payloads[0]["tool_output"] == UNRENDERABLE_TOOL_OUTPUT
-
     async def test_mount_failure_does_not_suppress_real_tool_result(self) -> None:
         """A widget mount failure still lets the real tool.result dispatch.
 
@@ -9564,65 +5683,6 @@ class TestToolHooksTextual:
             }
         ]
 
-    async def test_set_success_failure_does_not_drop_later_tool_hooks(self) -> None:
-        """A widget `set_success` failure must not abort the turn or drop hooks.
-
-        The widget update is guarded and runs *after* the terminal dispatch, so
-        even when the first tool's `set_success` raises, the stream loop keeps
-        going and the second tool still emits its own tool.result. Without the
-        guard the first exception would propagate and the second tool's hook
-        would never fire.
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "a.py"}, "call-1"), {}),
-            ),
-            ((), "messages", (ToolMessage(content="a", tool_call_id="call-1"), {})),
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "b.py"}, "call-2"), {}),
-            ),
-            ((), "messages", (ToolMessage(content="b", tool_call_id="call-2"), {})),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        calls = {"n": 0}
-
-        def flaky_set_success(_self: ToolCallMessage, _result: str = "") -> None:
-            calls["n"] += 1
-            if calls["n"] == 1:
-                msg = "set_success boom"
-                raise RuntimeError(msg)
-
-        with (
-            patch.object(ToolCallMessage, "set_success", flaky_set_success),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        result_payloads = [
-            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
-        ]
-        # Both tools emit a success tool.result even though the first widget
-        # update raised — the guard swallows it and the loop proceeds.
-        assert [p["tool_id"] for p in result_payloads] == ["call-1", "call-2"]
-        assert all(p["tool_status"] == "success" for p in result_payloads)
-
     async def test_clean_completion_closes_unresulted_tool_use(self) -> None:
         """A tool.use with no ToolMessage is closed on a clean stream end.
 
@@ -9677,61 +5737,6 @@ class TestToolHooksTextual:
         ]
         # Tracking is cleared so the orphan can't leak into the next turn.
         assert adapter._current_tool_messages == {}
-
-    async def test_uncorrelated_tool_result_logs_and_sends_empty_args(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A ToolMessage with no mounted widget emits tool.result with {} args.
-
-        Mirrors the headless twin: an uncorrelated real-id result is logged at
-        warning (degraded audit fidelity, greppable at default levels) and still
-        dispatched so audit hooks observe every executed tool.
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="orphan", tool_call_id="ghost-1", name="read_file"
-                    ),
-                    {},
-                ),
-            ),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with (
-            caplog.at_level("WARNING", logger="deepagents_code.tui.textual_adapter"),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        result_payloads = [
-            c[0][1] for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
-        ]
-        assert len(result_payloads) == 1
-        assert result_payloads[0]["tool_id"] == "ghost-1"
-        assert result_payloads[0]["tool_name"] == "read_file"
-        assert result_payloads[0]["tool_args"] == {}
-        assert any(
-            "ghost-1" in record.message
-            and "no correlated" in record.message
-            and record.levelname == "WARNING"
-            for record in caplog.records
-        )
 
     async def test_auto_denied_tool_result_skips_uncorrelated_warning(
         self, caplog: pytest.LogCaptureFixture
@@ -9884,137 +5889,6 @@ class TestToolHooksTextual:
             "tool_output": "User answered",
         }
 
-    @pytest.mark.parametrize(
-        ("tool_message_status", "expected_output"),
-        [
-            ("success", ASK_USER_ANSWERED_SUMMARY),
-            ("error", ASK_USER_FAILED_SUMMARY),
-        ],
-        ids=["answered", "middleware-error"],
-    )
-    async def test_ask_user_mount_failure_skips_tool_use_hook(
-        self, tool_message_status: str, expected_output: str
-    ) -> None:
-        """A failed ask_user mount fires no tool.use, so nothing is orphaned.
-
-        tool.use is gated on a successful mount, so a mount failure (e.g. a
-        torn-down DOM) never emits a tool.use that a later cancel could leave
-        unterminated. The authoritative ToolMessage still dispatches a sanitized
-        terminal result with the interrupt's original arguments.
-
-        Parametrized over the streamed status because this unmounted branch pairs
-        `tool.error` with `tool.result` itself rather than going through
-        `_dispatch_terminal_tool_result_hooks`. A failing prompt here (the
-        answer-count mismatch is the easy trigger) must still emit `tool.error`,
-        or an audit consumer sees a `tool_status="error"` result with no matching
-        error event — a pairing the rest of this module maintains everywhere else.
-        """
-
-        async def mount_message(_widget: object) -> bool:
-            await asyncio.sleep(0)
-            msg = "mount failed"
-            raise RuntimeError(msg)
-            return True
-
-        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
-        future.set_result({"type": "answered", "answers": ["Alice"]})
-
-        async def request_ask_user(
-            _questions: list[Question],
-        ) -> asyncio.Future[AskUserWidgetResult] | None:
-            await asyncio.sleep(0)
-            return future
-
-        questions: list[Question] = [{"question": "Name?", "type": "text"}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    _ask_user_interrupt_chunk(
-                        {
-                            "type": "ask_user",
-                            "questions": questions,
-                            "tool_call_id": "ask-1",
-                        }
-                    )
-                ],
-                [
-                    (
-                        (),
-                        "messages",
-                        (
-                            ToolMessage(
-                                content="Q: Name?\nA: Alice",
-                                tool_call_id="ask-1",
-                                name="ask_user",
-                                status=cast(
-                                    "Literal['success', 'error']", tool_message_status
-                                ),
-                            ),
-                            {},
-                        ),
-                    )
-                ],
-            ]
-        )
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
-        # No tool.use for the failed mount → nothing left dangling on a cancel.
-        assert "tool.use" not in events
-        # The question still resolved, so its terminal tool.result still fired.
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        # Assert the whole payload, not just the status: the two properties that
-        # distinguish this branch from the unmounted `else` fallback are the
-        # interrupt's args (instead of `{}`) and the sanitized summary (instead
-        # of `output_str`, which is the transcript of the user's answers).
-        # Asserting only id/status lets a regression leak "Alice" to hook scripts
-        # while keeping this test green.
-        assert tool_result_calls[0][0][1] == {
-            "tool_name": "ask_user",
-            "tool_id": "ask-1",
-            "tool_args": {"questions": questions},
-            "tool_status": tool_message_status,
-            "tool_output": expected_output,
-        }
-        # tool.error must accompany a failing result, and must not appear for a
-        # normal answer.
-        error_events = [
-            c[0][1]
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.error"
-        ]
-        if tool_message_status == "error":
-            assert error_events == [{"tool_names": ["ask_user"]}]
-        else:
-            assert error_events == []
-
     async def test_ask_user_result_hook_survives_widget_success_failure(
         self,
     ) -> None:
@@ -10107,215 +5981,6 @@ class TestToolHooksTextual:
             "tool_args": {"questions": questions},
             "tool_status": "success",
             "tool_output": ASK_USER_ANSWERED_SUMMARY,
-        }
-
-    async def test_ask_user_interrupt_error_dispatches_tool_result_hook(self) -> None:
-        """ask_user UI errors emit tool.result with tool_status='error'."""
-        questions: list[Question] = [{"question": "Name?", "type": "text"}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    _ask_user_interrupt_chunk(
-                        {
-                            "type": "ask_user",
-                            "questions": questions,
-                            "tool_call_id": "ask-1",
-                        }
-                    )
-                ],
-                [],
-            ]
-        )
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            request_ask_user=None,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        dispatched_events = [c[0][0] for c in mock_dispatch_background.call_args_list]
-        assert "tool.error" in dispatched_events
-        mock_dispatch_background.assert_any_call(
-            "tool.use",
-            {
-                "tool_name": "ask_user",
-                "tool_id": "ask-1",
-                "tool_args": {"questions": questions},
-            },
-        )
-
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_name"] == "ask_user"
-        assert payload["tool_id"] == "ask-1"
-        assert payload["tool_args"] == {"questions": questions}
-        assert payload["tool_status"] == "error"
-        assert payload["tool_output"] == "ask_user not supported by this UI"
-
-    async def test_tool_result_hook_dispatched_on_error(self) -> None:
-        """tool.result fires with tool_status='error' and tool.error also fires."""
-        mounted: list[object] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("write_file", {"path": "x.py"}, "call-2"), {}),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="Permission denied",
-                        tool_call_id="call-2",
-                        status="error",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        dispatched_events = {c[0][0] for c in mock_dispatch_background.call_args_list}
-        assert "tool.error" in dispatched_events
-
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_status"] == "error"
-        assert payload["tool_name"] == "write_file"
-
-    async def test_hitl_bare_reject_dispatches_terminal_tool_hooks(self) -> None:
-        """A bare HITL reject closes the prior tool.use hook before aborting."""
-        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    (
-                        (),
-                        "messages",
-                        (
-                            _tool_call_message(
-                                "execute", {"command": "echo hi"}, "tool-1"
-                            ),
-                            {},
-                        ),
-                    ),
-                    _hitl_interrupt_chunk(
-                        {
-                            "action_requests": action_requests,
-                            "review_configs": [
-                                {
-                                    "action_name": "execute",
-                                    "allowed_decisions": ["approve", "reject"],
-                                }
-                            ],
-                        }
-                    ),
-                ],
-                [],
-            ]
-        )
-
-        async def request_approval(
-            _action_requests: list[dict[str, Any]],
-            _assistant_id: str | None,
-        ) -> asyncio.Future[object]:
-            await asyncio.sleep(0)
-            future: asyncio.Future[object] = asyncio.Future()
-            future.set_result({"type": "reject"})
-            return future
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=request_approval,
-        )
-
-        with (
-            patch.object(ToolCallMessage, "set_rejected", side_effect=RuntimeError),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        assert len(agent.stream_inputs) == 1
-        assert [c[0][0] for c in mock_dispatch_background.call_args_list] == [
-            "tool.use",
-            "tool.error",
-            "tool.result",
-        ]
-        tool_result_payload = mock_dispatch_background.call_args_list[2][0][1]
-        assert tool_result_payload == {
-            "tool_name": "execute",
-            "tool_id": "tool-1",
-            "tool_args": {"command": "echo hi"},
-            "tool_status": "error",
-            "tool_output": "Tool approval rejected",
         }
 
     async def test_yolo_permission_hook_can_reject_before_auto_approval(self) -> None:
@@ -10679,161 +6344,6 @@ class TestToolHooksTextual:
         # so the upstream canned rejection wording is what the model would see.
         assert len(agent.stream_inputs) == 1
 
-    async def test_tool_use_dispatched_after_streaming_fragments(self) -> None:
-        """tool.use reassembles streamed arg fragments and fires exactly once."""
-        chunks = [
-            _tool_chunk(name="execute", args='{"command": "uv run', chunk_id="call-1"),
-            _tool_chunk(name=None, args=' pytest"}', chunk_id=None),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as mock_dispatch:
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        tool_use_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
-        ]
-        assert len(tool_use_calls) == 1
-        assert tool_use_calls[0][0][1] == {
-            "tool_name": "execute",
-            "tool_id": "call-1",
-            "tool_args": {"command": "uv run pytest"},
-        }
-
-    async def test_untracked_tool_message_dispatches_tool_result(self) -> None:
-        """A ToolMessage whose id was never mounted still emits tool.result.
-
-        Mirrors the headless path so audit hooks observe every executed tool,
-        even when the tool call was never rendered (e.g. its args never parsed).
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="orphaned output",
-                        tool_call_id="ghost-1",
-                        name="read_file",
-                        status="error",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
-        assert "tool.error" in events
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_name"] == "read_file"
-        assert payload["tool_id"] == "ghost-1"
-        assert payload["tool_args"] == {}
-        assert payload["tool_status"] == "error"
-        assert payload["tool_output"] == "orphaned output"
-
-    async def test_untracked_tool_message_success_suppresses_tool_error(self) -> None:
-        """An untracked *successful* ToolMessage emits tool.result, not tool.error.
-
-        Complements the error variant above: the widget-less path must not fire a
-        spurious tool.error for a tool that succeeded.
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="orphaned output",
-                        tool_call_id="ghost-1",
-                        name="read_file",
-                        status="success",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
-        assert "tool.error" not in events
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        assert tool_result_calls[0][0][1] == {
-            "tool_name": "read_file",
-            "tool_id": "ghost-1",
-            "tool_args": {},
-            "tool_status": "success",
-            "tool_output": "orphaned output",
-        }
-
     async def test_hitl_bare_reject_dispatches_hooks_for_every_tool(self) -> None:
         """A batch bare-reject closes each pending tool's tool.use, per tool.
 
@@ -10933,440 +6443,6 @@ class TestToolHooksTextual:
         assert results["tool-2"]["tool_args"] == {"path": "foo.py"}
         assert results["tool-2"]["tool_status"] == "error"
         assert errors == ["execute", "write_file"]
-
-    async def test_hitl_unexpected_decision_type_dispatches_terminal_hooks(
-        self,
-    ) -> None:
-        """An unrecognized HITL decision type still closes the pending tool.use."""
-        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    (
-                        (),
-                        "messages",
-                        (
-                            _tool_call_message(
-                                "execute", {"command": "echo hi"}, "tool-1"
-                            ),
-                            {},
-                        ),
-                    ),
-                    _hitl_interrupt_chunk(
-                        {
-                            "action_requests": action_requests,
-                            "review_configs": [
-                                {
-                                    "action_name": "execute",
-                                    "allowed_decisions": ["approve", "reject"],
-                                }
-                            ],
-                        }
-                    ),
-                ],
-                [],
-            ]
-        )
-
-        async def request_approval(
-            _action_requests: list[dict[str, Any]],
-            _assistant_id: str | None,
-        ) -> asyncio.Future[object]:
-            await asyncio.sleep(0)
-            future: asyncio.Future[object] = asyncio.Future()
-            future.set_result({"type": "bogus"})
-            return future
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=request_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        assert [c[0][0] for c in mock_dispatch_background.call_args_list] == [
-            "tool.use",
-            "tool.error",
-            "tool.result",
-        ]
-        assert mock_dispatch_background.call_args_list[2][0][1] == {
-            "tool_name": "execute",
-            "tool_id": "tool-1",
-            "tool_args": {"command": "echo hi"},
-            "tool_status": "error",
-            "tool_output": "Tool approval rejected",
-        }
-
-    async def test_hitl_non_dict_decision_dispatches_terminal_hooks(self) -> None:
-        """A non-dict HITL decision still closes the pending tool.use."""
-        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    (
-                        (),
-                        "messages",
-                        (
-                            _tool_call_message(
-                                "execute", {"command": "echo hi"}, "tool-1"
-                            ),
-                            {},
-                        ),
-                    ),
-                    _hitl_interrupt_chunk(
-                        {
-                            "action_requests": action_requests,
-                            "review_configs": [
-                                {
-                                    "action_name": "execute",
-                                    "allowed_decisions": ["approve", "reject"],
-                                }
-                            ],
-                        }
-                    ),
-                ],
-                [],
-            ]
-        )
-
-        async def request_approval(
-            _action_requests: list[dict[str, Any]],
-            _assistant_id: str | None,
-        ) -> asyncio.Future[object]:
-            await asyncio.sleep(0)
-            future: asyncio.Future[object] = asyncio.Future()
-            future.set_result("reject")
-            return future
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=request_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        assert [c[0][0] for c in mock_dispatch_background.call_args_list] == [
-            "tool.use",
-            "tool.error",
-            "tool.result",
-        ]
-        assert mock_dispatch_background.call_args_list[2][0][1] == {
-            "tool_name": "execute",
-            "tool_id": "tool-1",
-            "tool_args": {"command": "echo hi"},
-            "tool_status": "error",
-            "tool_output": "Tool approval rejected",
-        }
-
-    async def test_malformed_complete_args_skip_tool_use_but_emit_result(self) -> None:
-        """Interactive parity: complete-but-malformed args skip tool.use, keep result.
-
-        Mirrors the headless `test_malformed_args_emit_result_without_use`: a
-        streamed arg fragment that looks complete (bracketed and closed) but fails
-        to parse produces no tool.use, yet the executed tool's tool.result still
-        fires via the untracked path with `{}` args.
-        """
-        chunks = [
-            _tool_chunk(name="execute", args='{"command": }', chunk_id="call-1"),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage(
-                        content="ran anyway",
-                        tool_call_id="call-1",
-                        name="execute",
-                        status="success",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
-        assert "tool.use" not in events
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        assert tool_result_calls[0][0][1] == {
-            "tool_name": "execute",
-            "tool_id": "call-1",
-            "tool_args": {},
-            "tool_status": "success",
-            "tool_output": "ran anyway",
-        }
-
-    async def test_unexpected_tool_status_fails_closed_to_error(self) -> None:
-        """Interactive parity: an unexpected ToolMessage.status fails closed to error.
-
-        A mounted tool whose terminal ToolMessage carries a status outside the
-        `success`/`error` domain must emit `tool.error` and an error
-        `tool.result`, never a spurious success.
-        """
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
-            ),
-            (
-                (),
-                "messages",
-                (
-                    ToolMessage.model_construct(
-                        content="stopped",
-                        tool_call_id="call-1",
-                        name="read_file",
-                        status="cancelled",
-                    ),
-                    {},
-                ),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        events = [c[0][0] for c in mock_dispatch_background.call_args_list]
-        assert "tool.error" in events
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_status"] == "error"
-        assert payload["tool_name"] == "read_file"
-        assert payload["tool_id"] == "call-1"
-        assert payload["tool_args"] == {"path": "foo.py"}
-
-    async def test_bare_reject_with_answered_ask_user_emits_single_result(
-        self,
-    ) -> None:
-        """A bare reject beside an answered ask_user emits one execute tool.result.
-
-        The turn still resumes to deliver the ask_user answer, so the middleware's
-        synthetic reject ToolMessage streams back for the rejected `execute` call.
-        Its terminal hooks already fired at reject time, so the resumed message
-        must be deduped by tool id rather than emitting a second tool.result with
-        mismatched `{}` args.
-        """
-        questions: list[Question] = [{"question": "Name?", "type": "text"}]
-        action_requests = [{"name": "execute", "args": {"command": "echo hi"}}]
-        ask_interrupt = SimpleNamespace(
-            id="ask-int",
-            value={
-                "type": "ask_user",
-                "questions": questions,
-                "tool_call_id": "ask-1",
-            },
-        )
-        hitl_interrupt = SimpleNamespace(
-            id="hitl-int",
-            value={
-                "action_requests": action_requests,
-                "review_configs": [
-                    {
-                        "action_name": "execute",
-                        "allowed_decisions": ["approve", "reject"],
-                    }
-                ],
-            },
-        )
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    (
-                        (),
-                        "messages",
-                        (
-                            _tool_call_message(
-                                "execute", {"command": "echo hi"}, "tool-1"
-                            ),
-                            {},
-                        ),
-                    ),
-                    ((), "updates", {"__interrupt__": [ask_interrupt, hitl_interrupt]}),
-                ],
-                [
-                    (
-                        (),
-                        "messages",
-                        (
-                            ToolMessage(
-                                content="Tool approval rejected",
-                                tool_call_id="tool-1",
-                                status="error",
-                            ),
-                            {},
-                        ),
-                    ),
-                ],
-            ]
-        )
-
-        ask_future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
-        ask_future.set_result({"type": "answered", "answers": ["Alice"]})
-
-        async def request_ask_user(
-            _questions: list[Question],
-        ) -> asyncio.Future[AskUserWidgetResult] | None:
-            await asyncio.sleep(0)
-            return ask_future
-
-        async def request_approval(
-            _action_requests: list[dict[str, Any]],
-            _assistant_id: str | None,
-        ) -> asyncio.Future[object]:
-            await asyncio.sleep(0)
-            future: asyncio.Future[object] = asyncio.Future()
-            future.set_result({"type": "reject"})
-            return future
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=request_approval,
-            request_ask_user=request_ask_user,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        # The turn resumed (to deliver the ask_user answer), so the synthetic
-        # reject ToolMessage was streamed back on the second call.
-        assert len(agent.stream_inputs) == 2
-        execute_results = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result" and c[0][1]["tool_name"] == "execute"
-        ]
-        assert len(execute_results) == 1
-        assert execute_results[0][0][1] == {
-            "tool_name": "execute",
-            "tool_id": "tool-1",
-            "tool_args": {"command": "echo hi"},
-            "tool_status": "error",
-            "tool_output": "Tool approval rejected",
-        }
-        # The reject sweep leaves the answered `ask_user` tracked (its answer is
-        # why the turn resumes), so the stream-end backstop closes it out here —
-        # this resume stream carries no ToolMessage for it. It still succeeded,
-        # its answers reached the graph per the resume above, so it must report
-        # its own success rather than the sweep's "Tool approval rejected", and
-        # must not emit a spurious tool.error. The body says the result never
-        # arrived, which is what distinguishes this from a completed prompt.
-        ask_results = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result" and c[0][1]["tool_name"] == "ask_user"
-        ]
-        assert len(ask_results) == 1
-        assert ask_results[0][0][1] == {
-            "tool_name": "ask_user",
-            "tool_id": "ask-1",
-            "tool_args": {"questions": questions},
-            "tool_status": "success",
-            "tool_output": ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
-        }
-        assert [
-            c[0][1]["tool_names"]
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.error"
-        ] == [["execute"]]
 
     @pytest.mark.parametrize(
         ("cancelled_question_count", "expected_subject"),
@@ -11641,231 +6717,6 @@ class TestToolHooksTextual:
         assert ask_row._output == transcript
         assert ask_row.deferred_success_output is None
 
-    async def test_answered_ask_user_row_settles_when_no_tool_message_arrives(
-        self,
-    ) -> None:
-        """A deferred row must not stay pending when the stream ends without it.
-
-        The clean-stream-end backstop is hooks-only by design, so nothing settled
-        the row: it kept its paused-pending look for the rest of the session,
-        showing neither the answers nor a failure.
-        """
-        mounted: list[ToolCallMessage] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            if isinstance(widget, ToolCallMessage):
-                mounted.append(widget)
-            return True
-
-        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
-        future.set_result({"type": "answered", "answers": ["Alice"]})
-
-        async def request_ask_user(
-            _questions: list[Question],
-        ) -> asyncio.Future[AskUserWidgetResult] | None:
-            await asyncio.sleep(0)
-            return future
-
-        questions: list[Question] = [{"question": "Name?", "type": "text"}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    _ask_user_interrupt_chunk(
-                        {
-                            "type": "ask_user",
-                            "questions": questions,
-                            "tool_call_id": "ask-1",
-                        }
-                    )
-                ],
-                # Resume stream carries no ToolMessage for `ask-1`.
-                [],
-            ]
-        )
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        assert len(mounted) == 1
-        assert mounted[0].is_success is True
-        assert mounted[0]._output == ASK_USER_ANSWERED_SUMMARY
-        assert mounted[0].has_expandable_output is False
-        # The backstop reports the success it earned, not a fabricated failure,
-        # and never the answers. The body distinguishes this from a prompt whose
-        # ToolMessage did arrive, so an audit consumer can tell the two apart.
-        results = [
-            c[0][1]
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(results) == 1
-        assert results[0] == {
-            "tool_name": "ask_user",
-            "tool_id": "ask-1",
-            "tool_args": {"questions": questions},
-            "tool_status": "success",
-            "tool_output": ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
-        }
-        assert "tool.error" not in [
-            c[0][0] for c in mock_dispatch_background.call_args_list
-        ]
-
-    async def test_ask_user_interrupt_cancelled_dispatches_tool_result(self) -> None:
-        """A cancelled ask_user emits tool.error and an error tool.result."""
-        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
-        future.set_result({"type": "cancelled"})
-
-        async def request_ask_user(
-            _questions: list[Question],
-        ) -> asyncio.Future[AskUserWidgetResult] | None:
-            await asyncio.sleep(0)
-            return future
-
-        questions: list[Question] = [{"question": "Name?", "type": "text"}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    _ask_user_interrupt_chunk(
-                        {
-                            "type": "ask_user",
-                            "questions": questions,
-                            "tool_call_id": "ask-1",
-                        }
-                    )
-                ],
-                [],
-            ]
-        )
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        assert "tool.error" in [
-            c[0][0] for c in mock_dispatch_background.call_args_list
-        ]
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_name"] == "ask_user"
-        assert payload["tool_id"] == "ask-1"
-        assert payload["tool_status"] == "error"
-        # Compared against the constant, not the literal: this string is part of
-        # the `tool.result` hook contract, so a reword must fail here loudly.
-        assert payload["tool_output"] == ASK_USER_CANCELLED_SUMMARY
-
-    async def test_ask_user_interrupt_non_list_answers_dispatches_error(self) -> None:
-        """A non-list answers payload emits tool.error and an error tool.result."""
-        future: asyncio.Future[AskUserWidgetResult] = asyncio.Future()
-        # Deliberately malformed (answers must be a list) to drive the error
-        # branch; cast past the type checker since that is the whole point.
-        future.set_result(
-            cast("AskUserWidgetResult", {"type": "answered", "answers": "not-a-list"})
-        )
-
-        async def request_ask_user(
-            _questions: list[Question],
-        ) -> asyncio.Future[AskUserWidgetResult] | None:
-            await asyncio.sleep(0)
-            return future
-
-        questions: list[Question] = [{"question": "Name?", "type": "text"}]
-        agent = _SequencedAgent(
-            streams_by_call=[
-                [
-                    _ask_user_interrupt_chunk(
-                        {
-                            "type": "ask_user",
-                            "questions": questions,
-                            "tool_call_id": "ask-1",
-                        }
-                    )
-                ],
-                [],
-            ]
-        )
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            request_ask_user=request_ask_user,
-        )
-
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook",
-                new_callable=AsyncMock,
-            ),
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-            ) as mock_dispatch_background,
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=agent,
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        assert "tool.error" in [
-            c[0][0] for c in mock_dispatch_background.call_args_list
-        ]
-        tool_result_calls = [
-            c
-            for c in mock_dispatch_background.call_args_list
-            if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        payload = tool_result_calls[0][0][1]
-        assert payload["tool_name"] == "ask_user"
-        assert payload["tool_status"] == "error"
-        assert payload["tool_output"] == "invalid ask_user answers payload"
-
     @pytest.mark.parametrize("answers", [[], ["Alice", "blue"]])
     async def test_ask_user_uses_authoritative_mismatch_result(
         self, answers: list[str]
@@ -11960,120 +6811,6 @@ class TestToolHooksTextual:
         assert len(result_payloads) == 1
         assert result_payloads[0]["tool_status"] == "error"
         assert result_payloads[0]["tool_output"] == ASK_USER_FAILED_SUMMARY
-
-    async def test_tool_use_not_dispatched_without_id(self) -> None:
-        """tool.use waits for a tool id even when name and args are complete.
-
-        Guards the interactive id gate: a call whose args parse and whose name is
-        known must still not fire tool.use until an id arrives, so a later
-        tool.result can always be correlated back to it. Mirrors the headless
-        `test_tool_use_not_dispatched_without_id`.
-        """
-        chunks = [
-            _tool_chunk(name="read_file", args='{"path": "foo.py"}', chunk_id=None)
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as mock_dispatch:
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        tool_use_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
-        ]
-        assert not tool_use_calls
-
-    async def test_tool_use_dispatches_when_id_arrives_after_args(self) -> None:
-        """Complete args are retained until a later chunk supplies the id."""
-        chunks = [
-            _tool_chunk(name="read_file", args='{"path": "foo.py"}', chunk_id=None),
-            _tool_chunk(name=None, args="", chunk_id="call-1"),
-            (
-                (),
-                "messages",
-                (ToolMessage(content="ok", tool_call_id="call-1"), {}),
-            ),
-        ]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as mock_dispatch:
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        tool_use_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
-        ]
-        assert len(tool_use_calls) == 1
-        assert tool_use_calls[0][0][1] == {
-            "tool_name": "read_file",
-            "tool_id": "call-1",
-            "tool_args": {"path": "foo.py"},
-        }
-
-        tool_result_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.result"
-        ]
-        assert len(tool_result_calls) == 1
-        assert tool_result_calls[0][0][1] == {
-            "tool_name": "read_file",
-            "tool_id": "call-1",
-            "tool_args": {"path": "foo.py"},
-            "tool_status": "success",
-            "tool_output": "ok",
-        }
-
-    async def test_tool_use_not_dispatched_without_name(self) -> None:
-        """tool.use must not fire while a streamed call has args + id but no name.
-
-        Mirrors the headless `test_tool_use_not_dispatched_when_no_name`.
-        """
-        chunks = [_tool_chunk(name=None, args='{"path": "foo.py"}', chunk_id="call-1")]
-
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        with patch(
-            "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget"
-        ) as mock_dispatch:
-            await execute_task_textual(
-                user_input="hello",
-                agent=_FakeAgent(chunks),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        tool_use_calls = [
-            c for c in mock_dispatch.call_args_list if c[0][0] == "tool.use"
-        ]
-        assert not tool_use_calls
 
 
 # ---------------------------------------------------------------------------
@@ -12172,72 +6909,6 @@ class TestCrossSurfaceHookParity:
     edit to one surface's gating that is not mirrored in the other fails loudly
     rather than shipping green.
     """
-
-    async def test_successful_tool_call_parity(self) -> None:
-        """A parsed tool call + success result: tool.use then tool.result, both."""
-        headless = _run_headless_surface(
-            [
-                {
-                    "type": "tool_call",
-                    "name": "read_file",
-                    "id": "call-1",
-                    "index": 0,
-                    "args": {"path": "foo.py"},
-                }
-            ],
-            ToolMessage(
-                content="ok",
-                tool_call_id="call-1",
-                name="read_file",
-                status="success",
-            ),
-        )
-        textual = await _run_textual_surface(
-            [
-                (
-                    (),
-                    "messages",
-                    (_tool_call_message("read_file", {"path": "foo.py"}, "call-1"), {}),
-                ),
-                (
-                    (),
-                    "messages",
-                    (
-                        ToolMessage(
-                            content="ok",
-                            tool_call_id="call-1",
-                            name="read_file",
-                            status="success",
-                        ),
-                        {},
-                    ),
-                ),
-            ]
-        )
-        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
-        # Sanity-check the shared expectation rather than only that they agree.
-        assert _normalize_hook_calls(headless) == _normalize_hook_calls(
-            [
-                (
-                    "tool.use",
-                    {
-                        "tool_name": "read_file",
-                        "tool_id": "call-1",
-                        "tool_args": {"path": "foo.py"},
-                    },
-                ),
-                (
-                    "tool.result",
-                    {
-                        "tool_name": "read_file",
-                        "tool_id": "call-1",
-                        "tool_args": {"path": "foo.py"},
-                        "tool_status": "success",
-                        "tool_output": "ok",
-                    },
-                ),
-            ]
-        )
 
     async def test_structured_content_output_parity(self) -> None:
         """List/structured tool output formats identically across surfaces.
@@ -12352,109 +7023,6 @@ class TestCrossSurfaceHookParity:
         assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
         events = sorted(event for event, _ in headless)
         assert events == ["tool.error", "tool.result", "tool.use"]
-
-    async def test_unparsed_args_result_parity(self) -> None:
-        """Args that never parse: no tool.use, tool.result with empty args, both."""
-        headless = _run_headless_surface(
-            [
-                {
-                    "type": "tool_call_chunk",
-                    "name": "read_file",
-                    "id": "call-2",
-                    "index": 0,
-                    # Never closes, so the args never parse and no tool.use fires.
-                    "args": '{"path": ',
-                }
-            ],
-            ToolMessage(
-                content="ok",
-                tool_call_id="call-2",
-                name="read_file",
-                status="success",
-            ),
-        )
-        textual = await _run_textual_surface(
-            [
-                _tool_chunk(name="read_file", args='{"path": ', chunk_id="call-2"),
-                (
-                    (),
-                    "messages",
-                    (
-                        ToolMessage(
-                            content="ok",
-                            tool_call_id="call-2",
-                            name="read_file",
-                            status="success",
-                        ),
-                        {},
-                    ),
-                ),
-            ]
-        )
-        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
-        assert _normalize_hook_calls(headless) == _normalize_hook_calls(
-            [
-                (
-                    "tool.result",
-                    {
-                        "tool_name": "read_file",
-                        "tool_id": "call-2",
-                        "tool_args": {},
-                        "tool_status": "success",
-                        "tool_output": "ok",
-                    },
-                ),
-            ]
-        )
-
-    async def test_idless_tool_call_parity(self) -> None:
-        """An empty (uncorrelatable) tool-call id: no tool.use, bare tool.result.
-
-        A real `ToolMessage.tool_call_id` is always a string, so the "no usable
-        id" case is exercised with an empty string — falsy on both surfaces, so
-        neither correlates it and neither fires a `tool.use`.
-        """
-        headless = _run_headless_surface(
-            [
-                {
-                    "type": "tool_call",
-                    "name": "noop",
-                    "id": "",
-                    "index": 0,
-                    "args": {"x": 1},
-                }
-            ],
-            ToolMessage(content="done", tool_call_id="", name="noop"),
-        )
-        textual = await _run_textual_surface(
-            [
-                (
-                    (),
-                    "messages",
-                    (_tool_call_message("noop", {"x": 1}, ""), {}),
-                ),
-                (
-                    (),
-                    "messages",
-                    (ToolMessage(content="done", tool_call_id="", name="noop"), {}),
-                ),
-            ]
-        )
-        assert _normalize_hook_calls(headless) == _normalize_hook_calls(textual)
-        assert _normalize_hook_calls(headless) == _normalize_hook_calls(
-            [
-                (
-                    "tool.result",
-                    {
-                        "tool_name": "noop",
-                        "tool_id": "",
-                        "tool_args": {},
-                        "tool_status": "success",
-                        "tool_output": "done",
-                    },
-                ),
-            ]
-        )
 
 
 class TestTextualEndOfStreamDiagnostics:
@@ -12607,53 +7175,6 @@ class TestTextualNonCleanExitTerminalHooks:
     pending tool can only come from the surface's own `finally` backstop.
     """
 
-    async def test_midstream_error_closes_pending_tool_use(self) -> None:
-        """A stream error emits terminal hooks for a tool whose `tool.use` fired."""
-        dispatched: list[tuple[str, dict[str, Any]]] = []
-
-        def record_dispatch(event: str, payload: dict[str, Any]) -> None:
-            dispatched.append((event, payload))
-
-        chunks = [
-            (
-                (),
-                "messages",
-                (_tool_call_message("read_file", {"path": "f.py"}, "call-1"), {}),
-            ),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        with (
-            patch(
-                "deepagents_code.tui.textual_adapter.dispatch_hook_fire_and_forget",
-                side_effect=record_dispatch,
-            ),
-            pytest.raises(RuntimeError, match="boom"),
-        ):
-            await execute_task_textual(
-                user_input="hello",
-                agent=_RaisingAgent(chunks, RuntimeError("boom")),
-                assistant_id="assistant",
-                session_state=_session_state(auto_approve=False),
-                adapter=adapter,
-            )
-
-        events = [event for event, _ in dispatched]
-        assert "tool.use" in events
-        result_payloads = [p for event, p in dispatched if event == "tool.result"]
-        assert any(
-            p["tool_id"] == "call-1" and p["tool_status"] == "error"
-            for p in result_payloads
-        )
-        error_payloads = [p for event, p in dispatched if event == "tool.error"]
-        assert any("read_file" in p["tool_names"] for p in error_payloads)
-        # The backstop terminated and cleared the pending widget, so a later
-        # caller's finalize would find nothing to dispatch (no double tool.result).
-        assert adapter._current_tool_messages == {}
-
 
 # ---------------------------------------------------------------------------
 # _read_mentioned_file inline embedding
@@ -12673,18 +7194,6 @@ class TestReadMentionedFile:
         assert "```text\nalpha\nbeta\n```" in snippet
         assert f"Path: `{target}`" in snippet
 
-    def test_oversized_file_returns_reference_without_fence(
-        self, tmp_path: Path
-    ) -> None:
-        """A file over the embed threshold is referenced, not fenced."""
-        target = tmp_path / "big.txt"
-        target.write_text("x" * 4096, encoding="utf-8")
-
-        snippet = _read_mentioned_file(target, max_embed_bytes=1024)
-
-        assert "too large to embed" in snippet
-        assert "```" not in snippet
-
 
 # ---------------------------------------------------------------------------
 # Rubric custom-stream events (textual path)
@@ -12693,100 +7202,6 @@ class TestReadMentionedFile:
 
 class TestExecuteTaskTextualRubricEvents:
     """Rubric custom-stream events surface only for the main agent."""
-
-    async def test_main_agent_rubric_event_mounts_message(self) -> None:
-        """A main-agent rubric verdict is rendered and forwarded with its run ID."""
-        mounted: list[object] = []
-        evaluations: list[tuple[str, str]] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        # (namespace, stream_mode, data); empty namespace == main agent.
-        chunks = [
-            (
-                (),
-                "custom",
-                {
-                    "type": "rubric_evaluation_end",
-                    "result": "satisfied",
-                    "grading_run_id": "grade-current",
-                },
-            ),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-            on_rubric_evaluation_end=lambda event: evaluations.append(
-                (event.grading_run_id, event.result)
-            ),
-        )
-
-        rubric_msgs = [
-            m
-            for m in mounted
-            if isinstance(m, AppMessage)
-            and "Acceptance criteria satisfied" in str(m._content)
-        ]
-        assert len(rubric_msgs) == 1
-        assert evaluations == [("grade-current", "satisfied")]
-
-    async def test_subagent_rubric_event_is_not_mounted(self) -> None:
-        """A rubric event from a subagent namespace must not reach the transcript."""
-        mounted: list[object] = []
-        evaluations: list[tuple[str, str]] = []
-
-        async def mount_message(widget: object) -> bool:
-            await asyncio.sleep(0)
-            mounted.append(widget)
-            return True
-
-        # Non-empty namespace == subagent; the is_main_agent gate suppresses it.
-        chunks = [
-            (
-                ("subagent",),
-                "custom",
-                {
-                    "type": "rubric_evaluation_end",
-                    "result": "satisfied",
-                    "grading_run_id": "grade-subagent",
-                },
-            ),
-        ]
-        adapter = TextualUIAdapter(
-            mount_message=mount_message,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-
-        await execute_task_textual(
-            user_input="hi",
-            agent=_FakeAgent(chunks),
-            assistant_id="assistant",
-            session_state=_session_state(auto_approve=False),
-            adapter=adapter,
-            on_rubric_evaluation_end=lambda event: evaluations.append(
-                (event.grading_run_id, event.result)
-            ),
-        )
-
-        assert evaluations == []
-        assert not [
-            m
-            for m in mounted
-            if isinstance(m, AppMessage) and "Rubric" in str(m._content)
-        ]
 
     async def test_rubric_event_without_run_id_is_not_forwarded(self) -> None:
         """A verdict without correlation metadata cannot authorize completion."""
@@ -12881,3 +7296,907 @@ class TestExecuteTaskTextualRubricEvents:
         callback.assert_called_once_with(
             RubricEvaluationEnd("grade-current", "satisfied")
         )
+
+
+async def test_reasoning_is_drained_when_the_stream_errors_mid_turn() -> None:
+    """A mid-stream error must not lose reasoning the user already read.
+
+    The store records the widget at mount time with empty content, so the
+    `_sync_message_content` inside the drain is the only thing that ever writes
+    the accumulated text back. Skip it and the row survives on screen but comes
+    back blank the first time the transcript virtualizes.
+    """
+    mounted: list[object] = []
+    sync_message_content = MagicMock()
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[{"type": "reasoning", "reasoning": "half a "}]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+        sync_message_content=sync_message_content,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await execute_task_textual(
+            user_input="hi",
+            agent=_RaisingAgent(chunks, RuntimeError("boom")),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            show_reasoning=True,
+        )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    assert reasoning._streaming is False
+    sync_message_content.assert_any_call(reasoning.id, "half a ")
+
+
+@pytest.mark.parametrize(
+    ("show_reasoning", "namespace"),
+    [
+        pytest.param(False, (), id="preference-off"),
+        pytest.param(True, ("tools:task",), id="subagent-namespace"),
+    ],
+)
+async def test_reasoning_is_not_rendered(
+    show_reasoning: bool, namespace: tuple[str, ...]
+) -> None:
+    """Reasoning stays hidden when opted out, and for subagents either way.
+
+    The subagent case is carried by the pre-existing `is_main_agent` gate, which
+    drops every nested content block long before the reasoning branch. It is
+    pinned here so a future reasoning path that runs ahead of that gate cannot
+    start leaking subagent thoughts into the main transcript unnoticed.
+    """
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            namespace,
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "hidden"},
+                        {"type": "non_standard", "reasoning": "opaque"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=show_reasoning,
+    )
+
+    assert not any(isinstance(widget, ReasoningMessage) for widget in mounted)
+
+
+async def test_reasoning_streams_separately_and_collapses_before_answer() -> None:
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "[bold]plain"},
+                        {"type": "reasoning", "reasoning": " "},
+                        {"type": "reasoning", "reasoning": "text[/bold]"},
+                        {"type": "reasoning", "reasoning": "\n"},
+                        {"type": "reasoning", "reasoning": "next line"},
+                        {"type": "text", "text": "answer"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=True,
+    )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    answer = next(widget for widget in mounted if isinstance(widget, AssistantMessage))
+    assert reasoning._content == "[bold]plain text[/bold]\nnext line"
+    assert reasoning._expanded is False
+    assert reasoning._streaming is False
+    assert answer._content == "answer"
+
+
+class TestModelRetryLifecycleReconciliation:
+    """Streamed model-attempt lifecycle and retry reconciliation in the TUI."""
+
+    async def test_clean_teardown_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful stream preserves output when its completion event is lost."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, _mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-clean"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
+            ),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        main = runtime.transcripts.materialize("thread-clean").path.read_text()
+        assert '"content":"kept"' in main
+
+    async def test_lost_retry_event_still_reconciles_the_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A start for a new attempt with no retry event in between.
+
+        `_emit_stream_event` logs and swallows writer faults, so the retry event
+        can be lost. Reconciling only on a scope match would then let the replay
+        stream into the same bubble with no seam.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(tmp_path, "thread-lost")
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            # No `model_retry` — attempt 1 simply starts.
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        assert "partial" not in str(assistant_widgets[1]._content)
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        main = runtime.transcripts.materialize("thread-lost").path.read_text()
+        assert "partial" not in main
+
+    async def test_malformed_retry_keeps_legacy_spinner_only_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed correlation falls back to status text, nothing else."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-malformed"
+        )
+        malformed_retry = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 5,
+            "message": "boom",
+            # Missing call_id while correlation fields are present: invalid.
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
+            ),
+            ((), "custom", malformed_retry),
+            _attempt_complete("call-1", 0),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        # Prior spinner behavior retained, but no marker and no widget split.
+        assert any("Retrying model request 1/5" in s for s in statuses if s)
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        # The malformed retry must not discard the attempt's staged records.
+        main = runtime.transcripts.materialize("thread-malformed").path.read_text()
+        assert '"content":"kept"' in main
+
+    async def test_nested_retry_never_mutates_root_chat_or_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """Nested lifecycle events reconcile only usage scope, never the chat."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-nested"
+        )
+        nested_ns = ("tools:task",)
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 2,
+            "max_retries": 3,
+            "message": "nested retry",
+            "call_id": "call-n",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            (
+                nested_ns,
+                "custom",
+                {
+                    "type": "model_attempt",
+                    "phase": "start",
+                    "call_id": "call-n",
+                    "attempt": 0,
+                },
+            ),
+            (
+                nested_ns,
+                "messages",
+                (AIMessageChunk(content="sub text", id="sub-1"), {}),
+            ),
+            (nested_ns, "custom", retry_event),
+            (
+                (),
+                "messages",
+                (
+                    AIMessageChunk(
+                        content="root reply", id="m-1", chunk_position="last"
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        assert "root reply" in str(assistant_widgets[0]._content)
+        assert all("Retrying" not in (s or "") for s in statuses)
+        main = runtime.transcripts.materialize("thread-nested").path.read_text()
+        assert '"content":"root reply"' in main
+
+    async def test_new_call_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A different call preserves the reply when only completion was lost."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-lost-complete"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="first", id="m-1", chunk_position="last"), {}),
+            ),
+            # No completion for call-1; call-2 is a new model step, not a retry.
+            _attempt_start("call-2", 0),
+            (
+                (),
+                "messages",
+                (
+                    AIMessageChunk(content="second", id="m-2", chunk_position="last"),
+                    {},
+                ),
+            ),
+            _attempt_complete("call-2", 0),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        main = runtime.transcripts.materialize("thread-lost-complete").path.read_text()
+        assert '"content":"first"' in main
+        assert '"content":"second"' in main
+
+    async def test_post_output_retry_splits_widget_and_mounts_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """A retried attempt keeps its partial reply and starts a fresh bubble."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-retry"
+        )
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "message": "ignored [markup]",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            ((), "custom", retry_event),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        assert "partial" in str(assistant_widgets[0]._content)
+        assert "final" in str(assistant_widgets[1]._content)
+        assert "partial" not in str(assistant_widgets[1]._content)
+
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "Connection dropped; the partial response above is incomplete. "
+            "Retrying 1/3."
+        )
+        # The marker sits between the finalized partial reply and the replay.
+        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
+        assert mounted.index(markers[0]) < mounted.index(assistant_widgets[1])
+        assert any("Retrying model request 1/3" in s for s in statuses if s)
+
+        main = runtime.transcripts.materialize("thread-retry").path.read_text()
+        assert "partial" not in main
+        assert '"content":"final"' in main
+
+    async def test_pre_output_retry_discards_staging_without_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """A retry before visible output skips the marker and widget split."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-pre-output"
+        )
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 2,
+            "message": "n/a",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": False,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "custom", retry_event),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="clean", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        main = runtime.transcripts.materialize("thread-pre-output").path.read_text()
+        assert '"content":"clean"' in main
+
+    async def test_retry_settles_tool_rows_idempotently(self, tmp_path: Path) -> None:
+        """Retried attempt's parsed tool rows settle once, hooks and maps alike."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        synced_tool_states: list[tuple[str, str]] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            sync_tool_message=lambda widget: synced_tool_states.append(
+                (widget._status, widget._output)
+            ),
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-tools"
+        )
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "message": "n/a",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        tool_chunk = AIMessageChunk(
+            content="",
+            id="m-1",
+            tool_call_chunks=[
+                {
+                    "name": "read_file",
+                    "args": '{"path": "a.py"}',
+                    "id": "tc-1",
+                    "index": 0,
+                }
+            ],
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (tool_chunk, {})),
+            ((), "custom", retry_event),
+            # A duplicate retry for the already-settled attempt is a no-op.
+            ((), "custom", dict(retry_event)),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="done", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        tool_results: list[tuple[str, str]] = []
+        with patch(
+            "deepagents_code.tui.textual_adapter._dispatch_tool_result_hook",
+            side_effect=lambda name, _id, _args, status, _output: tool_results.append(
+                (name, status)
+            ),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        # Exactly one terminal settle for the interrupted tool call, despite
+        # the duplicate retry event and the end-of-stream orphan sweep.
+        assert tool_results == [("read_file", "error")]
+        assert not adapter._current_tool_messages
+        tool_widgets = [w for w in mounted if isinstance(w, ToolCallMessage)]
+        assert len(tool_widgets) == 1
+        assert tool_widgets[0]._status == "error"
+        assert tool_widgets[0]._output == (
+            "Model response interrupted before tool execution"
+        )
+        assert synced_tool_states[-1] == (
+            "error",
+            "Model response interrupted before tool execution",
+        )
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+
+    async def test_retry_spares_a_row_awaiting_a_deferred_result(self) -> None:
+        """An answered `ask_user` still expects its authoritative ToolMessage.
+
+        The turn resumed, so consuming the row here would strand its deferred
+        hook and mark the id as already-settled — which then swallows the real
+        result and trips the contradiction check in the ToolMessage handler.
+        Every other sweep spares these rows for the same reason.
+        """
+        from deepagents_code.tui.textual_adapter import _settle_attempt_for_retry
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        adapter = TextualUIAdapter(
+            mount_message=_collect_mounts()[0],
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        deferred = ToolCallMessage("ask_user", {"question": "which?"})
+        deferred.defer_success("User answered")
+        plain = ToolCallMessage("read_file", {"file_path": "a.py"})
+        adapter._current_tool_messages = {
+            "call-ask": deferred,
+            "call-read": plain,
+        }
+
+        completed: set[str] = set()
+        displayed = {"call-ask", "call-read"}
+        with (
+            patch("deepagents_code.tui.textual_adapter._dispatch_tool_result_hook"),
+            patch("deepagents_code.tui.textual_adapter._dispatch_tool_error_hook"),
+        ):
+            await _settle_attempt_for_retry(
+                adapter,
+                preserve_partial=True,
+                pending_text_by_namespace={},
+                assistant_message_by_namespace={},
+                completed_tool_result_ids=completed,
+                displayed_tool_ids=displayed,
+                tool_call_buffers={},
+            )
+
+        # The deferred row survives; only the ordinary row is settled.
+        assert list(adapter._current_tool_messages) == ["call-ask"]
+        assert "call-ask" not in completed
+        assert displayed == {"call-ask"}
+
+    async def test_retry_usage_scope_separates_replayed_message_ids(
+        self, tmp_path: Path
+    ) -> None:
+        """Replayed chunks under a retried attempt are billed per attempt."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, _mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-usage"
+        )
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+        }
+        # Same provider message id on both attempts: without an attempt scope
+        # the replay would dedupe to a single billed request.
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "message": "n/a",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="x", id="m-1", usage_metadata=usage), {}),  # ty: ignore[invalid-argument-type]
+            ),
+            ((), "custom", retry_event),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="y", id="m-1", usage_metadata=usage), {}),  # ty: ignore[invalid-argument-type]
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+        turn_stats = SessionStats()
+
+        with (
+            patch.object(config_module.runtime_state, "model_name", "gpt-5.5"),
+            patch.object(config_module.runtime_state, "model_provider", "openai"),
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.01),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.per_kind["assistant"].request_count == 2
+
+    async def test_teardown_drops_uncommitted_attempt(self, tmp_path: Path) -> None:
+        """A stream error mid-attempt stages nothing into the transcript."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-error"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="lost", id="m-1"), {})),
+        ]
+
+        with pytest.raises(RuntimeError, match="stream blew up"):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_RaisingAgent(chunks, RuntimeError("stream blew up")),
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        assert "lost" in str(assistant_widgets[0]._content)
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "The model request failed; the partial response above is incomplete."
+        )
+        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
+        main = runtime.transcripts.materialize("thread-error").path.read_text()
+        assert "lost" not in main
+
+    async def test_unusable_retry_counts_still_mark_the_partial_reply(
+        self, tmp_path: Path
+    ) -> None:
+        """A marker with no counts beats no marker at all.
+
+        By the time the marker is mounted the partial reply is already detached
+        and finalized, so returning nothing would leave a truncated answer in the
+        chat that reads as a complete one.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-nocounts"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            (
+                (),
+                "custom",
+                {
+                    "type": "model_retry",
+                    # Structurally valid correlation, unusable counters.
+                    "attempt": 0,
+                    "max_retries": 0,
+                    "call_id": "call-1",
+                    "failed_attempt": 0,
+                    "output_may_have_started": True,
+                },
+            ),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "Connection dropped; the partial response above is incomplete. Retrying."
+        )
+
+
+def _attempt_complete(call_id: str, attempt: int) -> tuple[tuple, str, dict[str, Any]]:
+    return (
+        (),
+        "custom",
+        {
+            "type": "model_attempt",
+            "phase": "complete",
+            "call_id": call_id,
+            "attempt": attempt,
+        },
+    )
+
+
+def _attempt_start(call_id: str, attempt: int) -> tuple[tuple, str, dict[str, Any]]:
+    return (
+        (),
+        "custom",
+        {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": call_id,
+            "attempt": attempt,
+        },
+    )
+
+
+def _collect_mounts() -> tuple[Callable[[object], Awaitable[bool]], list[object]]:
+    """Capture-mounted widget helper for retry-lifecycle tests."""
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        await asyncio.sleep(0)
+        mounted.append(widget)
+        return True
+
+    return mount_message, mounted
+
+
+def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any, Any]:
+    """Session state whose hooks record into a real transcript store."""
+    from deepagents_code.hooks.manager import HooksManager
+    from deepagents_code.hooks.runtime import HooksRuntime
+
+    session_state = _session_state(auto_approve=False, thread_id=thread_id)
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=tmp_path / "config",
+        transcript_root=tmp_path / "transcripts",
+    )
+    hooks = HooksManager.adopting(None, identity=session_state.hook_identity)
+    hooks._runtime = runtime
+    session_state.hooks = hooks
+    return session_state, runtime

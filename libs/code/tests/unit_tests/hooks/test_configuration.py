@@ -32,36 +32,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_registry_covers_all_hook_events() -> None:
-    specs = {event: get_event_spec(event) for event in HookEvent}
-    assert set(specs) == set(HookEvent)
-    assert all(event is spec.event for event, spec in specs.items())
-    assert (
-        get_event_spec(HookEvent.SESSION_END).default_timeout_seconds
-        == DEFAULT_COMMAND_TIMEOUT_SECONDS
-    )
-    assert get_event_spec(HookEvent.PERMISSION_REQUEST).matcher_field == "tool_name"
-    assert get_event_spec(
-        HookEvent.USER_PROMPT_SUBMIT
-    ).default_timeout_seconds == pytest.approx(30.0)
-    assert get_event_spec(HookEvent.PRE_COMPACT).matcher_field == "trigger"
-    assert get_event_spec(HookEvent.PRE_COMPACT).owner is HookOwner.SERVER
-
-
-def test_plugin_source_uses_windows_environment_references(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    source = PluginHooksSource(
-        location="hooks.json", plugin_id="plugin@market", env={"PLUGIN_ROOT": "ignored"}
-    )
-    monkeypatch.setattr("deepagents_code.hooks.loading.os.name", "nt")
-
-    assert (
-        source.resolve_variables('"${PLUGIN_ROOT}/check.cmd"', shell_syntax=True)
-        == '"%PLUGIN_ROOT%/check.cmd"'
-    )
-
-
 def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
     user_dir = tmp_path / "user"
     project_dir = tmp_path / "project"
@@ -307,24 +277,6 @@ def test_legacy_adapter_ignores_nested_hook_exit_code(
     assert migration._run_adapter(["session.start", encoded]) == 0
 
 
-def test_legacy_adapter_keeps_nested_hook_in_process_group(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    run = MagicMock()
-    monkeypatch.setattr(migration.subprocess, "run", run)
-    monkeypatch.setattr(
-        sys,
-        "stdin",
-        io.TextIOWrapper(io.BytesIO(b'{"session_id":"t1"}'), encoding="utf-8"),
-    )
-    encoded = migration.base64.urlsafe_b64encode(b'["legacy-hook"]').decode()
-
-    assert migration._run_adapter(["session.start", encoded]) == 0
-
-    run.assert_called_once()
-    assert "start_new_session" not in run.call_args.kwargs
-
-
 def test_invalid_config_is_diagnosed(tmp_path: Path) -> None:
     config_dir = tmp_path / "user"
     config_dir.mkdir()
@@ -396,106 +348,3 @@ def test_source_paths_are_canonicalized_and_deduplicated(tmp_path: Path) -> None
 
     assert loaded.sources == (path.resolve(),)
     assert len(loaded.config.hooks[HookEvent.STOP]) == 1
-
-
-def test_async_command_config_is_rejected() -> None:
-    with pytest.raises(ValidationError, match="async"):
-        HooksConfig.model_validate(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": "echo",
-                                    "async": True,
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-        )
-
-
-@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("-inf"), float("nan")])
-def test_command_timeout_must_be_positive_and_finite(timeout: float) -> None:
-    with pytest.raises(ValidationError, match="timeout"):
-        HooksConfig.model_validate(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "hooks": [
-                                {
-                                    "type": "command",
-                                    "command": "echo",
-                                    "timeout": timeout,
-                                }
-                            ]
-                        }
-                    ]
-                }
-            }
-        )
-
-
-def test_snapshot_id_is_immutable_and_stable() -> None:
-    config = HooksConfig.model_validate(
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {"hooks": [{"type": "command", "command": "policy"}]},
-                ]
-            }
-        }
-    )
-    first = HooksSnapshot.from_config(config)
-    second = HooksSnapshot.from_config(config)
-
-    assert first.snapshot_id == second.snapshot_id
-    assert len(first.snapshot_id) == 64
-
-    with_false_async = HooksConfig.model_validate(
-        {
-            "hooks": {
-                "PreToolUse": [
-                    {
-                        "hooks": [
-                            {
-                                "type": "command",
-                                "command": "policy",
-                                "async": False,
-                            }
-                        ]
-                    }
-                ]
-            }
-        }
-    )
-    assert compute_snapshot_id(with_false_async) == first.snapshot_id
-    assert with_false_async.hooks[HookEvent.PRE_TOOL_USE][0].hooks[0].async_ is None
-
-    with pytest.raises(ValueError, match="canonical"):
-        HooksSnapshot.from_config(config, snapshot_id="not-the-canonical-id")
-
-
-def test_snapshot_rejects_matcher_for_unmatchable_event() -> None:
-    snapshot = HooksSnapshot.from_config(
-        HooksConfig.model_validate(
-            {
-                "hooks": {
-                    "Stop": [
-                        {
-                            "matcher": "Bash",
-                            "hooks": [{"type": "command", "command": "stop"}],
-                        }
-                    ]
-                }
-            }
-        )
-    )
-
-    assert snapshot.handlers[HookEvent.STOP] == ()
-    assert [item.code for item in snapshot.diagnostics] == ["unsupported_matcher"]

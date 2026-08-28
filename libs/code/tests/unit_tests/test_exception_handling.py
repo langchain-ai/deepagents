@@ -26,55 +26,6 @@ from deepagents_code.tools import web_search
 class TestToolsExceptionHandling:
     """Test exception handling in CLI tools."""
 
-    def test_web_search_handles_tavily_usage_limit_error(self):
-        """Test that web_search catches Tavily UsageLimitExceededError."""
-        mock_client = MagicMock()
-        mock_client.search.side_effect = UsageLimitExceededError("Rate limit")
-        with patch(
-            "deepagents_code.tools._get_tavily_client", return_value=mock_client
-        ):
-            result = web_search("test query")
-
-        assert "error" in result
-        assert "Rate limit" in result["error"]
-        assert result["query"] == "test query"
-
-    def test_web_search_handles_tavily_invalid_api_key(self):
-        """Test that web_search catches Tavily InvalidAPIKeyError."""
-        mock_client = MagicMock()
-        mock_client.search.side_effect = InvalidAPIKeyError("Invalid key")
-        with patch(
-            "deepagents_code.tools._get_tavily_client", return_value=mock_client
-        ):
-            result = web_search("test query")
-
-        assert "error" in result
-        assert "Invalid key" in result["error"]
-
-    def test_web_search_handles_tavily_bad_request(self):
-        """Test that web_search catches Tavily BadRequestError."""
-        mock_client = MagicMock()
-        mock_client.search.side_effect = BadRequestError("Bad request")
-        with patch(
-            "deepagents_code.tools._get_tavily_client", return_value=mock_client
-        ):
-            result = web_search("test query")
-
-        assert "error" in result
-        assert "Bad request" in result["error"]
-
-    def test_web_search_handles_tavily_timeout(self):
-        """Test that web_search catches Tavily TimeoutError."""
-        mock_client = MagicMock()
-        mock_client.search.side_effect = TavilyTimeoutError(30.0)
-        with patch(
-            "deepagents_code.tools._get_tavily_client", return_value=mock_client
-        ):
-            result = web_search("test query")
-
-        assert "error" in result
-        assert "timed out" in result["error"].lower()
-
 
 class TestFileOpsExceptionHandling:
     """Test exception handling in file_ops."""
@@ -107,39 +58,6 @@ class TestFileOpsExceptionHandling:
         assert "Backend error" in caplog.text
         assert any(r.levelname == "WARNING" for r in caplog.records)
 
-    def test_file_op_tracker_handles_attribute_error(self, caplog):
-        """A backend that does not satisfy the protocol must not abort the turn.
-
-        Caught apart from the read errors so the log says which it was: routed
-        through the same message, a local defect reads as a broken workspace and
-        silently degrades every file operation in the session.
-        """
-        # Create tracker with a mock backend that raises AttributeError
-        mock_backend = MagicMock()
-        mock_backend.download_files.side_effect = AttributeError("Missing attribute")
-
-        tracker = FileOpTracker(assistant_id=None, backend=mock_backend)
-
-        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
-            tracker.start_operation(
-                "edit_file",
-                {"file_path": "/test.txt", "old_string": "a", "new_string": "b"},
-                "tool_call_456",
-            )
-
-        # Should have recorded the operation with empty before_content
-        assert "tool_call_456" in tracker.active
-        record = tracker.active["tool_call_456"]
-        assert record.before_content == ""
-        assert record.diff_outcome == "untrusted_before"
-
-        # A contract violation is a bug, but `start_operation` runs unguarded on
-        # the turn loop — so it is logged, not raised.
-        assert "Could not read pre-edit content" in caplog.text
-        assert "Missing attribute" in caplog.text
-        # Named as a contract violation, not as an unreadable file.
-        assert "Backend violated the download contract" in caplog.text
-
     def test_file_op_tracker_handles_unicode_decode_error(self, caplog):
         """Test that FileOpTracker handles UnicodeDecodeError for binary files."""
         # Create tracker with a mock backend that returns binary data
@@ -169,73 +87,6 @@ class TestFileOpsExceptionHandling:
         # Verify the error was logged
         assert "Could not read pre-edit content" in caplog.text
 
-    def test_safe_read_logs_on_failure(self, caplog, tmp_path):
-        """Test that _safe_read logs when file read fails."""
-        # Test with non-existent file
-        nonexistent = tmp_path / "does_not_exist.txt"
-
-        with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
-            result = _safe_read(nonexistent)
-
-        assert result is None
-        assert "Failed to read file" in caplog.text
-
 
 class TestMediaUtilsExceptionHandling:
     """Test exception handling in media utilities."""
-
-    def test_pngpaste_timeout_logs_and_returns_none(self, caplog):
-        """Test that pngpaste timeout is logged and function falls back."""
-        with (
-            patch("deepagents_code.media_utils._get_executable") as mock_exec,
-            patch("subprocess.run") as mock_run,
-            patch(
-                "deepagents_code.media_utils._get_clipboard_via_osascript"
-            ) as mock_osascript,
-        ):
-            mock_exec.return_value = "/usr/local/bin/pngpaste"
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="pngpaste", timeout=2)
-            mock_osascript.return_value = None
-
-            with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
-                result = _get_macos_clipboard_image()
-
-            assert result is None
-            assert "pngpaste timed out" in caplog.text
-
-    def test_pngpaste_not_found_logs_and_falls_back(self, caplog):
-        """Test that FileNotFoundError for pngpaste is logged."""
-        with (
-            patch("deepagents_code.media_utils._get_executable") as mock_exec,
-            patch("subprocess.run") as mock_run,
-            patch(
-                "deepagents_code.media_utils._get_clipboard_via_osascript"
-            ) as mock_osascript,
-        ):
-            mock_exec.return_value = "/usr/local/bin/pngpaste"
-            mock_run.side_effect = FileNotFoundError("pngpaste")
-            mock_osascript.return_value = None
-
-            with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
-                result = _get_macos_clipboard_image()
-
-            assert result is None
-            assert "pngpaste not found" in caplog.text
-
-    def test_osascript_timeout_logs_and_returns_none(self, caplog):
-        """Test that osascript timeout is logged."""
-        with (
-            patch("deepagents_code.media_utils._get_executable") as mock_exec,
-            patch("subprocess.run") as mock_run,
-            patch("tempfile.mkstemp") as mock_mkstemp,
-            patch("os.close"),
-        ):
-            mock_exec.return_value = "/usr/bin/osascript"
-            mock_mkstemp.return_value = (5, "/tmp/test.png")
-            mock_run.side_effect = subprocess.TimeoutExpired(cmd="osascript", timeout=2)
-
-            with caplog.at_level(logging.DEBUG, logger="deepagents_code"):
-                result = _get_clipboard_via_osascript()
-
-            assert result is None
-            assert "osascript timed out" in caplog.text

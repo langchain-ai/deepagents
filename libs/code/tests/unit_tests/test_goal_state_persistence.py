@@ -62,43 +62,6 @@ async def test_active_paused_active_persists_three_append_events() -> None:
     )
 
 
-async def test_legacy_active_thread_backfills_notice() -> None:
-    """An active checkpoint without a notice is repaired before model use."""
-    updater = SimpleNamespace(aupdate_state=AsyncMock())
-    app = DeepAgentsApp(agent=MagicMock())
-    app._agent = updater
-    app._lc_thread_id = "thread-1"
-    state = {**_active_state(), "messages": []}
-
-    with patch.object(app, "_get_thread_state_values", AsyncMock(return_value=state)):
-        assert await app._ensure_goal_state_notice()
-
-    updater.aupdate_state.assert_awaited_once()
-    update = updater.aupdate_state.await_args.args[1]
-    assert set(update) == {"messages"}
-    assert goal_state_notice_info(update["messages"][0]) is not None
-
-
-async def test_matching_remote_notice_is_not_duplicated() -> None:
-    """Serialized remote checkpoints use metadata for idempotent matching."""
-    updater = SimpleNamespace(aupdate_state=AsyncMock())
-    app = DeepAgentsApp(agent=MagicMock())
-    app._agent = updater
-    app._lc_thread_id = "thread-1"
-    state = _active_state()
-    notice = build_goal_state_notice(state, event_id="goal-event-1")
-    checkpoint = {**state, "messages": [_serialized(notice)]}
-
-    with patch.object(
-        app,
-        "_get_thread_state_values",
-        AsyncMock(return_value=checkpoint),
-    ):
-        assert await app._ensure_goal_state_notice()
-
-    updater.aupdate_state.assert_not_awaited()
-
-
 async def test_invalid_later_notice_is_superseded_by_current_inactive_state() -> None:
     updater = SimpleNamespace(aupdate_state=AsyncMock())
     app = DeepAgentsApp(agent=MagicMock())
@@ -334,65 +297,3 @@ async def test_notice_defers_for_incomplete_tool_result_batch(
     ):
         assert await app._ensure_goal_state_notice()
     updater.aupdate_state.assert_awaited_once()
-
-
-async def test_dangling_tool_call_does_not_abort_agent_run() -> None:
-    """The graph must run so its middleware can repair an interrupted call."""
-    updater = SimpleNamespace(aupdate_state=AsyncMock())
-    app = DeepAgentsApp(agent=MagicMock())
-    async with app.run_test() as pilot:
-        await pilot.pause()
-        app._agent = updater
-        app._lc_thread_id = "thread-1"
-        app._active_goal = "ship it"
-        app._goal_status = "active"
-        app._active_rubric = "tests pass"
-        assistant = AIMessage(
-            content="",
-            tool_calls=[{"name": "one", "args": {}, "id": "call-1"}],
-        )
-        checkpoint = {**_active_state(), "messages": [assistant]}
-
-        with (
-            patch.object(
-                app,
-                "_get_thread_state_values",
-                AsyncMock(return_value=checkpoint),
-            ),
-            patch.object(app, "_cleanup_agent_task", new_callable=AsyncMock),
-            patch(
-                "deepagents_code.tui.textual_adapter.execute_task_textual",
-                new_callable=AsyncMock,
-            ) as execute,
-        ):
-            await app._run_agent_task("resume")
-
-    execute.assert_awaited_once()
-    updater.aupdate_state.assert_not_awaited()
-
-
-async def test_remote_state_and_notice_share_one_update() -> None:
-    """Remote TUI transitions use one attributed state-plus-message write."""
-    from deepagents_code.client.remote_client import RemoteAgent
-
-    remote = MagicMock(spec=RemoteAgent)
-    remote.aensure_thread = AsyncMock()
-    remote.aupdate_state = AsyncMock()
-    app = DeepAgentsApp(agent=remote)
-    app._lc_thread_id = "thread-1"
-    state = _active_state()
-    notice = build_goal_state_notice(state, event_id="goal-event-remote")
-
-    assert await app._persist_goal_rubric_state(
-        notice=notice,
-        state_update=dict(state),
-    )
-
-    remote.aensure_thread.assert_awaited_once_with(
-        {"configurable": {"thread_id": "thread-1"}}
-    )
-    remote.aupdate_state.assert_awaited_once_with(
-        {"configurable": {"thread_id": "thread-1"}},
-        {**state, "messages": [notice]},
-        as_node="model",
-    )

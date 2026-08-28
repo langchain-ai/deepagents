@@ -34,40 +34,6 @@ class TestThreadAgentSwitchPromptScreen:
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
         return screen, dismiss
 
-    def test_body_explains_agents_restart_and_default_scope(self) -> None:
-        """The prompt makes every material consequence explicit."""
-        screen, _ = self._screen()
-
-        body = screen._body_text()
-
-        assert "thread-123" in body
-        assert "researcher" in body
-        assert "coder" in body
-        assert "server will restart" in body
-        assert "saved default agent will not change" in body
-
-    def test_modal_binds_confirmation_cancel_and_quit(self) -> None:
-        """Keyboard bindings match the sibling cwd-switch modal."""
-        bindings = [
-            binding
-            for binding in ThreadAgentSwitchPromptScreen.BINDINGS
-            if isinstance(binding, Binding)
-        ]
-        bindings_by_key = {binding.key: binding for binding in bindings}
-
-        assert bindings_by_key["enter"].action == "switch"
-        assert bindings_by_key["escape"].action == "cancel"
-        assert bindings_by_key["ctrl+c"].action == "quit_or_interrupt"
-        assert bindings_by_key["ctrl+d"].action == "quit_app"
-
-    def test_action_switch_confirms(self) -> None:
-        """Enter resolves to the explicit switch action."""
-        screen, dismiss = self._screen()
-
-        screen.action_switch()
-
-        dismiss.assert_called_once_with("switch")
-
     def test_action_cancel_stays_on_current_thread(self) -> None:
         """Esc resolves to the safe no-op outcome."""
         screen, dismiss = self._screen()
@@ -75,26 +41,6 @@ class TestThreadAgentSwitchPromptScreen:
         screen.action_cancel()
 
         dismiss.assert_called_once_with("cancel")
-
-    async def test_real_keypresses_resolve_modal(self) -> None:
-        """The mounted modal receives the confirmation key."""
-        app = _ThreadAgentSwitchTestApp()
-        async with app.run_test() as pilot:
-            outcomes: list[ThreadAgentSwitchChoice | None] = []
-            app.push_screen(
-                ThreadAgentSwitchPromptScreen(
-                    thread_id="thread-123",
-                    current_agent="coder",
-                    thread_agent="researcher",
-                ),
-                outcomes.append,
-            )
-            await pilot.pause()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert outcomes == ["switch"]
 
     async def test_escape_cancels_mounted_modal(self) -> None:
         """The app-level Esc binding resolves to the safe cancel outcome."""

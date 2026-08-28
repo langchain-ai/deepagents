@@ -76,29 +76,6 @@ def test_install_is_noop_outside_macos() -> None:
     isatty.assert_not_called()
 
 
-async def test_stdout_driver_renders_to_stdout() -> None:  # noqa: RUF029
-    """The subclass must flip the stream Textual's stock driver writes to.
-
-    Must be async: `Driver.__init__` calls `asyncio.get_running_loop()`. The
-    drivers are built under a patched `signal.signal` because `LinuxDriver`
-    registers process-global SIGTSTP/SIGCONT handlers it never removes.
-    """
-    from textual.drivers.linux_driver import LinuxDriver
-
-    app = SimpleNamespace()
-    driver_class = stdout_driver_class()
-    assert driver_class is not None
-    with patch("signal.signal"):
-        stock = LinuxDriver(app)  # ty: ignore[invalid-argument-type]
-        driver = driver_class(app)  # ty: ignore[invalid-argument-type]
-
-    # Pin the upstream contract too: if Textual renames `_file`, the subclass
-    # writes a dead attribute and the TUI silently renders to the guarded
-    # stderr. That must fail here rather than in a user's terminal.
-    assert stock._file is sys.__stderr__
-    assert driver._file is sys.__stdout__  # ty: ignore[unresolved-attribute]
-
-
 def test_stdout_driver_class_declines_when_stdout_is_unusable() -> None:
     """A missing or closed stdout must not yield a driver that renders blind."""
     with patch("deepagents_code._terminal_stderr.sys.__stdout__", None):

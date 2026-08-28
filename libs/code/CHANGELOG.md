@@ -4,31 +4,25 @@
 
 ## [0.1.64](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.63...deepagents-code==0.1.64) (2026-08-28)
 
-
 ### Features
 
-* **code:** add extension trust and inspection UX ([#5634](https://github.com/langchain-ai/deepagents/issues/5634)) ([da5dcdc](https://github.com/langchain-ai/deepagents/commit/da5dcdc1df38218f50d57be37908bc39438e3f2b))
-* **code:** attribute skill invocations in trace metadata ([#5925](https://github.com/langchain-ai/deepagents/issues/5925)) ([68fa627](https://github.com/langchain-ai/deepagents/commit/68fa627522e60fe5d5278b454d21fa63a40b2d35))
-* **code:** configure and load Python extensions ([#5632](https://github.com/langchain-ai/deepagents/issues/5632)) ([017d7ae](https://github.com/langchain-ai/deepagents/commit/017d7ae41fe1dfe3fe7fa07bfa206959170707ed))
-* **code:** copy current model from picker header ([#5904](https://github.com/langchain-ai/deepagents/issues/5904)) ([cfd9e7a](https://github.com/langchain-ai/deepagents/commit/cfd9e7aedfd4438d284bf5b567dbc858936af2e4))
-* **code:** host Python extensions in the agent runtime ([#5633](https://github.com/langchain-ai/deepagents/issues/5633)) ([2c8d154](https://github.com/langchain-ai/deepagents/commit/2c8d154c7616071919cab4947403dff701e74b31))
-* **code:** link doctor commit hash to GitHub ([#5920](https://github.com/langchain-ai/deepagents/issues/5920)) ([c9e6f55](https://github.com/langchain-ai/deepagents/commit/c9e6f55c3ee4b6efedfc945fd1c9b160e6e2a872))
-* **code:** list MCP servers needing login ([#5867](https://github.com/langchain-ai/deepagents/issues/5867)) ([a71cafd](https://github.com/langchain-ai/deepagents/commit/a71cafdbbd851db65dc311eebe5574982866b222))
-* **code:** standardize external editor shortcut ([#5911](https://github.com/langchain-ai/deepagents/issues/5911)) ([f75300f](https://github.com/langchain-ai/deepagents/commit/f75300f12dc363132dc187e674cf3cd52eb93595))
-
+- Added trace metadata attribution for skill invocations ([#5925](https://github.com/langchain-ai/deepagents/issues/5925)).
+- Added a list of MCP servers that require login ([#5867](https://github.com/langchain-ai/deepagents/issues/5867)).
+- Added the ability to copy the current model from the picker header ([#5904](https://github.com/langchain-ai/deepagents/issues/5904)).
+- Linked the doctor commit hash to GitHub ([#5920](https://github.com/langchain-ai/deepagents/issues/5920)).
+- Standardized the external editor shortcut ([#5911](https://github.com/langchain-ai/deepagents/issues/5911)).
 
 ### Bug Fixes
 
-* **code:** defer the recursion limit to the LangGraph server ([#5882](https://github.com/langchain-ai/deepagents/issues/5882)) ([4379a46](https://github.com/langchain-ai/deepagents/commit/4379a463a181a978aab206e93cdcc0788f7eac2b))
-* **code:** disable Git terminal prompts in `execute` ([#5878](https://github.com/langchain-ai/deepagents/issues/5878)) ([a535b61](https://github.com/langchain-ai/deepagents/commit/a535b610a158a79a2629fac73fa788d7b31f4096))
-* **code:** hide MCP token path outside debug mode ([#5866](https://github.com/langchain-ai/deepagents/issues/5866)) ([bd79104](https://github.com/langchain-ai/deepagents/commit/bd791048b3dfafae3df81e89aa81388e26bc9667))
-* **code:** move editable path to debug console ([#5850](https://github.com/langchain-ai/deepagents/issues/5850)) ([e85f4b7](https://github.com/langchain-ai/deepagents/commit/e85f4b7bd0acc696a3f29f5c298d3353d7d5495f))
-* **code:** point model switch warning to `/offload` ([#5901](https://github.com/langchain-ai/deepagents/issues/5901)) ([2f4d606](https://github.com/langchain-ai/deepagents/commit/2f4d606ee338720dd6ae6758761f08c3cb9c2350))
-* **code:** reject stale successful updates ([#5847](https://github.com/langchain-ai/deepagents/issues/5847)) ([23976f4](https://github.com/langchain-ai/deepagents/commit/23976f414a928eb50d13d351bdc19971098ea7b9))
-* **code:** render thread timestamps without the glibc-only `%-I` strftime flag ([#5886](https://github.com/langchain-ai/deepagents/issues/5886)) ([ef6b5be](https://github.com/langchain-ai/deepagents/commit/ef6b5beec93bdcbb38ea44f157a029bc07b8b5ee))
-* **code:** respect ASCII mode in splash border ([#5923](https://github.com/langchain-ai/deepagents/issues/5923)) ([437c2db](https://github.com/langchain-ai/deepagents/commit/437c2dbbe287c6b37a4fe7466b5f9d5305163d85))
-* **code:** skip unchanged config writes ([#5919](https://github.com/langchain-ai/deepagents/issues/5919)) ([c313ff0](https://github.com/langchain-ai/deepagents/commit/c313ff0e6b3549d9f959578ae177291d8c8f13a3))
-* **code:** skip uncorrelated-result warning for auto-mode policy denials ([#5869](https://github.com/langchain-ai/deepagents/issues/5869)) ([35fd008](https://github.com/langchain-ai/deepagents/commit/35fd00833a03e9e76858195aae8b13e7753cfa47))
+- Deferred recursion-limit handling to the LangGraph server ([#5882](https://github.com/langchain-ai/deepagents/issues/5882)).
+- Disabled Git terminal prompts in `execute` ([#5878](https://github.com/langchain-ai/deepagents/issues/5878)).
+- Improved privacy and debug-only visibility for MCP token and editable paths ([#5866](https://github.com/langchain-ai/deepagents/issues/5866), [#5850](https://github.com/langchain-ai/deepagents/issues/5850)).
+- Updated the model-switch warning to point to `/offload` ([#5901](https://github.com/langchain-ai/deepagents/issues/5901)).
+- Rejected stale successful updates ([#5847](https://github.com/langchain-ai/deepagents/issues/5847)).
+- Fixed thread timestamp rendering on systems without the glibc-only `%-I` `strftime` flag ([#5886](https://github.com/langchain-ai/deepagents/issues/5886)).
+- Respected ASCII mode in the splash border ([#5923](https://github.com/langchain-ai/deepagents/issues/5923)).
+- Skipped unchanged config writes ([#5919](https://github.com/langchain-ai/deepagents/issues/5919)).
+- Skipped uncorrelated-result warnings for auto-mode policy denials ([#5869](https://github.com/langchain-ai/deepagents/issues/5869)).
 
 ## [0.1.63](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.62...deepagents-code==0.1.63) (2026-08-26)
 

@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import MODEL_RETRIES_ATTR
+from deepagents_code.hooks.models.domain import HookEvent, PreCompactDecision
 from deepagents_code.offload_middleware import (
     _SUMMARY_TRIM_FALLBACK,
     CLICompactionMiddleware,
@@ -33,6 +34,8 @@ from deepagents_code.offload_middleware import (
 _NO_BACKOFF = "deepagents_code.model_retry._retry_delay_seconds"
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.messages import AnyMessage
 
@@ -144,6 +147,67 @@ class TestCLICompactionMiddleware:
         ]
         summarization._compute_state_cutoff.return_value = 2
         return summarization
+
+    def test_auto_compaction_uses_each_runtime_workspace(self, tmp_path: Path) -> None:
+        """One process must expose each run's bound directory to hooks."""
+        launch_dir = tmp_path / "launch"
+        workspaces = [tmp_path / "one", tmp_path / "two"]
+        for directory in [launch_dir, *workspaces]:
+            directory.mkdir()
+        middleware = CLICompactionMiddleware(self._summarization())
+        request = MagicMock()
+        request.messages = [HumanMessage("compact")]
+        context: dict[str, Any] = {
+            "hooks_snapshot_id": "snapshot",
+            "hooks_server_events": [HookEvent.PRE_COMPACT.value],
+        }
+        request.runtime.context = context
+        decisions = PreCompactDecision(event=HookEvent.PRE_COMPACT)
+
+        with (
+            patch(
+                "deepagents_code.offload_middleware.Path.cwd", return_value=launch_dir
+            ),
+            patch(
+                "deepagents_code.offload_middleware._invoke_hook",
+                return_value=decisions,
+            ) as invoke_hook,
+        ):
+            resolved = []
+            for workspace in workspaces:
+                context["workspace"] = {"cwd": str(workspace)}
+                assert middleware._pre_auto_compact(request)
+                resolved.append(invoke_hook.call_args.args[0].cwd)
+
+        assert resolved == workspaces
+
+    def test_auto_compaction_without_workspace_uses_process_cwd(
+        self, tmp_path: Path
+    ) -> None:
+        """Runs without a workspace must retain the process-cwd behavior."""
+        launch_dir = tmp_path / "launch"
+        launch_dir.mkdir()
+        middleware = CLICompactionMiddleware(self._summarization())
+        request = MagicMock()
+        request.messages = [HumanMessage("compact")]
+        request.runtime.context = {
+            "hooks_snapshot_id": "snapshot",
+            "hooks_server_events": [HookEvent.PRE_COMPACT.value],
+        }
+        decision = PreCompactDecision(event=HookEvent.PRE_COMPACT)
+
+        with (
+            patch(
+                "deepagents_code.offload_middleware.Path.cwd", return_value=launch_dir
+            ),
+            patch(
+                "deepagents_code.offload_middleware._invoke_hook",
+                return_value=decision,
+            ) as invoke_hook,
+        ):
+            assert middleware._pre_auto_compact(request)
+
+        assert invoke_hook.call_args.args[0].cwd == launch_dir
 
     async def test_operation_plan_defers_archive_until_checkpoint_reservation(
         self,

@@ -49,9 +49,10 @@ def test_new_process_cwd_read_fails_guard(tmp_path: Path) -> None:
 
     check = cast("Any", _load_check())
     check._ALLOWLIST = {}
+    (site,) = _detected_sites(check, package)
 
     assert check.find_violations(package) == [
-        "request_path.py:4: unreviewed Path.cwd call in handle_request"
+        f"request_path.py:4: unreviewed Path.cwd call [{site.token}] in handle_request"
     ]
 
 
@@ -69,9 +70,13 @@ def test_nullable_project_root_read_fails_guard(tmp_path: Path) -> None:
 
     check = cast("Any", _load_check())
     check._ALLOWLIST = {}
+    (site,) = _detected_sites(check, package)
 
     assert check.find_violations(package) == [
-        "request_path.py:4: unreviewed find_project_root call in handle_request"
+        (
+            f"request_path.py:4: unreviewed find_project_root call "
+            f"[{site.token}] in handle_request"
+        )
     ]
 
 
@@ -90,9 +95,13 @@ def test_defining_module_read_fails_guard(tmp_path: Path) -> None:
 
     check = cast("Any", _load_check())
     check._ALLOWLIST = {}
+    (site,) = _detected_sites(check, package)
 
     assert check.find_violations(package) == [
-        "project_utils.py:5: unreviewed find_project_root call in get_context"
+        (
+            f"project_utils.py:5: unreviewed find_project_root call "
+            f"[{site.token}] in get_context"
+        )
     ]
 
 
@@ -123,8 +132,11 @@ def test_added_read_does_not_shift_reviewed_entries(tmp_path: Path) -> None:
 
     # The added read is reported at its own line, and neither reviewed entry
     # goes stale, so no reason moves to a call nobody reviewed.
+    added = next(
+        site for site in _detected_sites(check, package) if site not in check._ALLOWLIST
+    )
     assert check.find_violations(package) == [
-        "request_path.py:4: unreviewed Path.cwd call in build"
+        f"request_path.py:4: unreviewed Path.cwd call [{added.token}] in build"
     ]
 
 

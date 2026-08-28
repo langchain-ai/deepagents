@@ -152,8 +152,6 @@ class TestCLICompactionMiddleware:
         """One process must expose each run's bound directory to hooks."""
         launch_dir = tmp_path / "launch"
         workspaces = [tmp_path / "one", tmp_path / "two"]
-        for directory in [launch_dir, *workspaces]:
-            directory.mkdir()
         middleware = CLICompactionMiddleware(self._summarization())
         request = MagicMock()
         request.messages = [HumanMessage("compact")]
@@ -186,7 +184,6 @@ class TestCLICompactionMiddleware:
     ) -> None:
         """Runs without a workspace must retain the process-cwd behavior."""
         launch_dir = tmp_path / "launch"
-        launch_dir.mkdir()
         middleware = CLICompactionMiddleware(self._summarization())
         request = MagicMock()
         request.messages = [HumanMessage("compact")]

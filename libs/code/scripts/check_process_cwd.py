@@ -246,7 +246,7 @@ class _Visitor(ast.NodeVisitor):
     def __init__(self, path: str, tree: ast.AST) -> None:
         self.path = path
         self.scopes: list[str] = []
-        self.statement = "<module>"
+        self.statement: ast.stmt | None = None
         self.counts: Counter[tuple[str, str, str]] = Counter()
         self.sites: list[tuple[CallSite, int]] = []
         self.path_names: set[str] = set()
@@ -314,7 +314,7 @@ class _Visitor(ast.NodeVisitor):
     def visit(self, node: ast.AST) -> None:
         if isinstance(node, ast.stmt):
             previous = self.statement
-            self.statement = _statement_text(node)
+            self.statement = node
             super().visit(node)
             self.statement = previous
             return
@@ -338,14 +338,31 @@ class _Visitor(ast.NodeVisitor):
         kind = self._call_kind(node)
         if kind is not None:
             scope = ".".join(self.scopes) or "<module>"
+            statement = (
+                "<module>"
+                if self.statement is None
+                else _statement_text(self.statement)
+            )
             digest = hashlib.sha256(
-                f"{self.statement}|{ast.unparse(node)}".encode()
+                f"{statement}|{ast.unparse(node)}".encode()
             ).hexdigest()[:8]
             key = (scope, kind, digest)
             self.counts[key] += 1
             site = CallSite(self.path, scope, kind, digest, self.counts[key])
             self.sites.append((site, node.lineno))
         self.generic_visit(node)
+
+
+def _token_text(site: CallSite) -> str:
+    """Render the identity an allowlist entry must repeat for this call.
+
+    Returns:
+        The token, suffixed with the occurrence when more than one call shares
+        it, which is the pair a new `CallSite` entry has to name.
+    """
+    if site.occurrence > 1:
+        return f"{site.token}#{site.occurrence}"
+    return site.token
 
 
 def find_violations(package_dir: Path) -> list[str]:
@@ -381,7 +398,8 @@ def find_violations(package_dir: Path) -> list[str]:
         found.update(visitor.sites)
 
     violations = [
-        f"{site.path}:{line}: unreviewed {site.kind} call in {site.scope}"
+        f"{site.path}:{line}: unreviewed {site.kind} call "
+        f"[{_token_text(site)}] in {site.scope}"
         for site, line in found.items()
         if site not in _ALLOWLIST
     ]

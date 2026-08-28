@@ -4282,6 +4282,37 @@ enabled = false
         assert results == [("baseten:zai-org/GLM-5.2", "baseten")]
         dismiss.assert_called_once_with(("baseten:zai-org/GLM-5.2", "baseten"))
 
+    async def test_remote_selection_skips_local_provider_requirements(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets import model_selector
+
+        results: list[tuple[str, str] | None] = []
+        screen = ModelSelectorScreen(
+            check_provider_requirements=False,
+            default_scope=None,
+            result_callback=results.append,
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.provider_install_extra",
+            lambda _provider: pytest.fail("local install should not be checked"),
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda _provider: pytest.fail("local credentials should not be checked"),
+        )
+
+        screen._select_with_auth_check(
+            "server_provider:remote-model", "server_provider"
+        )
+
+        result = ("server_provider:remote-model", "server_provider")
+        assert results == [result]
+        dismiss.assert_called_once_with(result)
+
     async def test_select_uninstalled_provider_prompts_install(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

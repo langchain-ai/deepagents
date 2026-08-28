@@ -507,6 +507,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         title: str | None = None,
         description: str | Content | None = None,
         default_scope: DefaultModelScope | None,
+        check_provider_requirements: bool = True,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
@@ -537,6 +538,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 Ctrl+S and drop its footer hint — for pickers whose choice has
                 no persistent config key (the `/goal model` and `/rubric model`
                 graders) and for onboarding, which advertises no Ctrl+S.
+            check_provider_requirements: Whether to require local provider packages
+                and credentials before returning a selection.
             result_callback: Optional callback for selector results when the
                 screen is displayed without a `push_screen` result callback.
         """
@@ -554,6 +557,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._title = title
         self._description = description
         self._default_scope = default_scope
+        self._check_provider_requirements = check_provider_requirements
         self._result_callback = result_callback
         # Standard /model defaults to the curated recommended subset so users
         # face less decision fatigue; onboarding (`curated=True`) already
@@ -2022,7 +2026,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         on the selector and refresh the credential indicator so the user can
         try again or pick a different provider.
         """
-        if not provider:
+        if not provider or not self._check_provider_requirements:
             self._dismiss_with_result((model_spec, provider))
             return
 

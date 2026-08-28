@@ -29268,6 +29268,9 @@ class DeepAgentsApp(App):
                 "with `/summarization-model clear` to follow the main agent model."
             ),
             default_scope=None,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
         )
         self.push_screen(screen, handle_result)
 

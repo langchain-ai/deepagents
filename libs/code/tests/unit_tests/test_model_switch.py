@@ -1660,6 +1660,19 @@ class TestSummarizationModelCommand:
         assert screen._current_provider == "openai"
         assert screen._current_model == "gpt-5.4-mini"
         assert screen._default_scope is None
+        assert screen._check_provider_requirements is True
+
+    async def test_external_remote_selector_skips_local_provider_requirements(
+        self,
+    ) -> None:
+        app = DeepAgentsApp(summarization_model="server_provider:remote-model")
+        app._agent = _make_remote_agent()  # ty: ignore[invalid-assignment]
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._check_provider_requirements is False
 
     async def test_selector_falls_back_to_main_model_when_unset(self) -> None:
         app = DeepAgentsApp(summarization_model="")

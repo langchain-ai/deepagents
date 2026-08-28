@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_type_hints
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 from langchain.agents.middleware.types import (
@@ -39,6 +40,7 @@ from langgraph.errors import GraphInterrupt
 from langgraph.graph import StateGraph
 from langgraph.runtime import ExecutionInfo
 from langgraph.types import Command
+from langsmith import tracing_context
 from pydantic import BaseModel, Field
 
 from deepagents_code._ask_user_types import (
@@ -60,6 +62,7 @@ from deepagents_code.auto_mode import (
     _MAX_CLASSIFIER_MODEL_CACHE,
     _MAX_EMITTED_EVENT_SCOPES,
     _MAX_PENDING_EVENT_SCOPES,
+    _REASON_LIMIT,
     AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
     USER_PROMPT_METADATA_KEY,
@@ -78,6 +81,8 @@ from deepagents_code.auto_mode import (
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
+    _routine_write_allowed,
+    _unresolvable_write_path_reason,
     classifier_unavailable_reason,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
@@ -1302,6 +1307,155 @@ def test_fixed_repo_commands_allow_only_read_only_git_operations(
     assert not _fixed_repo_command_allowed("git diff ../other", tmp_path)
     assert not _fixed_repo_command_allowed("git status && rm -rf .", tmp_path)
     assert not _fixed_repo_command_allowed("git status & rm -rf .", tmp_path)
+
+
+def _unresolvable_home_prefix() -> str:
+    """Return a `~name` prefix that names no account on this host.
+
+    Generated instead of hardcoded so the test cannot pass by accident on a
+    host that has an account with the chosen name.
+    """
+    name = f"dcode-absent-{uuid4().hex}"
+    prefix = f"~{name}"
+    if not os.path.expanduser(prefix).startswith("~"):  # noqa: PTH111
+        pytest.skip(f"host unexpectedly resolves {prefix}")
+    return prefix
+
+
+def test_unresolvable_home_path_is_reviewed_not_raised(tmp_path: Path) -> None:
+    """An unknown `~name` denies the shortcut instead of failing the gate.
+
+    `Path.expanduser` raises `RuntimeError` for a home directory it cannot
+    determine. The path arguments here are model output, so that raise must not
+    escape: it would abort the model node and end the turn.
+    """
+    prefix = _unresolvable_home_prefix()
+
+    assert not _fixed_repo_command_allowed(f"git diff -- {prefix}/f.txt", tmp_path)
+    assert not _routine_write_allowed(
+        tmp_path,
+        {
+            "name": "write_file",
+            "args": {"file_path": f"{prefix}/f.txt"},
+            "id": "call-1",
+            "type": "tool_call",
+        },
+    )
+
+
+async def test_unresolvable_home_write_is_reported_to_the_model(
+    tmp_path: Path,
+) -> None:
+    """An unresolvable write path is refused with the resolver's own error.
+
+    The backend does not expand `~`, so letting the write through creates a
+    literal `~name` directory and reports success. The model needs the error to
+    correct the path, and this guard runs in every approval mode.
+    """
+    prefix = _unresolvable_home_prefix()
+    middleware = _middleware(tmp_path)
+    executed = False
+    request = ToolCallRequest(
+        tool_call={
+            "name": "write_file",
+            "args": {"file_path": f"{prefix}/f.txt", "content": "x"},
+            "id": "write-call",
+            "type": "tool_call",
+        },
+        tool=_tool("write_file"),
+        state={"messages": []},
+        runtime=cast("Any", SimpleNamespace()),
+    )
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal executed
+        await asyncio.sleep(0)
+        executed = True
+        return ToolMessage(content="ran", tool_call_id="write-call")
+
+    result = await middleware.awrap_tool_call(request, handler)
+
+    assert not executed
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    content = cast("str", result.content)
+    assert "Could not determine home directory" in content
+    assert prefix in content
+
+
+async def test_unresolvable_home_write_is_denied_with_a_reason(
+    tmp_path: Path,
+) -> None:
+    """The Auto gate denies the write and hands the model the resolver error."""
+    prefix = _unresolvable_home_prefix()
+    model = _StructuredModel(_deny_result(call_id="write-call"))
+    middleware = _middleware(tmp_path)
+    args: dict[str, object] = {"file_path": f"{prefix}/f.txt", "content": "x"}
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(middleware, request, tool_name="write_file", args=args)
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "policy_deny"
+    assert "Could not determine home directory" in decision["reason"]
+    assert prefix in decision["reason"]
+    # Denied on the path itself, so the classifier is never consulted.
+    assert not model.calls
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        pytest.param("a" * 600, id="over-reason-limit"),
+        pytest.param("\x00\x1b[31m", id="control-characters"),
+    ],
+)
+def test_unresolvable_write_path_reason_stays_plan_safe(
+    tmp_path: Path, suffix: str
+) -> None:
+    """The echoed path is untrusted, so the reason must survive plan validation.
+
+    An oversized reason fails `_validated_plan`, which discards the decisions
+    for every call in the batch and drops the whole turn to Manual.
+    """
+    prefix = _unresolvable_home_prefix()
+
+    reason = _unresolvable_write_path_reason(tmp_path, f"{prefix}{suffix}/f.txt")
+
+    assert reason is not None
+    assert len(reason) <= _REASON_LIMIT
+    assert "\x00" not in reason
+    assert "\x1b" not in reason
+
+
+async def test_oversized_unresolvable_write_path_keeps_the_plan_valid(
+    tmp_path: Path,
+) -> None:
+    """A long malformed path denies its own call without voiding the batch."""
+    prefix = _unresolvable_home_prefix()
+    model = _StructuredModel(_deny_result(call_id="write-call"))
+    middleware = _middleware(tmp_path)
+    args: dict[str, object] = {
+        "file_path": f"{prefix}{'a' * 600}/f.txt",
+        "content": "x",
+    }
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(middleware, request, tool_name="write_file", args=args)
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "policy_deny"
+    assert len(decision["reason"]) <= _REASON_LIMIT
 
 
 def test_classifier_schema_requires_every_object_property() -> None:
@@ -4545,6 +4699,104 @@ async def test_classifier_timeout_reports_configured_limit(tmp_path: Path) -> No
         "review_started",
         "review_completed",
     ]
+
+
+class _RecordingTracingClient:
+    """Stand-in for `langsmith.Client` that records what a run posts."""
+
+    def __init__(self) -> None:
+        self.created: list[dict[str, Any]] = []
+        self.updated: list[dict[str, Any]] = []
+
+    def create_run(self, **kwargs: Any) -> None:
+        self.created.append(kwargs)
+
+    def update_run(self, **kwargs: Any) -> None:
+        self.updated.append(kwargs)
+
+
+def _review_span(client: _RecordingTracingClient) -> dict[str, Any]:
+    """Return the single closed `auto_classifier_review` run."""
+    spans = [
+        run for run in client.updated if run.get("name") == "auto_classifier_review"
+    ]
+    assert len(spans) == 1
+    return spans[0]
+
+
+def _review_span_inputs(client: _RecordingTracingClient) -> dict[str, Any]:
+    """Return the review run's inputs, which travel on the create, not the close."""
+    opens = [
+        run for run in client.created if run.get("name") == "auto_classifier_review"
+    ]
+    assert len(opens) == 1
+    return cast("dict[str, Any]", opens[0]["inputs"])
+
+
+async def test_classifier_timeout_closes_review_span_with_error(tmp_path: Path) -> None:
+    """A deadline reaches tracing as a failed span, not one that never ended."""
+
+    class _SlowModel(_StructuredModel):
+        async def ainvoke(self, messages: list[object], **kwargs: object) -> object:
+            self.calls.append(messages)
+            self.call_kwargs.append(kwargs)
+            await asyncio.sleep(5)
+            return self.result
+
+    middleware = _middleware(tmp_path, classifier_timeout_seconds=0.05)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_SlowModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    client = _RecordingTracingClient()
+
+    with tracing_context(enabled=True, client=cast("Any", client)):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
+    span = _review_span(client)
+    assert span["end_time"] is not None
+    assert "_ClassifierDeadlineExceededError" in span["error"]
+    # No verdict was reached, so the span must not claim one.
+    assert not span["outputs"]
+
+
+async def test_classifier_review_span_records_verdict(tmp_path: Path) -> None:
+    """A completed review closes the span with no error and a decision count."""
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    client = _RecordingTracingClient()
+
+    with tracing_context(enabled=True, client=cast("Any", client)):
+        plan = await _plan(
+            middleware,
+            request,
+            tool_name="delete",
+            args={"file_path": "old.py"},
+        )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    span = _review_span(client)
+    assert span["error"] is None
+    assert span["outputs"] == {"decision_count": 1}
+    # Names identify the batch; arguments can carry secrets and stay out.
+    assert _review_span_inputs(client) == {
+        "tool_count": 1,
+        "tools": ["delete"],
+        "classifier_model": "inherited",
+    }
 
 
 @pytest.mark.parametrize("budget", [0, -1.0, float("nan"), float("inf")])

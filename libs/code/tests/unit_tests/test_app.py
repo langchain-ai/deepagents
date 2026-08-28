@@ -36914,6 +36914,7 @@ class TestRespawnServer:
         proc = MagicMock()
         proc.url = "http://localhost:0/"
         proc.restart = AsyncMock()
+        proc.wait_for_graph_ready = AsyncMock()
         app._server_proc = proc
         app._server_kwargs = {}
         app._mcp_preload_kwargs = {}
@@ -37493,6 +37494,7 @@ class TestRespawnServer:
             # restart — the server came up; only metadata refresh degraded.
             assert result is True
             proc.restart.assert_awaited_once()
+            proc.wait_for_graph_ready.assert_awaited_once_with("agent", timeout=30.0)
             ready = [m for m in posted if isinstance(m, app.ServerReady)]
             assert len(ready) == 1
             assert ready[0].mcp_server_info is None

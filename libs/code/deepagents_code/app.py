@@ -27705,6 +27705,13 @@ class DeepAgentsApp(App):
                     server_proc,
                     timeout=restart_timeout,
                 )
+                # `langgraph dev` lazily builds the agent graph. Wait for that
+                # build before reporting a completed restart so graph-bound
+                # extensions are registered and `/extensions` is accurate.
+                await server_proc.wait_for_graph_ready(
+                    "agent",
+                    timeout=restart_timeout,
+                )
             # `asyncio.CancelledError` is intentionally NOT caught here (it is a
             # `BaseException`): `_restart_server_process` raises it only when app
             # teardown has begun or a terminal `stop()` bumped the server's stop

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:a56da5085ccb31628b88a2199925e73f2feec8c653b3460789b2c85b35c1931d",
+  "pageVersion": "sha256:ee05518b840d41274ced4dff2b3981a1b43fcd33eca8bd832747048c75d35039",
   "claims": [
     {
       "id": "claim_e7a91a3229bd4003a7735b2a304d544d",
@@ -104,7 +104,7 @@
     },
     {
       "id": "claim_f62e7e84a661498da640e9c2c4552017",
-      "statement": "A declarative SubAgent may override the parent's model and tools and set its own filesystem `permissions`, which replace the parent's rules entirely when provided and otherwise inherit the parent's.",
+      "statement": "A declarative subagents may override the parent's model and tools and set its own filesystem `permissions`, which replace the parent's rules entirely when provided and otherwise inherit the parent's.",
       "evidence": [
         {
           "resource": "repo://libs/deepagents/deepagents/graph.py#L656-L671",
@@ -276,15 +276,15 @@
     },
     {
       "id": "claim_7b5884820c3c48e8aba1e741c4c82e70",
-      "statement": "The deepagents_code package ships bundled skills under its built_in_skills/ directory, resolved by Settings.get_built_in_skills_dir() and registered as a (\"...\", \"Built-in\") skill source.",
+      "statement": "The deepagents_code package resolves bundled skills from its `built_in_skills/` directory and registers that directory as the lowest-priority `(path, \"Built-in\")` source in dcode's ordered skill source list.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/agent.py#L2236-L2240",
-          "version": "repo-lines-v1:sha256:da4ca8cd275b9aed704ef5c437fc922577920c81aaef8ad1780977bd64dfe44d:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMzBjMWYxODhmMTQyZWQ3YTgyNDY4MGIyMDcxNzJjNTUxOWJjNjE0YTQ4ZmRhN2NmMTY3ZWRiOGRkZjc5OTU2YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYWRhNWM2NmUxN2IxNDUzOTc4MzRiOGM4NTRkYzQxOTNlMjEyNTE4MGE4OTk2YTE0YzMxODgzMzI2YjJlZmJjZiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMmY1NTU0YmNlNGI0NTI4NjczZjkwZjQyODgyMmE2NzdhN2EwMmQ1MDY4OWVlOWI3ZjRmNWEwYmRkY2Q2MTkzMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODMzZTczODgwMTFiMjM4NmZlM2Y2YTYyYzBkZDE5ZmIyNDcyMTA5ZmU1NmE0MjRjNjc1ZDM2YTBkYmY2Yjc0YyJ9"
+          "resource": "repo://libs/code/deepagents_code/_paths.py#L380-L382",
+          "version": "repo-lines-v1:sha256:e94bb4360bc20c900b2cc7aa9e3c2ab44c59ee6fdd9da0940827152d5ec53884:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjUxNjE0MTA4MzUzNjE1NGY2MjJhNDA0ZGI2NDRmNzZiN2U2YTZiYmQ5MjQ4M2Y2OWU1MTMyNmMyNTQ3ZWE4OCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzdlNDNmZmFkMGI2NjU1NzE4M2UxMzljYWM5MjBhYzA3YzQxNGQyOTE3MjRjNTg3NWQ0MjZhYjg0MDE2MzRlZSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTIzNDI5MWNmMDVjYWU1MDkwMWJmYWIwYzE5YjFmMGU4YzQ1MzM3NjIyMjY5ZDM5ZmIyOWU3ZmM4MDgwMzk5OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMTcwYmQzYTVjM2RmNDc3MDc2MWQ0M2M2OWIxMzliNTQ0ZjhjZDI0ODEzN2U2M2I5MGE0MWE3N2U5OGVhZjViMSJ9"
         },
         {
-          "resource": "repo://libs/code/deepagents_code/config.py#L3672-L3678",
-          "version": "repo-lines-v1:sha256:9a285b15a8162e8d9576ff6dc1d127805716c248d0d0385ee620c760607d500f:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZWIzM2U1Yzk1MTMzNmEwNmJhYmEyN2RjMWIyZmY0Yjk3YmJmYWIwZDNmMjkyYjU5ZWUxYjI0NzdhMjhmMTA0MCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMmI0ZGVjNmYxYTUxODA2MTg4ODUzNjMxZmNjNzYwZGMyOGM3M2IzNWE3MzdiN2Q5MjRkYTllYmZjNmRjYzIwNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTg3OTYwNmYzOTNhYTA0MzhhZjM2NTQ2YjJiYjAwMDdjZDJiNWYzNzNkYjliZTA0NmRmYjRjZTE0NTI1YzdjMyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOTViMjQ4OWQ1OTAxZWFiMjBkMjJhM2EzZTBlYzAyNjE1Y2ViODhlYjU2YWUyNGY5MjU2NWNmMTk1Y2Y2NjUzNiJ9"
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2294-L2353",
+          "version": "repo-lines-v1:sha256:a149ad109dab8e3e2d58633c87266621e9e83f3cae7e48de069344c49e856ad6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkN2Q0YzliODhlOTQ4NTIxNTg3ZjJiNDU0OTk4MzExYWJkZTZlZDFiZTc4ODk3Y2I4ZWQzOWRkYjRmNWM5YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWZkYThlZTI4MjQzM2ZjZjAzZThlNjM1MmVjMmNmZWUzZGEwOTBmYjQ3YWJiZmQ1MDFkZDU4N2Y5NmZlMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2NzA3YjMxNjNmNjcwZDljOWNlNDk2ODRkY2EwYWIzOWI3NjZjYzY4NmYzMjU0MGY4MGQ3NjQyNjk2Njg4MmIifQ"
         }
       ]
     },
@@ -301,10 +301,60 @@
           "version": "repo-lines-v1:sha256:457e7418129d15af7a8755722da66dc2ec4e30c975b2b3ea73e02024aaab0c66:eyJzZWxlY3RlZExpbmVDb3VudCI6MTA4LCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiIzNmYwM2ZmOTBhOGZjMjIzYzg1ZGQyODJlMDdmNjRlMmFlMTExNDFjZjI2MWU5MTIzZWIzYmY3YmQwYTQ0OTdiIiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI0ODkzZjQwZTM3ODFlYjg5NmM4MmQwNDZhMDgwNjdhMTFlMzVjZGYyZjFkZmFmMjZmZWE5MGI4ZGI2Njc2NDEzIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiIxNWI0ZGIwZjIzNGJjNzM3MGNlMWRjYjE4OGZkZjNhYWU3NzAwMDU5ZmY1MGY4Yzk1MDllNTgzYmU3ZmE3MmZkIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiI2OTY3NTA0MzhiNmFkYWRlMmZhYmVjYzc0OTE0YmQwZWMwODIxNGI2NTU1YjI0NzVmYzEzOTA2MDM4MWZmM2I3In0"
         }
       ]
+    },
+    {
+      "id": "claim_ca34755a52f04329b08126b0b4f7b86e",
+      "statement": "When dcode enables skills, it installs PluginSkillsMiddleware with a FilesystemBackend and ordered sources from bundled and plugin skills through user/project Deepagents and Agents directories to experimental Claude directories; later sources have higher collision precedence.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2294-L2353",
+          "version": "repo-lines-v1:sha256:a149ad109dab8e3e2d58633c87266621e9e83f3cae7e48de069344c49e856ad6:eyJzZWxlY3RlZExpbmVDb3VudCI6NjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImZkN2Q0YzliODhlOTQ4NTIxNTg3ZjJiNDU0OTk4MzExYWJkZTZlZDFiZTc4ODk3Y2I4ZWQzOWRkYjRmNWM5YzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImYyYWZkYThlZTI4MjQzM2ZjZjAzZThlNjM1MmVjMmNmZWUzZGEwOTBmYjQ3YWJiZmQ1MDFkZDU4N2Y5NmZlMDYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2NzA3YjMxNjNmNjcwZDljOWNlNDk2ODRkY2EwYWIzOWI3NjZjYzY4NmYzMjU0MGY4MGQ3NjQyNjk2Njg4MmIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2893-L2904",
+          "version": "repo-lines-v1:sha256:ce2f4361f94ba2dcfa83a6ec16cc96ea6cb4b5116271006ed0c89224525961f0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA1YjJiYWU3Mjc5NjRiM2ZmNjc2NGM5MWE5ZTI5MDJiZDNiNzhmZDkwZmMwZjU2N2VmYjNlNmRjZmMyZDNiZmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0MTY4ODUwZTQzMmUwMDg1YjE0ZjBhZWVhZjY4NGEzNTQwNDk5MDYwY2VkMzMwMmVkNGFlZDY0MTk2YjM5OTAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjljNzIzNGE0Mjk2MGViYjBiZDdkOWNmNGIyYmEzMmI4MTU0MDlkODYyY2Y1ZmYzMzU4Nzk2YzIzNWExY2NjMTQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_fe8a457594d442f2b43399c80330ef8c",
+      "statement": "PluginSkillsMiddleware preserves SDK loading for ordinary sources, but recursively discovers plugin skill directories and qualifies their names with the plugin namespace before last-one-wins merging.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py#L229-L260",
+          "version": "repo-lines-v1:sha256:dedf08aa78c178c99eefc3461d77977d060bc6b04d2f9f489c1d79eb641bb87f:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjIxYzdjMjRiODY4ZTM0ZWNhMWQxNGUyM2UyZWRhZjIxNGRjM2RiZmE2MzZlMWZmODhiN2VjMzQ2NmQwNzg1MjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJmYjQyNDM1NjMzODgxYThlYjljMmNiZDUxZTE1MmY3NzIyMjdjOTQ5OWEyY2I4ZGI0MmFmMTVhODE5NDEzYmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI4YzAzYTZlMGE5M2Q3MTI2M2U0NDUxNzljODcxYmZlYjNmMThhYzRhMzM0YWEzYjE1NmMzODQ0MTVhNDcyM2YifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/plugins/adapters/skills_middleware.py#L282-L326",
+          "version": "repo-lines-v1:sha256:cde41f5526fe1844455b7c34688ad7ecf92ddc16719e424d78dca540140dbe63:eyJzZWxlY3RlZExpbmVDb3VudCI6NDUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIyN2JjMTljN2UwNjA0YTg3Y2VkZDdiZGNmM2U2ZDcwYzg2MDRmYTk3ZmU3MDFhZjhiNDMwMjU3YzQxYmZkYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmNDkyZTkxYTI4OWMwZTI0M2QwMDA2ZmZiOGZlYjFjMTVjOTdiN2RmZDEzZjhhYmQyMThkMzFmODU3NGRmZDciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYzODNiMTU5ZmQzZDU2NDhlZWZjZGJlNmYyYTI2NDk4YzVmNWYzYzFkZDEwODFjMDVlMjYwNGFmNDUzZWQ2MzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3Y2JmMWFhMGUxOTIyYmM5OTE0Zjg5NmY0ODI1ZGNhNjZjNTBiYThkZTEyYzdkYTFjMmE0OTM1NWU5NzljNzcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_bd2170eefc2d453bb4ef0e3ed60508a8",
+      "statement": "dcode relays a launch-time PYTHONPATH outside the server interpreter and restores it only in the curated, approval-gated execute environment; that shell backend disables further inheritance to avoid leaking the carrier or dcode tracing credentials.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2231-L2245",
+          "version": "repo-lines-v1:sha256:1f993fd21ff304a731537070a480165db9212c2153d5db3eeb98bdaea70694a1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmNGRmYTcwNWNkNjVjNDkwYmUxNGVkMDE3ODk5MWY5YTQyODI5MWZlMzU1OTYzNzlhZGNkZTA1YTM3NWNlYWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJhN2U3ZDc0ZjBkYTRiYTQwMWZhMmI5NmM5MWM3ODAwM2JjOGQzYzY1ZTRlYWNkODBhMTI5MTkxNjUzNTM2ODciLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQ5YzVkN2U0YmIyZjIwODczYjUzMzM2Yjk2ZDk3ZGNkMzgzMDdjMDQ5YmI0ZmUyZmE5Yjc4ZGY1MDVjOTNlYzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdkYTkyMWU5MTAwNWE0YmJiNzJjZjRkNTQxMjI4NmNjNzFjOTc5ZDE3NTQ3NjgzNjVhYzkwMjcxZDM1NWU4Y2MifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py#L2913-L2945",
+          "version": "repo-lines-v1:sha256:37febe85e82666f2cb582cdf1cc5d0eef4aedc94f559bb0ed165a72c1da7a569:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijc1MjdkODZlMWI4ODM5YmFiZDJlYWRiN2RmNjA4NjkwNzRkZjYyM2MwMTcwOTMwMjcwNzVjNGYwY2I0MjNmMzYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMTU5YTYyNzBlNWJkZTdiNTk1MTkwMTY3MDhiMzNiYTM2ZmU1ZmI1ZDk3MDQxYjZkZTVmZGMzNjQ5MDE1NTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZmYxMDM2YTRlYWJmMmZkYWFkMmNiYzE3YmI5OWJjYjk2ZDZkOTBkMDMwNWViYTlhZTc3NDNjMTU1ZDZkNzIifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/launch/server.py#L390-L424",
+          "version": "repo-lines-v1:sha256:63cb1eee6977a24068dae025b3672790474dbde4bf3f8dea5ad05038f419f249:eyJzZWxlY3RlZExpbmVDb3VudCI6MzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdlODkxYjZiMWJmMzNmOTQ4YTY1NTVmZjRjMzhkYTVhOThhYzVlYjllYzkxYWU0YjI2MmMwMzUzNmY3N2Y2MmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUwNmZlNGE4Zjk2NjEyZGE3ZTE1N2UwODAwMGZjNjY1MjBjYjlmMWI2NDBkMzNlYTI4ODcyOTc1M2NlYWMwNjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlhODJlYmU5ZWQ0MDdjM2E2YmE0YjAwMzQyOTJiYWE1MmMxMWNlNWFlMjg2MTA3NDAyZGU0NzkyZWVlY2FjZmMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhiZDEzYmY4YjRlYmZlYzg1OWUxYmQ1YTVjNjM0ZmVhNGQ1ZGJkODBjNTY1OTYyNDE3YzQ0ZWMwOGYxODI1ZmMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/config.py#L117-L125",
+          "version": "repo-lines-v1:sha256:d4c3515533e81ca578d0ba767ba5c81db04b517f53b7bd209b64019c6081a858:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDBiNjk4ZmM4MDliMWUyYzc1MDk2NTQwMzQ5MjYwOTAwMTE1ZjI0NWI2ZmNhOTAxMDQ4MzViMmMwNGY1Y2I0ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYThmYjMxYTNmNmU4N2I5OTBlOGZlN2JmY2UxYzI5Mzk1OTM0NmQwNTI5OTk0ODJkNDk2YzYxYmE2MTU3Yzg0NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzQ0NDlkMDMxMDY2ZTJhNjk5YWNhYmU3MDMyOTZiMTdjYTQ0MDM5MTBlMjQ5YmIyMzQ3NDUwMWE1YzNjZDY5YiJ9"
+        }
+      ]
     }
   ],
   "verification": {
-    "by": "openwiki/0.4.0",
-    "at": "2026-08-26T21:35:57.774Z"
+    "by": "openwiki/0.4.2",
+    "at": "2026-08-28T11:44:48.051Z"
   }
 }

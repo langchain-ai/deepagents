@@ -2505,7 +2505,9 @@ def create_cli_agent(
             Direct callers may omit this to resolve one for the current
             process. The server supplies a snapshot that incorporates its
             invocation-scoped PTC overrides.
-        rubric_model: Grader model for `RubricMiddleware`.
+        rubric_model: Default grader model. `None` makes the grader follow
+            the active main model. Either way a thread's recorded
+            `_rubric_model_spec` selection takes precedence.
 
             A `'provider:model'` string or `BaseChatModel`.
 
@@ -3275,6 +3277,11 @@ def create_cli_agent(
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
+        ConfigurableModelMiddleware(
+            persist_model_state=False,
+            cli_max_retries=cli_max_retries,
+            strict_model_resolution=True,
+        ),
         # Both clients filter this nested message stream. A transient fault can
         # safely retry the failed model node without replaying grader tools.
         CodeModelRetryMiddleware(
@@ -3341,6 +3348,13 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            # The bootstrap only scaffolds the runtime grader's graph;
+            # `ConfigurableModelMiddleware` swaps in the thread-selected model
+            # before any call. Pass the main model through even as an
+            # unresolved spec so a runtime selection never depends on the
+            # startup rubric model resolving.
+            "runtime_bootstrap_model": model,
+            "inherit_main_model": rubric_model is None,
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations

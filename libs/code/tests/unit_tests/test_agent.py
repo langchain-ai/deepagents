@@ -38,6 +38,7 @@ from deepagents_code.agent import (
     _apply_inherited_pythonpath,
     _create_rubric_grader_tools,
     _format_delete_description,
+    _format_execute_description,
     _interrupt_predicate,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
@@ -995,6 +996,88 @@ def test_format_delete_description() -> None:
     )
 
     assert "Action: Delete file or directory" in description
+
+
+def test_format_execute_description_prefers_workspace_binding() -> None:
+    """The approval prompt shows the run's workspace instead of the server CWD."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "execute", "args": {"command": "pwd"}, "id": "call-6"},
+    )
+    runtime = cast(
+        "Runtime[Any]",
+        SimpleNamespace(context={"workspace": {"cwd": "/workspace/thread-a"}}),
+    )
+    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
+
+    with patch(
+        "deepagents_code.agent.get_server_project_context",
+        return_value=server_context,
+    ):
+        description = _format_execute_description(
+            tool_call, cast("AgentState[Any]", None), runtime
+        )
+
+    assert "Working Directory: /workspace/thread-a" in description
+    assert "/workspace/server" not in description
+
+
+def test_format_execute_description_varies_by_workspace_binding() -> None:
+    """One server formats each run with its own bound working directory."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "execute", "args": {"command": "pwd"}, "id": "call-7"},
+    )
+    contexts = [
+        CLIContextSchema(workspace={"cwd": "/workspace/thread-a"}),
+        CLIContextSchema(workspace={"cwd": "/workspace/thread-b"}),
+    ]
+    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
+
+    with patch(
+        "deepagents_code.agent.get_server_project_context",
+        return_value=server_context,
+    ):
+        descriptions = [
+            _format_execute_description(
+                tool_call,
+                cast("AgentState[Any]", None),
+                cast("Runtime[Any]", SimpleNamespace(context=context)),
+            )
+            for context in contexts
+        ]
+
+    assert "Working Directory: /workspace/thread-a" in descriptions[0]
+    assert "Working Directory: /workspace/thread-b" in descriptions[1]
+
+
+def test_format_execute_description_without_workspace_uses_existing_fallback(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A run without a workspace keeps the server and process CWD fallbacks."""
+    tool_call = cast(
+        "ToolCall",
+        {"name": "execute", "args": {"command": "pwd"}, "id": "call-8"},
+    )
+    runtime = cast("Runtime[Any]", SimpleNamespace(context={}))
+    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
+
+    with patch(
+        "deepagents_code.agent.get_server_project_context",
+        return_value=server_context,
+    ):
+        server_description = _format_execute_description(
+            tool_call, cast("AgentState[Any]", None), runtime
+        )
+
+    monkeypatch.chdir(tmp_path)
+    with patch("deepagents_code.agent.get_server_project_context", return_value=None):
+        process_description = _format_execute_description(
+            tool_call, cast("AgentState[Any]", None), runtime
+        )
+
+    assert "Working Directory: /workspace/server" in server_description
+    assert f"Working Directory: {tmp_path}" in process_description
 
 
 def test_add_interrupt_on_gates_only_non_read_only_mcp_tools() -> None:

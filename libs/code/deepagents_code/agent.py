@@ -1796,7 +1796,7 @@ def _format_task_description(
 
 
 def _format_execute_description(
-    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+    tool_call: ToolCall, _state: AgentState[Any], runtime: Runtime[Any]
 ) -> str:
     """Format execute tool call for approval prompt.
 
@@ -1806,12 +1806,21 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    project_context = get_server_project_context()
-    effective_cwd = (
-        str(project_context.user_cwd)
-        if project_context is not None
-        else str(Path.cwd())
-    )
+    context = runtime.context
+    if isinstance(context, CLIContextSchema):
+        workspace: object = context.workspace
+    elif isinstance(context, dict):
+        workspace = context.get("workspace")
+    else:
+        workspace = None
+    effective_cwd = workspace.get("cwd") if isinstance(workspace, dict) else None
+    if not isinstance(effective_cwd, str) or not effective_cwd:
+        project_context = get_server_project_context()
+        effective_cwd = (
+            str(project_context.user_cwd)
+            if project_context is not None
+            else str(Path.cwd())
+        )
     lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)

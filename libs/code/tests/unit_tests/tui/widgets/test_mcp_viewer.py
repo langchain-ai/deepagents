@@ -1,17 +1,13 @@
 """Tests for the MCP viewer modal screen."""
 
-import asyncio
-
 import pytest
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
-from textual.notifications import Notification
 from textual.widget import Widget
 from textual.widgets import Static
 
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tui.widgets.mcp_viewer import (
-    MCP_VIEWER_RECONNECT_REQUEST,
     MCPServerErrorScreen,
     MCPServerHeaderItem,
     MCPToolItem,
@@ -23,12 +19,6 @@ def _widget_text(widget: Widget) -> str:
     """Extract plain text content from a Static widget."""
     content = widget._Static__content  # ty: ignore
     return str(content)
-
-
-def _latest_notification(app: App[None]) -> Notification | None:
-    """Return the most recently raised toast, or `None` if there are none."""
-    notifications = list(app._notifications)
-    return notifications[-1] if notifications else None
 
 
 class MCPViewerTestApp(App[None]):

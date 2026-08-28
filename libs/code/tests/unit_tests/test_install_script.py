@@ -527,28 +527,6 @@ def _run_prompt_yn_on_tty(
     return b"".join(chunks).decode(errors="replace")
 
 
-def _run_install_script(
-    tmp_path: Path,
-    extra_env: dict[str, str],
-    *,
-    installed_version: str | None = "0.0.1",
-    latest_version: str | None = None,
-    curl_fails: bool = False,
-) -> list[str]:
-    """Run the script expecting success and return the argv passed to uv."""
-    proc, args_path = _invoke(
-        tmp_path,
-        extra_env,
-        installed_version=installed_version,
-        latest_version=latest_version,
-        curl_fails=curl_fails,
-    )
-    if proc.returncode != 0:
-        msg = f"install.sh exited {proc.returncode}\nstderr:\n{proc.stderr}"
-        raise AssertionError(msg)
-    return args_path.read_text().splitlines()
-
-
 def _run_with_args(
     tmp_path: Path,
     args: tuple[str, ...],
@@ -766,30 +744,6 @@ def test_install_script_warns_when_live_log_ends_up_empty(tmp_path: Path) -> Non
     assert "Full log:" not in proc.stdout
 
 
-def _invoke_with_unaskable_prompt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[subprocess.CompletedProcess[str], Path]:
-    """Run the script with a terminal that probes open but cannot be asked.
-
-    `can_prompt` succeeds and `prompt_yn` returns 2 — the detached-session
-    shape, where the branches under test must complete the install rather than
-    read the silence as a refusal. Stubbing is the only way in: a genuinely
-    unaskable terminal cannot be produced from inside a whole-script run, and
-    `prompt_yn`'s own 1-vs-2 contract is pinned separately by the harness
-    tests above.
-    """
-    script = tmp_path / "install.sh"
-    source = (
-        SCRIPT.read_text(encoding="utf-8")
-        .replace(_extract_shell_function("can_prompt"), "can_prompt() {\n  return 0\n}")
-        .replace(_extract_shell_function("prompt_yn"), "prompt_yn() {\n  return 2\n}")
-    )
-    script.write_text(source, encoding="utf-8")
-    _make_executable(script)
-    monkeypatch.setitem(globals(), "SCRIPT", script)
-    return _invoke(tmp_path, {}, installed_version="0.1.0", latest_version="0.2.0")
-
-
 @pytest.mark.parametrize("stdin_is_tty", [True, False])
 def test_prompt_yn_eof_on_an_open_terminal_declines(
     tmp_path: Path, *, stdin_is_tty: bool
@@ -858,49 +812,6 @@ def test_can_prompt_false_without_usable_tty(tmp_path: Path) -> None:
     wrongly report the unanswerable cron/systemd/CI case as promptable.
     """
     assert _eval_can_prompt(tmp_path, is_interactive=True, stdin_is_tty=False) is False
-
-
-def _eval_prompt_yn(tmp_path: Path, *, is_interactive: bool, answer: str | None) -> int:
-    """Run the real `prompt_yn` and report its raw exit code.
-
-    `answer=None` detaches the controlling terminal (stdin from `/dev/null`,
-    `start_new_session`), so there is no terminal to prompt on — the rc=2
-    path. Otherwise stdin is a real pty with the answer written in, so the
-    `[ -t 0 ]` branch reads it and rc distinguishes yes (0) from no (1).
-    """
-    script = tmp_path / "prompt_yn_harness.sh"
-    script.write_text(
-        f"{_extract_shell_function('prompt_yn')}\n"
-        f"IS_INTERACTIVE={'true' if is_interactive else 'false'}\n"
-        "prompt_yn 'Proceed?'\n",
-        encoding="utf-8",
-    )
-    if answer is None:
-        proc = subprocess.run(
-            ["bash", str(script)],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            start_new_session=True,
-        )
-        return proc.returncode
-    primary, secondary = pty.openpty()
-    try:
-        # Write the answer before the child reads, so `read` sees it on the
-        # pty's input queue rather than blocking.
-        os.write(primary, (answer + "\n").encode())
-        proc = subprocess.run(
-            ["bash", str(script)],
-            stdin=secondary,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            check=False,
-        )
-    finally:
-        os.close(secondary)
-        os.close(primary)
-    return proc.returncode
 
 
 def _eval_version_at_least(tmp_path: Path, have: str, want: str) -> bool:
@@ -1010,33 +921,6 @@ def test_install_script_same_version_with_dependency_updates_says_dependencies_u
     )
     assert "✔ Dependencies updated. Run: dcode" in proc.stdout
     assert "✔ Already installed. Run: dcode" not in proc.stdout
-
-
-def _make_editable(tmp_path: Path, *, version: str = "0.1.0") -> Path:
-    """Mark the staged uv tool install as an editable one.
-
-    Mirrors what `uv tool install -e <path>` leaves behind: a `direct_url.json`
-    in the dist-info recording `"editable": true` plus the source it points at.
-    The script globs for exactly this file, so nothing else needs to change.
-
-    Returns the source directory named in the marker.
-    """
-    src = tmp_path / "src" / "deepagents"
-    src.mkdir(parents=True, exist_ok=True)
-    dist_info = (
-        tmp_path
-        / "tools"
-        / "deepagents-code"
-        / "lib"
-        / "python3.13"
-        / "site-packages"
-        / f"deepagents_code-{version}.dist-info"
-    )
-    dist_info.mkdir(parents=True, exist_ok=True)
-    (dist_info / "direct_url.json").write_text(
-        f'{{"url": "file://{src}", "dir_info": {{"editable": true}}}}\n'
-    )
-    return src
 
 
 def test_install_script_dependency_update_without_writable_log_omits_log_pointer(
@@ -1733,49 +1617,6 @@ def test_copy_install_log_live_rejects_symlink_planted_after_uv(
     assert target.read_text() == "attacker content\n"
 
 
-def _run_setup_live_install_log(
-    tmp_path: Path, *, uid: int, install_log: Path | None
-) -> tuple[str, str]:
-    """Run the real `setup_live_install_log` under a chosen effective uid.
-
-    Root must never take the live path: `copy_install_log` refuses to resolve
-    a user-writable parent as root, and streaming straight to `INSTALL_LOG`
-    would follow a symlink planted there. The whole-script suite skips
-    root-sensitive cases, so the guard is only reachable by overriding `id`.
-
-    Returns `UV_LIVE_LOG` and `uv_stderr` as the function left them.
-    """
-    harness = tmp_path / "setup_live_install_log_harness.sh"
-    log = "" if install_log is None else str(install_log)
-    harness.write_text(
-        "set -uo pipefail\n"
-        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        f"id() {{ printf '%s\\n' {uid}; }}\n"
-        f"{_extract_shell_function('setup_live_install_log')}\n"
-        "UV_LIVE_LOG=false\n"
-        "UV_LIVE_LOG_FD=9\n"
-        "uv_stderr=\n"
-        f"INSTALL_LOG={log!r}\n"
-        'INSTALL_LOG_DISPLAY="$INSTALL_LOG"\n'
-        f"install_log_dir={str(tmp_path)!r}\n"
-        "setup_live_install_log\n"
-        'printf "live=%s\\nstderr=%s\\n" "$UV_LIVE_LOG" "$uv_stderr"\n',
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(harness)],
-        check=False,
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-    )
-    assert proc.returncode == 0, proc.stderr
-    live = re.search(r"live=(\S*)", proc.stdout)
-    stderr_path = re.search(r"stderr=(\S*)", proc.stdout)
-    assert live is not None, proc.stdout
-    return live.group(1), stderr_path.group(1) if stderr_path else ""
-
-
 def test_copy_install_log_stages_outside_user_writable_log_dir(
     tmp_path: Path,
 ) -> None:
@@ -2050,48 +1891,6 @@ def test_install_script_failed_install_points_to_log(tmp_path: Path) -> None:
     assert (tmp_path / "home/.cache/deepagents-code/install.log").read_text() == (
         f"{_DEPENDENCY_UPDATE_DIFF}\n"
     )
-
-
-def _run_signal_failure_hint(
-    tmp_path: Path,
-    *,
-    exit_code: int,
-    os_name: str,
-    uname: str,
-    already_shown: bool = False,
-) -> str:
-    """Run the real `log_signal_failure_hint` in isolation and return its stderr.
-
-    A fake `uname` is placed on `PATH` so `is_linux_os` is fully determined by
-    (`os_name`, `uname`) rather than the test host's kernel — the OOM message is
-    gated on Linux, and this makes that gate deterministic on any CI runner.
-    """
-    bin_dir = tmp_path / "hintbin"
-    bin_dir.mkdir(exist_ok=True)
-    fake_uname = bin_dir / "uname"
-    fake_uname.write_text(f'#!/usr/bin/env bash\nprintf "%s\\n" {uname!r}\n')
-    _make_executable(fake_uname)
-
-    script = tmp_path / "signal_hint_harness.sh"
-    shown = "true" if already_shown else "false"
-    script.write_text(
-        'log_error() { printf "%s\\n" "$*" >&2; }\n'
-        f"OS={os_name!r}\n"
-        f"SIGNAL_FAILURE_HINT_SHOWN={shown}\n"
-        f"{_extract_shell_function('is_linux_os')}\n"
-        f"{_extract_shell_function('log_signal_failure_hint')}\n"
-        f"log_signal_failure_hint {exit_code}\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(script)],
-        env={**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}"},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    return proc.stderr
 
 
 # A PID above every platform's pid_max, so `kill -0` always reports it dead.
@@ -4590,86 +4389,6 @@ def test_install_script_current_uv_tool_repairs_shadowed_path(tmp_path: Path) ->
     assert (tmp_path / "uv-args.txt").exists()
     assert "not selected on PATH" in proc.stdout
     assert "Detected existing dcode" in proc.stderr
-
-
-def _run_detect_shadowing_install(
-    tmp_path: Path,
-    *,
-    original_path: str,
-    stage_shadow: bool = False,
-) -> str:
-    """Run the real `detect_shadowing_install` in isolation; return its stderr.
-
-    `HOME/.local/bin/dcode` is always created as the freshly-installed uv tool.
-    The caller controls `ORIGINAL_PATH` (the user's pre-installer PATH) to decide
-    what `command -v dcode` resolves to. With `stage_shadow`, a genuinely
-    different `dcode` (distinct inode) is also placed under `HOME/shadow` so the
-    caller can put it earlier on `ORIGINAL_PATH` to exercise the warning path.
-    """
-    home = tmp_path / "home"
-    local_bin = home / ".local" / "bin"
-    local_bin.mkdir(parents=True)
-    dcode = local_bin / "dcode"
-    dcode.write_text("#!/usr/bin/env bash\nexit 0\n")
-    _make_executable(dcode)
-    # The intermediate `share` dir must exist for the kernel to resolve the
-    # `~/.local/share/../bin` alias; without it the path is ENOENT and
-    # `command -v` finds nothing, so the `-ef` branch would never be reached.
-    (home / ".local" / "share").mkdir()
-
-    if stage_shadow:
-        shadow_dir = home / "shadow"
-        shadow_dir.mkdir()
-        shadow = shadow_dir / "dcode"
-        shadow.write_text("#!/usr/bin/env bash\nexit 0\n")
-        _make_executable(shadow)
-
-    script = tmp_path / "shadowing_harness.sh"
-    script.write_text(
-        'log_warn() { printf "%s\\n" "$*" >&2; }\n'
-        'OS="linux"\n'
-        f"HOME={str(home)!r}\n"
-        f"TOOL_BIN_DIR={str(local_bin)!r}\n"
-        f"ORIGINAL_PATH={original_path!r}\n"
-        f"{_extract_shell_function('classify_shadowing_command')}\n"
-        f"{_extract_shell_function('detect_shadowing_install')}\n"
-        "detect_shadowing_install\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(script)],
-        env={**_clean_environ(), "HOME": str(home)},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    return proc.stderr
-
-
-def _eval_local_bin_in_profile(tmp_path: Path, profile_body: str) -> bool:
-    """Run the real `local_bin_in_profile` against a profile file's contents.
-
-    Returns True when the function reports ~/.local/bin as already configured
-    (exit 0).
-    """
-    profile = tmp_path / "profile"
-    profile.write_text(profile_body, encoding="utf-8")
-    script = tmp_path / "profile_harness.sh"
-    script.write_text(
-        f"{_extract_shell_function('local_bin_in_profile')}\n"
-        f"local_bin_in_profile {str(profile)!r}\n",
-        encoding="utf-8",
-    )
-    proc = subprocess.run(
-        ["bash", str(script)],
-        env={**os.environ},
-        capture_output=True,
-        text=True,
-        stdin=subprocess.DEVNULL,
-        check=False,
-    )
-    return proc.returncode == 0
 
 
 def test_install_script_no_path_warning_when_dcode_on_path(tmp_path: Path) -> None:

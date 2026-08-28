@@ -10,10 +10,8 @@ from textual.widgets import Checkbox, Static
 
 from deepagents_code.approval_mode import YOLO_WARNING_KEY
 from deepagents_code.config import get_glyphs
-from deepagents_code.model_config import is_warning_suppressed, suppress_warning
 from deepagents_code.tui.widgets import notification_center
 from deepagents_code.tui.widgets.notification_center import NotificationCenterScreen
-from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
 
 
 class _NotificationSettingsHost(App[None]):

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import os
 import socket
 import ssl
 import sys
@@ -23,7 +22,6 @@ from deepagents_code.config_manifest import (
     ConfigOption,
     OptionKind,
     _emit_ranked_diagnostics,
-    _ranked_source,
 )
 from deepagents_code.configuration.paths import managed_config_path
 from deepagents_code.configuration.providers import (

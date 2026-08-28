@@ -16,13 +16,9 @@ import pytest
 from langchain.agents import create_agent
 from langchain_core.exceptions import (
     ContextOverflowError,
-    ModelAPIError,
     ModelAuthenticationError,
-    ModelConnectionError,
     ModelInvalidRequestError,
     ModelPermissionDeniedError,
-    ModelRateLimitError,
-    ModelTimeoutError,
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage
@@ -39,14 +35,8 @@ if TYPE_CHECKING:
     )
 
 from deepagents_code import model_retry
-from deepagents_code.config import (
-    ASCII_GLYPHS,
-    DEFAULT_MODEL_RETRIES,
-    MODEL_RETRIES_ATTR,
-    UNICODE_GLYPHS,
-)
+from deepagents_code.config import MODEL_RETRIES_ATTR
 from deepagents_code.model_retry import (
-    _JITTER_FRACTION,
     CodeModelRetryMiddleware,
     _is_retryable_model_error,
     _retry_after_seconds,
@@ -85,12 +75,6 @@ class AuthenticationError(Exception):
     def __init__(self) -> None:
         super().__init__("auth")
         self.status_code = 401
-
-
-def _typed_error(module: str, name: str, message: str = "boom") -> Exception:
-    """Build an exception whose type mimics an optional transport library."""
-    error_type = type(name, (Exception,), {"__module__": module})
-    return error_type(message)
 
 
 class _GoogleAPICoreError(Exception):

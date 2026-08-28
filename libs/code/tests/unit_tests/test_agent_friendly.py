@@ -14,20 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
-from deepagents_code._paths import PATHS
-from deepagents_code.main import parse_args
-from deepagents_code.ui import (
-    show_agents_help,
-    show_help,
-    show_list_help,
-    show_reset_help,
-    show_skills_delete_help,
-    show_skills_help,
-    show_skills_info_help,
-    show_skills_list_help,
-    show_threads_delete_help,
-    show_update_help,
-)
+from deepagents_code.ui import show_help
 
 # ---------------------------------------------------------------------------
 # Section 1: Help screen Examples sections

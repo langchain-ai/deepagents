@@ -1,77 +1,45 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
-import io
 import json
-import re
 import shutil
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.middleware.skills import _list_skills as list_sdk_skills
-from textual.widgets import Input, OptionList
+from textual.widgets import OptionList
 
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.config import get_glyphs
-from deepagents_code.mcp_tools import MCPServerInfo
 from deepagents_code.plugins import (
     add_local_marketplace,
     add_marketplace_source,
     discover_plugins,
     install_plugin,
-    list_available_plugins,
-    remove_marketplace,
     set_installed_plugin_enabled,
-    uninstall_plugin,
 )
 from deepagents_code.plugins.adapters.mcp import (
-    discover_plugin_mcp_configs,
-    plugin_mcp_configs,
     plugin_mcp_server_entries,
     scoped_mcp_server_name,
 )
-from deepagents_code.plugins.adapters.skills import (
-    discover_plugin_skill_sources_and_roots,
-    plugin_skill_sources,
-)
-from deepagents_code.plugins.adapters.skills_middleware import (
-    PluginSkillsMiddleware,
-    discover_skill_dirs,
-)
+from deepagents_code.plugins.adapters.skills_middleware import discover_skill_dirs
 from deepagents_code.plugins.commands_cli import execute_plugin_command
-from deepagents_code.plugins.discovery import auto_update_plugins
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     load_marketplace,
     parse_marketplace_source,
 )
-from deepagents_code.plugins.models import (
-    GithubPluginSource,
-    MarketplaceRecord,
-    PluginMarketplace,
-)
+from deepagents_code.plugins.models import MarketplaceRecord
 from deepagents_code.plugins.store import (
-    ensure_marketplace_cache_dir,
     get_primary_install_entry,
     load_enabled_plugin_ids,
     load_installed_plugins,
     load_marketplace_records,
     plugin_data_dir,
-    sanitize_plugin_id,
     save_marketplace_record,
-    set_plugin_enabled,
     versioned_cache_path,
 )
 from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
-from deepagents_code.tui.modals.plugin_manager.models import _ManagerState
-from deepagents_code.tui.modals.plugin_manager.state import (
-    _list_plugin_skill_names,
-    _load_manager_state,
-)
+from deepagents_code.tui.modals.plugin_manager.state import _load_manager_state
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -123,49 +91,6 @@ def _make_marketplace(root: Path) -> None:
             }
         },
     )
-
-
-def _install_remote_plugin(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> tuple[Path, str]:
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / "state"
-    )
-    monkeypatch.setattr(
-        "deepagents_code.model_config.DEFAULT_CONFIG_DIR", tmp_path / "config"
-    )
-    marketplace_root = tmp_path / "marketplace"
-    _make_marketplace(marketplace_root)
-    monkeypatch.setattr(
-        "deepagents_code.plugins.discovery.materialize_marketplace_source",
-        lambda _source: (load_marketplace(marketplace_root), marketplace_root),
-    )
-    add_marketplace_source("https://example.com/company-tools.git")
-    plugin_id = "quality-review-plugin@company-tools"
-    install_plugin(plugin_id)
-    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "1")
-    monkeypatch.delenv("DEEPAGENTS_CODE_OFFLINE")
-    return marketplace_root, plugin_id
-
-
-def _add_docs_helper_plugin(root: Path) -> None:
-    """Add a second, MCP-less plugin to the `_make_marketplace` fixture."""
-    marketplace_path = root / ".claude-plugin" / "marketplace.json"
-    manifest = json.loads(marketplace_path.read_text(encoding="utf-8"))
-    manifest["plugins"].append(
-        {
-            "name": "docs-helper",
-            "source": "./plugins/docs-helper",
-            "description": "Docs helper",
-        }
-    )
-    _write_json(marketplace_path, manifest)
-    plugin = root / "plugins" / "docs-helper"
-    _write_json(
-        plugin / ".claude-plugin" / "plugin.json",
-        {"name": "docs-helper", "version": "1.0.0"},
-    )
-    _write_skill(plugin / "skills" / "lookup" / "SKILL.md", name="lookup")
 
 
 async def test_plugin_manager_installed_selection_opens_details_not_disable(

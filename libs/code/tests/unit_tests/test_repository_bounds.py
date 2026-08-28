@@ -8,20 +8,7 @@ from unittest.mock import MagicMock
 import pytest
 from deepagents.backends.protocol import LsResult
 
-from deepagents_code._repository_bounds import (
-    REPOSITORY_DIRECTORY_ENTRY_LIMIT,
-    REPOSITORY_GLOB_MATCH_LIMIT,
-    REPOSITORY_GREP_MATCH_LIMIT,
-    REPOSITORY_LISTING_ERROR,
-    REPOSITORY_PATH_ERROR,
-    REPOSITORY_READ_BYTE_LIMIT,
-    REPOSITORY_READ_LINE_LIMIT,
-    REPOSITORY_READ_ONLY_ERROR,
-    REPOSITORY_SIZE_ERROR,
-    REPOSITORY_TOOL_RESULT_LIMIT,
-    REPOSITORY_UNAVAILABLE_ERROR,
-    RepositoryBounds,
-)
+from deepagents_code._repository_bounds import REPOSITORY_PATH_ERROR, RepositoryBounds
 
 if TYPE_CHECKING:
     from pathlib import Path

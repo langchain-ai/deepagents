@@ -3,16 +3,12 @@
 import asyncio
 from collections.abc import Callable, Iterator
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
 from deepagents_code.config import get_glyphs
-from deepagents_code.tui.widgets.approval import (
-    _SHELL_COMMAND_TRUNCATE_LENGTH,
-    _SHELL_COMMAND_TRUNCATE_LINES,
-    ApprovalMenu,
-)
+from deepagents_code.tui.widgets.approval import ApprovalMenu
 
 MenuFactory = Callable[..., tuple[ApprovalMenu, "asyncio.Future[dict[str, str]]"]]
 

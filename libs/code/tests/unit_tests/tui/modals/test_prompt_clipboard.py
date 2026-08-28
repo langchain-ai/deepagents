@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
 from textual.app import App, ComposeResult
-from textual.containers import Container, Vertical, VerticalScroll
-from textual.widgets import Input, Static
+from textual.containers import Container
 
 from deepagents_code.tui.modals.prompt_clipboard import PromptClipboardScreen
 

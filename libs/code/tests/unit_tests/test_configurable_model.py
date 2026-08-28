@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -17,15 +16,10 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
-from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
-    _cache_endpoint_identity,
     _checkpoint_command,
-    _effective_cache_params,
     _get_context,
-    _is_anthropic_model,
-    _is_fireworks_model,
     _is_openai_model,
     _model_spec_from_model,
     _ResolvedModelRequest,

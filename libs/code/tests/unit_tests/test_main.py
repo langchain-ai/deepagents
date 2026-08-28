@@ -1,8 +1,6 @@
 """Unit tests for main entry point."""
 
 import asyncio
-import inspect
-import logging
 import os
 import signal
 import sys
@@ -11,7 +9,7 @@ from io import StringIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from rich.console import Console
@@ -33,20 +31,15 @@ from deepagents_code.app import (
     TextualAppError,
     run_textual_app,
 )
-from deepagents_code.config import build_langsmith_thread_url, reset_langsmith_url_cache
+from deepagents_code.config import reset_langsmith_url_cache
 from deepagents_code.main import (
     _auto_install_ripgrep_cli,
-    _handle_termination_signal,
     _install_termination_signal_handlers,
-    _is_managed_ripgrep_path,
     _print_session_stats,
     _render_teardown_thread_hints,
     _restart_current_process,
-    _ripgrep_install_hint,
     _run_startup_auto_update,
     _should_check_teardown_thread,
-    _terminal_row_count,
-    build_missing_tool_notification,
     check_optional_tools,
     cli_main,
     format_tool_warning_cli,

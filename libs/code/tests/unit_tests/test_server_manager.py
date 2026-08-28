@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
 import os
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -16,7 +15,6 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 from deepagents_code.client.launch.server_manager import (
     _apply_server_config,
-    _preflight_validate_mcp_config,
     _runtime_package_dependency,
     _write_pyproject,
     server_session,

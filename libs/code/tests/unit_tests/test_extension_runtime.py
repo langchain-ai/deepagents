@@ -7,11 +7,8 @@ from unittest.mock import patch
 import pytest
 
 from deepagents_code.extensions import load_extensions
-from deepagents_code.extensions.registry import ExtensionError
 from deepagents_code.extensions.runtime import (
-    ExtensionLoadResult,
     bind_server_extensions,
-    shutdown_extensions,
     shutdown_server_extensions,
 )
 from deepagents_code.extensions.settings import ExtensionSettings, TrustPolicy

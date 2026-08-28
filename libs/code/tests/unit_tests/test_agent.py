@@ -26,9 +26,8 @@ if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
 from deepagents_code import _env_vars
-from deepagents_code._cli_context import CLIContext, CLIContextSchema
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._paths import PATHS, get_built_in_skills_dir
-from deepagents_code._repository_bounds import REPOSITORY_TOOL_CALL_LIMIT
 from deepagents_code._reserved_names import reserved_agent_dir_names
 from deepagents_code.agent import (
     _AGENT_DIR_MARKER,
@@ -39,13 +38,6 @@ from deepagents_code.agent import (
     _apply_inherited_pythonpath,
     _create_rubric_grader_tools,
     _format_delete_description,
-    _format_edit_file_description,
-    _format_execute_description,
-    _format_fetch_url_description,
-    _format_task_description,
-    _format_web_search_description,
-    _format_write_file_description,
-    _has_resolvable_model_provider,
     _interrupt_predicate,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
@@ -56,9 +48,8 @@ from deepagents_code.agent import (
     get_available_agent_names,
     get_system_prompt,
     list_agents,
-    load_async_subagents,
 )
-from deepagents_code.config import get_glyphs, runtime_state
+from deepagents_code.config import runtime_state
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.managed_tools import BIN_DIR
 from deepagents_code.offload import (

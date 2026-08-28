@@ -4,20 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import socket
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from deepagents_code.command_registry import BypassTier
 from deepagents_code.event_bus import (
-    _MAX_LINE_BYTES,
     ExternalEvent,
     UnixSocketEventSource,
     decode_external_event,
-    default_unix_socket_path,
 )
 
 # Unix socket paths are capped at ~104 bytes on macOS / ~108 on Linux. Pytest's

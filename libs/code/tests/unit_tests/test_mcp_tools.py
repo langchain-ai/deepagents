@@ -34,16 +34,11 @@ from deepagents_code.mcp_tools import (
     _MCP_STDERR_LINE_LIMIT,
     _MCP_STDERR_TRUNCATION_MARKER,
     DiscoveredMCPConfig,
-    MCPConfigIdentity,
     MCPConfigScope,
-    MCPConfigSources,
     MCPServerInfo,
     MCPSessionManager,
     MCPToolInfo,
-    _append_discovered_config,
     _apply_tool_filter,
-    _check_remote_server,
-    _check_stdio_server,
     _create_mcp_session,
     _gather_bounded,
     _json_error_snippet,
@@ -51,16 +46,13 @@ from deepagents_code.mcp_tools import (
     _mcp_tool_name,
     _MCPStderrSink,
     _normalize_mcp_arguments,
-    _same_config_location,
     _warm_mcp_adapter_imports,
     discover_mcp_config_sources,
     extract_project_server_summaries,
-    extract_stdio_server_commands,
     get_mcp_tools,
     load_mcp_config,
     load_mcp_config_lenient,
     load_merged_mcp_configs_lenient,
-    merge_mcp_configs,
     resolve_and_load_mcp_tools,
 )
 from deepagents_code.project_utils import ProjectContext
@@ -79,14 +71,6 @@ def _set_profile_root(
     snapshot = _capture_paths(str(root), launch_home=launch_home)
     monkeypatch.setattr("deepagents_code._paths.PATHS", snapshot)
     monkeypatch.setattr("deepagents_code.mcp_tools.PATHS", snapshot)
-
-
-def _discovered_paths(*, project_context: ProjectContext | None = None) -> list[Path]:
-    """Return discovered MCP config paths in precedence order."""
-    return [
-        source.path
-        for source in discover_mcp_config_sources(project_context=project_context)
-    ]
 
 
 def _raise_oserror() -> Path:
@@ -3694,14 +3678,6 @@ class TestCachedSessionProxy:
         assert "ok" in str(result)
 
 
-def _make_prefixed_tool(name: str, description: str = "") -> MagicMock:
-    """Build a mock tool as the adapter produces with `tool_name_prefix=True`."""
-    tool = MagicMock()
-    tool.name = name
-    tool.description = description
-    return tool
-
-
 class TestToolFilterValidation:
     """Validation of `allowedTools` / `disabledTools` server fields."""
 
@@ -5201,3 +5177,11 @@ class TestMCPToolName:
 
     def test_short_name_is_unchanged(self) -> None:
         assert _mcp_tool_name("filesystem", "read_file") == "filesystem_read_file"
+
+
+def _make_prefixed_tool(name: str, description: str = "") -> MagicMock:
+    """Build a mock tool as the adapter produces with `tool_name_prefix=True`."""
+    tool = MagicMock()
+    tool.name = name
+    tool.description = description
+    return tool

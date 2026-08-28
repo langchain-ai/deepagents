@@ -15,16 +15,13 @@ from deepagents.backends.utils import (
 )
 from rich.style import Style
 from textual.app import App, ComposeResult
-from textual.containers import VerticalScroll
 from textual.content import Content
 from textual.widgets import Markdown, Static
 
 import deepagents_code
 from deepagents_code import theme
 from deepagents_code._ask_user_types import ASK_USER_ANSWERED_SUMMARY
-from deepagents_code.diff_utils import DiffStats
 from deepagents_code.formatting import format_duration
-from deepagents_code.input import INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
     EXECUTE_HEADER_MAX_LENGTH,
     JS_EVAL_HEADER_MAX_LENGTH,

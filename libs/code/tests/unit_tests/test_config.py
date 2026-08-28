@@ -3,8 +3,6 @@
 import logging
 import subprocess
 import sys
-import textwrap
-import time
 import warnings
 from collections.abc import Iterator
 from dataclasses import replace
@@ -15,19 +13,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from deepagents_code import _git as git_module, config as config_module, model_config
-from deepagents_code._env_vars import SERVER_ENV_PREFIX
-from deepagents_code._paths import (
-    get_agent_dir,
-    get_project_agent_md_path,
-    get_project_agent_skills_dir,
-    get_project_claude_skills_dir,
-    get_user_agent_md_path,
-    get_user_agent_skills_dir,
-    get_user_claude_skills_dir,
-    user_agents_dir,
-    user_deepagents_dir,
-)
-from deepagents_code._version import __version__
+from deepagents_code._paths import get_agent_dir, get_user_agent_md_path
 from deepagents_code.config import (
     _MCP_SHUTDOWN_RACE_MESSAGES,
     _MCP_SSE_LOGGER_NAME,
@@ -35,48 +21,33 @@ from deepagents_code.config import (
     _QUIET_SDK_LOGGER_NAMES,
     LANGSMITH_EU_ENDPOINT,
     LANGSMITH_US_ENDPOINT,
-    MODEL_RETRIES_ATTR,
     RECOMMENDED_SAFE_SHELL_COMMANDS,
     SHELL_ALLOW_ALL,
     Credentials,
-    LangSmithApiError,
-    LangSmithProjectNotFoundError,
     LangsmithShadowResult,
     ModelResult,
     _apply_default_langsmith_project,
     _apply_stored_langsmith_tracing,
-    _create_model_from_class,
     _create_model_via_init,
     _disable_orphaned_tracing,
     _get_provider_kwargs,
     _McpShutdownRaceFilter,
-    _parse_retry_config,
-    _provider_retry_disable_kwargs,
     _quiet_sdk_logging,
     _read_retry_config,
-    _resolve_config_retry_count,
     _resolve_model_retries_from_section,
     apply_stored_langsmith_auth,
-    build_langsmith_thread_url,
     configure_langsmith_secret_redaction,
     consume_orphaned_tracing_disabled_notice,
     create_model,
     credentials,
-    detect_mode_prefix,
     detect_provider,
-    fetch_langsmith_project_url,
-    fetch_langsmith_project_url_or_raise,
-    get_cached_langsmith_thread_url,
     get_langsmith_project_name,
     is_http_url,
     is_langsmith_redaction_enabled,
     langsmith_key_shadowed_by_empty_override,
-    newline_shortcut,
-    normalize_langsmith_endpoint,
     parse_shell_allow_list,
     reset_langsmith_url_cache,
     runtime_state,
-    validate_model_capabilities,
 )
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.model_config import (
@@ -86,10 +57,7 @@ from deepagents_code.model_config import (
     clear_caches,
 )
 from deepagents_code.project_utils import (
-    ProjectContext,
     find_project_agent_md as _find_project_agent_md,
-    find_project_root as _find_project_root,
-    get_server_project_context,
 )
 
 

@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from textual import events
 from textual.app import App, ComposeResult
-from textual.widgets import Markdown, Static
+from textual.widgets import Static
 
 import deepagents_code
-from deepagents_code.goal_state_limits import GOAL_APPLICATION_CHAR_LIMIT
 from deepagents_code.tui.widgets.goal_review import (
     GoalReviewMenu,
     GoalReviewResult,

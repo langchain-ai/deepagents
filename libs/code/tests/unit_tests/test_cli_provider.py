@@ -7,10 +7,10 @@ from typing import Any
 
 import pytest
 
-from deepagents_code.config_manifest import CliSpec, get_option
+from deepagents_code.config_manifest import get_option
 from deepagents_code.configuration.provider import CliProvider
 from deepagents_code.configuration.resolver import CLI_RANK
-from deepagents_code.configuration.types import Found, Invalid, ProviderHealth, Unset
+from deepagents_code.configuration.types import Found
 
 
 @pytest.mark.parametrize(
@@ -83,50 +83,3 @@ def test_cli_provider_reads_any_mapping_not_just_dict() -> None:
     assert CliProvider(argparse.Namespace(recursion_limit=42)).get(
         option
     ).result == Found(42)
-
-
-def _all_parser_destinations() -> set[str]:
-    """Collect every argparse destination, root parser and subcommands alike.
-
-    `parse_args` builds its parser inline, so the instance is captured on the
-    way through rather than rebuilt here -- a copy would drift from the real
-    one, which is exactly the failure this guards.
-
-    Returns:
-        Every `dest` the CLI can populate.
-    """
-    import sys
-    from unittest.mock import patch
-
-    from deepagents_code.main import parse_args
-
-    captured: list[argparse.ArgumentParser] = []
-    real_parse_args = argparse.ArgumentParser.parse_args
-
-    def _capture(
-        self: argparse.ArgumentParser, *args: Any, **kwargs: Any
-    ) -> argparse.Namespace:
-        captured.append(self)
-        return real_parse_args(self, *args, **kwargs)
-
-    with (
-        patch.object(sys, "argv", ["dcode", "-n", "task"]),
-        patch.object(argparse.ArgumentParser, "parse_args", _capture),
-    ):
-        parse_args()
-
-    assert captured, "parse_args did not build a parser"
-
-    dests: set[str] = set()
-
-    def _walk(parser: argparse.ArgumentParser) -> None:
-        for action in parser._actions:  # no public accessor
-            if action.dest != argparse.SUPPRESS:
-                dests.add(action.dest)
-            choices = getattr(action, "choices", None) or {}
-            if isinstance(action, argparse._SubParsersAction):
-                for sub in choices.values():
-                    _walk(sub)
-
-    _walk(captured[0])
-    return dests

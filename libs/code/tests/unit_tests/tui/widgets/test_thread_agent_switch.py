@@ -5,7 +5,6 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
-from textual.binding import Binding
 from textual.widgets import Static
 
 from deepagents_code.config import get_glyphs

@@ -2,17 +2,11 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
-import pytest
 from textual.app import App
-from textual.widgets import Log, Static
+from textual.widgets import Static
 
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.update_progress import UpdateProgressScreen
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 async def test_update_progress_screen_close_waits_until_done(tmp_path) -> None:

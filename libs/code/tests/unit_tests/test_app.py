@@ -5,13 +5,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import inspect
-import locale
 import logging
 import os
 import signal
 import threading
 import time
-import webbrowser
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
@@ -21,7 +19,6 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 
 if TYPE_CHECKING:
     from collections.abc import (
-        AsyncIterator,
         Awaitable,
         Callable,
         Coroutine,
@@ -52,7 +49,7 @@ if TYPE_CHECKING:
 
 import pytest
 from textual import events
-from textual.app import App, ComposeResult, ScreenStackError
+from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container
 from textual.content import Content
@@ -68,25 +65,17 @@ from deepagents_code._constants import (
 )
 from deepagents_code._paths import PATHS
 from deepagents_code._session_stats import SessionStats
-from deepagents_code._version import CHANGELOG_URL, __version__
+from deepagents_code._version import __version__
 from deepagents_code.app import (
-    _DEEPAGENTS_IMPORT_LOCK,
-    _MIN_TOAST_ROWS,
-    _TYPING_IDLE_THRESHOLD_SECONDS,
     DeepAgentsApp,
     DeferredAction,
     ExternalInput,
-    InputMode,
     QueuedMessage,
     TextualSessionState,
-    _build_whats_new_message,
     _ChatScroll,
-    _display_model_label,
-    _extra_is_ready,
     _format_mcp_server_changes,
     _GoalApplication,
     _GoalGradeObservation,
-    _parse_rubric_max_iterations,
     _ServerRespawnResult,
     _ThreadHistoryPayload,
     _warn_discarded_goal_channels,
@@ -103,7 +92,6 @@ from deepagents_code.event_bus import ExternalEvent
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
-    GOAL_STATUS_NOTE_CHAR_LIMIT,
     RUBRIC_CHAR_LIMIT,
 )
 from deepagents_code.goal_state_notice import (
@@ -113,7 +101,7 @@ from deepagents_code.goal_state_notice import (
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.media_utils import ImageData, VideoData
 from deepagents_code.tui.modals.cold_cache import ColdCacheChoice
-from deepagents_code.tui.textual_adapter import RubricEvaluationEnd, TextualUIAdapter
+from deepagents_code.tui.textual_adapter import RubricEvaluationEnd
 from deepagents_code.tui.widgets.ask_user import AskUserMenu, AskUserTextArea
 from deepagents_code.tui.widgets.chat_input import ChatInput
 from deepagents_code.tui.widgets.goal_review import (
@@ -140,12 +128,10 @@ from deepagents_code.tui.widgets.messages import (
     QueuedUserMessage,
     ReasoningMessage,
     RubricResultMessage,
-    SummarizationMessage,
     ToolCallMessage,
     UserMessage,
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
-from deepagents_code.tui.widgets.status import _PICKER_ACTIONS
 from deepagents_code.update_check import ExtraInstallOutcome
 
 
@@ -20984,7 +20970,6 @@ class TestExternalBypassFieldHonored:
 
 
 # Local import for BypassTier in TestExternalBypassFieldHonored.
-from deepagents_code.command_registry import BypassTier  # noqa: E402
 
 
 class TestSetSpinnerTerminalProgress:

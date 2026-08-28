@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import fields
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -23,13 +22,7 @@ from deepagents_code.theme import (
     LIGHT_COLORS,
     ThemeColors,
     ThemeEntry,
-    _build_registry,
-    _builtin_names,
-    _builtin_themes,
     _load_user_themes,
-    get_css_variable_defaults,
-    get_registry,
-    get_theme_colors,
 )
 
 # ---------------------------------------------------------------------------

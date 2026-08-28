@@ -2,31 +2,17 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING, cast
 
 import pytest
 from rich.cells import get_character_cell_size
-from textual.geometry import Offset
-from textual.style import Color, Style
+from textual.style import Style
 from textual.visual import RenderOptions
 from textual.widgets import Static
 
-from deepagents_code.config import ASCII_GLYPHS, get_glyphs, reset_glyphs_cache
-from deepagents_code.diff_utils import (
-    DiffStats,
-    count_diff_change_lines,
-    split_diff_lines,
-)
+from deepagents_code.config import reset_glyphs_cache
 from deepagents_code.tui.widgets import diff as diff_module
-from deepagents_code.tui.widgets.diff import (
-    _DiffRowContent,
-    _DiffRowStatic,
-    clamp_selection,
-    compose_diff_lines,
-    format_diff_stats,
-    highlight_source_prefixes,
-)
+from deepagents_code.tui.widgets.diff import _DiffRowStatic, compose_diff_lines
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -160,11 +146,6 @@ def _visual_strips(
     return content.render_strips(width, None, Style.null(), options)
 
 
-def _visual_lines(widget: Static, width: int) -> list[str]:
-    """Render a diff widget at `width` and return its visual lines."""
-    return [strip.text for strip in _visual_strips(widget, width)]
-
-
 def _offset_at(widget: Static, width: int, x: int, y: int) -> int | None:
     """Resolve a visual cell to a logical offset the way Textual does.
 
@@ -192,13 +173,6 @@ def _offset_at(widget: Static, width: int, x: int, y: int) -> int | None:
             return offset[0] + index
         start = end
     return None
-
-
-def _selected(widget: Static, width: int, x: int, y: int) -> str:
-    """Return the source text a drag from cell `(x, y)` to the row end copies."""
-    content = cast("Content", widget.render())
-    offset = _offset_at(widget, width, x, y)
-    return "" if offset is None else content.plain[offset:]
 
 
 # A diff exercising file headers, a hunk header, and context/add/remove lines.

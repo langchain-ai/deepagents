@@ -4,35 +4,18 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
-from textual.widgets import Markdown, Static
 
 import deepagents_code
-from deepagents_code._ask_user_types import (
-    CHOICE_QUESTION_TYPES,
-    QUESTION_TYPES,
-    decode_multi_select_answer,
-    encode_multi_select_answer,
-)
-from deepagents_code.config import ASCII_GLYPHS, get_glyphs
 from deepagents_code.tui.widgets.ask_user import (
-    _TRAILING_ANNOTATION_RE,
-    ADD_ANOTHER_OTHER_LABEL,
-    MAX_MULTI_SELECT_OTHER_ENTRIES,
-    MAX_OTHER_ENTRIES_TOAST,
     MISSING_ANSWER_TOAST,
     MISSING_OTHER_TEXT_TOAST,
-    OTHER_CHOICE_LABEL,
     AskUserMenu,
     AskUserTextArea,
-    _ChoiceOption,
-    _MultiSelectOption,
-    _MultiSelectOtherEntry,
     _QuestionWidget,
 )
 

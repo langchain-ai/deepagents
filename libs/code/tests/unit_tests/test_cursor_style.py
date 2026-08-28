@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from deepagents_code._env_vars import CURSOR_STYLE
-from deepagents_code.app import DeepAgentsApp, _load_cursor_style_preference
+from deepagents_code.app import _load_cursor_style_preference
 
 if TYPE_CHECKING:
     from pathlib import Path

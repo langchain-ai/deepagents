@@ -2,14 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import subprocess
 import sys
-import tomllib
-from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import ANY, AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, patch
 
 import pytest
 

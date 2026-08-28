@@ -7,22 +7,20 @@ in `CLAUDE.md`.
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import sys
 import textwrap
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 
-from deepagents_code.main import (
-    _BARE_ACTION_GROUPS,
-    _HELP_SPECS,
-    _show_bare_command_group_help,
-    parse_args,
-)
+from deepagents_code.main import _show_bare_command_group_help, parse_args
+
+if TYPE_CHECKING:
+    import argparse
 
 # Module *prefixes* that must not appear in `sys.modules` after a help-only
 # invocation. Using prefixes (rather than an explicit allowlist) catches
@@ -258,45 +256,3 @@ def parse_args_from(argv: list[str]) -> argparse.Namespace:
 
     with patch.object(sys, "argv", ["deepagents", *argv]):
         return parse_args()
-
-
-def _build_top_level_parser() -> argparse.ArgumentParser:
-    """Capture the top-level parser by hooking `ArgumentParser.parse_args`."""
-    from typing import Any
-    from unittest.mock import patch
-
-    captured: dict[str, argparse.ArgumentParser] = {}
-    real_parse_args = argparse.ArgumentParser.parse_args
-
-    def _capture(
-        self: argparse.ArgumentParser,
-        *a: Any,
-        **kw: Any,
-    ) -> argparse.Namespace:
-        captured.setdefault("parser", self)
-        return real_parse_args(self, *a, **kw)
-
-    with (
-        patch.object(sys, "argv", ["deepagents", "help"]),
-        patch.object(argparse.ArgumentParser, "parse_args", _capture),
-    ):
-        parse_args()
-
-    return captured["parser"]
-
-
-def _top_level_subparser_groups(parser: argparse.ArgumentParser) -> set[str]:
-    """Return names of top-level subparsers that themselves have subparsers."""
-    from typing import cast
-
-    groups: set[str] = set()
-    for action in parser._actions:
-        if not isinstance(action, argparse._SubParsersAction):
-            continue
-        choices = cast("dict[str, argparse.ArgumentParser]", action.choices)
-        for name, sub in choices.items():
-            for sub_action in sub._actions:
-                if isinstance(sub_action, argparse._SubParsersAction):
-                    groups.add(name)
-                    break
-    return groups

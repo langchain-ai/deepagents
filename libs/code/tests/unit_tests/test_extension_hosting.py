@@ -1,7 +1,7 @@
 """Tests for agent-server extension hosting."""
 
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 from deepagents.backends import FilesystemBackend
@@ -9,8 +9,6 @@ from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.language_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.tools import tool
-from starlette.requests import Request
-from starlette.routing import Route
 
 from deepagents_code.agent import create_cli_agent
 from deepagents_code.extensions.registry import (

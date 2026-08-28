@@ -5,10 +5,7 @@ from textual.content import Content
 from textual.widget import Widget
 from textual.widgets import Markdown
 
-from deepagents_code.tui.widgets.tool_renderers import (
-    DeleteFileRenderer,
-    get_renderer,
-)
+from deepagents_code.tui.widgets.tool_renderers import get_renderer
 from deepagents_code.tui.widgets.tool_widgets import (
     _MAX_LINES,
     EditFileApprovalWidget,

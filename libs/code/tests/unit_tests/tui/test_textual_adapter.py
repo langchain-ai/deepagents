@@ -1,10 +1,8 @@
 """Unit tests for textual_adapter functions."""
 
 import asyncio
-import sys
 from asyncio import Future
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
-from datetime import datetime
 from pathlib import Path
 from time import time
 from types import SimpleNamespace
@@ -16,7 +14,6 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.types import Command
 from pydantic import ValidationError
 from rich.console import Console
-from textual.widgets import Static
 
 from deepagents_code import config as config_module, file_ops as file_ops_module
 from deepagents_code._ask_user_types import (
@@ -29,10 +26,6 @@ from deepagents_code._ask_user_types import (
     Question,
 )
 from deepagents_code._session_stats import SessionStats
-from deepagents_code._tool_stream import (
-    TOOL_OUTPUT_TRUNCATION_MARKER,
-    UNRENDERABLE_TOOL_OUTPUT,
-)
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import (
     APPROVAL_MODE_NAMESPACE,
@@ -46,18 +39,15 @@ from deepagents_code.client.non_interactive import (
     _process_message_chunk,
 )
 from deepagents_code.config import ASCII_GLYPHS, UNICODE_GLYPHS, build_stream_config
-from deepagents_code.diff_utils import DiffStats
 from deepagents_code.hooks.client_lifecycle import ClientHookStopError
 from deepagents_code.hooks.manager import HooksManager, PromptOutcome
 from deepagents_code.hooks.models.domain import (
     HookEvent,
     PermissionEffect,
     PermissionRequestDecision,
-    UserPromptSubmitDecision,
 )
 from deepagents_code.hooks.permissions import PermissionPlan, permission_hook_outcome
 from deepagents_code.tui.textual_adapter import (
-    _MAX_COMPLETED_AUTO_REVIEWS,
     RubricEvaluationEnd,
     TextualUIAdapter,
     _AutoModeReviewEvent,
@@ -67,15 +57,9 @@ from deepagents_code.tui.textual_adapter import (
     _format_rubric_event,
     _handle_interrupt_cleanup,
     _interrupt_owned_tool_rows,
-    _is_auto_mode_classifier_chunk,
     _is_renderable_auto_mode_event,
-    _is_summarization_chunk,
     _parse_auto_mode_review_event,
     _read_mentioned_file,
-    _session_cost_pricing_ok,
-    _session_cost_thread_id,
-    _session_cost_total,
-    _set_running_unless_deferred,
     execute_task_textual,
 )
 from deepagents_code.tui.widgets.messages import (
@@ -2399,23 +2383,6 @@ class _PhasedRead:
             f"expected {_READS_PER_EDIT} reads, saw {self.count} — the phase "
             "overrides no longer line up with the reads they target"
         )
-
-
-def _strip_trailing_newline(
-    read: Callable[[Path], tuple[str | None, str | None]],
-) -> Callable[[Path], tuple[str | None, str | None]]:
-    """Wrap a read so its content loses the trailing newline.
-
-    Returns:
-        A read whose only difference from the real one is what `splitlines()`
-        discards.
-    """
-
-    def stripped(path: Path) -> tuple[str | None, str | None]:
-        content, reason = read(path)
-        return (content.rstrip("\n") if content is not None else None), reason
-
-    return stripped
 
 
 class TestExecuteTaskTextualFileOpDiffs:

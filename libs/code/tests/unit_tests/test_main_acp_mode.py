@@ -3,34 +3,12 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import sys
-from contextlib import asynccontextmanager
-from inspect import signature
-from types import SimpleNamespace
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
-from deepagents_acp.server import AgentServerACP
 
-from deepagents_code.main import _preload_session_mcp_server_info, cli_main
-from unit_tests.conftest import redirect_managed_config
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Generator
-    from pathlib import Path
-
-
-def _build_agent_server(server: object) -> Callable[..., object]:
-    """Stand in for `AgentServerACP`, exercising the agent factory it is handed."""
-
-    def build(agent_factory: Callable[..., object], **kwargs: object) -> object:
-        signature(AgentServerACP).bind(agent_factory, **kwargs)
-        agent_factory(SimpleNamespace(cwd="/tmp", model=None))
-        return server
-
-    return build
+from deepagents_code.main import cli_main
 
 
 def _make_acp_args(**overrides: object) -> argparse.Namespace:

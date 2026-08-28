@@ -1,7 +1,6 @@
 """Unit tests for the welcome banner widget."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from textual.app import App, ComposeResult
@@ -13,25 +12,12 @@ from deepagents_code import clipboard as clipboard_module
 from deepagents_code._env_vars import (
     DEBUG,
     EXPERIMENTAL,
-    HIDE_CWD,
-    HIDE_LANGSMITH_TRACING,
-    HIDE_SPLASH_VERSION,
-    SHOW_LANGSMITH_REPLICA_TRACING,
     SPLASH_SHOW_CWD,
     SPLASH_SHOW_MODEL,
 )
 from deepagents_code._version import __version__
 from deepagents_code.tui.widgets import welcome as welcome_module
-from deepagents_code.tui.widgets._copy_spans import copy_span_target
-from deepagents_code.tui.widgets.welcome import (
-    WelcomeBanner,
-    _debug_tag_style,
-    _experimental_tag_style,
-    _home_prefixed,
-    _langsmith_project_link,
-    _langsmith_project_link_style,
-    _local_tag_style,
-)
+from deepagents_code.tui.widgets.welcome import WelcomeBanner, _local_tag_style
 
 _EDITABLE = "deepagents_code.tui.widgets.welcome._is_editable_install"
 _PROJECT_NAME = "deepagents_code.tui.widgets.welcome.get_langsmith_project_name"

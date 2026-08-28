@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import sys
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -13,9 +12,7 @@ from langchain_core.messages import ToolMessage
 from langgraph.types import Command
 
 from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks import dispatch_hook
 from deepagents_code.hooks.engine import HookEngine
-from deepagents_code.hooks.envelope import HookEnvelopeAdapter
 from deepagents_code.hooks.migration import migrate_legacy_hooks
 from deepagents_code.hooks.models.adapters import HOOK_WIRE_INPUT_ADAPTER
 from deepagents_code.hooks.models.config import HooksConfig
@@ -55,18 +52,15 @@ from deepagents_code.hooks.models.domain import (
     UserPromptSubmitEvent,
 )
 from deepagents_code.hooks.models.wire import HookWireOutput
-from deepagents_code.hooks.projection import project_hook_input, serialize_hook_input
+from deepagents_code.hooks.projection import project_hook_input
 from deepagents_code.hooks.reducer import reduce_hook_results
 from deepagents_code.hooks.runner import HandlerResult, run_command_handler
 from deepagents_code.hooks.snapshot import HookHandler, HooksSnapshot
-from deepagents_code.hooks.tools import to_wire_call
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.hooks.models.domain import HookDomainEvent
-    from deepagents_code.hooks.presenter import HookProgress
-    from deepagents_code.json_types import JsonObject
 
 
 def _context(tmp_path: Path, *, agent: AgentIdentity | None = None) -> HookContext:

@@ -9,16 +9,15 @@ import stat
 import tempfile
 import time
 from contextlib import nullcontext
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Coroutine
 
 import pytest
-from deepagents.backends.utils import validate_path
 from langgraph.runtime import Runtime
 from textual.worker import WorkerCancelled
 
@@ -26,12 +25,9 @@ from deepagents_code import offload
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._session_stats import format_token_count
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.configuration.types import TomlSnapshot
-from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.offload import (
     _artifacts_root,
-    _filesystem_tool_path,
     _offload_fallback_root,
     delete_offloaded_history,
     sweep_offloaded_history,
@@ -59,29 +55,6 @@ def _make_dict_messages(n: int) -> list[dict[str, Any]]:
     return messages
 
 
-def _make_dict_summary_message() -> dict[str, Any]:
-    """Create a serialized summary message payload from remote state."""
-    return {
-        "content": "Old summary.",
-        "additional_kwargs": {"lc_source": "summarization"},
-        "response_metadata": {},
-        "type": "human",
-        "name": None,
-        "id": "summary-1",
-    }
-
-
-def _summary_event(
-    cutoff: int, *, file_path: str | None = "/conversation_history/test-thread.md"
-) -> dict[str, Any]:
-    """Build a persisted `_summarization_event` mapping for server-state tests."""
-    return {
-        "cutoff_index": cutoff,
-        "summary_message": _make_dict_summary_message(),
-        "file_path": file_path,
-    }
-
-
 def _compacted_result() -> dict[str, Any]:
     """Build a successful server-owned offload result."""
     return {
@@ -106,17 +79,6 @@ def _setup_server_offload_app(app: DeepAgentsApp) -> MagicMock:
     agent = MagicMock(spec=RemoteAgent)
     agent.aupdate_state = AsyncMock()
     agent.aoffload = AsyncMock()
-    app._agent = agent
-    app._backend = None
-    app._lc_thread_id = "test-thread"
-    app._agent_running = False
-    return agent
-
-
-def _setup_local_offload_app(app: DeepAgentsApp) -> MagicMock:
-    """Configure a `DeepAgentsApp` with a local in-process agent."""
-    agent = MagicMock()
-    agent.aupdate_state = AsyncMock()
     app._agent = agent
     app._backend = None
     app._lc_thread_id = "test-thread"
@@ -1182,24 +1144,6 @@ class TestOffloadHelpers:
         assert _effective_conversation(["m0"], event) == ["m0"]
         # Not the SDK's reading, which would be `["S"]`.
         assert _effective_conversation(["m0"], event) != ["S"]
-
-
-def _deny_dispatched_call(
-    reason: str | None,
-) -> Callable[[Any, Any], dict[str, Any]]:
-    """Build an `aafter_model` stub that denies the dispatched compact call."""
-    from deepagents_code.hooks.server_middleware import _PRE_TOOL_STATE_KEY
-
-    def deny(state: Any, _runtime: Any) -> dict[str, Any]:  # noqa: ANN401
-        call = state["messages"][0].tool_calls[0]
-        assert call["name"] == "compact_conversation"
-        assert call["args"] == {"force": True}
-        outcome: dict[str, Any] = {"behavior": "deny"}
-        if reason is not None:
-            outcome["reason"] = reason
-        return {_PRE_TOOL_STATE_KEY: {call["id"]: outcome}}
-
-    return deny
 
 
 class TestOffloadOperation:

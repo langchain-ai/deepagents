@@ -12,11 +12,9 @@ from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents_code import _glm_5p2_profile as glm_profile
 from deepagents_code._glm_5p2_profile import _GlmTerminalStallRecovery
 
 if TYPE_CHECKING:
-    from deepagents.profiles import HarnessProfile
     from langchain_core.tools import BaseTool
 
 

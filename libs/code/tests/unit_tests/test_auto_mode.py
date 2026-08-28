@@ -1340,13 +1340,14 @@ def test_unresolvable_home_path_is_reviewed_not_raised(tmp_path: Path) -> None:
     )
 
 
-async def test_unresolvable_home_write_passes_the_managed_temp_guard(
+async def test_unresolvable_home_write_is_reported_to_the_model(
     tmp_path: Path,
 ) -> None:
-    """The artifact guard also expands an untrusted path, so it needs the guard.
+    """An unresolvable write path is refused with the resolver's own error.
 
-    An unresolvable path names no managed artifact. The write tool runs and
-    reports its own error, which lets the model correct the path and retry.
+    The backend does not expand `~`, so letting the write through creates a
+    literal `~name` directory and reports success. The model needs the error to
+    correct the path, and this guard runs in every approval mode.
     """
     prefix = _unresolvable_home_prefix()
     middleware = _middleware(tmp_path)
@@ -1371,9 +1372,37 @@ async def test_unresolvable_home_write_passes_the_managed_temp_guard(
 
     result = await middleware.awrap_tool_call(request, handler)
 
-    assert executed
+    assert not executed
     assert isinstance(result, ToolMessage)
-    assert result.status != "error"
+    assert result.status == "error"
+    content = cast("str", result.content)
+    assert "Could not determine home directory" in content
+    assert prefix in content
+
+
+async def test_unresolvable_home_write_is_denied_with_a_reason(
+    tmp_path: Path,
+) -> None:
+    """The Auto gate denies the write and hands the model the resolver error."""
+    prefix = _unresolvable_home_prefix()
+    model = _StructuredModel(_deny_result(call_id="write-call"))
+    middleware = _middleware(tmp_path)
+    args: dict[str, object] = {"file_path": f"{prefix}/f.txt", "content": "x"}
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="write_file",
+        args=args,
+    )
+
+    plan = await _plan(middleware, request, tool_name="write_file", args=args)
+
+    decision = plan["decisions"][0]
+    assert decision["disposition"] == "policy_deny"
+    assert "Could not determine home directory" in decision["reason"]
+    assert prefix in decision["reason"]
+    # Denied on the path itself, so the classifier is never consulted.
+    assert not model.calls
 
 
 def test_classifier_schema_requires_every_object_property() -> None:

@@ -1,0 +1,156 @@
+name: "📝 Markdown file check"
+
+on:
+  pull_request_target:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  markdown-file-check:
+    name: "require acknowledgment for new Markdown files"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    concurrency:
+      group: markdown-file-check-${{ github.event.pull_request.number }}
+      cancel-in-progress: false
+    steps:
+      - name: "Checkout detector from trusted base"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: .github/scripts/checks/markdown_file_check.js
+
+      - name: "Check newly added Markdown files"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const {
+              addedMarkdownFiles,
+              fileLines,
+              isDocsTitle,
+            } = require('./.github/scripts/checks/markdown_file_check.js');
+            const STICKY_MARKER = '<!-- markdown-file-check -->';
+            const ACKNOWLEDGMENT_LABEL = 'markdown-added: acknowledged';
+            const pullRequest = context.payload.pull_request;
+            if (!pullRequest) {
+              core.setFailed('No pull_request payload; this workflow only supports pull_request_target events.');
+              return;
+            }
+
+            const { number, title } = pullRequest;
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo,
+                issue_number: number,
+                per_page: 100,
+              });
+              return comments.find(comment => comment.body?.startsWith(STICKY_MARKER));
+            }
+
+            async function removeStickyComment() {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    ...context.repo,
+                    comment_id: existing.id,
+                  });
+                }
+              } catch (error) {
+                core.warning(`Could not remove the prior Markdown-file comment: ${error.message}`);
+              }
+            }
+
+            async function upsertStickyComment(body) {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  if (existing.body !== body) {
+                    await github.rest.issues.updateComment({
+                      ...context.repo,
+                      comment_id: existing.id,
+                      body,
+                    });
+                  }
+                } else {
+                  await github.rest.issues.createComment({
+                    ...context.repo,
+                    issue_number: number,
+                    body,
+                  });
+                }
+              } catch (error) {
+                core.warning(`Could not post the Markdown-file comment: ${error.message}`);
+                try {
+                  await core.summary.addHeading('New Markdown files require acknowledgment').addRaw(body).write();
+                } catch (summaryError) {
+                  core.warning(`Could not write the job summary fallback: ${summaryError.message}`);
+                }
+              }
+            }
+
+            let files;
+            try {
+              files = await github.paginate(github.rest.pulls.listFiles, {
+                ...context.repo,
+                pull_number: number,
+                per_page: 100,
+              });
+            } catch (error) {
+              core.setFailed(`Could not list PR files: ${error.message}`);
+              return;
+            }
+
+            if (typeof pullRequest.changed_files !== 'number' || files.length !== pullRequest.changed_files) {
+              core.setFailed(`Changed-file list is incomplete (${files.length} collected, ${JSON.stringify(pullRequest.changed_files)} reported); failing closed.`);
+              return;
+            }
+
+            const markdownFiles = addedMarkdownFiles(files);
+            if (markdownFiles.length === 0 || isDocsTitle(title)) {
+              await removeStickyComment();
+              core.info(isDocsTitle(title) ? 'PR type is docs; no acknowledgment required.' : 'No newly added Markdown files.');
+              return;
+            }
+
+            let labels;
+            try {
+              ({ data: labels } = await github.rest.issues.listLabelsOnIssue({
+                ...context.repo,
+                issue_number: number,
+              }));
+            } catch (error) {
+              core.setFailed(`Could not read PR labels: ${error.message}`);
+              return;
+            }
+            const acknowledged = labels.some(label => label.name === ACKNOWLEDGMENT_LABEL);
+            const shownFiles = fileLines(markdownFiles);
+            const body = acknowledged
+              ? [
+                  STICKY_MARKER,
+                  `ℹ️ **New Markdown files acknowledged** via the \`${ACKNOWLEDGMENT_LABEL}\` label.`,
+                  '',
+                  ...shownFiles,
+                  '',
+                  'Remove the label to re-enable the block.',
+                ].join('\n')
+              : [
+                  STICKY_MARKER,
+                  '⛔ **This non-docs PR adds new Markdown files.**',
+                  '',
+                  ...shownFiles,
+                  '',
+                  'Change the PR type to `docs` if it only contains documentation changes. Otherwise, review the new files and apply the acknowledgment label:',
+                  '',
+                  `\`${ACKNOWLEDGMENT_LABEL}\``,
+                ].join('\n');
+
+            if (!acknowledged) {
+              core.setFailed(`Non-docs PR adds ${markdownFiles.length} Markdown file(s); apply '${ACKNOWLEDGMENT_LABEL}' to acknowledge.`);
+            }
+            await upsertStickyComment(body);

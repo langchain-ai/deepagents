@@ -510,15 +510,7 @@ class _ForkedContextState(TypedDict):
 
 
 class _ForkTaskToolMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
-    """Gives a forked subagent the real `task` tool, guarded against recursion.
-
-    Reuses the parent's actual `task`/`atask` functions (same name,
-    description, and schema) rather than a decoy, so the tools block stays
-    byte-identical to the parent's -- required for Anthropic's cache.
-    `task`/`atask` check `_FORKED_CONTEXT_KEY` and refuse before doing
-    anything else, so recursion is blocked at call time, not by omitting the
-    tool. Mirrors Claude Code's own fork implementation.
-    """
+    """Gives a forked subagent the real `task` tool, guarded against recursion."""
 
     state_schema = _ForkedContextState
 

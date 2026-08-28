@@ -2003,6 +2003,7 @@ async def _run_agent_loop(
     hooks: HooksManager | None = None,
     approval_mode: ApprovalMode | None = None,
     prompt_id: UUID | None = None,
+    summarization_model: str | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -2043,6 +2044,7 @@ async def _run_agent_loop(
         hooks: Preloaded Hooks v2 coordinator; one is built when omitted.
         approval_mode: Effective client approval policy. Defaults to manual.
         prompt_id: Stable identifier for the headless turn.
+        summarization_model: Model spec used only for context-compaction summaries.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -2070,7 +2072,10 @@ async def _run_agent_loop(
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
-    context = CLIContext(thread_id=context_thread_id)
+    context = CLIContext(
+        thread_id=context_thread_id,
+        summarization_model=summarization_model,
+    )
 
     from pathlib import Path
 
@@ -2477,6 +2482,7 @@ async def run_non_interactive(
     sandbox_setup: str | None = None,
     *,
     cli_max_retries: int | None = None,
+    summarization_model: str | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
@@ -2523,6 +2529,7 @@ async def run_non_interactive(
 
             These override config file values.
         cli_max_retries: Explicit `--max-retries` value.
+        summarization_model: Model spec used only for context-compaction summaries.
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2876,6 +2883,7 @@ async def run_non_interactive(
                 hooks=hooks,
                 approval_mode=approval_mode,
                 prompt_id=turn_id,
+                summarization_model=summarization_model,
             )
 
     except KeyboardInterrupt:

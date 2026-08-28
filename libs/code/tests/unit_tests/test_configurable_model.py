@@ -700,9 +700,10 @@ class TestModelSwap:
         """
         from dataclasses import fields
 
-        payload = {
+        payload: dict[str, Any] = {
             "model": "openai:gpt-5.5",
             "model_params": {"temperature": 0.2},
+            "summarization_model": "openai:gpt-5.4-mini",
             "profile_overrides": {"context_window": 1000},
             "model_context_limit": 4096,
             "classifier_model": "openai:gpt-5.1",

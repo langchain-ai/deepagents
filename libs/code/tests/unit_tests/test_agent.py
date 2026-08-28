@@ -5535,6 +5535,21 @@ class TestCreateCliAgentInterpreterWiring:
         # LangChain composes the first middleware as the outermost wrapper.
         assert middleware.index(compaction) < middleware.index(retry)
 
+    def test_summarization_model_reaches_compaction_middleware(
+        self, tmp_path: Path
+    ) -> None:
+        """ACP graph construction retains the summary spec for lazy use."""
+        from deepagents_code.offload_middleware import CLICompactionMiddleware
+
+        middleware = self._capture_middleware(
+            tmp_path, summarization_model="openai:summary-model"
+        )
+        compaction = next(
+            item for item in middleware if isinstance(item, CLICompactionMiddleware)
+        )
+
+        assert compaction._summarization_model_spec == "openai:summary-model"
+
     def test_auto_classifier_model_argument_reaches_middleware(
         self, tmp_path: Path
     ) -> None:

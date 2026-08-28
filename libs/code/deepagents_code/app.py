@@ -59,6 +59,7 @@ from deepagents_code import (
 )
 from deepagents_code._cli_context import (
     INHERIT_CLASSIFIER_MODEL,
+    INHERIT_SUMMARIZATION_MODEL,
     CLIContext,
 )
 from deepagents_code._constants import (
@@ -1991,6 +1992,13 @@ InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
 
+_CLEAR_TOKENS: frozenset[str] = frozenset({"clear", "--clear", "reset"})
+"""Spellings that reset a per-session override back to its default.
+
+Shared by every such command -- `/effort`, `/summarization-model` -- so the
+habit transfers and the accepted spellings cannot drift apart.
+"""
+
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
     """Parse the argument tail of `/mcp reconnect [force]`.
@@ -3235,6 +3243,7 @@ class DeepAgentsApp(App):
         launch_init: bool = False,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
+        summarization_model: str | None = None,
         server_proc: ServerProcess | None = None,
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
@@ -3286,6 +3295,7 @@ class DeepAgentsApp(App):
                 the app override, including model selection details,
                 offload budget display, and on-demand `create_model()`
                 calls such as `/offload`.
+            summarization_model: Initial model used only for compaction summaries.
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
 
@@ -3761,6 +3771,20 @@ class DeepAgentsApp(App):
             model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
         )
         """Per-turn model params override set via startup or `/model` params."""
+
+        self._summarization_model_override: str | None = (
+            # An empty-string test, spelled the long way because ruff's
+            # `compare-to-empty-string` rejects `== ""` and the falsey
+            # shorthand it suggests would also catch `None`.
+            INHERIT_SUMMARIZATION_MODEL
+            if summarization_model is not None and not summarization_model
+            else summarization_model
+        )
+        """Per-session model used only for context-compaction summaries.
+
+        `None` leaves the graph's startup choice unchanged, while
+        `INHERIT_SUMMARIZATION_MODEL` explicitly returns to the main model.
+        """
 
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
@@ -16317,6 +16341,8 @@ class DeepAgentsApp(App):
             self._open_notification_center()
         elif cmd == "/effort" or cmd.startswith("/effort "):
             await self._handle_effort_command(command)
+        elif cmd == "/summarization-model" or cmd.startswith("/summarization-model "):
+            await self._handle_summarization_model_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -17200,6 +17226,7 @@ class DeepAgentsApp(App):
             context = CLIContext(
                 model=self._effective_model_spec(),
                 model_params=self._model_params_override or {},
+                summarization_model=self._summarization_model_override,
                 profile_overrides=self._profile_override or {},
                 model_context_limit=runtime_state.model_context_limit,
                 thread_id=self._lc_thread_id,
@@ -17904,7 +17931,7 @@ class DeepAgentsApp(App):
             without_effort_model_params,
         )
 
-        if effort.lower() in {"clear", "--clear", "reset"}:
+        if effort.lower() in _CLEAR_TOKENS:
             spec = self._effective_model_spec()
             if not spec:
                 await self._mount_message(
@@ -18186,6 +18213,7 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    summarization_model=self._summarization_model_override,
                     profile_overrides=self._profile_override or {},
                     model_context_limit=runtime_state.model_context_limit,
                     classifier_model=self._auto_classifier_context_value(),
@@ -29096,6 +29124,63 @@ class DeepAgentsApp(App):
         self.notify(message, markup=False)
         return (message, now)
 
+    async def _handle_summarization_model_command(self, command: str) -> None:
+        """Set, clear, or display the session's summary-model override.
+
+        The override is session-scoped: unlike `/model --default` there is no
+        persistent tier, so `[models].summarization_default` is the only way to
+        carry a choice across launches. A single bare spec is the whole grammar
+        -- no params and no trailing words, unlike `/model`.
+
+        Args:
+            command: The raw slash command line as typed.
+        """
+        await self._mount_message(UserMessage(command))
+        argument = command.strip()[len("/summarization-model") :].strip()
+        if not argument:
+            current = self._summarization_model_override
+            if current in {None, INHERIT_SUMMARIZATION_MODEL}:
+                current = "the main agent model"
+            await self._mount_message(AppMessage(f"Summarization model: {current}"))
+            return
+        if argument.lower() in _CLEAR_TOKENS:
+            self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
+            await self._mount_message(
+                AppMessage("Summarization model cleared; using the main agent model.")
+            )
+            return
+        if " " in argument:
+            await self._mount_message(
+                ErrorMessage("Usage: /summarization-model [<spec>|clear]")
+            )
+            return
+
+        if self._remote_agent() is not None and self._server_kwargs is None:
+            self._summarization_model_override = argument
+            await self._mount_message(
+                AppMessage(
+                    f"Summarization model requested: {argument}. The remote server "
+                    "will validate it at compaction time and use the main agent "
+                    "model if initialization fails."
+                )
+            )
+            return
+
+        try:
+            result = await asyncio.to_thread(
+                _create_model_with_deepagents_import_lock,
+                argument,
+                cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
+            )
+        except Exception as exc:
+            logger.exception("Failed to resolve summarization model %s", argument)
+            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            return
+
+        display = f"{result.provider}:{result.model_name}"
+        self._summarization_model_override = display
+        await self._mount_message(AppMessage(f"Summarization model set to {display}."))
+
     async def _switch_model(
         self,
         model_spec: str,
@@ -29581,6 +29666,7 @@ async def run_textual_app(
     launch_init: bool = False,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     server_proc: ServerProcess | None = None,
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
@@ -29630,6 +29716,7 @@ async def run_textual_app(
             the app override, including model selection details, offload
             budget display, and on-demand `create_model()` calls such
             as `/offload`.
+        summarization_model: Initial model used only for compaction summaries.
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
@@ -29686,6 +29773,7 @@ async def run_textual_app(
         launch_init=launch_init,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
+        summarization_model=summarization_model,
         server_proc=server_proc,
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,

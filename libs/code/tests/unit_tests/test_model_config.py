@@ -2056,6 +2056,46 @@ class TestModelConfigLoad:
         assert config.default_model is None
         assert config.providers == {}
 
+    def test_loads_summarization_default_model(self, tmp_path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "anthropic:claude-sonnet-4-5"\n'
+            'summarization_default = "openai:gpt-5.4-mini"\n'
+        )
+
+        config = ModelConfig.load(config_path)
+
+        assert config.default_model == "anthropic:claude-sonnet-4-5"
+        assert config.summarization_default_model == "openai:gpt-5.4-mini"
+
+    def test_bare_summarization_default_warns_but_loads(self, tmp_path, caplog):
+        """A bare name is legitimate -- `create_model` auto-detects the provider.
+
+        So this warns rather than rejecting, matching the sibling
+        `auto_classifier` check. The value must still load: an unresolvable
+        spec is caught later, at the first compaction.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nsummarization_default = "gpt-5.4-mini"\n')
+
+        with caplog.at_level(logging.WARNING):
+            config = ModelConfig.load(config_path)
+
+        assert config.summarization_default_model == "gpt-5.4-mini"
+        assert "summarization_default_model" in caplog.text
+        assert "provider:model" in caplog.text
+
+    def test_qualified_summarization_default_does_not_warn(self, tmp_path, caplog):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nsummarization_default = "openai:gpt-5.4-mini"\n'
+        )
+
+        with caplog.at_level(logging.WARNING):
+            ModelConfig.load(config_path)
+
+        assert "summarization_default_model" not in caplog.text
+
     def test_returns_empty_config_when_models_section_is_not_a_table(
         self, tmp_path, caplog
     ):

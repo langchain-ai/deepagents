@@ -1395,15 +1395,67 @@ def _unquoted_indices(command: str) -> Iterator[int]:
             yield index
 
 
+def _shell_syntax_indices(command: str) -> Iterator[int]:
+    """Yield the indices of `command` characters the shell runs as syntax.
+
+    Wraps `_unquoted_indices` to also drop `#` comments. A comment runs to the
+    end of its line and executes nothing, so an operator inside one cannot
+    change the status. `#` opens a comment only at the start of a word, which
+    keeps a literal `#` inside a word (`echo a#b`, a URL fragment) as text.
+
+    Args:
+        command: Shell command string that ran.
+
+    Yields:
+        Indices into `command`, in order.
+    """
+    in_comment = False
+    for index in _unquoted_indices(command):
+        char = command[index]
+        if in_comment:
+            # The newline ends the comment and still separates two commands, so
+            # it is yielded; everything before it is not.
+            if char != "\n":
+                continue
+            in_comment = False
+        elif char == "#" and (index == 0 or command[index - 1] in " \t\n;|&"):
+            in_comment = True
+            continue
+        yield index
+
+
+def _is_background_operator(command: str, index: int) -> bool:
+    """Report whether the `&` at `index` backgrounds a job.
+
+    A backgrounded command does not contribute its status at all: the shell
+    reports 0 as soon as the job starts. But most `&` characters in practice
+    belong to something else. `&&` short-circuits, so a failure survives it,
+    and the redirections `2>&1`, `>&2`, and `&>file` are not list operators.
+    Reading any of those as backgrounding would warn about the most common
+    redirect in shell commands.
+
+    Args:
+        command: Shell command string that ran.
+        index: Position of an unquoted `&` in `command`.
+
+    Returns:
+        Whether this `&` discards the preceding command's status.
+    """
+    before = command[index - 1] if index else ""
+    after = command[index + 1 : index + 2]
+    return before not in "&<>" and after not in {"&", ">"}
+
+
 def _status_masking_construct(command: str) -> str | None:
     """Name the construct that stops exit code 0 from covering the whole command.
 
     A shell reports only the status of the last command it ran. So `pytest | tail`
-    reports `tail`, `pytest; echo done` reports `echo`, and `pytest || true`
-    reports `true`. Each of these turns a real failure into exit code 0. `&&` is
-    excluded because a failing stage short-circuits the chain, which keeps the
-    failure as the final status. A trailing `;` is excluded too, because no
-    command follows it to overwrite the status.
+    reports `tail`, `pytest; echo done` reports `echo`, `pytest || true` reports
+    `true`, and `pytest &` reports 0 the moment the job starts. Each of these
+    turns a real failure into exit code 0. `&&` is excluded because a failing
+    stage short-circuits the chain, which keeps the failure as the final status.
+    A trailing `;` is excluded too, because no command follows it to overwrite
+    the status.
 
     Args:
         command: Shell command string that ran.
@@ -1414,21 +1466,32 @@ def _status_masking_construct(command: str) -> str | None:
     """
     found: set[str] = set()
     skip = -1
-    for index in _unquoted_indices(command):
+    indices = list(_shell_syntax_indices(command))
+    # A separator only masks a status when a command still follows it. Taken over
+    # the syntax indices, this also excludes a separator trailed by a comment.
+    last_command_index = max((index for index in indices if command[index] not in " \t;\n"), default=-1)
+    for index in indices:
         if index == skip:
             continue
         char = command[index]
         if char == "|":
             if command[index + 1 : index + 2] == "|":
                 skip = index + 1
-                found.add("'||'")
+                found.add("the right side of '||'")
             else:
-                found.add("a pipeline")
-        elif char in ";\n" and command[index + 1 :].strip(" \t;\n"):
-            found.add("a ';' chain")
+                found.add("the last stage of a pipeline")
+        elif char == "&" and _is_background_operator(command, index):
+            found.add("a command that was backgrounded with '&'")
+        elif char in ";\n" and index < last_command_index:
+            found.add("the last command in a ';' chain")
     # Report the most misleading construct present: a filter pipeline is both the
     # most common and the least likely to be a deliberate discard of the status.
-    for construct in ("a pipeline", "a ';' chain", "'||'"):
+    for construct in (
+        "the last stage of a pipeline",
+        "the last command in a ';' chain",
+        "the right side of '||'",
+        "a command that was backgrounded with '&'",
+    ):
         if construct in found:
             return construct
     return None
@@ -1456,9 +1519,9 @@ def _execute_status_line(exit_code: int | None, command: str) -> str:
     if construct is None:
         return "[Command succeeded with exit code 0]"
     return (
-        f"[Command exited 0, but that is the status of the last stage of {construct} - an earlier "
-        "command may have failed. Check the output, then re-run the command whose status matters "
-        "on its own to confirm.]"
+        f"[Command exited 0, but that status comes from {construct}, not necessarily from the "
+        "command you are checking - an earlier command may have failed. Check the output, then "
+        "re-run the command whose status matters on its own to confirm.]"
     )
 
 

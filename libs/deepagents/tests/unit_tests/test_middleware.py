@@ -3052,19 +3052,35 @@ class TestFilesystemMiddleware:
         ("command", "construct"),
         [
             # The shell's final status belongs to the filter, not the command.
-            ("pytest tests/ 2>&1 | tail -15", "a pipeline"),
-            ("ruff check . | head -20", "a pipeline"),
-            ("false; echo done", "a ';' chain"),
-            ("pytest\nls", "a ';' chain"),
-            ("mypy . || true", "'||'"),
+            ("pytest tests/ 2>&1 | tail -15", "the last stage of a pipeline"),
+            ("ruff check . | head -20", "the last stage of a pipeline"),
+            ("false; echo done", "the last command in a ';' chain"),
+            ("pytest\nls", "the last command in a ';' chain"),
+            ("mypy . || true", "the right side of '||'"),
+            # A backgrounded job reports 0 as soon as it starts.
+            ("pytest tests/ &", "a command that was backgrounded with '&'"),
+            ("pytest tests/ & echo started", "a command that was backgrounded with '&'"),
             # `&&` short-circuits, so a failure survives as the final status.
             ("ruff check . && mypy .", None),
             ("pytest tests/", None),
+            # `&` in a redirection is not a list operator. Reading these as
+            # backgrounding would warn on the most common redirect there is.
+            ("pytest tests/ 2>&1", None),
+            ("echo boom >&2", None),
+            ("ruff check . &> out.txt", None),
             # Operators inside quotes are literal text, not shell syntax.
             ("grep 'a|b' file.txt", None),
             ("awk -F';' '{print $1}' f.csv", None),
             ('echo "a;b"', None),
             ("printf 'a\\|b'", None),
+            ('echo "a & b"', None),
+            # A comment executes nothing, so an operator inside one is inert.
+            ("pytest tests/ # results piped | elsewhere", None),
+            ("pytest tests/; # run the suite", None),
+            ("pytest tests/ # first\nls", "the last command in a ';' chain"),
+            # `#` inside a word is literal, not the start of a comment.
+            ("echo a#b", None),
+            ('curl "http://example.com/x#frag"', None),
             # Nothing follows a trailing separator, so nothing overwrites the status.
             ("pytest tests/;", None),
             ("pytest tests/ ; ", None),
@@ -3080,7 +3096,7 @@ class TestFilesystemMiddleware:
 
         assert "succeeded" not in line
         assert "exited 0" in line
-        assert "a pipeline" in line
+        assert "the last stage of a pipeline" in line
 
     def test_execute_status_line_unchanged_for_plain_commands(self):
         """Commands whose status covers the whole command keep the plain wording."""

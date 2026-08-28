@@ -25,8 +25,8 @@ import secrets
 import stat
 import threading
 import time
-from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
-from typing import TYPE_CHECKING, Any, Literal, TypedDict, override
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Any, Literal, TypeAlias, override
 from urllib.parse import parse_qs, urlparse
 
 import httpx
@@ -85,39 +85,19 @@ class _DeviceCodeResponse(BaseModel):
     """Recommended polling interval in seconds when the provider omits one."""
 
 
-class McpServerSpec(TypedDict, total=False):
-    """Parsed MCP server config entry.
+McpServerSpec: TypeAlias = Mapping[str, Any]
+"""A raw `mcpServers` entry, as it appears in a config file.
 
-    All keys are optional at the type level because `mcpServers` entries
-    are validated shape-first by `_validate_server_config` rather than by
-    the type system. This TypedDict documents the accepted shape for
-    readers and static checkers — validate the fields at use sites before
-    relying on them.
-    """
+Deliberately a mapping rather than one of FastMCP's server models: entries
+reach here straight from JSON and may still carry unresolved `${VAR}`
+references, so they are not yet valid against those models.
 
-    auth: Literal["oauth"]
-    """Authentication mode for remote MCP servers that require OAuth login."""
-
-    type: Literal["stdio", "http", "sse"]
-    """Transport type when the config uses the `type` key."""
-
-    transport: Literal["stdio", "http", "sse"]
-    """Transport type when the config uses the `transport` key."""
-
-    url: str
-    """Remote endpoint URL for HTTP or SSE MCP servers."""
-
-    headers: dict[str, str]
-    """Optional request headers sent when connecting to the remote server."""
-
-    command: str
-    """Executable for stdio MCP servers."""
-
-    args: list[str]
-    """Command-line arguments passed to the stdio server executable."""
-
-    env: dict[str, str]
-    """Environment overrides for launching a stdio MCP server."""
+The accepted fields are FastMCP's, not this app's — `fastmcp.mcp_config`'s
+`StdioMCPServer` and `RemoteMCPServer` define and validate them, and
+`mcp_tools._build_transport` is where an entry is finally checked against
+them. Anything this app adds on top (`allowedTools`, `disabledTools`, and the
+`auth: "oauth"` mode marker) is validated by `_validate_server_config`.
+"""
 
 
 logger = logging.getLogger(__name__)

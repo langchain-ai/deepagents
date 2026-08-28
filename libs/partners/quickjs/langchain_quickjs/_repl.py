@@ -84,6 +84,7 @@ class EvalOutcome:
     stdout_truncated_chars: int = 0
     result: str | None = None
     result_kind: str | None = None  # "handle" when marshaling fell back
+    displayed_content: list[dict[str, Any]] | None = None
     error_type: str | None = None
     error_message: str = ""
     error_stack: str | None = None
@@ -202,6 +203,39 @@ def _is_undefined(value: Any) -> bool:
     ``UNDEFINED`` singleton, so identity comparison is unreliable.
     """
     return isinstance(value, _UNDEFINED_TYPE)
+
+
+_DISPLAYABLE_TYPES = frozenset({"image", "image_url", "text"})
+
+
+def _normalize_display_content(value: Any) -> list[dict[str, Any]]:
+    """Validate explicit multimodal content sent through `display`."""
+    entries = value if isinstance(value, list) else [value]
+    blocks: list[dict[str, Any]] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            blocks.append({"type": "text", "text": entry})
+            continue
+        if not isinstance(entry, dict) or entry.get("type") not in _DISPLAYABLE_TYPES:
+            msg = "display() accepts text, image, or image_url content blocks"
+            raise ValueError(msg)
+        kind = entry["type"]
+        if kind == "text" and not isinstance(entry.get("text"), str):
+            msg = "display() text blocks require a string `text` field"
+            raise ValueError(msg)
+        if kind == "image" and not any(
+            isinstance(entry.get(field), str) for field in ("base64", "url")
+        ):
+            msg = "display() image blocks require a string `base64` or `url` field"
+            raise ValueError(msg)
+        image_url = entry.get("image_url")
+        if kind == "image_url" and (
+            not isinstance(image_url, dict) or not isinstance(image_url.get("url"), str)
+        ):
+            msg = "display() image_url blocks require an `image_url.url` string"
+            raise ValueError(msg)
+        blocks.append(entry)
+    return blocks
 
 
 def _strip_undefined(value: Any) -> Any:
@@ -487,6 +521,7 @@ class _ThreadREPL:
         self._max_ptc_calls = max_ptc_calls
         self._subagents_enabled = subagents_enabled
         self._console = _ConsoleBuffer(max_stdout_chars)
+        self._displayed_content: list[dict[str, Any]] | None = None
         self._ctx: Context | None = None
         self._eval_lock: asyncio.Lock | None = None
         # PTC state. `_registered_tools` tracks which camel-case names
@@ -518,6 +553,7 @@ class _ThreadREPL:
     async def _ainit(self) -> None:
         self._eval_lock = asyncio.Lock()
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
+        self._install_display()
         if self._capture_console:
             self._install_console()
         if self._subagents_enabled:
@@ -530,6 +566,21 @@ class _ThreadREPL:
             msg = "QuickJS context is closed"
             raise RuntimeError(msg)
         return self._ctx
+
+    def _install_display(self) -> None:
+        ctx = self._require_ctx()
+
+        @ctx.function(name="__display")
+        def _display(value: Any) -> None:
+            self._displayed_content = _normalize_display_content(value)
+
+        ctx.eval(
+            "globalThis.display = __display;"
+            "Object.freeze(globalThis.display);"
+            "Object.defineProperty(globalThis, 'display', {"
+            " value: globalThis.display, writable: false, configurable: false"
+            "}); undefined"
+        )
 
     def _install_console(self) -> None:
         ctx = self._require_ctx()
@@ -932,6 +983,7 @@ class _ThreadREPL:
         """Evaluate code while holding the context lock."""
         ctx = self._require_ctx()
         outcome = EvalOutcome()
+        self._displayed_content = None
         # Save/restore so nested bridge callbacks cannot clear the active
         # evaluation's dispatch state.
         prev_ptc_state = self._ptc_state
@@ -1012,6 +1064,8 @@ class _ThreadREPL:
             _clear_exception_references(e)
         finally:
             self._ptc_state = prev_ptc_state
+            outcome.displayed_content = self._displayed_content
+            self._displayed_content = None
             outcome.stdout, outcome.stdout_truncated_chars = self._console.drain()
         return outcome
 

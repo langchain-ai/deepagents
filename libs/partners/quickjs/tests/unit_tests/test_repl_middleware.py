@@ -19,7 +19,7 @@ from langchain.agents.middleware.types import ModelRequest
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, SystemMessage
+from langchain_core.messages import AIMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
 from langgraph.errors import GraphInterrupt
@@ -28,7 +28,11 @@ from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 
 from langchain_quickjs import CodeInterpreterMiddleware
-from langchain_quickjs._format import format_outcome
+from langchain_quickjs._format import (
+    coerce_tool_output_for_ptc,
+    format_outcome,
+    format_outcome_content,
+)
 from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
@@ -269,7 +273,10 @@ def test_system_prompt_includes_subagent_guidance_when_specs_configured() -> Non
     )
     assert "### Dispatching Subagents with `task`" in sys_text
     assert "await task({" in sys_text
-    assert "`worker`" in sys_text
+    assert 'subagentType: "worker"' in sys_text
+    assert 'subagentType: "reviewer"' not in sys_text
+    assert 'subagentType: "verifier"' not in sys_text
+    assert "the parent user's prompt" in sys_text
 
 
 def test_system_prompt_omits_subagent_guidance_when_disabled() -> None:
@@ -430,6 +437,62 @@ def test_registry_reset_repl_clears_state_without_recreating_runtime() -> None:
     finally:
         reg.close()
     assert outcome.result == "undefined"
+
+
+def test_display_preserves_native_content_blocks(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync(
+        "display({type: 'image', base64: 'AAAA', mime_type: 'image/png'})"
+    )
+
+    assert outcome.error_type is None
+    assert outcome.displayed_content == [
+        {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
+    ]
+    content = format_outcome_content(outcome, max_result_chars=1000)
+    assert isinstance(content, list)
+    assert content[-1]["type"] == "image"
+
+
+def test_display_accepts_text(repl: _ThreadREPL) -> None:
+    outcome = repl.eval_sync("display('visible text')")
+
+    assert outcome.displayed_content == [{"type": "text", "text": "visible text"}]
+
+
+def test_display_forwards_ptc_image_result(repl: _ThreadREPL) -> None:
+    def read_file(file_path: str) -> list[dict[str, str]]:
+        del file_path
+        return [{"type": "image", "base64": "AAAA", "mime_type": "image/png"}]
+
+    image_tool = StructuredTool.from_function(
+        name="read_file",
+        description="Read a file.",
+        func=read_file,
+    )
+    repl.install_tools([image_tool])
+
+    outcome = repl.eval_sync(
+        "display(await tools.readFile({file_path: '/tmp/image.png'}))"
+    )
+
+    assert outcome.error_type is None
+    assert outcome.displayed_content == [
+        {"type": "image", "base64": "AAAA", "mime_type": "image/png"}
+    ]
+
+
+def test_ptc_execute_result_preserves_exit_code() -> None:
+    message = ToolMessage(
+        content="command output",
+        artifact={"exit_code": 3},
+        tool_call_id="call-1",
+    )
+
+    assert coerce_tool_output_for_ptc(message) == {
+        "output": "command output",
+        "exit_code": 3,
+        "ok": False,
+    }
 
 
 # ---------------------------------------------------------------------------

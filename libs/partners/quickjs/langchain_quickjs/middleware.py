@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
-from langchain_quickjs._format import format_outcome
+from langchain_quickjs._format import format_outcome_content
 from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
     render_eval_tool_description,
@@ -337,7 +337,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             tool_call_id: str | None,
         ) -> ToolMessage:
             return ToolMessage(
-                content=format_outcome(outcome, max_result_chars=max_chars),
+                content=format_outcome_content(outcome, max_result_chars=max_chars),
                 tool_call_id=tool_call_id,
                 name=tool_name,
             )

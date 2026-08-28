@@ -109,14 +109,31 @@ def coerce_tool_output_for_ptc(value: Any) -> Any:
     if isinstance(value, Command):
         return coerce_tool_output_for_ptc(_extract_command_content(value))
     if isinstance(value, ToolMessage):
-        return coerce_tool_output_for_ptc(value.content)
+        return _coerce_tool_message_for_ptc(value)
     if isinstance(value, list):
         for entry in reversed(value):
             if isinstance(entry, ToolMessage):
-                return coerce_tool_output_for_ptc(entry.content)
+                return _coerce_tool_message_for_ptc(entry)
             if isinstance(entry, Command):
                 return coerce_tool_output_for_ptc(_extract_command_content(entry))
     return _coerce_for_marshal(value)
+
+
+def _coerce_tool_message_for_ptc(message: ToolMessage) -> Any:
+    """Preserve structured status metadata from command tool messages."""
+    artifact = message.artifact
+    if (
+        isinstance(artifact, dict)
+        and isinstance(artifact.get("exit_code"), int)
+        and not isinstance(artifact.get("exit_code"), bool)
+    ):
+        exit_code = artifact["exit_code"]
+        return {
+            "output": _coerce_for_marshal(message.content),
+            "exit_code": exit_code,
+            "ok": exit_code == 0,
+        }
+    return coerce_tool_output_for_ptc(message.content)
 
 
 def _coerce_for_marshal(value: Any) -> Any:
@@ -203,6 +220,23 @@ def format_outcome(
         truncated_body = _truncate(body, max_result_chars)
         parts.append(f"<result{kind_attr}>{truncated_body}</result>")
     return "\n".join(parts)
+
+
+def format_outcome_content(
+    outcome: EvalOutcome,
+    *,
+    max_result_chars: int,
+) -> str | list[str | dict[Any, Any]]:
+    """Render an outcome, preserving content explicitly sent to `display`."""
+    if outcome.displayed_content is None:
+        return format_outcome(outcome, max_result_chars=max_result_chars)
+    text = format_outcome(outcome, max_result_chars=max_result_chars)
+    if outcome.error_type is None and outcome.result in {"null", "undefined"}:
+        text = text.rsplit("\n", maxsplit=1)[0] if "\n" in text else ""
+    blocks: list[str | dict[Any, Any]] = (
+        [{"type": "text", "text": text}] if text else []
+    )
+    return [*blocks, *outcome.displayed_content]
 
 
 def _truncate(text: str, limit: int, *, dropped: int | None = None) -> str:

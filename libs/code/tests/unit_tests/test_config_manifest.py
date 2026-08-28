@@ -1812,6 +1812,20 @@ def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
     assert should_run_onboarding() is False
 
 
+def test_legacy_debug_file_remains_discoverable(monkeypatch) -> None:
+    option = get_option("debug.file")
+    assert option is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_FILE", "/tmp/legacy.log")
+    assert _resolve_manifest_option(option, toml_data={}) == (
+        "/tmp/legacy.log",
+        "env (DEEPAGENTS_CODE_DEBUG_FILE)",
+    )
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_FILE")
+    assert _resolve_manifest_option(
+        option, toml_data={"debug": {"file": "/tmp/configured.log"}}
+    ) == ("/tmp/configured.log", "config.toml")
+
+
 def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     """A synthetic option exercises the empty-fallback → `config.toml` path.
 

@@ -6,6 +6,7 @@ from typing import Any, cast
 from unittest.mock import MagicMock
 
 import pytest
+from langchain.agents.middleware.summarization import _DEFAULT_TRIM_TOKEN_LIMIT
 from langchain_core.messages import AIMessage, MessageLikeRepresentation
 
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -42,6 +43,26 @@ def test_factory_uses_fallback_defaults_without_profile() -> None:
     assert middleware._lc_helper.keep == ("messages", 6)
     assert middleware._truncate_args_trigger == ("messages", 20)
     assert middleware._truncate_args_keep == ("messages", 20)
+
+
+def test_factory_uses_default_summary_trim_limit() -> None:
+    """Keeps the summary request within the middleware's default token limit."""
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(model, cast("Any", MagicMock()))
+
+    assert middleware._lc_helper.trim_tokens_to_summarize == _DEFAULT_TRIM_TOKEN_LIMIT
+
+
+def test_factory_allows_disabling_summary_trimming() -> None:
+    """Preserves `None` as an explicit opt-out from summary input trimming."""
+    model = _make_model(with_profile_limit=120_000)
+    middleware = create_summarization_middleware(
+        model,
+        cast("Any", MagicMock()),
+        trim_tokens_to_summarize=None,
+    )
+
+    assert middleware._lc_helper.trim_tokens_to_summarize is None
 
 
 def test_factory_default_prompt_explains_media_references() -> None:

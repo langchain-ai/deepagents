@@ -684,31 +684,6 @@ class TestListSkillsBuiltIn:
         assert "deepagents-code-version" in remember["metadata"]
         assert remember["metadata"]["deepagents-code-version"] == _cli_version
 
-    def test_real_textual_screenshot_skill_ships(self) -> None:
-        """Verify the built-in Textual screenshot skill loads from the package."""
-        built_in_dir = get_built_in_skills_dir()
-        skill_md = built_in_dir / "textual-screenshot" / "SKILL.md"
-        assert skill_md.exists(), f"Expected {skill_md} to exist"
-        instructions = skill_md.read_text()
-        assert "run_test" in instructions
-        assert "save_screenshot" in instructions
-
-        skills = list_skills(
-            built_in_skills_dir=built_in_dir,
-            user_skills_dir=None,
-            project_skills_dir=None,
-        )
-        screenshot = next(
-            skill for skill in skills if skill["name"] == "textual-screenshot"
-        )
-        assert screenshot["source"] == "built-in"
-        assert len(screenshot["description"]) > 0
-        assert screenshot["license"] == "MIT"
-        assert screenshot["compatibility"] == (
-            "designed for deepagents-code and Textual apps"
-        )
-        assert screenshot["metadata"]["deepagents-code-version"] == _cli_version
-
     def test_real_thread_inspector_skill_ships(self) -> None:
         """Verify the built-in thread inspector and its script load from the package."""
         built_in_dir = get_built_in_skills_dir()

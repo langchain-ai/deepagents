@@ -408,6 +408,41 @@ async def _plan(
     )
 
 
+async def _plan_with_trace_context(
+    middleware: AutoModeHITLMiddleware,
+    request: ModelRequest[Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    from langsmith.run_helpers import get_tracing_context
+
+    context: dict[str, Any] = {}
+
+    async def handler(_request: ModelRequest) -> ModelResponse:
+        await asyncio.sleep(0)
+        context.update(get_tracing_context())
+        return ModelResponse(
+            result=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "delete",
+                            "args": {"file_path": "old.py"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        )
+
+    response = await middleware.awrap_model_call(request, handler)
+    assert isinstance(response, ExtendedModelResponse)
+    assert response.command is not None
+    assert response.command.update is not None
+    plan = cast("dict[str, Any]", response.command.update)["_auto_decision_plan"]
+    return plan, context
+
+
 async def _route_plan(
     middleware: AutoModeHITLMiddleware,
     request: ModelRequest[Any],
@@ -2111,6 +2146,76 @@ async def test_counter_write_failure_is_not_reported_as_classifier_approval(
     assert plan["decisions"][0]["disposition"] == "require_human"
     completed = next(event for event in events if event["event"] == "review_completed")
     assert completed["approved_tool_call_ids"] == []
+
+
+async def test_effective_approval_mode_reaches_model_metadata_and_plan(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_StructuredModel(_allow_result()),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    plan, context = await _plan_with_trace_context(middleware, request)
+
+    assert context["metadata"]["effective_approval_mode"] == "auto"
+    assert plan["effective_approval_mode"] == "auto"
+    assert plan["approval_mode_metadata"] == {
+        "effective_approval_mode": "auto",
+        "client_approval_mode": "auto",
+        "server_approval_mode": "auto",
+    }
+    assert plan["approval_mode_tags"] == []
+
+
+async def test_approval_mode_mismatch_is_tagged_and_logged(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    request.runtime.context["approval_mode"] = "yolo"
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.auto_mode"):
+        plan, context = await _plan_with_trace_context(middleware, request)
+
+    assert "approval_mode:mismatch" in context["tags"]
+    assert plan["approval_mode_metadata"] == {
+        "effective_approval_mode": "auto",
+        "client_approval_mode": "yolo",
+        "server_approval_mode": "auto",
+        "approval_mode_warning": "client_server_mismatch",
+    }
+    assert "client_approval_mode=yolo server_approval_mode=auto" in caplog.text
+
+
+async def test_missing_approval_mode_key_tags_store_fallback(tmp_path: Path) -> None:
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    request.runtime.context.pop("approval_mode_key")
+
+    plan, context = await _plan_with_trace_context(middleware, request)
+
+    assert plan["effective_approval_mode"] == "manual"
+    assert plan["fallback_reason"] == "approval_mode_unavailable"
+    assert {"approval_mode:fallback", "approval_mode:store_unavailable"}.issubset(
+        context["tags"]
+    )
+    assert context["metadata"]["approval_mode_fallback_reason"] == (
+        "approval_mode_unavailable"
+    )
 
 
 async def test_unavailable_auto_control_state_surfaces_manual_fallback(

@@ -13,11 +13,14 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import dataclasses
 import logging
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
     STARTUP_ERROR_MARKER as _STARTUP_ERROR_MARKER,
@@ -31,9 +34,11 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends.composite import CompositeBackend
+    from langgraph_sdk.runtime import ServerRuntime as LangGraphServerRuntime
 
     from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.offload_middleware import OffloadOperation
+    from deepagents_code.workspace import WorkspaceBinding
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +217,11 @@ class ServerRuntime(NamedTuple):
     """Server-owned thread offload operation bound to `backend`."""
 
 
-async def _make_graphs() -> ServerRuntime:
+async def _make_graphs(
+    *,
+    config_override: ServerConfig | None = None,
+    project_context_override: ProjectContext | None = None,
+) -> ServerRuntime:
     """Create the agent graph and the backend carrying its shared resources.
 
     Reads `DEEPAGENTS_CODE_SERVER_*` env vars via `ServerConfig.from_env()`
@@ -223,7 +232,7 @@ async def _make_graphs() -> ServerRuntime:
         The agent graph, its configured composite backend, and the server-owned
             offload operation bound to that backend.
     """
-    config = ServerConfig.from_env()
+    config = config_override or ServerConfig.from_env()
 
     # Offload cwd/path resolution and the lazy settings bootstrap off the event
     # loop. On Windows, `Path.resolve()` / `Path.cwd()` call `os.getcwd()`, which
@@ -245,7 +254,7 @@ async def _make_graphs() -> ServerRuntime:
         Any,
         Any,
     ]:
-        project_context = get_server_project_context()
+        project_context = project_context_override or get_server_project_context()
 
         from deepagents_code.agent import create_cli_agent, load_async_subagents
         from deepagents_code.config import (
@@ -534,6 +543,56 @@ def _build_graph_factory(
 
 
 _get_runtime = _build_runtime_factory()
+_MAX_WORKSPACE_RUNTIMES = 32
+_workspace_runtimes: OrderedDict[str, ServerRuntime] = OrderedDict()
+_workspace_runtime_locks: dict[str, asyncio.Lock] = {}
+
+
+async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
+    """Build or reuse a runtime from the persisted workspace resource policy.
+
+    Returns:
+        The runtime selected by the binding's immutable resource key.
+
+    Raises:
+        RuntimeError: If the authoritative server configuration has changed.
+    """
+    runtime = _workspace_runtimes.get(binding.resource_key)
+    if runtime is not None:
+        _workspace_runtimes.move_to_end(binding.resource_key)
+        return runtime
+    lock = _workspace_runtime_locks.setdefault(binding.resource_key, asyncio.Lock())
+    async with lock:
+        runtime = _workspace_runtimes.get(binding.resource_key)
+        if runtime is None:
+            config = ServerConfig.from_env()
+            current_config = dataclasses.replace(
+                config,
+                cwd=binding.cwd,
+                project_root=binding.project_root,
+            )
+            if (
+                current_config.workspace_fingerprint() != binding.config_fingerprint
+                or current_config.to_workspace_payload() != binding.workspace_config()
+            ):
+                msg = "Server configuration changed after the workspace was bound."
+                raise RuntimeError(msg)
+            config = current_config
+            project_context = ProjectContext(
+                user_cwd=Path(binding.cwd),
+                project_root=Path(binding.project_root)
+                if binding.project_root
+                else None,
+            )
+            runtime = await _make_graphs(
+                config_override=config,
+                project_context_override=project_context,
+            )
+            _workspace_runtimes[binding.resource_key] = runtime
+            if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
+                evicted_key, _ = _workspace_runtimes.popitem(last=False)
+                _workspace_runtime_locks.pop(evicted_key, None)
+    return runtime
 
 
 async def get_server_runtime() -> ServerRuntime:
@@ -552,6 +611,24 @@ async def get_server_runtime() -> ServerRuntime:
     return await _get_runtime()
 
 
-async def make_graph() -> Any:  # noqa: ANN401
-    """Return the cached interactive graph for `langgraph.json`."""
+async def make_graph(
+    config: dict[str, Any] | None = None,
+    runtime: LangGraphServerRuntime[CLIContextSchema] | None = None,
+) -> Any:  # noqa: ANN401
+    """Return the graph after validating execution workspace context.
+
+    Raises:
+        ValueError: If execution context is missing or malformed.
+    """
+    execution = runtime.execution_runtime if runtime is not None else None
+    if execution is not None:
+        context = CLIContextSchema.from_payload(execution.context)
+        thread_id = (config or {}).get("configurable", {}).get("thread_id")
+        if context is None or not isinstance(thread_id, str) or not thread_id:
+            msg = "A thread id and workspace context are required for execution."
+            raise ValueError(msg)
+        from deepagents_code.workspace import require_thread_workspace
+
+        binding = await require_thread_workspace(thread_id, context.workspace)
+        return (await _workspace_runtime(binding)).agent
     return (await get_server_runtime()).agent

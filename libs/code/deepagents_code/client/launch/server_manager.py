@@ -325,6 +325,7 @@ async def start_server_and_get_agent(
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
+    cwd: str | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -369,6 +370,7 @@ async def start_server_and_get_agent(
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
+        cwd: Explicit project workspace to bind to new threads.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -379,11 +381,16 @@ async def start_server_and_get_agent(
         MCPConfigError: The explicit `--mcp-config` path is malformed,
             missing, or references contradictory transport fields. Raised
             from the pre-flight validator before any subprocess is spawned.
+        RuntimeError: If no explicit workspace can be resolved.
     """  # noqa: DOC502 - `_preflight_validate_mcp_config()` raises indirectly
     from deepagents_code.client.launch.server import ServerProcess
     from deepagents_code.client.remote_client import RemoteAgent
 
-    project_context = _capture_project_context()
+    project_context = (
+        ProjectContext.from_user_cwd(Path(cwd))
+        if cwd is not None
+        else _capture_project_context()
+    )
 
     _preflight_validate_mcp_config(
         mcp_config_path=mcp_config_path,
@@ -441,6 +448,14 @@ async def start_server_and_get_agent(
         agent = RemoteAgent(
             url=server.url,
             graph_name="agent",
+        )
+        if project_context is None:
+            msg = "A workspace is required to start the remote agent."
+            raise RuntimeError(msg)
+        agent.set_workspace(
+            str(project_context.user_cwd),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
         )
         started = True
         return agent, server, None
@@ -511,6 +526,7 @@ async def server_session(
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
+    cwd: str | None = None,
 ) -> AsyncIterator[tuple[RemoteAgent, ServerProcess]]:
     """Async context manager that starts a server and guarantees cleanup.
 
@@ -558,6 +574,7 @@ async def server_session(
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
+        cwd: Explicit project workspace to bind to new threads.
 
     Yields:
         Tuple of `(remote_agent, server_process)`.
@@ -597,6 +614,7 @@ async def server_session(
             interactive=interactive,
             host=host,
             port=port,
+            cwd=cwd,
         )
         yield agent, server_proc
     finally:

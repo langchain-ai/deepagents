@@ -3683,7 +3683,14 @@ class DeepAgentsApp(App):
         and cannot restart it).
         """
 
+        if server_kwargs is not None:
+            server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
+        if self._agent is not None:
+            from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
+
+            if isinstance(self._agent, _RemoteAgent):
+                self._configure_remote_agent(self._agent)
         """Cached kwargs for `start_server_and_get_agent`.
 
         When non-`None`, startup is deferred and the UI begins in a status-bar
@@ -4588,6 +4595,26 @@ class DeepAgentsApp(App):
         Startup workers register notices (missing deps, update available)
         here; the user opens them via toast click or `ctrl+n`.
         """
+
+    def _configure_remote_agent(self, agent: RemoteAgent) -> RemoteAgent:
+        """Attach this session's explicit workspace to a remote client.
+
+        Returns:
+            The configured client.
+        """
+        if self._server_kwargs is None:
+            agent.set_workspace(self._cwd)
+            return agent
+
+        from deepagents_code._server_config import ServerConfig
+
+        config = ServerConfig.from_env()
+        agent.set_workspace(
+            self._cwd,
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        return agent
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -5959,6 +5986,9 @@ class DeepAgentsApp(App):
             start_server_and_get_agent,
         )
 
+        if self._server_kwargs is None:
+            return
+        self._server_kwargs["cwd"] = self._cwd
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
 
         if self._mcp_preload_kwargs is not None:
@@ -23847,7 +23877,9 @@ class DeepAgentsApp(App):
             Returns:
                 A fresh `RemoteAgent`, exposed as `Any`.
             """
-            return _RemoteAgent(url=url, graph_name="agent")
+            return self._configure_remote_agent(
+                _RemoteAgent(url=url, graph_name="agent")
+            )
 
         previous_agent = self._assistant_id
         previous_default_agent = self._default_assistant_id
@@ -27731,7 +27763,9 @@ class DeepAgentsApp(App):
                     mcp_status = "fresh" if mcp_info is not None else "unavailable"
 
             def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
-                return _RemoteAgent(url=url, graph_name="agent")
+                return self._configure_remote_agent(
+                    _RemoteAgent(url=url, graph_name="agent")
+                )
 
             # A failed refresh must not reach the UI as "zero servers": the
             # `ServerReady` handler recomputes the status-bar counters and the
@@ -28503,7 +28537,10 @@ class DeepAgentsApp(App):
             self._preserve_launch_relative_server_paths(previous_cwd)
             await self._switch_process_cwd(cwd)
 
-            coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]
+            self._server_kwargs["cwd"] = self._cwd
+            coros: list[Any] = [
+                start_server_and_get_agent(**self._server_kwargs)  # ty: ignore[invalid-argument-type]
+            ]
             if self._mcp_preload_kwargs is not None:
                 coros.append(
                     _preload_session_mcp_server_info(**self._mcp_preload_kwargs)

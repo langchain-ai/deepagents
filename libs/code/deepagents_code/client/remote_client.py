@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents_code.offload_middleware import OffloadResult
 
@@ -329,6 +330,10 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
+        self._workspaces: dict[str, dict[str, Any]] = {}
+        self._workspace_config: dict[str, Any] | None = None
+        self._workspace_config_fingerprint: str | None = None
+        self._workspace_cwd: str | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -382,6 +387,9 @@ class RemoteAgent:
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
         thread_id = _require_thread_id(config)
+        workspace = await self._workspace_for_thread(config)
+        operation_context = dict(context)
+        operation_context["workspace"] = workspace
         # The operation reads and writes thread state over HTTP, so the thread's
         # live row must exist first. Checkpoint persistence and registration are
         # separate on the dev server (see `aensure_thread`), so a resumed thread
@@ -398,7 +406,7 @@ class RemoteAgent:
                         f"/dcode/threads/{thread_id}/offload",
                         json={
                             "operation_id": operation_id,
-                            "context": dict(context),
+                            "context": operation_context,
                             "hook_responses": hook_responses,
                         },
                     ),
@@ -519,6 +527,9 @@ class RemoteAgent:
         # verified against `langgraph-api` 0.10.0 and subject to change.)
         from deepagents_code.config import get_langsmith_replica_project
 
+        payload = dict(context) if isinstance(context, Mapping) else {}
+        payload["workspace"] = await self._workspace_for_thread(config)
+
         extra_stream_kwargs: dict[str, Any] = {}
         replica_project = get_langsmith_replica_project()
         if replica_project:
@@ -529,7 +540,7 @@ class RemoteAgent:
             stream_mode=stream_mode or ["messages", "updates"],
             subgraphs=subgraphs,
             config=config,
-            context=context,
+            context=payload,
             **extra_stream_kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
@@ -776,6 +787,69 @@ class RemoteAgent:
             )
             # Load-bearing: see Notes. Callers fail closed on this propagation.
             raise
+
+    async def _workspace_for_thread(
+        self,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        thread_id = _require_thread_id(config)
+        workspace = self._workspaces.get(thread_id)
+        if workspace is not None:
+            return workspace
+        if self._workspace_cwd is None:
+            msg = "RemoteAgent workspace is not configured."
+            raise RuntimeError(msg)
+        return await self.abind_workspace(config, self._workspace_cwd)
+
+    async def abind_workspace(
+        self, config: Mapping[str, Any], cwd: str
+    ) -> dict[str, Any]:
+        """Create or verify the remote thread's durable workspace binding.
+
+        Returns:
+            The server-validated workspace descriptor.
+
+        Raises:
+            TypeError: If the server returns a malformed descriptor.
+        """
+        thread_id = _require_thread_id(config)
+        graph = self._get_graph()
+        payload: dict[str, Any] = {"cwd": cwd}
+        if self._workspace_config is not None:
+            payload["workspace_config"] = self._workspace_config
+            payload["config_fingerprint"] = self._workspace_config_fingerprint
+        response = await graph.client.http.post(
+            f"/dcode/threads/{thread_id}/workspace",
+            json=payload,
+        )
+        if not isinstance(response, dict) or not isinstance(
+            response.get("workspace"), dict
+        ):
+            msg = "Workspace server returned an invalid binding response."
+            raise TypeError(msg)
+        workspace = cast("dict[str, Any]", response["workspace"])
+        self._workspaces[thread_id] = workspace
+        return workspace
+
+    def set_workspace(
+        self,
+        cwd: str,
+        config: Mapping[str, Any] | None = None,
+        *,
+        config_fingerprint: str | None = None,
+    ) -> None:
+        """Configure the explicit workspace used when binding threads.
+
+        Raises:
+            ValueError: If only one policy field is provided.
+        """
+        if (config is None) != (config_fingerprint is None):
+            msg = "Workspace policy and fingerprint must be configured together."
+            raise ValueError(msg)
+        self._workspace_cwd = cwd
+        self._workspace_config = dict(config) if config is not None else None
+        self._workspace_config_fingerprint = config_fingerprint
+        self._workspaces.clear()
 
     async def aensure_thread(self, config: dict[str, Any]) -> None:
         """Ensure the remote thread record exists before mutating state.

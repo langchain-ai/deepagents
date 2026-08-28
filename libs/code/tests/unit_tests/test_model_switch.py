@@ -1636,37 +1636,47 @@ class TestSummarizationModelCommand:
         create_model.assert_not_called()
         assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
 
-    async def test_no_argument_reports_the_current_value(self) -> None:
+    async def test_no_argument_opens_selector_without_changing_override(self) -> None:
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
+        with patch.object(
+            app,
+            "_show_summarization_model_selector",
+            new_callable=AsyncMock,
+        ) as show_selector:
             await app._handle_command("/summarization-model")
 
-        assert any("openai:gpt-5.4-mini" in text for text in captured)
+        show_selector.assert_awaited_once()
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
 
-    async def test_no_argument_names_the_fallback_when_unset(self) -> None:
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
+    async def test_selector_highlights_summarization_model(self) -> None:
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
 
-        with patch.object(AppMessage, "__init__", capture_init):
-            await app._handle_command("/summarization-model")
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
 
-        assert any("main agent model" in text for text in captured)
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "openai"
+        assert screen._current_model == "gpt-5.4-mini"
+        assert screen._default_scope is None
 
-    async def test_blank_launch_override_names_the_main_model(self) -> None:
+    async def test_selector_falls_back_to_main_model_when_unset(self) -> None:
         app = DeepAgentsApp(summarization_model="")
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
-            await app._handle_command("/summarization-model")
+        with (
+            patch.object(
+                app,
+                "_effective_model_spec",
+                return_value="anthropic:claude-sonnet-4-5",
+            ),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_summarization_model_selector()
 
-        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
-        assert any("main agent model" in text for text in captured)
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "anthropic"
+        assert screen._current_model == "claude-sonnet-4-5"
 
     async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
         """The grammar is a single bare spec -- no params, unlike `/model`."""

@@ -8,12 +8,6 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_code.command_registry import (
-    _STATIC_SKILL_ALIASES,
-    CommandEntry,
-    build_skill_commands,
-    parse_skill_command,
-)
 from deepagents_code.skills.load import load_skill_content
 
 

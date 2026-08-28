@@ -1,9 +1,7 @@
 """Tests for autocomplete fuzzy search functionality."""
 
-import asyncio
 import logging
 import subprocess
-import threading
 from pathlib import Path
 from typing import cast
 from unittest.mock import MagicMock
@@ -13,9 +11,7 @@ import pytest
 from deepagents_code.command_registry import CommandEntry, get_slash_commands
 from deepagents_code.tui.widgets import autocomplete as autocomplete_module
 from deepagents_code.tui.widgets.autocomplete import (
-    MAX_SUGGESTIONS,
     CompletionController,
-    CompletionResult,
     FuzzyFileController,
     MultiCompletionManager,
     SlashCommandController,
@@ -23,8 +19,6 @@ from deepagents_code.tui.widgets.autocomplete import (
     _fuzzy_search,
     _get_git_executable,
     _get_project_files,
-    _is_dotpath,
-    _path_depth,
     _run_git_ls_files,
     _scope_files_to_cwd,
 )

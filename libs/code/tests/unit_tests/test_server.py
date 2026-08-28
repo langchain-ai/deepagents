@@ -9,7 +9,6 @@ import os
 import signal
 import socket
 import subprocess
-import sys
 import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self
@@ -20,8 +19,6 @@ import pytest
 from deepagents_code.client.launch import server as server_module
 from deepagents_code.client.launch.server import (
     ServerProcess,
-    _find_free_port,
-    _port_in_use,
     _server_process_group,
     _terminate_server_process,
     _wait_for_process_group_exit,

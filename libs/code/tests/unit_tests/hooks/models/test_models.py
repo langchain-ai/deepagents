@@ -1,8 +1,6 @@
 """Contract tests for hooks data models."""
 
-from datetime import UTC, datetime
 from pathlib import Path
-from uuid import UUID, uuid4
 
 import pytest
 from langchain_core.messages import ToolMessage
@@ -11,9 +9,6 @@ from pydantic import ValidationError
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.models.adapters import (
     HOOK_DECISION_ADAPTER,
-    HOOK_DOMAIN_EVENT_ADAPTER,
-    HOOK_INVOCATION_REQUEST_ADAPTER,
-    HOOK_INVOCATION_RESPONSE_ADAPTER,
     HOOK_WIRE_INPUT_ADAPTER,
     HOOK_WIRE_OUTPUT_ADAPTER,
     HOOKS_CONFIG_ADAPTER,
@@ -21,17 +16,9 @@ from deepagents_code.hooks.models.adapters import (
 from deepagents_code.hooks.models.domain import (
     HookContext,
     HookEvent,
-    HookInvocation,
     PermissionEffect,
     PostToolUseEvent,
-    SessionStartCause,
-    SessionStartDecision,
-    SessionStartEvent,
     ToolCallData,
-)
-from deepagents_code.hooks.models.transport import (
-    HookInvocationRequest,
-    HookInvocationResponse,
 )
 
 _COMMON_WIRE_INPUT = {

@@ -22,15 +22,6 @@ def _active_state() -> dict[str, object]:
     }
 
 
-def _serialized(message: HumanMessage) -> dict[str, object]:
-    return {
-        "type": "human",
-        "content": message.content,
-        "id": message.id,
-        "additional_kwargs": dict(message.additional_kwargs),
-    }
-
-
 async def test_active_paused_active_persists_three_append_events() -> None:
     """A return to an earlier state does not reuse or replace its first event."""
     updater = SimpleNamespace(aupdate_state=AsyncMock())

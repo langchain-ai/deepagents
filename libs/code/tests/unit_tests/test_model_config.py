@@ -5,7 +5,7 @@ import logging
 import sys
 import threading
 import tomllib
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import AbstractContextManager, suppress
 from dataclasses import replace
 from pathlib import Path
@@ -17,12 +17,9 @@ import pytest
 from deepagents_code import model_config
 from deepagents_code.json_types import JsonObject
 from deepagents_code.model_config import (
-    DEFAULT_STARTUP_MODE,
     IMPLICIT_AUTH_PROVIDERS,
-    MANAGED_CONFIG_SOURCE,
     NO_AUTH_REQUIRED_PROVIDERS,
     PROVIDER_API_KEY_ENV,
-    PROVIDER_BASE_URL_ENV,
     RETRY_PARAM_BY_PROVIDER,
     STARTUP_MODE_AUTO,
     STARTUP_MODE_MANUAL,
@@ -33,22 +30,14 @@ from deepagents_code.model_config import (
     ModelConfig,
     ModelConfigError,
     ModelNotAllowedError,
-    ModelProfileEntry,
     ModelSpec,
     NoAllowedModelCredentialsError,
     ProviderAuthSource,
     ProviderAuthState,
     ProviderAuthStatus,
-    ProviderConfig,
-    _get_builtin_providers,
-    _get_provider_profile_modules,
     _is_local_endpoint,
-    _load_provider_profiles,
-    _profile_module_from_class_path,
     clear_caches,
     clear_default_agent,
-    clear_default_model,
-    clear_effort_for_model,
     default_cache_dir,
     fingerprint_mcp_server_config,
     get_available_models,
@@ -65,15 +54,12 @@ from deepagents_code.model_config import (
     load_thread_columns,
     normalize_mcp_project_root,
     parse_model_allowlist,
-    save_auto_classifier_model,
     save_default_agent,
-    save_default_model,
     save_effort_for_model,
     save_recent_agent,
     save_recent_model,
     save_recent_startup_mode,
     save_thread_columns,
-    suppress_warning,
     suppress_warning_reason,
     touch_recent_model,
     unsuppress_warning,

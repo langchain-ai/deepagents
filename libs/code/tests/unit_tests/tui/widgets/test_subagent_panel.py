@@ -7,8 +7,6 @@ types. Uses the Textual `run_test()` pilot harness.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, cast
-
 import pytest
 from textual.app import App, ComposeResult
 from textual.geometry import Offset
@@ -19,9 +17,6 @@ from deepagents_code.tui.widgets.subagent_panel import (
     _Phase,
     _SubagentRecord,
 )
-
-if TYPE_CHECKING:
-    from typing import Any
 
 
 class PanelApp(App):

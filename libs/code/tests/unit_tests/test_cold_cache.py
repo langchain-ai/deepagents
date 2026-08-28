@@ -4,26 +4,17 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta, timezone
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import pytest
 
 from deepagents_code.cold_cache import (
     _LOGGED_DIAGNOSTICS,
-    _MAX_LOGGED_DIAGNOSTICS,
     CacheConfidence,
     CacheWriteBucket,
-    ColdCacheReason,
-    ColdCacheWarning,
     PromptCachePolicy,
-    RewarmEstimate,
-    _warn_once,
-    cache_identity_params,
-    debug_stand_in_policy,
     endpoint_cache_identity,
     estimate_rewarm_cost,
-    format_cache_age,
-    format_cache_window,
     load_trusted_cache_endpoints,
     parse_cache_timestamp,
     resolve_prompt_cache_policy,

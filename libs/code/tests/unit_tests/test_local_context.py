@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import os
-import shutil
 import subprocess
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, Mock
@@ -19,8 +18,6 @@ from deepagents.middleware._state import private_state_field_names
 from deepagents.middleware.summarization import SummarizationMiddleware
 
 from deepagents_code.local_context import (
-    _DETECT_SCRIPT_TIMEOUT,
-    _TOOL_NAME_DISPLAY_LIMIT,
     DETECT_CONTEXT_SCRIPT,
     LocalContextMiddleware,
     LocalContextState,
@@ -38,9 +35,8 @@ from deepagents_code.local_context import (
     _section_runtimes,
     _section_test_command,
     _section_tree,
-    build_detect_script,
 )
-from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
+from deepagents_code.mcp_tools import MCPServerInfo
 
 
 class _SyncBackendFake:
@@ -420,31 +416,6 @@ class TestSectionRuntimes:
     """Tests for _section_runtimes."""
 
 
-def _runtime_stub_env(
-    tmp_path: Path, *, python: str | None, node: str | None
-) -> dict[str, str]:
-    """Build an isolated PATH exposing only coreutils plus optional runtime stubs.
-
-    `_section_runtimes` needs `mktemp`/`rm` from the real environment, but the
-    system `python3`/`node` must not leak in when a test asserts an absent
-    runtime. Symlink just the required coreutils into a private bin dir and add
-    only the runtime stubs the test asks for.
-    """
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for tool in ("mktemp", "rm"):
-        resolved = shutil.which(tool)
-        assert resolved, f"{tool} not found on PATH"
-        (bin_dir / tool).symlink_to(resolved)
-    for name, script in (("python3", python), ("node", node)):
-        if script is None:
-            continue
-        stub = bin_dir / name
-        stub.write_text(script)
-        stub.chmod(0o755)
-    return {"PATH": str(bin_dir), "TMPDIR": str(tmp_path)}
-
-
 def _git_env(tmp_path: Path) -> dict[str, str]:
     """Minimal env for `git commit` in an isolated temp dir."""
     return {
@@ -630,16 +601,6 @@ class TestSectionGitExtended:
 # ---------------------------------------------------------------------------
 # MCP context tests
 # ---------------------------------------------------------------------------
-
-
-def _make_server(
-    name: str, transport: str = "stdio", tool_names: list[str] | None = None
-) -> MCPServerInfo:
-    """Create an MCPServerInfo with the given tool names."""
-    tools = tuple(
-        MCPToolInfo(name=n, description=f"desc-{n}") for n in (tool_names or [])
-    )
-    return MCPServerInfo(name=name, transport=transport, tools=tools)
 
 
 class TestBuildMcpContext:

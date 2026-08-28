@@ -1,7 +1,6 @@
 """Tests for registrations made after extension initialization."""
 
 from pathlib import Path
-from typing import Any, cast
 
 import pytest
 from deepagents.backends import (
@@ -9,23 +8,11 @@ from deepagents.backends import (
     LocalShellBackend,
     StateBackend,
 )
-from langchain.agents.middleware.types import (
-    ModelRequest,
-    ModelResponse,
-    ToolCallRequest,
-)
-from langchain_core.language_models import GenericFakeChatModel
-from langchain_core.messages import AIMessage, ToolMessage
 from langchain_core.tools import tool
 
-from deepagents_code.extensions.hosting import (
-    ExtensionRuntimeMiddleware,
-    bind_runtime_host_policy,
-    validate_backend_route,
-)
+from deepagents_code.extensions.hosting import validate_backend_route
 from deepagents_code.extensions.registry import (
     ExtensionError,
-    ExtensionRegistry,
     RegisteredUnit,
     SourceInfo,
 )

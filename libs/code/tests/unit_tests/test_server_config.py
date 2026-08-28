@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -13,11 +13,6 @@ from deepagents_code._server_config import (
     ServerConfig,
     _interpreter_suppressed_by_sandbox,
     _normalize_path,
-    _read_env_bool,
-    _read_env_int,
-    _read_env_json,
-    _read_env_optional_bool,
-    _read_env_str,
 )
 
 if TYPE_CHECKING:

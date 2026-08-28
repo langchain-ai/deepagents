@@ -1,10 +1,7 @@
 """Unit tests for ranked config precedence and durable masking."""
 
-import os
-import subprocess
-import sys
 from pathlib import Path
-from typing import Any, Self, assert_type, cast
+from typing import Any, Self, cast
 
 import pytest
 
@@ -12,25 +9,17 @@ from deepagents_code.config_manifest import (
     ConfigOption,
     MergeStrategy,
     OptionKind,
-    get_config_options,
     get_option,
 )
-from deepagents_code.configuration.provider import CliProvider, ConfigProvider
-from deepagents_code.configuration.providers import (
-    DefaultProvider,
-    EnvProvider,
-    TomlFileProvider,
-)
+from deepagents_code.configuration.providers import DefaultProvider, TomlFileProvider
 from deepagents_code.configuration.resolver import (
     CLI_RANK,
     DEFAULT_RANK,
     ENVIRONMENT_RANK,
     MANAGED_RANK,
-    RELOAD_RANK,
     USER_RANK,
     ConfigResolver,
     RankedProviderValue,
-    ResolvedValue,
     resolve_ranked,
     resolver_from_snapshots,
 )

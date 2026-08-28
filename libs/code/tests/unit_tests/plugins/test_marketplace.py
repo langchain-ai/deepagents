@@ -10,24 +10,21 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_code.plugins._json import json_object, json_value
+from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     _download_marketplace,
     _HttpsOnlyRedirectHandler,
     _redact_url_credentials,
-    _root_for_marketplace_file,
     _run_git,
     materialize_plugin_source,
     parse_marketplace_source,
 )
 from deepagents_code.plugins.models import (
     GitSubdirectoryPluginSource,
-    LocalMarketplaceSource,
     LocalPluginSource,
     MarketplacePluginEntry,
     PluginMarketplace,
-    RepositoryMarketplaceSource,
     UrlMarketplaceSource,
 )
 

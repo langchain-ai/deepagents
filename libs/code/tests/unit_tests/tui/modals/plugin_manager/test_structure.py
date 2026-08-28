@@ -5,7 +5,6 @@ import contextlib
 import re
 import time
 from pathlib import Path
-from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,12 +26,10 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _status_lines,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
-    PluginTab,
     _ManagerState,
     _MarketplaceRow,
     _PluginRow,
 )
-from deepagents_code.tui.modals.plugin_manager.tabs import TAB_LABELS
 
 
 def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:

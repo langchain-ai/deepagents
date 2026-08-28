@@ -1,7 +1,6 @@
 """Tests for command-line argument parsing."""
 
 import argparse
-import asyncio
 import io
 import os
 import sys
@@ -832,28 +831,6 @@ class TestMaxTurnsArgument:
             cli_main()
         assert exc_info.value.code == 0
         assert mock_run.await_args.kwargs["max_turns"] == 5  # ty: ignore
-
-
-async def _raise_timeout_and_close(awaitable: object, **_kwargs: object) -> None:
-    """Close the mocked awaitable before simulating a timeout."""
-    close = getattr(awaitable, "close", None)
-    if callable(close):
-        close()
-    await asyncio.sleep(0)
-    raise TimeoutError
-
-
-def _wait_for_timeout(mock_wait_for: MagicMock) -> object:
-    """Extract the `timeout` arg from a mocked `asyncio.wait_for` call.
-
-    Handles both positional and keyword call styles so the assertion does not
-    depend on how production code passes the argument.
-    """
-    import inspect
-
-    call = mock_wait_for.call_args
-    bound = inspect.signature(asyncio.wait_for).bind(*call.args, **call.kwargs)
-    return bound.arguments["timeout"]
 
 
 class TestTimeoutArgument:

@@ -4,9 +4,7 @@ Covers clipboard detection, base64 encoding, and multimodal content.
 """
 
 import base64
-import io
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 from PIL import Image
 
@@ -16,9 +14,6 @@ from deepagents_code.media_utils import (
     VideoData,
     _detect_video_format,
     create_multimodal_content,
-    encode_to_base64,
-    get_clipboard_image,
-    get_image_from_path,
     get_video_from_path,
     is_media_path,
     strip_media_placeholders,

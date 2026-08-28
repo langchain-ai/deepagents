@@ -3,21 +3,9 @@
 from __future__ import annotations
 
 import pathlib
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-if TYPE_CHECKING:
-    import pytest
-
-from deepagents_code.editor import (
-    EDITOR_DISPLAY_NAME_MAX_LENGTH,
-    GUI_WAIT_FLAG,
-    VIM_EDITORS,
-    _prepare_command,
-    editor_display_name,
-    open_in_editor,
-    resolve_editor,
-)
+from deepagents_code.editor import open_in_editor
 
 
 class TestResolveEditor:

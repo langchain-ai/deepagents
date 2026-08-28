@@ -9,11 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from deepagents_code.formatting import (
-    format_duration,
-    format_message_timestamp,
-    uses_24_hour_clock,
-)
+from deepagents_code.formatting import format_message_timestamp, uses_24_hour_clock
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

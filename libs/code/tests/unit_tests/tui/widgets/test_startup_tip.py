@@ -1,21 +1,10 @@
 """Unit tests for the startup tip widget."""
 
-from unittest.mock import patch
-
 import pytest
 from textual.content import Content
 
 from deepagents_code._env_vars import HIDE_SPLASH_TIPS
-from deepagents_code.tui.widgets.startup_tip import (
-    _TIP_EXTERNAL_EDITOR,
-    _TIP_SHIFT_TAB_WITH_YOLO,
-    _TIP_SHIFT_TAB_WITHOUT_YOLO,
-    _TIPS,
-    StartupTip,
-    _active_tips,
-    _pick_tip,
-    show_startup_tip,
-)
+from deepagents_code.tui.widgets.startup_tip import _TIPS, StartupTip, show_startup_tip
 
 _PICK_TIP = "deepagents_code.tui.widgets.startup_tip._pick_tip"
 _CHOICES = "deepagents_code.tui.widgets.startup_tip.random.choices"

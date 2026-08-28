@@ -19,7 +19,6 @@ from deepagents_code._debug import (
     bind_debug_logging_to_thread,
     configure_debug_logging,
     installed_debug_log_path,
-    resolve_log_level,
 )
 
 

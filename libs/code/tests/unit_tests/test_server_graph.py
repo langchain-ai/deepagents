@@ -5,9 +5,7 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-import threading
 from types import ModuleType, SimpleNamespace
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest

@@ -2,34 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
 import html
 from typing import TYPE_CHECKING
 
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
-from textual.color import Color
 from textual.containers import Container
 from textual.widgets import Static
 from textual.widgets.text_area import Selection
 
-from deepagents_code import _textual_patches as _textual_patches, theme
-from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.input import MediaTracker
-from deepagents_code.media_utils import ImageData, create_multimodal_content
+from deepagents_code.media_utils import create_multimodal_content
 from deepagents_code.tui.widgets import (
     _paste_textarea as paste_textarea_module,
     chat_input as chat_input_module,
 )
-from deepagents_code.tui.widgets.autocomplete import MAX_SUGGESTIONS
 from deepagents_code.tui.widgets.chat_input import (
-    _CHAT_INPUT_AUTO_MAX_HEIGHT,
     _CHAT_INPUT_MANUAL_MAX_HEIGHT,
     _CHAT_INPUT_RESERVED_SCREEN_ROWS,
-    _COMPLETION_POPUP_MAX_HEIGHT,
     ChatInput,
-    ChatInputBox,
     ChatInputResizeHandle,
     ChatTextArea,
     CompletionOption,
@@ -203,23 +195,6 @@ class _RecordingApp(App[None]):
         self.submitted.append(event)
 
 
-def _capture_notifications(
-    monkeypatch: pytest.MonkeyPatch, app: App[None]
-) -> list[tuple[str, dict[str, object]]]:
-    """Patch ``app.notify`` and return a list recording each call.
-
-    Each entry is ``(message, kwargs)`` so tests can assert both the toast
-    text and the notification options (e.g. ``markup``, ``timeout``).
-    """
-    calls: list[tuple[str, dict[str, object]]] = []
-
-    def _record(message: str, *_args: object, **kwargs: object) -> None:
-        calls.append((str(message), kwargs))
-
-    monkeypatch.setattr(app, "notify", _record)
-    return calls
-
-
 async def _noop() -> None:
     pass
 
@@ -341,16 +316,6 @@ async def _pause_for_strip(pilot: Pilot[None]) -> None:
     """Wait two frames so the prefix-strip text-change event propagates."""
     await pilot.pause()
     await pilot.pause()
-
-
-def _prompt_text(prompt: Static) -> str:
-    """Read the current text content of a Static widget."""
-    return str(prompt._Static__content)  # ty: ignore  # accessing internal content store
-
-
-def _render_text_area_line(text_area: ChatTextArea, y: int = 0) -> str:
-    """Render a text-area line and trim widget padding for assertions."""
-    return text_area.render_line(y).text.rstrip()
 
 
 class TestPromptIndicator:
@@ -1076,17 +1041,6 @@ class TestDroppedImagePaste:
             assert app.submitted[0].value == "[image 1]"
             assert app.submitted[0].mode == "normal"
             assert len(app.tracker.get_images()) == 1
-
-
-def _make_mp4_bytes() -> bytes:
-    """Return minimal valid MP4 ftyp box bytes."""
-    return (
-        b"\x00\x00\x00\x14"  # box size (20 bytes)
-        b"ftyp"  # box type
-        b"mp42"  # major brand
-        b"\x00\x00\x00\x00"  # minor version
-        b"mp42"  # compatible brand
-    )
 
 
 class TestDroppedVideoPaste:

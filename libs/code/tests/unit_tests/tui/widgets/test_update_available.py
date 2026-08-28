@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
-
-import pytest
 from textual.app import App
 
 from deepagents_code.notifications import (
@@ -13,10 +10,7 @@ from deepagents_code.notifications import (
     PendingNotification,
     UpdateAvailablePayload,
 )
-from deepagents_code.tui.widgets.update_available import (
-    UpdateAvailableScreen,
-    _ChangelogOption,
-)
+from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
 
 def _update_entry() -> PendingNotification:

@@ -7,12 +7,9 @@ import pytest
 from deepagents_code.input import (
     ParsedPastedPathPayload,
     dropped_payload_paths,
-    extract_leading_pasted_file_path,
-    normalize_pasted_path,
     parse_file_mentions,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
-    parse_single_pasted_file_path,
 )
 
 

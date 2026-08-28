@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
     import pytest
 
-    from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
+    from deepagents_code.hooks.presenter import HookPresenter
 
 
 def _write_project_hooks(root: Path) -> Path:

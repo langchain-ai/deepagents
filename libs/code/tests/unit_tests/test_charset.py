@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import os
-import sys
-from dataclasses import fields
 from typing import TYPE_CHECKING
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-from deepagents_code._env_vars import HIDE_SPLASH_VERSION
+from dataclasses import fields
+
 from deepagents_code.config import (
     _ASCII_BANNER,
     _UNICODE_BANNER,
@@ -21,7 +20,6 @@ from deepagents_code.config import (
     UNICODE_GLYPHS,
     CharsetMode,
     Glyphs,
-    __version__,
     _detect_charset_mode,
     get_banner,
     get_glyphs,

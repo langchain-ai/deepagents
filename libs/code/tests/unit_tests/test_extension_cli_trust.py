@@ -1,19 +1,12 @@
 """Tests for interactive project-extension trust."""
 
-from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.extensions.settings import ExtensionSettings, TrustPolicy
-from deepagents_code.main import (
-    _check_project_extensions_trust,
-    _TrustAction,
-    _TrustPromptOutcome,
-    parse_args,
-)
+from deepagents_code.main import _check_project_extensions_trust, parse_args
 
 
 @pytest.fixture(autouse=True)

@@ -9,16 +9,13 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event, Lock
-from types import MethodType, SimpleNamespace
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from deepagents.backends.protocol import FileDownloadResponse, WriteResult
-from langchain.agents.middleware.types import ModelRequest
-from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage
-from langgraph.runtime import Runtime
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.config import MODEL_RETRIES_ATTR
@@ -27,9 +24,6 @@ from deepagents_code.offload_middleware import (
     CLICompactionMiddleware,
     _ArchiveReadGuard,
     _install_lazy_summary_model,
-    _install_summary_model_retries,
-    _install_summary_token_counter,
-    _install_summary_trim_limit,
     _require_helper_slot,
     _RetryingModelInvoker,
     _runtime_model_config,
@@ -39,8 +33,6 @@ from deepagents_code.offload_middleware import (
 _NO_BACKOFF = "deepagents_code.model_retry._retry_delay_seconds"
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from deepagents.backends.protocol import BackendProtocol
     from langchain_core.messages import AnyMessage
 

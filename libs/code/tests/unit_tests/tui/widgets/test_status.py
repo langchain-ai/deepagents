@@ -7,18 +7,13 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
-from textual.content import Content
-from textual.geometry import Offset, Size
+from textual.geometry import Offset
 from textual.widgets import Static
 
-from deepagents_code import theme
-from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
+from deepagents_code._env_vars import HIDE_CWD
 from deepagents_code.config import ASCII_GLYPHS, reset_glyphs_cache
 from deepagents_code.tui.widgets.status import (
-    _PICKER_ACTIONS,
-    _PICKER_STYLES,
     _PICKER_TARGET_META,
-    PICKER_TARGETS,
     BranchLabel,
     ModelLabel,
     StatusBar,

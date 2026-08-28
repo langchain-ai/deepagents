@@ -2,17 +2,10 @@
 
 from __future__ import annotations
 
-import argparse
-import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
-from deepagents_code.client.commands.extras import (
-    run_install_command,
-    run_install_request,
-)
+from deepagents_code.client.commands.extras import run_install_request
 from deepagents_code.update_check import (
     UPDATE_LOCK_CONTENDED_MESSAGE,
     ExtraInstallOutcome,

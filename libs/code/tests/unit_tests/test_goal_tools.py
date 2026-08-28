@@ -1,15 +1,11 @@
 """Unit tests for goal tools middleware."""
 
-import json
-import logging
 from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import pytest
-from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
 
 from deepagents_code.goal_state_limits import (
@@ -23,11 +19,7 @@ from deepagents_code.goal_state_notice import (
     goal_state_fingerprint,
     goal_state_notice_info,
 )
-from deepagents_code.goal_tools import (
-    GoalToolsMiddleware,
-    GoalToolState,
-    _update_goal_command,
-)
+from deepagents_code.goal_tools import GoalToolsMiddleware, _update_goal_command
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.types import AgentState

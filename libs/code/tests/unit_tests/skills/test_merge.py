@@ -3,18 +3,15 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 
 from deepagents.backends.filesystem import FilesystemBackend
 
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
-from deepagents_code.skills.load import list_skills
-from deepagents_code.skills.merge import merge_skill
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
 
 _MERGE_LOGGER = "deepagents_code.skills.merge"
 
@@ -28,24 +25,6 @@ description: {description}
 ---
 Content
 """)
-
-
-def _override_records(
-    caplog: pytest.LogCaptureFixture, level: int = logging.DEBUG
-) -> list[logging.LogRecord]:
-    """Return the merge-helper override records emitted at exactly `level`."""
-    return [
-        record
-        for record in caplog.records
-        if record.name == _MERGE_LOGGER and record.levelno == level
-    ]
-
-
-def _args(record: logging.LogRecord) -> tuple[object, ...]:
-    """Return a record's positional log args, asserting they form a tuple."""
-    args = record.args
-    assert isinstance(args, tuple)
-    return args
 
 
 class TestMergeSkillHelper:

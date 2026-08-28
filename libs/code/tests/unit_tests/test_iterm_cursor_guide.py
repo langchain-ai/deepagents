@@ -3,25 +3,16 @@
 from __future__ import annotations
 
 import io
-import os
-from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
-from textual.app import App
-
 from deepagents_code import iterm_cursor_guide
-from deepagents_code.app import DeepAgentsApp
 from deepagents_code.iterm_cursor_guide import (
     _ITERM_CURSOR_GUIDE_OFF,
     _ITERM_CURSOR_GUIDE_ON,
     _disable_iterm_cursor_guide,
-    _iterm_profile_cursor_guide_enabled,
     _write_iterm_escape,
     restore_iterm_cursor_guide,
 )
-
-if TYPE_CHECKING:
-    import pytest
 
 
 class TestITerm2CursorGuide:

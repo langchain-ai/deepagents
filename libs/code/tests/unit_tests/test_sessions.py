@@ -1,15 +1,11 @@
 """Tests for session/thread management."""
 
 import asyncio
-import gc
 import json
 import sqlite3
-import threading
-import uuid
-import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, ClassVar, cast
+from typing import TYPE_CHECKING, ClassVar, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -17,7 +13,6 @@ from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from deepagents_code import sessions
 from deepagents_code.app import TextualSessionState
-from deepagents_code.sessions import get_thread_limit
 
 if TYPE_CHECKING:
     import aiosqlite

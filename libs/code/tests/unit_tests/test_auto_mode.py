@@ -11,7 +11,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Literal, cast, get_type_hints
+from typing import TYPE_CHECKING, Any, Literal, cast
 from unittest.mock import patch
 from uuid import uuid4
 
@@ -20,7 +20,6 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
-    PrivateStateAttr,
     ToolCallRequest,
 )
 from langchain.tools import ToolRuntime
@@ -35,9 +34,6 @@ from langchain_core.messages import (
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from langchain_core.tools import StructuredTool, tool
-from langgraph.channels import BinaryOperatorAggregate
-from langgraph.errors import GraphInterrupt
-from langgraph.graph import StateGraph
 from langgraph.runtime import ExecutionInfo
 from langgraph.types import Command
 from langsmith import tracing_context
@@ -57,11 +53,6 @@ from deepagents_code.approval_mode import (
     approval_mode_key,
 )
 from deepagents_code.auto_mode import (
-    _CLASSIFIER_POLICY,
-    _CLASSIFIER_RETRY_DELAY_FRACTION,
-    _MAX_CLASSIFIER_MODEL_CACHE,
-    _MAX_EMITTED_EVENT_SCOPES,
-    _MAX_PENDING_EVENT_SCOPES,
     _REASON_LIMIT,
     AUTO_DENIED_METADATA_KEY,
     AUTO_MODE_COUNTERS_NAMESPACE,
@@ -70,8 +61,6 @@ from deepagents_code.auto_mode import (
     AutoDecisionBatch,
     AutoDecisionCategory,
     AutoModeHITLMiddleware,
-    AutoModeState,
-    HeadlessMCPGuardMiddleware,
     _active_user_directives,
     _ask_user_question_count,
     _batch_id,
@@ -84,12 +73,9 @@ from deepagents_code.auto_mode import (
     _routine_write_allowed,
     _unresolvable_write_path_reason,
     classifier_unavailable_reason,
-    gated_mcp_tool_names,
-    mcp_tool_is_coherently_read_only,
     sanitize_auto_reason,
     user_prompt_metadata,
 )
-from deepagents_code.config import MODEL_RETRIES_ATTR
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig

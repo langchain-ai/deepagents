@@ -3,35 +3,25 @@ r"""Tests for the Debug Console modal and its `Ctrl+\` / `/debug` toggle."""
 from __future__ import annotations
 
 import logging
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Checkbox, Select, Static
-from textual.widgets._select import SelectOverlay
 
 import deepagents_code.tui.widgets.debug_console as debug_console_mod
 from deepagents_code._debug_buffer import InMemoryLogRecord, get_log_buffer
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.tui.widgets._copy_spans import COPY_LABEL_META, COPY_TEXT_META
 from deepagents_code.tui.widgets.debug_console import (
     DebugConsoleScreen,
     SnapshotField,
     _DebugLogView,
-    _record_matches_filter,
-)
-from deepagents_code.tui.widgets.message_store import (
-    MessageData,
-    MessageStore,
-    MessageType,
 )
 
 if TYPE_CHECKING:
     import pytest
 
-    from deepagents_code.tui.widgets.debug_console import FilterValue
 
 logger = logging.getLogger("deepagents_code._test_console")
 

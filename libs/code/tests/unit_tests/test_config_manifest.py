@@ -9,10 +9,8 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import tomllib
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -26,26 +24,16 @@ from deepagents_code.client.commands.config import (
     run_config_command,
 )
 from deepagents_code.config_manifest import (
-    CURSOR_STYLE_DEFAULT,
-    NON_OPTION_ENV_VARS,
     ConfigOption,
     OptionKind,
-    _emit_ranked_diagnostics,
-    _ranked_source,
     get_config_options,
     get_option,
-    is_provider_package_installed,
-    load_bool_display_preference,
-    option_keys,
     options_with_key_prefix,
-    provider_install_extra,
-    provider_package_name,
 )
 from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
-from unit_tests.conftest import redirect_managed_config, resolve_option_for_test
+from unit_tests.conftest import resolve_option_for_test
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from pathlib import Path
 
 # Most unit tests set `DEEPAGENTS_CODE_NO_UPDATE_CHECK=1` to avoid accidental
@@ -69,17 +57,6 @@ def _resolve_manifest_option(
     return resolve_option_for_test(
         option, toml_data=toml_data, managed_toml_data=managed_toml_data
     )
-
-
-def _declared_deepagents_env_vars() -> set[str]:
-    """Every `DEEPAGENTS_CODE_*` constant declared in `_env_vars`."""
-    return {
-        value
-        for name, value in vars(_env_vars).items()
-        if not name.startswith("_")
-        and isinstance(value, str)
-        and value.startswith("DEEPAGENTS_CODE_")
-    }
 
 
 # --- Drift / coverage -------------------------------------------------------
@@ -1318,15 +1295,6 @@ def _get_json_object(
     """Return the single-option `config get --json` payload for `key`."""
     data = _get_json_data(key, capsys, verbose=verbose)
     assert isinstance(data, dict)
-    return data
-
-
-def _get_json_rows(
-    key: str, capsys: pytest.CaptureFixture[str], *, verbose: bool = False
-) -> list[dict[str, Any]]:
-    """Return the section `config get --json` rows for `key`."""
-    data = _get_json_data(key, capsys, verbose=verbose)
-    assert isinstance(data, list)
     return data
 
 

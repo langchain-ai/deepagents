@@ -3,33 +3,21 @@
 from __future__ import annotations
 
 import logging
-from io import StringIO
-from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
-from rich.console import Console
 
 from deepagents_code._session_stats import (
     ModelStats,
     RecordedRequest,
     SessionStats,
     UsageLedgerKey,
-    classify_usage_kind,
     finalize_recorded_requests,
-    format_cost,
-    format_cost_estimate,
-    format_token_count,
-    print_usage_table,
     record_message_usage,
     record_model_usage_event,
     usage_table_enabled,
 )
 from deepagents_code.cost_tracking import MODEL_USAGE_EVENT_VERSION
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 
 class TestFormatCost:

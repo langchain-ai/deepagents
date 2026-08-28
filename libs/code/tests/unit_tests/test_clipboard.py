@@ -10,7 +10,6 @@ from __future__ import annotations
 import base64
 import io
 import logging
-import sys
 from typing import TYPE_CHECKING, Self
 from unittest.mock import MagicMock, patch
 
@@ -18,13 +17,7 @@ from textual.app import App, ComposeResult
 from textual.screen import ModalScreen
 from textual.widgets import Static
 
-from deepagents_code.clipboard import (
-    _copy_osc52,
-    copy_selection_to_clipboard,
-    copy_text_to_clipboard,
-    copy_text_with_feedback,
-    logger as clipboard_logger,
-)
+from deepagents_code.clipboard import _copy_osc52, copy_selection_to_clipboard
 
 if TYPE_CHECKING:
     from textual.pilot import Pilot

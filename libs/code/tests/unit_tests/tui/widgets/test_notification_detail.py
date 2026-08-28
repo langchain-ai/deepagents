@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from textual.app import App
 
 from deepagents_code.notifications import (
@@ -11,10 +10,7 @@ from deepagents_code.notifications import (
     NotificationAction,
     PendingNotification,
 )
-from deepagents_code.tui.widgets.notification_detail import (
-    NotificationDetailScreen,
-    _ActionOption,
-)
+from deepagents_code.tui.widgets.notification_detail import NotificationDetailScreen
 
 
 def _dep_entry() -> PendingNotification:

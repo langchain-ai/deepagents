@@ -1,20 +1,16 @@
 """Tests for resume-state persistence and token display callbacks."""
 
-from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast, get_type_hints
+from typing import Any
 
 import pytest
-from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._session_stats import SessionStats
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.resume_state import (
-    ResumeState,
     ResumeStateMiddleware,
     _extract_context_tokens,
-    coerce_goal_proposal_kind,
     coerce_goal_status,
     coerce_model_spec,
 )

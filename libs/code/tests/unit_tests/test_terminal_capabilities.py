@@ -3,17 +3,10 @@
 from __future__ import annotations
 
 import contextlib
-import os
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 from deepagents_code import terminal_capabilities
-from deepagents_code._env_vars import KITTY_KEYBOARD
-from deepagents_code.terminal_capabilities import (
-    _override_supports_kitty_keyboard_protocol,
-    _terminal_identity_supports_kitty_keyboard_protocol,
-    supports_kitty_keyboard_protocol,
-)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

@@ -16,35 +16,28 @@ import sysconfig
 import tempfile
 import threading
 import time
-import tomllib
 from collections.abc import Iterator, Mapping, Sequence  # noqa: TC003
 from contextlib import contextmanager, nullcontext
 from itertools import starmap
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from packaging.version import InvalidVersion, Version
 
 from deepagents_code import _paths, update_check
 from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
-    INSTALLED_STALE_NOTICE_DAYS,
-    DependencyChange,
     ExtraInstallOutcome,
     InstallMethod,
     ShadowedDcode,
     ToolRequirementIntrospectionError,
     _extract_release_times,
     _install_extra_uv_tool_command,
-    _latest_from_releases,
     _note_install_baseline,
-    _parse_version,
     _prerelease_constraints_file,
     _prerelease_pin_requirements,
-    _run_install_subprocess,
     _terminate_install_process,
     _uv_tool_bin_dir,
     _write_release_prerelease_pins,
@@ -52,25 +45,10 @@ from deepagents_code.update_check import (
     cleanup_update_logs,
     clear_resume_auto_update_deferral,
     clear_startup_auto_update_failure,
-    clear_update_notified,
-    create_update_log_file,
-    create_update_log_path,
-    dependency_refresh_command,
     dependency_refresh_dry_run_command,
-    dependency_refresh_supported,
-    detect_install_method,
     detect_shadowed_dcode,
-    detect_shadowed_dcode_safe,
     editable_extra_hint,
-    editable_package_hint,
-    format_age_suffix,
-    format_dependency_changes,
-    format_installed_age_suffix,
     format_log_follow_command,
-    format_release_age,
-    format_release_age_parenthetical,
-    format_sdk_age_suffix,
-    format_sdk_release_age,
     format_shadowed_dcode_fix_command,
     format_shadowed_dcode_warning,
     get_cached_update_available,
@@ -83,7 +61,6 @@ from deepagents_code.update_check import (
     install_extra_recovery_command,
     install_extras_command,
     install_package_command,
-    installed_days_old,
     is_auto_update_enabled,
     is_auto_update_explicitly_set,
     is_installation_stale,
@@ -91,30 +68,23 @@ from deepagents_code.update_check import (
     is_update_available,
     is_update_cache_fresh,
     is_update_check_enabled,
-    is_valid_extra_name,
     is_valid_package_name,
     mark_auto_update_default_acknowledged,
     mark_startup_auto_update_failed,
     mark_update_notified,
     mark_version_seen,
-    parse_dependency_changes,
-    perform_dependency_refresh,
-    perform_dependency_refresh_dry_run,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
-    prerelease_upgrade_supported,
     read_installed_distribution_version,
     release_prerelease_pins,
     release_requires_prereleases,
     safe_install_extra_recovery_command,
-    set_auto_update,
     should_announce_auto_update_default,
     should_defer_startup_auto_update_for_resume,
     should_notify_update,
     should_skip_startup_auto_update_after_failure,
     update_install_lock,
-    upgrade_command,
     upgrade_install_command,
 )
 from unit_tests.conftest import redirect_managed_config
@@ -822,25 +792,6 @@ class TestGetReleaseTime:
         """Unparseable cache contents return `None` without raising."""
         cache_file.write_text("{not valid json")
         assert get_release_time("1.0.0") is None
-
-
-def _write_installed_release_time(
-    cache_file: Path, *, days_ago: int, latest_version: str | None = None
-) -> None:
-    """Seed the cache with a release time for the running version."""
-    from datetime import UTC, datetime, timedelta
-
-    iso = (datetime.now(tz=UTC) - timedelta(days=days_ago)).isoformat()
-    data: dict[str, object] = {
-        "release_times": {__version__: iso},
-        "checked_at": time.time(),
-    }
-    if latest_version is not None:
-        data["version"] = latest_version
-    cache_file.write_text(
-        json.dumps(data),
-        encoding="utf-8",
-    )
 
 
 class TestIsInstallationStale:

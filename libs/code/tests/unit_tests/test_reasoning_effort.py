@@ -5,28 +5,19 @@ Support data comes from LangChain model profiles, so most tests mock
 """
 
 import logging
-from collections.abc import Coroutine, Iterator
-from contextlib import AbstractContextManager
+from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import AsyncMock, Mock, call, patch
+from unittest.mock import AsyncMock
 
 import pytest
 from textual.app import App
-from textual.widgets import OptionList
 
 from deepagents_code import model_config, reasoning_effort
 from deepagents_code.app import DeepAgentsApp
-from deepagents_code.command_registry import COMMANDS
 from deepagents_code.config import runtime_state
-from deepagents_code.model_config import ModelProfileEntry
 from deepagents_code.reasoning_effort import (
     current_effort_from_model_params,
-    default_effort_for_model,
     has_explicit_effort_model_params,
-    is_effort_supported_for_model,
-    supported_efforts_for_model,
-    with_effort_model_params,
-    without_effort_model_params,
 )
 from deepagents_code.tui.widgets.effort_selector import EffortSelectorScreen
 from deepagents_code.tui.widgets.messages import ErrorMessage
@@ -45,17 +36,6 @@ def _restore_runtime_state(
     runtime_state.model_name = original_name
     runtime_state.model_provider = original_provider
     model_config.clear_caches()
-
-
-def _profile_entry(**profile: object) -> ModelProfileEntry:
-    return ModelProfileEntry(profile=dict(profile), overridden_keys=frozenset())
-
-
-def _mock_profiles(
-    mapping: dict[str, ModelProfileEntry],
-) -> AbstractContextManager[Mock]:
-    """Patch `get_model_profiles` to return a fixed, hermetic mapping."""
-    return patch.object(reasoning_effort, "get_model_profiles", return_value=mapping)
 
 
 # Reading logic (mocked profiles, provider-agnostic)

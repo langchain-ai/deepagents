@@ -13,7 +13,6 @@ import dotenv as _dotenv_module
 import pytest
 
 from deepagents_code import _env_vars
-from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.config import Credentials, runtime_state
 from deepagents_code.skills.load import ExtendedSkillMetadata
 

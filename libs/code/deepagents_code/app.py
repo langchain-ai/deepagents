@@ -29227,6 +29227,7 @@ class DeepAgentsApp(App):
 
     async def _show_summarization_model_selector(self) -> None:
         """Open the model selector for choosing the summarization model."""
+        from deepagents_code.config import detect_provider
         from deepagents_code.model_config import ModelSpec
         from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
 
@@ -29234,6 +29235,11 @@ class DeepAgentsApp(App):
         if current_spec in {None, INHERIT_SUMMARIZATION_MODEL}:
             current_spec = self._effective_model_spec()
         parsed = ModelSpec.try_parse(current_spec) if current_spec else None
+        current_provider = parsed.provider if parsed else None
+        current_model = parsed.model if parsed else None
+        if current_spec and parsed is None:
+            current_provider = detect_provider(current_spec)
+            current_model = current_spec if current_provider else None
 
         def handle_result(result: tuple[str, str] | None) -> None:
             if result is None:
@@ -29258,8 +29264,8 @@ class DeepAgentsApp(App):
             self.call_after_refresh(start_selection_worker)
 
         screen = ModelSelectorScreen(
-            current_model=parsed.model if parsed else None,
-            current_provider=parsed.provider if parsed else None,
+            current_model=current_model,
+            current_provider=current_provider,
             cli_profile_override=self._profile_override,
             title="Choose the summarization model",
             description=(

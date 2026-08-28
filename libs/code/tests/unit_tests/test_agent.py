@@ -1,6 +1,7 @@
 """Unit tests for agent formatting functions."""
 
 import asyncio
+import logging
 import sys
 import warnings
 from collections.abc import Iterator, Mapping
@@ -999,7 +1000,7 @@ def test_format_delete_description() -> None:
 
 
 def test_format_execute_description_prefers_workspace_binding() -> None:
-    """The approval prompt shows the run's workspace instead of the server CWD."""
+    """The prompt shows the run's workspace, not the server CWD (dict context)."""
     tool_call = cast(
         "ToolCall",
         {"name": "execute", "args": {"command": "pwd"}, "id": "call-6"},
@@ -1023,7 +1024,11 @@ def test_format_execute_description_prefers_workspace_binding() -> None:
 
 
 def test_format_execute_description_varies_by_workspace_binding() -> None:
-    """One server formats each run with its own bound working directory."""
+    """Each run formats with its own bound working directory (typed context).
+
+    One server process hosts several bound workspaces, so a per-run value is
+    the property under test.
+    """
     tool_call = cast(
         "ToolCall",
         {"name": "execute", "args": {"command": "pwd"}, "id": "call-7"},
@@ -1049,6 +1054,8 @@ def test_format_execute_description_varies_by_workspace_binding() -> None:
 
     assert "Working Directory: /workspace/thread-a" in descriptions[0]
     assert "Working Directory: /workspace/thread-b" in descriptions[1]
+    assert "/workspace/server" not in descriptions[0]
+    assert "/workspace/server" not in descriptions[1]
 
 
 def test_format_execute_description_sanitizes_workspace_binding() -> None:
@@ -1104,7 +1111,58 @@ def test_format_execute_description_without_workspace_uses_existing_fallback(
         )
 
     assert "Working Directory: /workspace/server" in server_description
-    assert f"Working Directory: {tmp_path}" in process_description
+    assert f"Working Directory: {tmp_path.resolve()}" in process_description
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        pytest.param({"workspace": "not-a-dict"}, id="workspace-not-a-mapping"),
+        pytest.param({"workspace": ["cwd"]}, id="workspace-is-a-list"),
+        pytest.param({"workspace": {"cwd": ""}}, id="cwd-empty"),
+        pytest.param({"workspace": {"cwd": None}}, id="cwd-none"),
+        pytest.param({"workspace": {"cwd": 7}}, id="cwd-not-a-string"),
+        pytest.param({"workspace": {"working_dir": "/x"}}, id="cwd-key-renamed"),
+        pytest.param(None, id="context-absent"),
+        pytest.param("not-a-context", id="context-wrong-type"),
+    ],
+)
+def test_format_execute_description_falls_back_on_malformed_workspace(
+    context: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A malformed workspace falls back to the server CWD and says so.
+
+    Reaching this path means an upstream invariant broke, so the prompt must
+    not render a blank or fabricated directory without a warning.
+    """
+    tool_call = cast(
+        "ToolCall",
+        {"name": "execute", "args": {"command": "pwd"}, "id": "call-10"},
+    )
+    runtime = cast("Runtime[Any]", SimpleNamespace(context=context))
+    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
+
+    with (
+        patch(
+            "deepagents_code.agent.get_server_project_context",
+            return_value=server_context,
+        ),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.agent"),
+    ):
+        description = _format_execute_description(
+            tool_call, cast("AgentState[Any]", None), runtime
+        )
+
+    assert "Working Directory: /workspace/server" in description
+    assert "no bound workspace cwd" in caplog.text
+
+
+def test_add_interrupt_on_gates_execute() -> None:
+    """The approval prompt for execute is rendered by the workspace formatter."""
+    interrupt_map = _add_interrupt_on()
+
+    assert "execute" in interrupt_map
+    assert interrupt_map["execute"]["description"] is _format_execute_description
 
 
 def test_add_interrupt_on_gates_only_non_read_only_mcp_tools() -> None:

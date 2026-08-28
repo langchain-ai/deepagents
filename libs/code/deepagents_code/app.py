@@ -28251,7 +28251,14 @@ class DeepAgentsApp(App):
         return state_has_pending_work(await self._get_thread_state(self._lc_thread_id))
 
     async def _cancel_pending_work_and_compact(self) -> None:
-        """Discard a confirmed stale step, then compact the preserved thread."""
+        """Discard a confirmed stale step, then compact the preserved thread.
+
+        Holds the agent-running reservation across the whole recovery so the
+        checkpoint cannot be written from under it, and hands the reservation
+        to `_handle_offload`, which releases it. Releasing here too is
+        redundant but harmless -- `_set_agent_running` is idempotent -- and it
+        is what covers the paths that never reach the offload.
+        """
         self._set_agent_running(True)
         try:
             await self._cancel_pending_work_and_compact_impl()

@@ -1,0 +1,49 @@
+.release-please-manifest.json
+  s_77d05958005819::t_cae2c9560bb826 4
+AGENTS.md
+  s_77d05958005819::t_b32c464d524193 84
+libs/code/CHANGELOG.md
+  s_77d05958005819::t_8bf7edd74b11b4 5-23
+libs/code/deepagents_code/_version.py
+  s_77d05958005819::t_4036769fef3feb 5
+libs/code/deepagents_code/agent.py
+  s_77d05958005819::t_93800b455cac94 51,149-159,3256-3261
+libs/code/deepagents_code/app.py
+  s_77d05958005819::t_735b79cc0b7408 27670-27676
+libs/code/deepagents_code/auto_mode.py
+  s_77d05958005819::t_e5daffb49a022a 1670-1680,1684-1686,1688,1692-1726,2284,2289-2304,2589-2655,2812-2831
+libs/code/deepagents_code/mcp_tools.py
+  s_77d05958005819::t_08a4d7d0639ace 30,59-63,1490-1491,1504-1511,1516,1521-1531,1533-1539,1542-1543,1546-1547,1550,1552-1582,1635-1638,1640-1643,1653-1658
+libs/code/pyproject.toml
+  s_77d05958005819::t_a805cef5b6df0e 7
+libs/code/tests/unit_tests/test_agent.py
+  s_77d05958005819::t_f0a17fb097748e 3376-3384,3386-3387,3390-3484
+libs/code/tests/unit_tests/test_app.py
+  s_77d05958005819::t_30ce6b906fa4be 36917,37497
+libs/code/tests/unit_tests/test_auto_mode.py
+  s_77d05958005819::t_9f13a7869f61f9 16,43,65,84-85,1312-1460,4704-4801
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_77d05958005819::t_fd7e652805ea76 9,37,53,286-310,1091-1134,3359-3368
+libs/code/uv.lock
+  s_77d05958005819::t_4c2088e2744029 1106
+libs/evals/uv.lock
+  s_77d05958005819::t_e1eecaa5c38f5c 533
+libs/talon/uv.lock
+  s_77d05958005819::t_084f41d8787f0f 744
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "528a26a8745658a8261d2c01ee5a156c3d6b717b",
+  "prompts": {},
+  "sessions": {
+    "s_77d05958005819": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1e039ed4-c9a3-48b7-a104-b54aaf7e0ba8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

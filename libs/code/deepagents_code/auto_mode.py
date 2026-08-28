@@ -2816,17 +2816,22 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             Primary response with a private decision-plan state update.
         """
         await self._reconcile_routed_plan(request)
-        resolution = await _live_mode(request.runtime)
-        mode_tags, mode_metadata = _approval_mode_telemetry(request.runtime, resolution)
-        _attach_approval_mode_telemetry(mode_tags, mode_metadata)
+        trace_resolution = await _live_mode(request.runtime)
+        trace_tags, trace_metadata = _approval_mode_telemetry(
+            request.runtime, trace_resolution
+        )
+        _attach_approval_mode_telemetry(trace_tags, trace_metadata)
         from langsmith import tracing_context
         from langsmith.run_helpers import get_tracing_context
 
         current_trace = get_tracing_context()
-        trace_tags = sorted({*(current_trace.get("tags") or []), *mode_tags})
-        trace_metadata = {**(current_trace.get("metadata") or {}), **mode_metadata}
-        with tracing_context(tags=trace_tags, metadata=trace_metadata):
+        model_tags = sorted({*(current_trace.get("tags") or []), *trace_tags})
+        model_metadata = {**(current_trace.get("metadata") or {}), **trace_metadata}
+        with tracing_context(tags=model_tags, metadata=model_metadata):
             response = await handler(request)
+        resolution = await _live_mode(request.runtime)
+        mode_tags, mode_metadata = _approval_mode_telemetry(request.runtime, resolution)
+        _attach_approval_mode_telemetry(mode_tags, mode_metadata)
         ai_message = next(
             (
                 message

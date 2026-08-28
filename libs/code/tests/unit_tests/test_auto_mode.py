@@ -2171,6 +2171,47 @@ async def test_effective_approval_mode_reaches_model_metadata_and_plan(
     assert plan["approval_mode_tags"] == []
 
 
+async def test_mode_switch_during_model_call_uses_latest_mode_for_plan(
+    tmp_path: Path,
+) -> None:
+    middleware = _middleware(tmp_path)
+    request, store, key = _request(
+        tmp_path,
+        model=_FailIfClassifiedModel(),
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    async def handler(_request: ModelRequest) -> ModelResponse:
+        await asyncio.sleep(0)
+        store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "manual"})
+        return ModelResponse(
+            result=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "delete",
+                            "args": {"file_path": "old.py"},
+                            "id": "call-1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            ]
+        )
+
+    response = await middleware.awrap_model_call(request, handler)
+
+    assert isinstance(response, ExtendedModelResponse)
+    assert response.command is not None
+    update = cast("dict[str, Any]", response.command.update)
+    plan = update["_auto_decision_plan"]
+    assert plan["mode_at_proposal"] == "manual"
+    assert plan["effective_approval_mode"] == "manual"
+    assert plan["decisions"] == []
+
+
 async def test_approval_mode_mismatch_is_tagged_and_logged(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

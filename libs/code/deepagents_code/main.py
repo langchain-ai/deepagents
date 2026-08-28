@@ -2448,6 +2448,20 @@ def parse_args() -> argparse.Namespace:
         help="Skip interactive confirmation prompts",
     )
 
+    uninstall_parser = subparsers.add_parser(
+        "uninstall",
+        help="Remove an installed optional extra",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_uninstall_help")),
+    )
+    uninstall_parser.add_argument(
+        "uninstall_target",
+        nargs="?",
+        default=None,
+        metavar="NAME",
+        help="Installed optional extra to remove",
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -2812,12 +2826,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Toggle automatic updates on or off, then exit",
     )
-    parser.add_argument(
+    extra_group = parser.add_mutually_exclusive_group()
+    extra_group.add_argument(
         "--install",
         metavar="NAME",
         help=(
             "Alias for `install NAME`. Install an optional extra "
             "(e.g. daytona, fireworks), then exit"
+        ),
+    )
+    extra_group.add_argument(
+        "--uninstall",
+        metavar="NAME",
+        help=(
+            "Alias for `uninstall NAME`. Remove an installed optional extra, then exit"
         ),
     )
     parser.add_argument(
@@ -2862,6 +2884,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    if args.package and (args.uninstall is not None or args.command == "uninstall"):
+        parser.error("--package cannot be used with uninstall")
+
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
     if (
@@ -5226,6 +5251,11 @@ def cli_main() -> None:
 
             sys.exit(run_install_command(args))
 
+        if command == "uninstall":
+            from deepagents_code.client.commands.extras import run_uninstall_command
+
+            sys.exit(run_uninstall_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -5827,6 +5857,11 @@ def cli_main() -> None:
                     f"Run manually: [cyan]{manual_cmd}[/cyan]"
                 )
                 sys.exit(1)
+
+        if args.uninstall is not None:
+            from deepagents_code.client.commands.extras import run_uninstall_request
+
+            sys.exit(run_uninstall_request(name=args.uninstall))
 
         if args.package and not args.install:
             console.print(

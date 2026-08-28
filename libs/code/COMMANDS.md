@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (44)
+## Public (45)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -53,6 +53,7 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/tokens` |  | Show token usage |
 | `/tools` |  | List the tools available to the agent |
 | `/trace` |  | Open this thread in LangSmith |
+| `/uninstall` |  | Remove an installed optional extra |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |
 | `/yolo` |  | Switch to YOLO approval mode (no review) |

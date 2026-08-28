@@ -15,6 +15,7 @@ from deepagents_code._session_stats import (
     ModelStats,
     RecordedRequest,
     SessionStats,
+    UsageLedgerKey,
     classify_usage_kind,
     finalize_recorded_requests,
     format_cost,
@@ -442,7 +443,7 @@ class TestRecordMessageUsage:
         delta and merges again, doubling the request's tokens and cost.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
 
         finalize_recorded_requests(ledger)
@@ -458,7 +459,7 @@ class TestRecordMessageUsage:
     def test_round_boundary_does_not_break_incremental_chunks(self) -> None:
         """Chunks within one round must still revise, not start a new request."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(stats, self._chunk(1_000, 60), recorded_requests=ledger)
         record_message_usage(stats, self._chunk(0, 40), recorded_requests=ledger)
@@ -474,7 +475,7 @@ class TestRecordMessageUsage:
         accumulator no longer has, so the status bar and `/cost` disagree.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         first = record_message_usage(
             stats,
             self._chunk(1_000, 60, names_model=False),
@@ -514,7 +515,7 @@ class TestRecordMessageUsage:
     def test_retracting_a_kind_s_only_request_drops_its_row(self) -> None:
         """An all-zero kind row would show as an empty line in the breakdown."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         record_message_usage(
             stats, self._chunk(1_000, 60), kind="subagent", recorded_requests=ledger
         )
@@ -534,7 +535,7 @@ class TestRecordMessageUsage:
         must survive too, so token counts cannot stand in for stream position.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         for output_tokens in (34, 33, 33):
             record_message_usage(
@@ -558,7 +559,7 @@ class TestRecordMessageUsage:
         fallback-model row and a real-model row in the breakdown.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(
             stats,
@@ -608,7 +609,7 @@ class TestRecordMessageUsage:
     def test_split_stream_costs_the_same_as_an_unsplit_one(self) -> None:
         """Chunking is a transport detail; it must not change the estimate."""
         split = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         for chunk in (
             self._chunk(1_000, 60, names_model=False),
             self._chunk(0, 40, names_model=True),
@@ -643,7 +644,7 @@ class TestRecordMessageUsage:
         would leave the token readout above the count the cost was based on.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(
             stats,
@@ -669,7 +670,7 @@ class TestRecordMessageUsage:
     def test_correction_only_chunk_still_revises_the_request(self) -> None:
         """A correction with no positive counts must not be discarded."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
         record_message_usage(stats, self._chunk(-200, 0), recorded_requests=ledger)
@@ -681,7 +682,7 @@ class TestRecordMessageUsage:
     def test_cached_token_details_survive_the_merge(self) -> None:
         """Cache buckets carry their own rates, so merging must keep them."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         for output_tokens in (60, 40):
             message = AIMessageChunk(
@@ -715,7 +716,7 @@ class TestRecordMessageUsage:
     def test_reports_message_delta_and_running_request_tokens(self) -> None:
         """Pricing needs a delta while context display needs the running total."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         first = record_message_usage(
             stats, self._chunk(1_000, 60), recorded_requests=ledger
@@ -738,7 +739,7 @@ class TestRecordMessageUsage:
     def test_completed_message_replay_is_recorded_once(self) -> None:
         """A resumed stream replays a completed message; it must not re-count."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         message = AIMessage(
             content="done",
             id="run-1",
@@ -760,7 +761,7 @@ class TestRecordMessageUsage:
     def test_completed_replay_after_chunks_is_not_added_on_top(self) -> None:
         """Chunks mark their ID so a later whole-message replay is skipped."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
         replay = record_message_usage(
@@ -784,7 +785,7 @@ class TestRecordMessageUsage:
     def test_usage_without_an_id_is_always_recorded(self) -> None:
         """Anthropic's usage-bearing chunk carries no ID, so it cannot dedupe."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         for _ in range(2):
             record_message_usage(
@@ -799,7 +800,7 @@ class TestRecordMessageUsage:
     def test_unusable_message_is_not_entered_in_the_ledger(self) -> None:
         """An unusable first pass must not suppress the real usage later."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         empty = AIMessage(
             content="",
             id="run-1",
@@ -850,6 +851,281 @@ class TestRecordMessageUsage:
         assert stats.request_count == 0
 
 
+class TestAttemptScopedUsage:
+    """Attempt-scoped dedupe for retries that reuse a provider message ID."""
+
+    @staticmethod
+    def _chunk(
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        names_model: bool = True,
+    ) -> AIMessageChunk:
+        return AIMessageChunk(
+            content="",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+            response_metadata=(
+                {"model_name": "gpt-5.5", "model_provider": "openai"}
+                if names_model
+                else {"model_provider": "openai"}
+            ),
+        )
+
+    def test_same_message_id_counts_once_per_attempt(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        first = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+        retry = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=2
+        )
+
+        assert first is not None
+        assert retry is not None
+        assert stats.request_count == 2
+        assert stats.input_tokens == 2_000
+        assert stats.output_tokens == 200
+        assert stats.per_model["openai", "gpt-5.5"].request_count == 2
+
+    def test_chunks_and_corrections_merge_within_one_attempt(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats, self._chunk(1_000, 60), recorded_requests=ledger, attempt_scope=1
+        )
+        record_message_usage(
+            stats, self._chunk(-200, 40), recorded_requests=ledger, attempt_scope=1
+        )
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 800
+        assert stats.output_tokens == 100
+
+    def test_model_correction_hits_the_attempt_it_belongs_to(self) -> None:
+        """A late model-naming chunk must re-file its own attempt's request."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 100, names_model=False),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+            attempt_scope=1,
+        )
+        # A second attempt of the same message ID completes without naming a
+        # model; the first attempt's late correction must not touch it.
+        record_message_usage(
+            stats,
+            AIMessage(
+                content="done",
+                id="run-1",
+                usage_metadata={
+                    "input_tokens": 2_000,
+                    "output_tokens": 50,
+                    "total_tokens": 2_050,
+                },
+            ),
+            recorded_requests=ledger,
+            attempt_scope=2,
+        )
+        correction = record_message_usage(
+            stats,
+            self._chunk(0, 0, names_model=True),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+            attempt_scope=1,
+        )
+
+        assert correction is not None
+        assert stats.request_count == 2
+        entry = stats.per_model["openai", "gpt-5.5"]
+        assert entry.request_count == 1
+        assert entry.input_tokens == 1_000
+        assert entry.output_tokens == 100
+        assert stats.input_tokens == 3_000
+        assert stats.output_tokens == 150
+        assert stats.per_kind["assistant"].request_count == 2
+
+    def test_none_scope_preserves_legacy_dedupe(self) -> None:
+        """Without a scope, a completed-message replay still counts once."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        message = AIMessage(
+            content="done",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+        )
+
+        first = record_message_usage(stats, message, recorded_requests=ledger)
+        replay = record_message_usage(stats, message, recorded_requests=ledger)
+
+        assert first is not None
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_none_scope_and_scoped_attempt_are_distinct_requests(self) -> None:
+        """Unscoped legacy recording must not collide with scoped attempts."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        legacy = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger
+        )
+        scoped = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+
+        assert legacy is not None
+        assert scoped is not None
+        assert stats.request_count == 2
+
+    def test_scoped_request_is_not_recounted_on_a_hitl_resume_replay(self) -> None:
+        """A turn that crosses a HITL pause must not count its spend twice.
+
+        The record pass keys by `(attempt_scope, message_id)`, but the attempt
+        scope closes when the attempt completes -- and `model_attempt(complete)`
+        always fires before the tool node interrupts. So the resume pass replays
+        with no scope open and keys by the bare message id. Closing the ledger at
+        the round boundary has to bridge the two shapes, or every turn containing
+        one tool approval reports double the tokens and cost.
+        """
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        scope = ((), "call-1", 0)
+
+        recorded = record_message_usage(
+            stats,
+            self._chunk(1_000, 100),
+            recorded_requests=ledger,
+            attempt_scope=scope,
+        )
+        assert recorded is not None
+        assert stats.request_count == 1
+
+        # End of the stream round: the tool node interrupts for approval.
+        finalize_recorded_requests(ledger)
+
+        # Resume pass. The scope is long closed, so this replays unscoped.
+        replay = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_resume_replay_credits_the_attempt_that_succeeded(self) -> None:
+        """After a retry, the projected row carries the surviving attempt."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 100),
+            recorded_requests=ledger,
+            attempt_scope=((), "call-1", 0),
+        )
+        record_message_usage(
+            stats,
+            self._chunk(2_000, 200),
+            recorded_requests=ledger,
+            attempt_scope=((), "call-1", 1),
+        )
+        # Both attempts are real spend and both counted.
+        assert stats.request_count == 2
+
+        finalize_recorded_requests(ledger)
+        replay = record_message_usage(
+            stats, self._chunk(2_000, 200), recorded_requests=ledger
+        )
+
+        assert replay is None
+        assert stats.request_count == 2
+        # The bare-id projection took the last attempt written, which is the one
+        # that actually succeeded.
+        assert ledger["run-1"].input_tokens == 2_000
+
+    def test_model_usage_event_dedupes_per_attempt_scope(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        event = {
+            "type": "model_usage",
+            "version": 1,
+            "request_id": "child-1",
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            "model_name": "gpt-5.5",
+            "provider": "openai",
+            "thread_id": "thread-1",
+            "scope": "tools:task",
+        }
+
+        first = record_model_usage_event(
+            stats,
+            event,
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+            attempt_scope="attempt-a",
+        )
+        retry = record_model_usage_event(
+            stats,
+            event,
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+            attempt_scope="attempt-b",
+        )
+        replay = record_model_usage_event(
+            stats,
+            event,
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+            attempt_scope="attempt-a",
+        )
+
+        assert first is not None
+        assert retry is not None
+        assert replay is None
+        assert stats.request_count == 2
+        assert stats.per_kind["subagent"].request_count == 2
+
+    def test_finalize_closes_scoped_entries(self) -> None:
+        """The round boundary applies to scoped keys exactly as to bare ones."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+        finalize_recorded_requests(ledger)
+        replay = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+
+
 class TestRecordModelUsageEvent:
     """Nested usage custom events share ordinary message accounting."""
 
@@ -873,7 +1149,7 @@ class TestRecordModelUsageEvent:
 
     def test_records_subagent_usage_once(self) -> None:
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         first = record_model_usage_event(
             stats,
@@ -897,7 +1173,7 @@ class TestRecordModelUsageEvent:
 
     def test_deduplicates_with_ordinary_message(self) -> None:
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         message = AIMessage(
             content="done",
             id="child-1",

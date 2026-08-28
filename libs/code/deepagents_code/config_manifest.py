@@ -2953,12 +2953,21 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         env_var=_env_vars.DEBUG,
     ),
     ConfigOption(
+        key="debug.directory",
+        group="Debug",
+        summary="Directory for per-thread debug log files.",
+        kind=OptionKind.STR,
+        default="/tmp/deepagents_debug",  # noqa: S108  # documents the app default, not a write target
+        env_var=_env_vars.DEBUG_DIRECTORY,
+        toml_keys=("debug", "directory"),
+    ),
+    ConfigOption(
         key="debug.file",
         group="Debug",
-        summary="Path for the debug log file.",
+        summary="Deprecated debug log file override; its parent directory is used.",
         kind=OptionKind.STR,
-        default="/tmp/deepagents_debug.log",  # noqa: S108  # documents the app default, not a write target
         env_var=_env_vars.DEBUG_FILE,
+        toml_keys=("debug", "file"),
     ),
     ConfigOption(
         key="debug.log_level",

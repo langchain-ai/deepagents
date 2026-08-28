@@ -6011,6 +6011,7 @@ class TestCreateCliAgentInterpreterWiring:
         from deepagents.middleware.rubric import RubricMiddleware
         from langchain_core.tools import StructuredTool
 
+        from deepagents_code.configurable_model import ConfigurableModelMiddleware
         from deepagents_code.model_retry import CodeModelRetryMiddleware
 
         def inspect_resource(resource_id: str) -> str:
@@ -6070,11 +6071,11 @@ class TestCreateCliAgentInterpreterWiring:
         ]
         assert "`notion_fetch`" in rubrics[0]._system_prompt
         assert rubrics[0]._grader_context_schema is CLIContextSchema
-        retry_middleware = next(
-            middleware
-            for middleware in rubrics[0]._grader_middleware
-            if isinstance(middleware, CodeModelRetryMiddleware)
-        )
+        configurable, retry_middleware = rubrics[0]._grader_middleware[:2]
+        assert isinstance(configurable, ConfigurableModelMiddleware)
+        assert configurable._persist_model_state is False
+        assert configurable._strict_model_resolution is True
+        assert isinstance(retry_middleware, CodeModelRetryMiddleware)
         assert retry_middleware.max_retries == 0
         assert retry_middleware.stream_output_is_visible is False
         assert any(
@@ -6365,7 +6366,7 @@ class TestCreateCliAgentInterpreterWiring:
             ),
         ):
             create_cli_agent(
-                model="fake-model",
+                model=fake_model,
                 assistant_id="test",
                 enable_memory=False,
                 enable_skills=False,
@@ -6374,6 +6375,45 @@ class TestCreateCliAgentInterpreterWiring:
 
         _, kwargs = mock_rubric.call_args
         assert "max_iterations" not in kwargs
+        assert kwargs["runtime_bootstrap_model"] is fake_model
+
+    def test_forwards_string_model_as_rubric_runtime_bootstrap(
+        self, tmp_path: Path
+    ) -> None:
+        """A main model left as a spec still bootstraps the runtime grader.
+
+        Startup leaves `model` unresolved when credentials are missing or the
+        provider is unknown; the runtime grader bypass must not depend on the
+        startup rubric model resolving in that case.
+        """
+        mock_settings = self._build_mock_settings(tmp_path)
+        mock_agent = Mock()
+        mock_agent.with_config.return_value = mock_agent
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.credentials", mock_settings),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.ReliableRubricMiddleware") as mock_rubric,
+            patch(
+                "deepagents_code.agent.create_deep_agent",
+                return_value=mock_agent,
+            ),
+            patch(
+                "deepagents._models.init_chat_model",
+                return_value=fake_model,
+            ),
+        ):
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                enable_shell=False,
+            )
+
+        _, kwargs = mock_rubric.call_args
+        assert kwargs["runtime_bootstrap_model"] == "fake-model"
 
     def test_rubric_grader_read_tool_only_reads_large_results(
         self, tmp_path: Path

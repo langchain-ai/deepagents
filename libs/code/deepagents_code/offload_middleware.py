@@ -824,41 +824,23 @@ def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
         The active model specification, invocation parameters, profile
             overrides, and effective context-window limit.
     """
-    context = runtime.context
-    if isinstance(context, CLIContextSchema):
+    # `from_payload` narrows both the in-process schema and the remote JSON
+    # dict, so this stays in step with every other context consumer.
+    context = CLIContextSchema.from_payload(runtime.context)
+    if context is None:
         return RuntimeModelConfig(
-            model_spec=context.model,
-            summarization_model_spec=context.summarization_model,
-            model_params=context.model_params,
-            profile_overrides=context.profile_overrides,
-            context_limit=context.model_context_limit,
-        )
-    if isinstance(context, dict):
-        # The remote boundary delivers the context as JSON, so the keys are
-        # strings; the values stay unknown and are narrowed individually below.
-        fields = cast("dict[str, Any]", context)
-        model = fields.get("model")
-        summarization_model = fields.get("summarization_model")
-        params = fields.get("model_params")
-        profile_overrides = fields.get("profile_overrides")
-        context_limit = fields.get("model_context_limit")
-        return RuntimeModelConfig(
-            model_spec=model if isinstance(model, str) else None,
-            summarization_model_spec=(
-                summarization_model if isinstance(summarization_model, str) else None
-            ),
-            model_params=dict(params) if isinstance(params, dict) else {},
-            profile_overrides=(
-                dict(profile_overrides) if isinstance(profile_overrides, dict) else {}
-            ),
-            context_limit=context_limit if isinstance(context_limit, int) else None,
+            model_spec=None,
+            summarization_model_spec=None,
+            model_params={},
+            profile_overrides={},
+            context_limit=None,
         )
     return RuntimeModelConfig(
-        model_spec=None,
-        summarization_model_spec=None,
-        model_params={},
-        profile_overrides={},
-        context_limit=None,
+        model_spec=context.model,
+        summarization_model_spec=context.summarization_model,
+        model_params=context.model_params,
+        profile_overrides=context.profile_overrides,
+        context_limit=context.model_context_limit,
     )
 
 

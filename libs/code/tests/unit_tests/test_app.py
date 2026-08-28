@@ -13907,7 +13907,17 @@ class TestFetchThreadHistoryData:
 
 
 class TestRemoteAgent:
-    """Tests for DeepAgentsApp._remote_agent()."""
+    """Tests for configuring external agents."""
+
+    def test_external_agent_defers_policy_to_server(self, tmp_path) -> None:
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        app = DeepAgentsApp(cwd=tmp_path)
+        agent = RemoteAgent("http://test:0")
+        with patch.object(agent, "set_workspace") as set_workspace:
+            app._configure_remote_agent(agent)
+
+        set_workspace.assert_called_once_with(str(tmp_path))
 
 
 class TestTerminalBackgroundSync:

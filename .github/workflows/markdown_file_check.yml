@@ -1,0 +1,115 @@
+# Pre-merge blocking check for newly added Markdown files on non-docs PRs.
+#
+# Why this exists:
+#   Markdown accumulates faster than anyone reads it. A `feat:` or `fix:` PR
+#   that quietly lands a new README, design note, or migration guide adds a
+#   document nobody agreed to maintain, and it is invisible in a diff dominated
+#   by code. This check finds Markdown files the PR causes to exist, posts a
+#   sticky comment listing them, and FAILS so a maintainer makes an explicit
+#   call before merge.
+#
+# Bypasses:
+#   - `docs(...)` PR titles pass: a docs-typed PR is already declaring that
+#     documentation is the point of the change.
+#   - release-please PRs pass. Onboarding a new package produces that package's
+#     first CHANGELOG.md under a `release(<pkg>):` title, and a bot PR cannot
+#     apply the acknowledgment label to unblock itself. The exemption is gated
+#     on provenance (author identity, branch prefix, same-repo head), never on
+#     the title — see isReleasePleasePr in the detector.
+#   - Apply the `markdown-added: acknowledged` label when the new files are
+#     intentional. The check re-runs on `labeled`/`unlabeled`, leaves an
+#     informational sticky note, and passes while the label is present.
+#
+# To actually gate merges, add this check to the branch's required status checks.
+#
+# Trust model:
+#   - NEVER CHECK OUT UNTRUSTED CODE FROM A PR's HEAD IN A pull_request_target
+#     JOB. This job holds `pull-requests: write`, so head code would run with a
+#     token that can write to the PR. The checkout below is pinned to
+#     `base.sha` and sparse to the single detector file; no head-supplied code
+#     is fetched, and nothing is executed from the PR.
+#   - The detector runs from the PR *base* revision, so a PR cannot edit
+#     markdown_file_check.js to return "[]" and self-bypass the gate. The PR
+#     title (event payload), changed-file list, and labels (API) are fed in
+#     separately and are authoritative regardless of this checkout.
+#   - `pull_request_target` rather than the `pull_request` its sibling
+#     pr_scope_file_check.yml uses. Deliberate, and it buys two things: fork
+#     PRs get a real sticky comment instead of a job-summary consolation prize,
+#     and the *workflow file itself* comes from base, so a PR that edits this
+#     file cannot neuter its own gate. The cost is the write token, which is
+#     why the checkout discipline above is load-bearing rather than incidental.
+#   - `persist-credentials: false` so the job token is not written into the
+#     checkout's git config; the detector needs no git credentials, and the
+#     github-script step receives its own token directly.
+#
+# Limitations:
+#   - Matches `.md` only. The repo has no `.mdx` or `.markdown` files today; add
+#     them to `isMarkdown` if that changes.
+#   - Nothing is decided from the event payload except the PR number. Title,
+#     author, head, and changed-file total all come from a live `pulls.get`,
+#     because two rapid title edits queue two runs against the same head SHA and
+#     check name, and nothing guarantees the newer event finishes last. A stale
+#     `docs:` payload landing after a `feat:` retitle would otherwise publish a
+#     green required check that a re-run cannot repair.
+
+name: "📝 Markdown file check"
+
+on:
+  pull_request_target:
+    # `labeled`/`unlabeled` so applying the acknowledgment label re-runs the
+    # check and clears the red without needing a new commit.
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  markdown-file-check:
+    name: "require acknowledgment for new Markdown files"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    concurrency:
+      group: markdown-file-check-${{ github.event.pull_request.number }}
+      # Not cancel-in-progress: a cancelled run leaves whatever sticky comment
+      # the previous one wrote. Runs are allowed to overlap because none of them
+      # trusts its own event payload — each re-reads the PR live — so a run that
+      # finishes out of order still decides on current state.
+      cancel-in-progress: false
+    steps:
+      - name: "Checkout detector from trusted base"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/checks/markdown_file_check.js
+          # Cone mode is for directory prefixes; this is a single file path.
+          # It happens to resolve under cone mode too, but declaring the
+          # non-cone form states the intent rather than relying on that.
+          sparse-checkout-cone-mode: false
+
+      - name: "Check newly added Markdown files"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const detector = './.github/scripts/checks/markdown_file_check.js';
+            // The detector is absent on base revisions predating this check:
+            // the bootstrapping PR that introduces it, and every PR already
+            // open when it merges (their recorded base.sha is older). Without
+            // this guard those runs die on an unhandled module-resolution
+            // error — an opaque red X the author can only clear by rebasing.
+            //
+            // Not a self-bypass vector: presence is read from trusted base, and
+            // head edits never change base. An author can target an old base
+            // that never had the detector, but gains nothing — that base never
+            // gated anything. Warn (not notice) so a detector renamed on base
+            // without updating this path surfaces in the Checks UI instead of
+            // silently disarming the gate.
+            if (!fs.existsSync(detector)) {
+              core.warning(`Detector '${detector}' absent on the base revision; the Markdown-file check is NOT enforcing. Expected on the bootstrapping PR or a branch cut from before it existed — otherwise the detector path here may be out of sync with the repo.`);
+              return;
+            }
+            const { run } = require(detector);
+            await run({ github, context, core });

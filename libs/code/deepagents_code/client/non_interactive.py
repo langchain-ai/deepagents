@@ -2939,6 +2939,7 @@ async def run_non_interactive(
             trust_project_extensions=trust_project_extensions,
             extension_paths=extension_paths,
             interactive=False,
+            cwd=str(Path.cwd()),
         ) as (agent, _server_proc):
             # Collect MCP preload result (ran concurrently with server startup)
             if mcp_task is not None:

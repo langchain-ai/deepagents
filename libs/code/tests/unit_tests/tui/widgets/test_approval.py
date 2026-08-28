@@ -66,6 +66,66 @@ class TestToggleExpand:
 class TestExecuteToolMinimalDisplay:
     """Tests confirming `execute` is treated as the shell-execution tool."""
 
+    async def test_mounted_widget_shows_working_directory(self) -> None:
+        """The compact shell approval renders its supplemental description."""
+        from textual.app import App, ComposeResult
+        from textual.content import Content
+        from textual.widgets import Static
+
+        class ApprovalTestApp(App[None]):
+            def compose(self) -> ComposeResult:
+                yield ApprovalMenu(
+                    {
+                        "name": "execute",
+                        "args": {"command": "pwd"},
+                        "description": (
+                            "Execute Command: pwd\n"
+                            "Working Directory: /workspace/thread-a"
+                        ),
+                    }
+                )
+
+        async with ApprovalTestApp().run_test() as pilot:
+            await pilot.pause()
+            menu = pilot.app.query_one(ApprovalMenu)
+            description = menu.query_one(".approval-description", Static)
+            command = menu.query_one(".approval-command", Static)
+
+            rendered_description = description.render()
+            rendered_command = command.render()
+            assert isinstance(rendered_description, Content)
+            assert isinstance(rendered_command, Content)
+            assert rendered_description.plain == (
+                "Working Directory: /workspace/thread-a"
+            )
+            assert rendered_command.plain == "pwd"
+
+    def test_auto_fallback_keeps_review_notice(self) -> None:
+        """An Auto fallback description keeps its notice, not a duplicate command."""
+        from textual.content import Content
+
+        menu = ApprovalMenu(
+            {
+                "name": "execute",
+                "args": {"command": "pwd"},
+                "description": (
+                    "Auto human fallback: this action needs your review.\n\n"
+                    "Execute Command: pwd\n"
+                    "Working Directory: /workspace/thread-a"
+                ),
+            }
+        )
+
+        widget = menu._get_minimal_description()
+
+        assert widget is not None
+        rendered = widget.render()
+        assert isinstance(rendered, Content)
+        assert rendered.plain == (
+            "Auto human fallback: this action needs your review.\n\n"
+            "Working Directory: /workspace/thread-a"
+        )
+
 
 class TestSecurityWarnings:
     """Tests for approval-level Unicode/URL warning collection."""

@@ -139,6 +139,7 @@ from deepagents_code.unicode_security import (
     detect_dangerous_unicode,
     format_warning_detail,
     render_with_unicode_markers,
+    sanitize_control_chars,
     strip_dangerous_unicode,
     summarize_issues,
 )
@@ -1796,9 +1797,15 @@ def _format_task_description(
 
 
 def _format_execute_description(
-    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+    tool_call: ToolCall, _state: AgentState[Any], runtime: Runtime[Any]
 ) -> str:
     """Format execute tool call for approval prompt.
+
+    The working directory comes from the run's bound workspace, which
+    `require_thread_workspace` validates against the durable binding before
+    the run starts. A run with no workspace falls back to the process-global
+    server project context and then the process CWD; both can name a
+    directory the command will not run in, so the fallback warns.
 
     Returns:
         Formatted description string for the execute tool call.
@@ -1806,13 +1813,25 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    project_context = get_server_project_context()
-    effective_cwd = (
-        str(project_context.user_cwd)
-        if project_context is not None
-        else str(Path.cwd())
-    )
-    lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
+    context = CLIContextSchema.from_payload(runtime.context)
+    workspace = context.workspace if context is not None else {}
+    effective_cwd = workspace.get("cwd") if isinstance(workspace, dict) else None
+    # An empty or non-str `cwd` would render a blank directory line, which
+    # reads as "no directory" rather than as missing data. Fall through.
+    if not isinstance(effective_cwd, str) or not effective_cwd:
+        logger.warning(
+            "Shell approval prompt has no bound workspace cwd; the directory "
+            "shown may not be where this command runs (workspace=%r)",
+            workspace,
+        )
+        project_context = get_server_project_context()
+        effective_cwd = (
+            str(project_context.user_cwd)
+            if project_context is not None
+            else str(Path.cwd())
+        )
+    display_cwd = sanitize_control_chars(effective_cwd, collapse_whitespace=False)
+    lines = [f"Execute Command: {command}", f"Working Directory: {display_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)
     if issues:

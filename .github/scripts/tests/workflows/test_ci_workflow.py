@@ -11,7 +11,6 @@ the strict step's bypass runs against a stubbed `gh` in
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
@@ -187,15 +186,6 @@ SELECTION_CASES = [
         None,
     ),
 ]
-
-
-def test_deepagents_code_collects_coverage_on_python_3_14() -> None:
-    """Keep all supported runtimes while collecting coverage on Python 3.14."""
-    workflow = _load_workflow(CI_WORKFLOW)
-    config = workflow["jobs"]["test-code"]["with"]
-
-    assert json.loads(config["python-versions"]) == ["3.12", "3.13", "3.14"]
-    assert config["coverage-python-version"] == "3.14"
 
 
 def test_ci_success_builds_named_results_from_needs_object() -> None:

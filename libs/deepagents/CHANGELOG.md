@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.9...deepagents==0.7.10) (2026-08-28)
+
+
+### Bug Fixes
+
+* **sdk:** prevent local shell commands from stealing TUI input ([#5873](https://github.com/langchain-ai/deepagents/issues/5873)) ([c94a090](https://github.com/langchain-ai/deepagents/commit/c94a090c1b21918c9e4eced52ecb4e3bf7476f43))
+* **sdk:** surface sandbox glob failures instead of reporting no matches ([#5566](https://github.com/langchain-ai/deepagents/issues/5566)) ([0286f62](https://github.com/langchain-ai/deepagents/commit/0286f628646d4196e5e89164b45803fb7b97a0cc))
+
 ## [0.7.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.8...deepagents==0.7.9) (2026-08-25)
 
 ### Features

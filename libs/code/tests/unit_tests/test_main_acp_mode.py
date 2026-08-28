@@ -44,6 +44,7 @@ def _make_acp_args(**overrides: object) -> argparse.Namespace:
         no_mcp=False,
         trust_project_mcp=False,
         auto_classifier_model=None,
+        summarization_model=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)

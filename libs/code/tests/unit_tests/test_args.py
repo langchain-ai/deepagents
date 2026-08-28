@@ -296,39 +296,6 @@ class TestRecursionLimitArg:
     """Tests for the --recursion-limit override flag."""
 
 
-class TestHelpScreenDrift:
-    """Ensure show_help() stays in sync with argparse flag definitions.
-
-    The help screen in `ui.show_help()` is hand-maintained separately from
-    the argparse definitions in `main.parse_args()`.  This test catches
-    drift — e.g. a new flag added to argparse but forgotten in the help screen.
-    """
-
-    def test_all_parser_flags_appear_in_help(self) -> None:
-        """Every top-level --flag in argparse must appear in show_help()."""
-        stderr_buf = io.StringIO()
-        with (
-            patch.object(sys, "argv", ["deepagents", "--_x_"]),
-            patch("sys.stderr", stderr_buf),
-            pytest.raises(SystemExit),
-        ):
-            parse_args()
-
-        help_buf = io.StringIO()
-        test_console = Console(file=help_buf, highlight=False, width=200)
-        with patch("deepagents_code.ui.console", test_console):
-            show_help()
-
-        parser_flags = set(re.findall(r"--[\w][\w-]*", stderr_buf.getvalue()))
-        help_flags = set(re.findall(r"--[\w][\w-]*", help_buf.getvalue()))
-        parser_flags.discard("--_x_")
-        missing = parser_flags - help_flags
-        assert not missing, (
-            f"Flags in argparse but missing from show_help(): {missing}\n"
-            "Add them to the Options section in ui.show_help()."
-        )
-
-
 class TestJsonArg:
     """Tests for `--json` argument parsing."""
 

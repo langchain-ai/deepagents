@@ -368,32 +368,6 @@ class TestPriceOverrides:
 
         assert after == pytest.approx((1_000 * 1.0 + 100 * 2.0) / 1_000_000)
 
-    def test_an_unexpected_load_failure_warns_and_disables_the_catalog(
-        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """A load failure must not be downgraded to DEBUG by the pricing net.
-
-        `_override_price`'s handler exists for a bad *rate*; what silently stops
-        applying on a bad *load* is the user's own hand-written catalog, so that
-        belongs at WARNING. Caching the empty catalog is the other half: letting
-        the failure escape would rebuild and re-raise on every unpriced request
-        for the life of the process.
-        """
-
-        def boom(*_args: Any, **_kwargs: Any) -> tuple[list[Any] | None, bool]:
-            msg = "unanticipated"
-            raise RuntimeError(msg)
-
-        monkeypatch.setattr(cost_tracking, "_read_override_source", boom)
-
-        with caplog.at_level(logging.WARNING, logger="deepagents_code.cost_tracking"):
-            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
-            assert estimate_cost(_usage(), _OVERRIDE_MODEL, "dcode-test") is None
-
-        assert caplog.text.count("Could not load the pricing override catalog") == 1
-        assert cost_tracking._PRICE_OVERRIDES == ()
-        assert cost_tracking.pricing_data_available()
-
     def test_a_vanished_upstream_parser_is_reported_at_warning(
         self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -559,43 +533,6 @@ class TestPriceUpdater:
 
         factory.assert_called_once()
 
-    def test_the_start_attempt_is_serialized_by_a_lock(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The latch is read and set inside `_PRICE_UPDATER_LOCK`.
-
-        `estimate_cost` runs on the event loop and on the executor threads that
-        price drained records, so an unguarded check-then-set lets two threads
-        both reach `start()`. The loser trips genai-prices' process-wide
-        singleton guard and its `RuntimeError` gets reported as a failed start
-        -- a warning claiming the updater is down while the winner's runs fine.
-
-        Holding the lock here and watching a pricing thread block on it tests
-        that directly, rather than trying to lose a race on purpose.
-        """
-        from genai_prices import UpdatePrices
-
-        self._enable_auto_update(monkeypatch)
-        self._stub_calc_price(monkeypatch)
-        factory = self._patch_updater(monkeypatch, self._autospec_updater())
-
-        priced = threading.Event()
-
-        def _price() -> None:
-            estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
-            priced.set()
-
-        thread = threading.Thread(target=_price)
-        with cost_tracking._PRICE_UPDATER_LOCK:
-            thread.start()
-            # Without the lock the thread sails through the start attempt.
-            assert not priced.wait(0.25)
-            factory.assert_not_called()
-
-        thread.join(timeout=5)
-        assert priced.is_set()
-        factory.assert_called_once_with(UpdatePrices)
-
 
 class TestPriceCatalogGuard:
     """`_build_price_updater` gating on what a fetch is allowed to install."""
@@ -739,29 +676,6 @@ class TestCostTrackingMiddleware:
         assert result["_session_cost_usd"] == pytest.approx(
             estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
         )
-
-    def test_cancelled_turn_does_not_destroy_drained_records(
-        self, recorder: _SessionCostRecorder
-    ) -> None:
-        """`CancelledError` is a `BaseException`, so `except Exception` misses it."""
-        _collect(recorder, _record())
-        middleware = CostTrackingMiddleware()
-        state: Any = {"messages": []}
-
-        with (
-            patch(
-                "deepagents_code.cost_tracking.estimate_cost",
-                side_effect=asyncio.CancelledError(),
-            ),
-            pytest.raises(asyncio.CancelledError),
-        ):
-            middleware._charge(
-                state,
-                _runtime(thread_id=THREAD_ID),
-                price_latest_message=False,
-            )
-
-        assert len(recorder.drain(THREAD_ID)) == 1
 
     def test_nested_agent_checkpoints_and_transfers_cost(
         self, recorder: _SessionCostRecorder

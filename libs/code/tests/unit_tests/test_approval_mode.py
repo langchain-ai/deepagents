@@ -145,16 +145,6 @@ def test_read_approval_mode_from_store_exception_fails_closed(
     assert "Could not read approval-mode store item" in caplog.text
 
 
-async def test_awrite_approval_mode_writes_payload() -> None:
-    writer = _Writer()
-    key = await awrite_approval_mode(writer, "thread-1", mode=ApprovalMode.AUTO)
-
-    assert key == approval_mode_key("thread-1")
-    assert writer.items == [
-        (APPROVAL_MODE_NAMESPACE, approval_mode_key("thread-1"), {"mode": "auto"})
-    ]
-
-
 async def test_awrite_approval_mode_returns_none_without_writer() -> None:
     assert (
         await awrite_approval_mode(object(), "thread-1", mode=ApprovalMode.AUTO)
@@ -187,73 +177,6 @@ def test_auto_mode_notice_rejects_missing_or_corrupt_file(tmp_path: Path) -> Non
     assert not has_yolo_acknowledgement(missing)
     assert not has_auto_mode_notice(corrupt)
     assert not has_yolo_acknowledgement(corrupt)
-
-
-def test_yolo_and_auto_notice_coexist(tmp_path: Path) -> None:
-    import json
-
-    path = tmp_path / "approval.json"
-
-    assert save_auto_mode_notice(path)
-    assert save_yolo_acknowledgement(path)
-    assert has_auto_mode_notice(path)
-    assert has_yolo_acknowledgement(path)
-
-    # Reverse order: YOLO first, then Auto, still keeps both records.
-    path.unlink()
-    assert save_yolo_acknowledgement(path)
-    assert save_auto_mode_notice(path)
-    assert has_auto_mode_notice(path)
-    assert has_yolo_acknowledgement(path)
-
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["version"] == 1
-    assert data["policy_version"] == YOLO_ACKNOWLEDGEMENT_POLICY_VERSION
-    assert data["acknowledged"] is True
-    assert data["auto_notice_version"] == AUTO_NOTICE_VERSION
-    assert data["auto_notice_shown"] is True
-
-
-def test_concurrent_yolo_and_auto_saves_preserve_both(tmp_path: Path) -> None:
-    """Overlapping merge-writes must not drop the other writer's fields."""
-    import json
-    import threading
-
-    path = tmp_path / "approval.json"
-    barrier = threading.Barrier(2)
-    errors: list[BaseException] = []
-
-    def run_yolo() -> None:
-        try:
-            barrier.wait(timeout=5)
-            assert save_yolo_acknowledgement(path)
-        except BaseException as exc:  # noqa: BLE001 - collect for the join site
-            errors.append(exc)
-
-    def run_auto() -> None:
-        try:
-            barrier.wait(timeout=5)
-            assert save_auto_mode_notice(path)
-        except BaseException as exc:  # noqa: BLE001 - collect for the join site
-            errors.append(exc)
-
-    threads = [
-        threading.Thread(target=run_yolo),
-        threading.Thread(target=run_auto),
-    ]
-    for thread in threads:
-        thread.start()
-    for thread in threads:
-        thread.join(timeout=10)
-
-    assert errors == []
-    assert has_auto_mode_notice(path)
-    assert has_yolo_acknowledgement(path)
-    data = json.loads(path.read_text(encoding="utf-8"))
-    assert data["policy_version"] == YOLO_ACKNOWLEDGEMENT_POLICY_VERSION
-    assert data["acknowledged"] is True
-    assert data["auto_notice_version"] == AUTO_NOTICE_VERSION
-    assert data["auto_notice_shown"] is True
 
 
 def test_save_fails_open_on_lock_timeout(

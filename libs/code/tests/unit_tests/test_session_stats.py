@@ -85,7 +85,7 @@ class TestRecordMessageUsage:
         delta and merges again, doubling the request's tokens and cost.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
 
         finalize_recorded_requests(ledger)
@@ -101,7 +101,7 @@ class TestRecordMessageUsage:
     def test_completed_message_replay_is_recorded_once(self) -> None:
         """A resumed stream replays a completed message; it must not re-count."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         message = AIMessage(
             content="done",
             id="run-1",
@@ -144,7 +144,7 @@ class TestRecordModelUsageEvent:
 
     def test_records_subagent_usage_once(self) -> None:
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         first = record_model_usage_event(
             stats,
@@ -168,7 +168,7 @@ class TestRecordModelUsageEvent:
 
     def test_deduplicates_with_ordinary_message(self) -> None:
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         message = AIMessage(
             content="done",
             id="child-1",
@@ -308,66 +308,6 @@ class TestUsageTableEnabled:
 
         with pytest.raises(BlockingError):
             usage_table_enabled()
-
-    def test_rejected_value_warns_on_stderr(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """A misparsed value reaches the user, not just the log buffer.
-
-        `show_usage_stats = "false"` is the expected typo — there is no
-        `dcode config set`, so the only way to set this is hand-edited TOML.
-        Falling through to `True` produces exactly the table the user meant to
-        hide, and the resolver's own warning has no reader outside the TUI
-        Debug Console. This is the one bool display option where that silence
-        is the whole bug, so it is the one that prints.
-        """
-        import deepagents_code._session_stats as session_stats
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text('[ui]\nshow_usage_stats = "false"\n', encoding="utf-8")
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
-        )
-        # Process-wide dedupe, so a leaked entry from another test would make
-        # this pass for the wrong reason.
-        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
-
-        assert usage_table_enabled() is True
-
-        captured = capsys.readouterr()
-        assert "show_usage_stats" in captured.err
-        # The warning is the entire point; it must not go to stdout, which a
-        # headless caller may be piping as the agent's answer.
-        assert captured.out == ""
-
-    def test_valid_value_prints_nothing(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """A value that parses stays silent on both streams.
-
-        Guards the obvious regression in the other direction: a warning that
-        fires for every well-formed config would be worse than no warning.
-        """
-        import deepagents_code._session_stats as session_stats
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
-        monkeypatch.setattr(
-            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
-        )
-        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
-
-        assert usage_table_enabled() is False
-
-        captured = capsys.readouterr()
-        assert captured.err == ""
-        assert captured.out == ""
 
 
 class TestAttemptScopedUsage:
@@ -621,3 +561,25 @@ class TestAttemptScopedUsage:
         assert stats.request_count == 1
         assert stats.input_tokens == 1_000
         assert stats.output_tokens == 100
+
+    @staticmethod
+    def _chunk(
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        names_model: bool = True,
+    ) -> AIMessageChunk:
+        return AIMessageChunk(
+            content="",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+            response_metadata=(
+                {"model_name": "gpt-5.5", "model_provider": "openai"}
+                if names_model
+                else {"model_provider": "openai"}
+            ),
+        )

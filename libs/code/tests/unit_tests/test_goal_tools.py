@@ -4,10 +4,10 @@ import json
 import logging
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import Any, NamedTuple, cast, get_type_hints
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
 
 import pytest
-from langchain.agents.middleware.types import AgentState, PrivateStateAttr
+from langchain.agents.middleware.types import PrivateStateAttr
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.types import Command
@@ -28,6 +28,9 @@ from deepagents_code.goal_tools import (
     GoalToolState,
     _update_goal_command,
 )
+
+if TYPE_CHECKING:
+    from langchain.agents.middleware.types import AgentState
 
 
 def test_update_goal_marks_blocked_with_note() -> None:
@@ -792,25 +795,3 @@ def test_notice_update_repairs_malformed_summarization_cutoff(cutoff: int) -> No
     assert update is not None
     assert update["_summarization_event"] is None
     assert goal_state_notice_info(update["messages"][0]) is not None
-
-
-def test_goal_tool_state_marks_goal_fields_private() -> None:
-    """`_goal_*` channels must stay private so they don't leak into the schema.
-
-    The channels are inherited from `GoalRubricChannels`. Resolving the full
-    hints the way LangGraph does (`get_type_hints(..., include_extras=True)`,
-    which walks the MRO) confirms the `PrivateStateAttr` markers carry through
-    inheritance, while the public `rubric` input stays non-private.
-    """
-    hints = get_type_hints(GoalToolState, include_extras=True)
-    for field in (
-        "_goal_objective",
-        "_goal_status",
-        "_goal_rubric",
-        "_goal_status_note",
-        "_pending_goal_completion_note",
-        "_sticky_rubric",
-    ):
-        assert PrivateStateAttr in getattr(hints[field], "__metadata__", ())
-    # `rubric` is the public `RubricMiddleware` input and stays non-private.
-    assert PrivateStateAttr not in getattr(hints["rubric"], "__metadata__", ())

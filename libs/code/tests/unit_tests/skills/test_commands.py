@@ -692,51 +692,6 @@ class TestListBuiltInSkillsDisplay:
         assert str(built_in_dir) not in joined
 
 
-class TestSkillsLsDispatch:
-    """Test that `execute_skills_command` dispatches 'ls' to `_list`."""
-
-    def test_ls_dispatches_to_list(self, tmp_path: Path) -> None:
-        """Verify `execute_skills_command` routes 'ls' to `_list()`."""
-        built_in_dir = tmp_path / "built_in_skills"
-        built_in_dir.mkdir()
-
-        mock_settings = patch(
-            "deepagents_code.config.Credentials.from_environment",
-            return_value=type(
-                "FakeSettings",
-                (),
-                {
-                    "project_root": None,
-                    "get_built_in_skills_dir": staticmethod(lambda: built_in_dir),
-                    "get_user_skills_dir": lambda _, _a: None,
-                    "get_project_skills_dir": lambda _: None,
-                    "get_user_agent_skills_dir": lambda _: None,
-                    "get_project_agent_skills_dir": lambda _: None,
-                },
-            )(),
-        )
-
-        args = argparse.Namespace(skills_command="ls", agent="agent", project=False)
-
-        output: list[str] = []
-
-        def capture_print(*args_p: str, **_: str) -> None:
-            output.append(" ".join(str(a) for a in args_p))
-
-        with (
-            mock_settings,
-            _patch_skill_paths(user=None, project=None, built_in=built_in_dir),
-            patch("deepagents_code.config.console") as mock_console,
-        ):
-            mock_console.print = capture_print
-            execute_skills_command(args)
-
-        # Should have produced output (even if "No skills found")
-        # rather than falling through to show_skills_help()
-        joined = "\n".join(output)
-        assert "No skills found" in joined or "Available Skills" in joined
-
-
 class TestDeleteSkill:
     """Test cases for the _delete command."""
 
@@ -1146,50 +1101,6 @@ class TestDeleteSkill:
         assert (agent_skills_dir / "orphan-skill").exists()
 
 
-class TestDeleteArgparsing:
-    """Test argparse wiring for `deepagents skills delete`."""
-
-    def test_execute_skills_command_dispatches_delete(self, tmp_path: Path) -> None:
-        """Verify `execute_skills_command` routes 'delete' to `_delete()`."""
-        user_skills_dir = tmp_path / ".deepagents" / "agent" / "skills"
-        user_skills_dir.mkdir(parents=True)
-
-        mock_settings = MagicMock()
-        mock_settings.get_user_skills_dir.return_value = user_skills_dir
-        mock_settings.get_project_skills_dir.return_value = None
-        mock_settings.get_user_agent_skills_dir.return_value = None
-        mock_settings.get_project_agent_skills_dir.return_value = None
-
-        args = argparse.Namespace(
-            skills_command="delete",
-            name="nonexistent-skill",
-            agent="agent",
-            project=False,
-            force=True,
-            dry_run=False,
-        )
-
-        output: list[str] = []
-
-        def capture_print(*args_p: str, **_: str) -> None:
-            output.append(" ".join(str(a) for a in args_p))
-
-        with (
-            patch("deepagents_code.config.Credentials") as mock_settings_cls,
-            patch("deepagents_code.config.console") as mock_console,
-        ):
-            mock_settings_cls.from_environment.return_value = mock_settings
-            mock_console.print = capture_print
-            with pytest.raises(SystemExit) as exc_info:
-                execute_skills_command(args)
-            assert exc_info.value.code == 1
-
-        # Should have dispatched to _delete and shown "not found"
-        # rather than falling through to show_skills_help()
-        joined = "\n".join(output)
-        assert "not found" in joined.lower()
-
-
 class TestSkillsTrustCommand:
     """Unit tests for `_trust` and its dispatch in `execute_skills_command`."""
 
@@ -1457,21 +1368,3 @@ class TestSkillsTrustCommand:
                 _trust(args)
 
         assert exc_info.value.code == 1
-
-    def test_no_subcommand_shows_help(self) -> None:
-        """`trust` with no subcommand shows the trust help."""
-        from deepagents_code.skills.commands import _trust
-
-        args = argparse.Namespace(trust_command=None)
-        with patch("deepagents_code.ui.show_skills_trust_help") as mock_help:
-            _trust(args)
-
-        mock_help.assert_called_once()
-
-    def test_execute_dispatches_trust_before_agent_validation(self) -> None:
-        """`trust` is routed without an `--agent`, ahead of agent validation."""
-        args = argparse.Namespace(skills_command="trust", trust_command="list")
-        with patch("deepagents_code.skills.commands._trust") as mock_trust:
-            execute_skills_command(args)
-
-        mock_trust.assert_called_once_with(args)

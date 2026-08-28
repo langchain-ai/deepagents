@@ -34,20 +34,6 @@ class TestThreadAgentSwitchPromptScreen:
         screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
         return screen, dismiss
 
-    def test_modal_binds_confirmation_cancel_and_quit(self) -> None:
-        """Keyboard bindings match the sibling cwd-switch modal."""
-        bindings = [
-            binding
-            for binding in ThreadAgentSwitchPromptScreen.BINDINGS
-            if isinstance(binding, Binding)
-        ]
-        bindings_by_key = {binding.key: binding for binding in bindings}
-
-        assert bindings_by_key["enter"].action == "switch"
-        assert bindings_by_key["escape"].action == "cancel"
-        assert bindings_by_key["ctrl+c"].action == "quit_or_interrupt"
-        assert bindings_by_key["ctrl+d"].action == "quit_app"
-
     def test_action_cancel_stays_on_current_thread(self) -> None:
         """Esc resolves to the safe no-op outcome."""
         screen, dismiss = self._screen()

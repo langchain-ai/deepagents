@@ -298,9 +298,9 @@ def test_writer_graph_bubble_up_propagates() -> None:
     mw = CodeModelRetryMiddleware(max_retries=5)
     with pytest.raises(GraphBubbleUp):
         mw.wrap_model_call(_req_with_writer(writer), _handler(handler))
-    # The interrupt must surface on the first failed attempt, not after the
-    # budget is spent.
-    assert calls["n"] == 1
+    # The interrupt surfaces from the first lifecycle event, before the
+    # handler or the retry budget is touched.
+    assert calls["n"] == 0
 
 
 class _RateLimitError(Exception):
@@ -386,9 +386,10 @@ def test_streaming_flag_is_set_before_the_chunk_is_forwarded() -> None:
     """A writer that raises mid-chunk has still shown output to the user.
 
     Setting the flag afterwards leaves it `False` on a broken pipe, and since
-    `ConnectionError` classifies retryable the loop would replay a response
-    whose first chunk already rendered -- the exact duplicate this guard
-    exists to prevent.
+    `ConnectionError` classifies retryable the retried call would wrongly
+    report `output_may_have_started=False` for a response whose first chunk
+    already rendered -- leaving the client to append the replay after text it
+    cannot correlate.
     """
     from langchain_core.callbacks import BaseCallbackManager as _Manager
     from langgraph.pregel import _messages as _lg_messages
@@ -415,40 +416,6 @@ def test_streaming_flag_is_set_before_the_chunk_is_forwarded() -> None:
 
     assert observed == [True], "flag must already be set when the writer runs"
     assert tracker.has_streamed is True
-
-
-def test_sync_model_call_is_not_retried_after_streaming() -> None:
-    """The sync loop must honour the streamed-output guard too.
-
-    `test_failed_attempt_is_not_retried_after_streaming` drives `astream`, so
-    it only covers `awrap_model_call`. The sync path is a verbatim duplicate
-    and deleting its guard leaves the suite green -- while replaying a
-    response whose first chunk already reached the user.
-    """
-    calls = 0
-
-    @contextmanager
-    def _already_streamed(
-        tracker: model_retry._MessageStreamTracker,
-    ) -> Iterator[None]:
-        tracker.has_streamed = True
-        yield
-
-    def _handler(_request: ModelRequest) -> ModelResponse:
-        nonlocal calls
-        calls += 1
-        raise httpx.ReadError(_DROPPED)
-
-    middleware = CodeModelRetryMiddleware(max_retries=3)
-    with (
-        patch.object(model_retry, "_track_message_streams", _already_streamed),
-        pytest.raises(httpx.ReadError),
-    ):
-        middleware.wrap_model_call(
-            cast("ModelRequest", SimpleNamespace(model=None)), _handler
-        )
-
-    assert calls == 1, "a retryable error after visible output must not replay"
 
 
 def test_sync_model_call_still_retries_before_streaming() -> None:

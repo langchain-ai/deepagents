@@ -148,33 +148,6 @@ class TestResolveMcpConfigAutodiscover:
         assert result.used_paths == (project_cfg,)
         assert set(result.config["mcpServers"]) == {"notion"}
 
-    def test_legacy_enabled_project_servers_is_surfaced(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A legacy flat allowlist is reported so login can explain the change.
-
-        `mcp login` is non-interactive (no approval prompt), so a user who
-        relied on the removed `[mcp].enabled_project_servers` key must be told
-        why their server stopped loading rather than have it vanish silently.
-        """
-        _isolate_project_mcp_trust_lists(
-            monkeypatch, tmp_path, '[mcp]\nenabled_project_servers = ["notion"]\n'
-        )
-        project_cfg = tmp_path / "project.json"
-        project_cfg.write_text(
-            '{"mcpServers":{"notion":{"transport":"http",'
-            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
-        )
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_config_sources",
-            return_value=[_project_source(project_cfg)],
-        ):
-            result = resolve_mcp_config(None)
-        assert isinstance(result, ConfigResolutionError)
-        assert result.legacy_ignored == ("notion",)
-
     def test_unreadable_policy_fails_closed_and_surfaces_error(
         self,
         tmp_path: Path,

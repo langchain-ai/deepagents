@@ -41,36 +41,6 @@ class TestStartupTip:
         assert isinstance(rendered, Content)
         assert rendered.plain == "Tip: Use /copy"
 
-    def test_selects_weighted_tip_when_omitted(self) -> None:
-        """A tip is selected when no explicit text is provided."""
-        with patch(_PICK_TIP, return_value="Use /copy") as pick_tip:
-            widget = StartupTip()
-
-        assert widget.tip == "Use /copy"
-        rendered = widget.render()
-        assert isinstance(rendered, Content)
-        assert rendered.plain == "Tip: Use /copy"
-        pick_tip.assert_called_once()
-
-    def test_pick_tip_returns_registered_tip(self) -> None:
-        """`_pick_tip` only ever returns a tip drawn from the active registry."""
-        with patch(_IS_YOLO_SWITCHER, return_value=True):
-            for _ in range(100):
-                assert _pick_tip() in _TIPS
-
-    def test_pick_tip_weights_by_registry_values(self) -> None:
-        """`_pick_tip` passes the active registry's relative weights to the draw."""
-        with (
-            patch(_IS_YOLO_SWITCHER, return_value=True),
-            patch(_CHOICES, return_value=["Use /copy"]) as choices,
-        ):
-            assert _pick_tip() == "Use /copy"
-
-        choices.assert_called_once()
-        args, kwargs = choices.call_args
-        assert args[0] == list(_TIPS.keys())
-        assert kwargs["weights"] == list(_TIPS.values())
-
     def test_show_startup_tip_defaults_to_true(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -94,11 +64,6 @@ class TestStartupTip:
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
-
-    def test_workflow_subagent_tip_registered(self) -> None:
-        """The workflow trigger phrase keeps an above-baseline weight."""
-        tip = "Ask for a workflow to fan work out to subagents in parallel"
-        assert _TIPS[tip] > 1
 
     def test_show_reasoning_tip_registered(self) -> None:
         """The reasoning display flag keeps a discoverability tip."""

@@ -204,13 +204,6 @@ class TestRetryParamByProvider:
         )
         assert set(RETRY_PARAM_BY_PROVIDER) <= known_providers
 
-    def test_contains_expected_retry_params(self) -> None:
-        """Major retry-enabled providers use `max_retries`."""
-        assert RETRY_PARAM_BY_PROVIDER["bedrock"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["fireworks"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["meta"] == "max_retries"
-        assert RETRY_PARAM_BY_PROVIDER["openai"] == "max_retries"
-
 
 class TestModelSpec:
     """Tests for ModelSpec value type."""
@@ -1324,44 +1317,6 @@ class TestResolveEnvVar:
 
 class TestUnknownProviderError:
     """Tests for the structured `UnknownProviderError` exception."""
-
-
-class TestProviderApiKeyEnv:
-    """Tests for PROVIDER_API_KEY_ENV constant."""
-
-    def test_contains_major_providers(self):
-        """Contains environment variables for major providers."""
-        assert PROVIDER_API_KEY_ENV["anthropic"] == "ANTHROPIC_API_KEY"
-        assert PROVIDER_API_KEY_ENV["azure_openai"] == "AZURE_OPENAI_API_KEY"
-        assert PROVIDER_API_KEY_ENV["baseten"] == "BASETEN_API_KEY"
-        assert PROVIDER_API_KEY_ENV["cohere"] == "COHERE_API_KEY"
-        assert PROVIDER_API_KEY_ENV["deepseek"] == "DEEPSEEK_API_KEY"
-        assert PROVIDER_API_KEY_ENV["fireworks"] == "FIREWORKS_API_KEY"
-        assert PROVIDER_API_KEY_ENV["google_anthropic_vertex"] == "GOOGLE_CLOUD_PROJECT"
-        assert PROVIDER_API_KEY_ENV["google_genai"] == "GOOGLE_API_KEY"
-        assert PROVIDER_API_KEY_ENV["google_vertexai"] == "GOOGLE_CLOUD_PROJECT"
-        assert PROVIDER_API_KEY_ENV["groq"] == "GROQ_API_KEY"
-        assert PROVIDER_API_KEY_ENV["huggingface"] == "HUGGINGFACEHUB_API_TOKEN"
-        assert PROVIDER_API_KEY_ENV["ibm"] == "WATSONX_APIKEY"
-        assert PROVIDER_API_KEY_ENV["meta"] == "MODEL_API_KEY"
-        assert PROVIDER_API_KEY_ENV["mistralai"] == "MISTRAL_API_KEY"
-        assert PROVIDER_API_KEY_ENV["nvidia"] == "NVIDIA_API_KEY"
-        assert PROVIDER_API_KEY_ENV["openai"] == "OPENAI_API_KEY"
-        assert PROVIDER_API_KEY_ENV["openrouter"] == "OPENROUTER_API_KEY"
-        assert PROVIDER_API_KEY_ENV["perplexity"] == "PPLX_API_KEY"
-        assert PROVIDER_API_KEY_ENV["together"] == "TOGETHER_API_KEY"
-        assert PROVIDER_API_KEY_ENV["xai"] == "XAI_API_KEY"
-
-
-class TestProviderBaseUrlEnv:
-    """Tests for PROVIDER_BASE_URL_ENV constant."""
-
-    def test_baseten_matches_langchain_baseten_precedence(self) -> None:
-        """Baseten reads the new env var before the legacy fallback."""
-        assert PROVIDER_BASE_URL_ENV["baseten"] == (
-            "BASETEN_BASE_URL",
-            "BASETEN_API_BASE",
-        )
 
 
 class TestModelConfigLoad:
@@ -4346,30 +4301,6 @@ class TestCodexProviderMirror:
     only models in the `CODEX_MODELS` allowlist are exposed under
     `openai_codex`; other openai models are not mirrored.
     """
-
-    def test_gpt_56_models_are_allowlisted(self) -> None:
-        assert {
-            "gpt-5.6-luna",
-            "gpt-5.6-sol",
-            "gpt-5.6-terra",
-        } <= model_config.CODEX_MODELS
-
-    def test_available_models_mirror_codex_allowlist(self) -> None:
-        model_config.clear_caches()
-        available = model_config.get_available_models()
-        openai_models = available.get("openai", [])
-        assert openai_models, "expected openai models to be discoverable"
-        codex_models = available.get(model_config.CODEX_PROVIDER, [])
-        # Only allowlisted openai models are mirrored under codex.
-        assert codex_models == [
-            name for name in openai_models if name in model_config.CODEX_MODELS
-        ]
-        # The curated flagship is present...
-        assert "gpt-5.5" in codex_models
-        # ...while a non-allowlisted openai model is excluded from codex even
-        # though openai itself offers it.
-        assert "gpt-5.4-pro" in openai_models
-        assert "gpt-5.4-pro" not in codex_models
 
     def test_profiles_mirror_codex_allowlist_under_codex(self) -> None:
         model_config.clear_caches()

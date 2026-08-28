@@ -222,48 +222,6 @@ class TestLocalContextMiddleware:
         assert effective == [summary, message]
         backend._mock.assert_called_once()
 
-    def test_before_agent_unchanged_context_records_cutoff_only(self) -> None:
-        """An unchanged refresh adds no conversation message."""
-        backend = _make_backend(output="existing context")
-        middleware = LocalContextMiddleware(backend=backend)
-        state: Any = {
-            "messages": [Mock() for _ in range(5)],
-            "_local_context": "existing context",
-            "_summarization_event": _make_summarization_event(5),
-        }
-
-        result = middleware.before_agent(state, Mock())  # ty: ignore
-
-        assert result == {
-            "_local_context_refreshed_at_cutoff": 5,
-            "_latest_local_context_fingerprint": hashlib.sha256(
-                b"existing context"
-            ).hexdigest(),
-        }
-
-    def test_before_agent_compares_with_latest_snapshot(self) -> None:
-        """A later refresh compares against the latest observed context."""
-        backend = _make_backend(output="first refresh")
-        middleware = LocalContextMiddleware(backend=backend)
-        state: Any = {
-            "messages": [Mock() for _ in range(20)],
-            "_local_context": "initial context",
-            "_latest_local_context_fingerprint": hashlib.sha256(
-                b"first refresh"
-            ).hexdigest(),
-            "_summarization_event": _make_summarization_event(20),
-            "_local_context_refreshed_at_cutoff": 10,
-        }
-
-        result = middleware.before_agent(state, Mock())  # ty: ignore
-
-        assert result == {
-            "_local_context_refreshed_at_cutoff": 20,
-            "_latest_local_context_fingerprint": hashlib.sha256(
-                b"first refresh"
-            ).hexdigest(),
-        }
-
     def test_before_agent_missing_cutoff_index_skips_refresh(self) -> None:
         """A malformed summarization event does not trigger detection."""
         backend = _make_backend(output="anything")

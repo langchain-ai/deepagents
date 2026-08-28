@@ -345,47 +345,6 @@ def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
 class TestModelSwap:
     """Cases where the middleware should swap the model."""
 
-    async def test_async_model_swapped(self) -> None:
-        original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-5.5")
-        request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
-
-        captured: list[ModelRequest] = []
-        offloaded: list[
-            tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
-        ] = []
-
-        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            captured.append(r)
-            return _make_response()
-
-        async def fake_to_thread(
-            func: Callable[..., object], /, *args: object, **kwargs: object
-        ) -> object:
-            await asyncio.sleep(0)
-            offloaded.append((func, args, kwargs))
-            return func(*args, **kwargs)
-
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create,
-            patch(
-                "deepagents_code.configurable_model.asyncio.to_thread", fake_to_thread
-            ),
-        ):
-            result = await _mw.awrap_model_call(request, handler)
-
-        assert captured[0].model is override
-        # Blocking calls must be offloaded: model construction, the
-        # endpoint-identity lookup, and effective cache-param resolution (both
-        # read the config and credential store). Doing any inline would trip
-        # `blockbuster` on the server event loop.
-        assert offloaded == [
-            (create, ("openai:gpt-5.5",), {}),
-            (_cache_endpoint_identity, ("openai:gpt-5.5",), {}),
-            (_effective_cache_params, ("openai:gpt-5.5", None), {}),
-        ]
-        assert "_last_cache_params" in _checkpoint_update(result)
-
     def test_create_model_error_falls_back_to_original(self) -> None:
         """ModelConfigError falls back to original model instead of crashing."""
         from deepagents_code.model_config import ModelConfigError

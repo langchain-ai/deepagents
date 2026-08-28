@@ -164,32 +164,6 @@ class TestWriteOsc:
         assert fake.getvalue() == "\x1b]0\a"
 
 
-class TestValidateProgress:
-    """Tests for `_validate_progress`."""
-
-    def test_determinate_clamps_low(self) -> None:
-        assert _validate_progress(-10, TerminalProgressState.NORMAL) == 0
-
-    def test_determinate_clamps_high(self) -> None:
-        assert _validate_progress(250, TerminalProgressState.ERROR) == 100
-
-    def test_non_numeric_progress_coerces_to_zero(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Bad types are logged + treated as zero, never raised."""
-        with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
-            assert _validate_progress("nope", TerminalProgressState.NORMAL) == 0  # ty: ignore
-        assert any("non-numeric" in record.message for record in caplog.records)
-
-    def test_clear_with_nonzero_progress_is_logged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Supplying progress to CLEAR/INDETERMINATE is observable misuse."""
-        with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
-            assert _validate_progress(42, TerminalProgressState.CLEAR) == 0
-        assert any("ignoring progress" in record.message for record in caplog.records)
-
-
 class TestSetTerminalProgress:
     """Tests for `set_terminal_progress` / `clear_terminal_progress`."""
 

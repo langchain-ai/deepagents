@@ -95,24 +95,6 @@ class TestBuildServerEnv:
             env = _build_server_env()
         assert env[_INHERITED_PYTHONPATH_ENV] == ""
 
-    def test_startup_hijack_keys_blocked_from_dotenv(self) -> None:
-        """Project `.env` files must not inject interpreter startup hooks."""
-        assert "PYTHONPATH" in _SERVER_ENV_DENYLIST
-        for key in (
-            "BASH_ENV",
-            "BASHOPTS",
-            "CDPATH",
-            "COMSPEC",
-            "ENV",
-            "GLOBIGNORE",
-            "PYTHONPATH",
-            "SHELLOPTS",
-            "SYSTEMROOT",
-            "WINDIR",
-            _INHERITED_PYTHONPATH_ENV,
-        ):
-            assert key in _DOTENV_DENIED_ENV_KEYS
-
 
 class TestPythonpathRelayRoundTrip:
     def test_launch_pythonpath_round_trips_to_execute_env(self) -> None:

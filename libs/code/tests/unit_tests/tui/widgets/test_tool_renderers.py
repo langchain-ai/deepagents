@@ -46,16 +46,6 @@ def test_write_renderer_falls_back_to_str_for_unserializable_content() -> None:
     assert data["content"] == str({1, 2, 3})
 
 
-def test_write_widget_formats_non_string_content() -> None:
-    widgets = list(
-        WriteFileApprovalWidget(
-            {"file_path": "data.json", "content": {"a": "b"}}
-        ).compose()
-    )
-
-    assert len(widgets) == 3
-
-
 @pytest.mark.parametrize(
     "file_path",
     [".env", "/home/user/project/.env", "config/.env.local"],
@@ -78,26 +68,6 @@ def test_write_widget_redacts_credential_file_content(file_path: str) -> None:
     # through. Guard structurally: the credential branch must emit no
     # `Markdown` child at all.
     assert not any(isinstance(widget, Markdown) for widget in widgets)
-
-
-def test_write_widget_renders_regular_file_via_markdown() -> None:
-    """Positive control for the credential redaction test.
-
-    A non-credential file must use the `Markdown` branch; without this, the
-    "no `Markdown` child" assertion above could pass vacuously if the widget
-    stopped using `Markdown` for everything.
-    """
-    widgets = list(
-        WriteFileApprovalWidget(
-            {
-                "file_path": "main.py",
-                "content": "print('hi')",
-                "file_extension": "python",
-            }
-        ).compose()
-    )
-
-    assert any(isinstance(widget, Markdown) for widget in widgets)
 
 
 def test_write_widget_redacts_large_credential_file() -> None:

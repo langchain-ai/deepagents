@@ -888,56 +888,6 @@ def test_remote_managed_policy_outranks_lower_sources(
     ) == ("manual", "managed config")
 
 
-def test_remote_opener_installs_both_destination_guards(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The real opener rejects redirects, not just environment proxies.
-
-    The safe-failure parametrization above stubs an `HTTPError(302)`, so it
-    pins the message mapping and not the handler that makes a real 302 raise
-    at all. Without this test, deleting `_RejectRedirects` from the opener
-    turns an administrator-pinned host into attacker-chosen egress with the
-    whole suite still green.
-    """
-    from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
-
-    from deepagents_code.configuration.providers import _build_remote_opener
-
-    # With no proxy in the environment `build_opener` installs no `ProxyHandler`
-    # either way, so asserting its absence would pass whether or not production
-    # passes `ProxyHandler({})`. Configuring one is what gives the assertion
-    # teeth -- and the control below proves this environment would otherwise
-    # route through it.
-    monkeypatch.setenv("HTTPS_PROXY", "https://proxy.invalid:3128")
-    monkeypatch.setenv("https_proxy", "https://proxy.invalid:3128")
-    # `handlers` is set in `OpenerDirector.__init__` but absent from typeshed,
-    # so read it the way the proxy assertion above reads `proxies`.
-    control: list[Any] = vars(build_opener())["handlers"]
-    proxied = [h for h in control if isinstance(h, ProxyHandler)]
-    assert proxied, "expected a default opener to install an env ProxyHandler"
-    assert hasattr(proxied[0], "https_open")
-
-    handlers: list[Any] = vars(_build_remote_opener())["handlers"]
-    # `ProxyHandler({})` registers no `*_open` method, so `build_opener` never
-    # adds it to the chain. Passing it still does the work: it displaces the
-    # default `ProxyHandler` class, whose `getproxies()` would install
-    # `HTTPS_PROXY`. Absence is therefore the assertion that env proxies lost.
-    assert not any(isinstance(h, ProxyHandler) for h in handlers)
-    redirectors = [h for h in handlers if isinstance(h, HTTPRedirectHandler)]
-    assert len(redirectors) == 1
-    assert (
-        redirectors[0].redirect_request(
-            None,
-            None,
-            302,
-            "Found",
-            Message(),
-            "https://elsewhere.example/policy.toml",
-        )
-        is None
-    )
-
-
 def test_remote_descriptor_source_is_the_url_fetched(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

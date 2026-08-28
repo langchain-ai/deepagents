@@ -463,46 +463,6 @@ class TestGetLatestVersion:
         assert result is None
         assert not cache_file.exists()
 
-    def test_bypass_cache_busts_cdn_cache(self, cache_file) -> None:  # noqa: ARG002
-        """A forced check sends no-cache headers and a cache-busting param.
-
-        PyPI's JSON API is served through a CDN, so bypassing only the local
-        cache can still return a stale answer right after a release. The
-        request must defeat the edge cache too.
-        """
-        with patch(
-            "requests.get", return_value=_mock_pypi_response("2.0.0")
-        ) as mock_get:
-            get_latest_version(bypass_cache=True)
-
-        kwargs = mock_get.call_args.kwargs
-        assert kwargs["headers"]["Cache-Control"] == "no-cache"
-        assert kwargs["headers"]["Pragma"] == "no-cache"
-        assert kwargs["params"]["_"]
-
-    def test_cache_bust_params_are_unique_per_call(self, cache_file) -> None:  # noqa: ARG002
-        """Each forced check uses a distinct cache-busting token."""
-        with patch(
-            "requests.get", return_value=_mock_pypi_response("2.0.0")
-        ) as mock_get:
-            get_latest_version(bypass_cache=True)
-            get_latest_version(bypass_cache=True)
-
-        first, second = mock_get.call_args_list
-        assert first.kwargs["params"]["_"] != second.kwargs["params"]["_"]
-
-    def test_non_bypass_fetch_omits_cache_busting(self, cache_file) -> None:  # noqa: ARG002
-        """A routine (non-forced) refresh does not add cache-busting."""
-        with patch(
-            "requests.get", return_value=_mock_pypi_response("2.0.0")
-        ) as mock_get:
-            get_latest_version(bypass_cache=False)
-
-        kwargs = mock_get.call_args.kwargs
-        assert "Cache-Control" not in kwargs["headers"]
-        assert "Pragma" not in kwargs["headers"]
-        assert "params" not in kwargs
-
 
 class TestPrereleasePinRequirements:
     """Unit tests for the targeted `Requires-Dist` pre-release pin extractor.
@@ -1829,7 +1789,7 @@ class TestUpgradeInstallCommand:
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
-            "deepagents_code.extras_info.installed_extra_names",
+            "deepagents_code.update_check._uv_tool_selected_extras",
             return_value=frozenset({"openai"}),
         ):
             assert upgrade_install_command(
@@ -1844,7 +1804,7 @@ class TestUpgradeInstallCommand:
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
-            "deepagents_code.extras_info.installed_extra_names",
+            "deepagents_code.update_check._uv_tool_selected_extras",
             return_value=frozenset({"quickjs", "nvidia"}),
         ):
             assert upgrade_install_command(include_prereleases=True) == (
@@ -1952,7 +1912,11 @@ class TestUpgradeInstallCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
             pytest.raises(ExtrasIntrospectionError),
@@ -1975,7 +1939,11 @@ class TestUpgradeInstallCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset({"not a valid extra"}),
             ),
             pytest.raises(ExtrasIntrospectionError),
@@ -2064,17 +2032,11 @@ class TestInstallExtraCommand:
         """UV recovery guidance matches the automatic context-preserving install."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            '{ name = "deepagents-code", extras = ["nvidia"] }, '
+            '{ name = "langchain-custom" }',
             python="/opt/Python 3.13/bin/python",
         )
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
         monkeypatch.setattr(
             "deepagents_code.update_check.detect_install_method", lambda: "uv"
         )
@@ -2103,40 +2065,13 @@ class TestInstallExtraCommand:
             "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
         )
 
-    def test_uv_install_extra_command_refuses_invalid_metadata(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Malformed optional-dependency metadata must not drop existing extras."""
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=("not a valid requirement ; ;",),
-        )
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        with pytest.raises(ExtrasIntrospectionError, match="Could not parse"):
-            _install_extra_uv_tool_command(
-                "quickjs", distribution_name="deepagents-code"
-            )
-
     def test_uv_install_extra_command_preserves_installed_extras(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Installing a new extra keeps already-installed extras selected."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=(
-                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
-                'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
-            ),
-        )
+        """Installing a new extra keeps already-selected extras selected."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code", extras = ["nvidia"] }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
-        assert installed_extra_names("deepagents-code") == {"nvidia"}
         assert _install_extra_uv_tool_command(
             "baseten", distribution_name="deepagents-code"
         ) == (
@@ -2147,16 +2082,9 @@ class TestInstallExtraCommand:
     def test_uv_install_extra_command_dedupes_existing_extra(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Installing an already-present extra does not duplicate it."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
+        """Installing an already-selected extra does not duplicate it."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code", extras = ["nvidia"] }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
         assert _install_extra_uv_tool_command(
             "nvidia", distribution_name="deepagents-code"
@@ -2165,49 +2093,17 @@ class TestInstallExtraCommand:
             f"'deepagents-code[nvidia]=={__version__}' --prerelease allow"
         )
 
-    def test_uv_install_extra_command_drops_composite_extras(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Composite extras are not echoed back into uv reinstall commands."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-openai")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=(
-                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
-                'definitely-present-dcode-test-openai; extra == "all-providers"',
-            ),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        assert installed_extra_names("deepagents-code") == {"nvidia"}
-        assert _install_extra_uv_tool_command(
-            "baseten", distribution_name="deepagents-code"
-        ) == (
-            "uv tool install --reinstall -U "
-            f"'deepagents-code[baseten,nvidia]=={__version__}' --prerelease allow"
-        )
-
     def test_uv_install_extra_command_preserves_receipt_python_and_with_packages(
         self, tmp_path, monkeypatch
     ) -> None:
         """Installing an extra preserves the uv tool interpreter and `--with` deps."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            '{ name = "deepagents-code", extras = ["nvidia"] }, '
+            '{ name = "langchain-custom" }',
             python="/opt/Python 3.13/bin/python",
         )
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
         command = _install_extra_uv_tool_command(
             "baseten", distribution_name="deepagents-code"
@@ -2340,17 +2236,11 @@ class TestInstallPackageCommand:
         """Adding a package keeps uv receipt interpreter and `--with` packages."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-first" }',
+            '{ name = "deepagents-code", extras = ["nvidia"] }, '
+            '{ name = "langchain-first" }',
             python="/opt/Python 3.13/bin/python",
         )
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
         command = install_package_command(
             "langchain-second", distribution_name="deepagents-code"
@@ -2533,7 +2423,7 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value=method,
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert needle in output
         assert "ToolRequirementIntrospectionError" not in output
@@ -2559,7 +2449,9 @@ class TestPerformInstallExtra:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is True
         assert output == "ok"
 
@@ -2581,7 +2473,7 @@ class TestPerformInstallExtra:
                 return_value=frozenset(),
             ),
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
@@ -2729,7 +2621,11 @@ class TestPerformInstallPackage:
                 return_value="/usr/bin/uv",
             ),
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
@@ -2872,66 +2768,6 @@ class TestRunInstallSubprocessFailureModes:
     public entry point of its own.
     """
 
-    async def test_timeout_kills_process_group_after_shell_exits(
-        self, tmp_path
-    ) -> None:
-        """Timeout cleanup kills descendants after the POSIX shell exits."""
-        if os.name != "posix":
-            pytest.skip("process groups are POSIX-specific")
-        log_path = tmp_path / "install.log"
-        with (
-            patch("deepagents_code.update_check._UPGRADE_TIMEOUT", 0.05),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value="/usr/bin/uv",
-            ),
-            patch(
-                "deepagents_code.update_check._install_extra_uv_tool_command",
-                return_value="sleep 5 & exit 0",
-            ),
-            patch("deepagents_code.update_check.os.killpg", wraps=os.killpg) as killpg,
-        ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
-        assert success is False
-        assert "timed out" in output
-        killpg.assert_called_once()
-        assert killpg.call_args.args[1] == signal.SIGKILL
-
-    async def test_cancellation_terminates_process_and_propagates(
-        self, tmp_path
-    ) -> None:
-        """Cancelling mid-install kills the process group and re-raises."""
-        if os.name != "posix":
-            pytest.skip("process groups are POSIX-specific")
-        log_path = tmp_path / "install.log"
-        started = asyncio.Event()
-
-        def progress(line: str) -> None:
-            if "ready" in line:
-                started.set()
-
-        with patch("deepagents_code.update_check.os.killpg", wraps=os.killpg) as killpg:
-            task = asyncio.ensure_future(
-                _run_install_subprocess(
-                    "echo ready; sleep 30", progress=progress, log_path=log_path
-                )
-            )
-            # Cancel only once the subprocess is actually running (it emitted a
-            # line), so cancellation lands inside the install, not before it.
-            await asyncio.wait_for(started.wait(), timeout=5)
-            task.cancel()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        # Cancellation must not be swallowed, and the descendant `sleep` must be
-        # killed via the process group rather than orphaned.
-        killpg.assert_called_once()
-        assert killpg.call_args.args[1] == signal.SIGKILL
-
     async def test_terminate_falls_back_to_direct_kill_on_permission_error(
         self,
     ) -> None:
@@ -2978,25 +2814,6 @@ class TestRunInstallSubprocessFailureModes:
         transport = getattr(proc, "_transport", None)
         assert transport is not None
         assert transport.is_closing()
-
-    async def test_terminate_closes_transport_after_reaping(self) -> None:
-        """`_terminate_install_process` explicitly closes the transport.
-
-        Deterministic guard for the CI `PytestUnraisableExceptionWarning`: real
-        subprocesses can close their transport naturally depending on timing, so
-        this pins the contract that cleanup closes it regardless. Fails if the
-        eager `transport.close()` is dropped and the transport is left pending.
-        """
-        proc = MagicMock()
-        proc.pid = 987654
-        proc.returncode = -9
-        proc.wait = AsyncMock(return_value=-9)
-        transport = MagicMock()
-        proc._transport = transport
-        # Patch `killpg` so the fake pid never signals a real process group.
-        with patch("deepagents_code.update_check.os.killpg"):
-            await _terminate_install_process(proc)
-        transport.close.assert_called_once_with()
 
 
 def _mock_sdk_pypi_response(

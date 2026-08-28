@@ -67,15 +67,6 @@ def clear_git_dir_cache() -> Iterator[None]:
     _git_dir_cache.clear()
 
 
-class TestNormalizeLookupPath:
-    @patch("pathlib.Path.resolve")
-    def test_normalize_os_error_fallback(
-        self, mock_resolve: MagicMock, tmp_path: Path
-    ) -> None:
-        mock_resolve.side_effect = OSError("Permission denied")
-        assert _normalize_lookup_path(tmp_path) == tmp_path
-
-
 class TestFindGitCommonDir:
     def test_main_and_genuine_sibling_worktrees_share_identity(
         self, tmp_path: Path

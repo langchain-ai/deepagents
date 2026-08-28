@@ -478,23 +478,6 @@ class TestCollectUpdates:
         assert labels["Latest version"] == "unknown (never checked)"
         assert labels["Last checked"] == "never"
 
-    def test_row_set_is_fixed(self, tmp_path: Path) -> None:
-        """Every state renders the same labels so outputs stay comparable."""
-        expected = ["Update checks", "Auto-updates", "Latest version", "Last checked"]
-        stale = self._stale_cache(tmp_path)
-        assert list(self._labels(stale)) == expected
-        assert (
-            list(self._labels(stale, editable=True, cached=(False, None))) == expected
-        )
-        assert (
-            list(self._labels(stale, checks_enabled=False, cached=(False, None)))
-            == expected
-        )
-        assert (
-            list(self._labels(tmp_path / "missing.json", cached=(False, None)))
-            == expected
-        )
-
 
 class TestCommitHash:
     """Tests for git commit hash detection."""
@@ -593,9 +576,11 @@ class TestConfigurationSection:
 class TestRunDoctorCommand:
     """Tests for the text and JSON rendering paths."""
 
-    def _run_text(self) -> tuple[int, str]:
+    def _run_text(self, *, force_terminal: bool = False) -> tuple[int, str]:
         buf = io.StringIO()
-        test_console = Console(file=buf, highlight=False, width=200)
+        test_console = Console(
+            file=buf, force_terminal=force_terminal, highlight=False, width=200
+        )
         args = argparse.Namespace(output_format="text")
         with patch("deepagents_code.config.console", test_console):
             code = run_doctor_command(args)

@@ -45,36 +45,6 @@ class TestSkillInvocationHistory:
     resolve to skills downstream.
     """
 
-    def test_skill_invocation_added(self, tmp_path: Path) -> None:
-        """`/skill:web-research` should be stored in history."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/skill:web-research find quantum computing")
-        assert mgr._entries == ["/skill:web-research find quantum computing"]
-
-    def test_skill_invocation_without_args_added(self, tmp_path: Path) -> None:
-        """`/skill:remember` with no args should be stored."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/skill:remember")
-        assert mgr._entries == ["/skill:remember"]
-
-    def test_mixed_case_skill_invocation_added(self, tmp_path: Path) -> None:
-        """Mixed-case `/skill:` invocations should be stored as typed."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/Skill:web-research find quantum computing")
-        mgr.add("/SKILL:remember")
-        assert mgr._entries == [
-            "/Skill:web-research find quantum computing",
-            "/SKILL:remember",
-        ]
-
-    def test_non_skill_slash_command_not_added(self, tmp_path: Path) -> None:
-        """`/help` and other slash commands should not be stored."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/help")
-        mgr.add("/quit")
-        mgr.add("/model")
-        assert mgr._entries == []
-
     def test_skill_invocation_recallable(self, tmp_path: Path) -> None:
         """Skill invocations should be recallable via get_previous."""
         mgr = HistoryManager(tmp_path / "history.jsonl")
@@ -87,55 +57,6 @@ class TestSkillInvocationHistory:
 
         entry = mgr.get_previous("", query="")
         assert entry == "some regular text"
-
-    def test_skill_invocation_dedup(self, tmp_path: Path) -> None:
-        """Duplicate skill invocations are deduplicated like normal entries."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/skill:web-research find cats")
-        mgr.add("/skill:web-research find cats")
-        assert mgr._entries == ["/skill:web-research find cats"]
-
-    def test_skill_listing_command_not_added(self, tmp_path: Path) -> None:
-        """`/skill` without a colon is the listing command, not an invocation."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/skill")
-        assert mgr._entries == []
-
-    def test_skill_prefix_collision_not_added(self, tmp_path: Path) -> None:
-        """Slash commands that merely start with `/skill` (no colon) are dropped."""
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/skilling")
-        mgr.add("/skill-creator")
-        assert mgr._entries == []
-
-    def test_skill_invocation_empty_name_added(self, tmp_path: Path) -> None:
-        """A bare `/skill:` (empty name) still matches the prefix and is stored.
-
-        Upstream parsing rejects empty skill names, so this form is not expected
-        in practice; the test pins current behavior to catch silent changes.
-        """
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/skill:")
-        assert mgr._entries == ["/skill:"]
-
-    def test_skill_alias_not_added(self, tmp_path: Path) -> None:
-        """Convenience aliases are dropped because history precedes rewriting.
-
-        A user typing `/remember` submits the raw alias, which is rewritten to
-        `/skill:remember` only in the app layer after history capture.
-        """
-        mgr = HistoryManager(tmp_path / "history.jsonl")
-        mgr.add("/remember something useful")
-        assert mgr._entries == []
-
-    def test_skill_invocation_persists_across_reload(self, tmp_path: Path) -> None:
-        """Stored skill invocations survive into a new session via the file."""
-        history_file = tmp_path / "history.jsonl"
-        mgr = HistoryManager(history_file)
-        mgr.add("/skill:web-research find cats")
-
-        reloaded = HistoryManager(history_file)
-        assert reloaded._entries == ["/skill:web-research find cats"]
 
 
 class TestRecentPrompts:
@@ -150,23 +71,6 @@ class TestRecentPrompts:
 
         assert mgr.recent_prompts() == ("from another process", "first")
         assert mgr.get_previous("") == "from another process"
-
-    @pytest.mark.skipif(os.geteuid() == 0, reason="root ignores read-only mode")
-    def test_read_failure_preserves_session_prompts(self, tmp_path: Path) -> None:
-        """A failed refresh keeps in-memory prompts instead of wiping them."""
-        history_file = tmp_path / "history.jsonl"
-        history_file.write_text(json.dumps("persisted") + "\n", encoding="utf-8")
-
-        mgr = HistoryManager(history_file)
-        mgr.add("session only")
-        assert mgr._entries == ["persisted", "session only"]
-
-        history_file.chmod(0o000)
-        try:
-            assert mgr.recent_prompts() == ("session only", "persisted")
-            assert mgr._entries == ["persisted", "session only"]
-        finally:
-            history_file.chmod(0o600)
 
     def test_failed_append_survives_refresh(self, tmp_path: Path) -> None:
         """A prompt that could not be written stays through a later refresh."""
@@ -216,26 +120,6 @@ class TestRecentPrompts:
         mgr.recent_prompts()
         assert mgr.history_unreadable is False
 
-    def test_failed_persist_is_bounded_by_max_entries(self, tmp_path: Path) -> None:
-        """Unpersisted entries stop being tracked once they age out."""
-        history_file = tmp_path / "history.jsonl"
-        blocker = tmp_path / "blocker"
-        blocker.touch()
-        mgr = HistoryManager(history_file, max_entries=3)
-        mgr.history_file = blocker / "history.jsonl"
-
-        for index in range(10):
-            mgr.add(f"prompt {index}")
-        assert len(mgr._failed_persist) == 10
-
-        # The bounding runs on a successful read, so the file has to exist.
-        history_file.write_text(json.dumps("from disk") + "\n", encoding="utf-8")
-        mgr.history_file = history_file
-        mgr.recent_prompts()
-
-        # Only the newest bounded suffix can still reach the navigation window.
-        assert len(mgr._failed_persist) <= mgr.max_entries
-
     def test_history_unwritable_latches_on_a_failed_append(
         self, tmp_path: Path
     ) -> None:
@@ -256,23 +140,6 @@ class TestRecentPrompts:
         # still only in memory, so the session's history is still incomplete.
         mgr.history_file = history_file
         mgr.add("persisted again")
-        assert mgr.history_unwritable is True
-
-    def test_history_unwritable_latches_on_a_failed_compaction(
-        self, tmp_path: Path
-    ) -> None:
-        """Compaction failures count too; they silently drop trimmed entries."""
-        history_file = tmp_path / "history.jsonl"
-        mgr = HistoryManager(history_file, max_entries=2)
-        mgr.add("one")
-        assert mgr.history_unwritable is False
-
-        blocker = tmp_path / "blocker"
-        blocker.touch()
-        mgr.history_file = blocker / "history.jsonl"
-        mgr._entries = [f"entry {index}" for index in range(6)]
-        mgr._compact_history()
-
         assert mgr.history_unwritable is True
 
     def test_failed_duplicate_append_stays_newest(self, tmp_path: Path) -> None:

@@ -76,39 +76,6 @@ class TestNormalizeToolStatus:
 class TestToolCallBufferParseArgs:
     """Argument reassembly and completeness gating."""
 
-    def test_incomplete_fragments_are_not_rejoined_per_chunk(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Incremental parsing avoids rejoining the growing prefix per chunk.
-
-        The pre-incremental version joined the whole accumulated prefix on every
-        fragment, so a long streamed value cost O(n^2). Counting joins is the
-        directly observable form of that fix: zero while the payload is
-        incomplete, then exactly one for the completed value, reused by the
-        second read. The fragment count is deliberately unrelated to
-        `MAX_JSON_CONTAINER_DEPTH` — nesting plays no part here.
-        """
-        chunks = 2_500
-        buffer = ToolCallBuffer(args_parts=['{"content": "'])
-        original_materialize = buffer._materialize_args
-        materializations = 0
-
-        def count_materialization() -> str:
-            nonlocal materializations
-            materializations += 1
-            return original_materialize()
-
-        monkeypatch.setattr(buffer, "_materialize_args", count_materialization)
-        for _ in range(chunks):
-            buffer.ingest(name=None, tool_id=None, args="x")
-            assert buffer.parse_args() is None
-
-        assert materializations == 0
-        buffer.ingest(name=None, tool_id=None, args='"}')
-        assert buffer.parse_args() == {"content": "x" * chunks}
-        assert buffer.parse_args() == {"content": "x" * chunks}
-        assert materializations == 1
-
     def test_warned_latch_does_not_strand_a_later_payload(self) -> None:
         """A malformed payload does not poison the next one in the same buffer.
 

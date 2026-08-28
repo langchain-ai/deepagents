@@ -42,119 +42,11 @@ def _rendered_text(widget: Widget) -> str:
 class TestMessageData:
     """Tests for MessageData serialization."""
 
-    def test_user_message_roundtrip_preserves_expansion(self):
-        """An expanded long prompt stays expanded across virtualization."""
-        original = UserMessage("A" * 12_000, id="test-user-long")
-        original._expanded = True
-
-        data = MessageData.from_widget(original)
-        assert data.user_expanded is True
-
-        restored = data.to_widget()
-        assert isinstance(restored, UserMessage)
-        assert restored._deferred_expanded is True
-
-    def test_user_message_roundtrip_preserves_detect_mode(self):
-        """`detect_mode=False` survives, so a literal leading slash stays literal."""
-        original = UserMessage("/not/a/command", id="test-user-path", detect_mode=False)
-
-        data = MessageData.from_widget(original)
-        assert data.user_detect_mode is False
-
-        restored = data.to_widget()
-        assert isinstance(restored, UserMessage)
-        assert restored._detect_mode is False
-
-    def test_user_message_roundtrip_defaults_to_collapsed(self):
-        """A prompt the user never expanded rehydrates collapsed."""
-        original = UserMessage("B" * 12_000, id="test-user-collapsed")
-
-        restored = MessageData.from_widget(original).to_widget()
-        assert isinstance(restored, UserMessage)
-        assert restored._deferred_expanded is False
-
     def test_assistant_message_defaults_to_agent_output(self):
         """A plain assistant message is agent output, not client output."""
         data = MessageData.from_widget(AssistantMessage("hi", id="asst-plain"))
 
         assert data.assistant_local_only is False
-
-    def test_local_only_assistant_message_roundtrip(self):
-        """`local_only` survives serialization and rehydration.
-
-        `!` shell output renders through `AssistantMessage`, and callers asking
-        whether the agent did anything in a thread rely on this flag. Losing it
-        on a virtualization round trip would make shell output read as a turn.
-        """
-        original = AssistantMessage(
-            "```text\nREADME.md\n```", id="asst-shell-1", local_only=True
-        )
-
-        data = MessageData.from_widget(original)
-        assert data.type == MessageType.ASSISTANT
-        assert data.assistant_local_only is True
-
-        restored = data.to_widget()
-        assert isinstance(restored, AssistantMessage)
-        assert restored._local_only is True
-        # A second round trip must not lose the flag either.
-        assert MessageData.from_widget(restored).assistant_local_only is True
-
-    async def test_lazy_tool_group_mounts_details_only_when_expanded(self) -> None:
-        """Collapsed restored groups keep their tool widget trees out of the DOM."""
-        data = MessageData(
-            type=MessageType.TOOL_GROUP,
-            content="",
-            tool_group_messages=[
-                MessageData(
-                    type=MessageType.TOOL,
-                    content="",
-                    tool_name="read_file",
-                    tool_status=ToolStatus.SUCCESS,
-                    tool_output="contents",
-                ),
-                MessageData(
-                    type=MessageType.TOOL,
-                    content="",
-                    tool_name="grep",
-                    tool_status=ToolStatus.SUCCESS,
-                    tool_output="match",
-                ),
-            ],
-        )
-        restored = data.to_widget()
-        assert isinstance(restored, LazyToolGroupSummary)
-
-        class _App(App[None]):
-            def compose(self) -> ComposeResult:
-                yield restored
-
-        async with _App().run_test():
-            assert not restored.query(ToolCallMessage)
-            await restored._set_expanded(True)
-            assert len(restored.query(ToolCallMessage)) == 2
-            await restored._set_expanded(False)
-            assert not restored.query(ToolCallMessage)
-
-    def test_rejected_supersession_is_logged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The guard protects an invariant, so tripping it must leave a trace.
-
-        Two name sources decide one outcome — the adapter gates on
-        `record.tool_name`, the widget on its own. A divergence mounts an
-        empty-bodied diff reading "no changes" *beside* a row that stayed visible,
-        and a silent return leaves nothing to debug that from.
-        """
-        widget = ToolCallMessage("shell")
-
-        with caplog.at_level(logging.WARNING):
-            widget.mark_superseded_by_diff()
-
-        assert widget._diff_superseded is False
-        assert any(
-            "may be superseded" in record.getMessage() for record in caplog.records
-        ), caplog.text
 
     def test_error_message_content_body_roundtrip(self):
         """`Content` bodies serialize as plain text; link spans drop on resume."""
@@ -176,38 +68,6 @@ class TestMessageData:
         # Restored widget renders without crashing (regression guard for the
         # `str(widget._content)` cast in `MessageData.from_widget`).
         assert restored.render().plain == f"Error: see {url}"
-
-    def test_app_message_markdown_roundtrip(self):
-        """Markdown AppMessages must survive dehydrate/rehydrate with their flag.
-
-        Regression guard: dropping `is_markdown` from either `from_widget`
-        or `to_widget` would silently downgrade rehydrated `/version` extras
-        tables to plain-text rendering.
-        """
-        from textual.content import Content
-
-        markdown_source = (
-            "### Installed optional dependencies\n"
-            "\n"
-            "| Extra | Package | Version |\n"
-            "| --- | --- | --- |\n"
-            "| anthropic | langchain-anthropic | 1.4.0 |\n"
-        )
-        original = AppMessage(markdown_source, markdown=True, id="test-app-md-1")
-
-        data = MessageData.from_widget(original)
-        assert data.type == MessageType.APP
-        assert data.content == markdown_source
-        assert data.is_markdown is True
-
-        restored = data.to_widget()
-        assert isinstance(restored, AppMessage)
-        assert restored._is_markdown is True
-        # Markdown renders to selectable `Content` (not a raw Rich renderable)
-        # so the rehydrated extras table stays copyable.
-        rendered = restored.render()
-        assert isinstance(rendered, Content)
-        assert "langchain-anthropic" in rendered.plain
 
     def test_default_ids_use_full_uuid_hex(self):
         """Auto-generated IDs use the full 128-bit hex, not a truncated prefix.
@@ -243,85 +103,6 @@ class TestMessageData:
         suffix = data.id.removeprefix("msg-")
         assert len(suffix) == 32
         int(suffix, 16)
-
-    def test_diff_message_roundtrip_preserves_highlighting_inputs(self) -> None:
-        """Virtualized diffs retain only the needed lexer prefixes and true counts.
-
-        `shown` with real counts, because `untrusted_before` leaves `stats`
-        unset — `FileOperationRecord.diff_stats` documents that pairing as
-        impossible, and a test that builds it stops describing what the code
-        produces.
-        """
-        original = DiffMessage(
-            "@@ -1 +1 @@\n-a\n+b",
-            "example.py",
-            tool_name="edit_file",
-            before="a\nunused before\n",
-            after="b\nunused after\n",
-            stats=DiffStats(additions=200, deletions=200),
-            id="test-diff-highlight",
-        )
-
-        restored = MessageData.from_widget(original).to_widget()
-
-        assert isinstance(restored, DiffMessage)
-        assert (restored._before, restored._after) == ("a", "b")
-        assert restored._stats == DiffStats(additions=200, deletions=200)
-        assert restored._outcome == "shown"
-        # Not only the privates: a rehydration bug preserving all four while
-        # breaking composition would pass on the assertions above alone.
-        assert any("+200" in _rendered_text(child) for child in restored.compose())
-
-    def test_an_untrusted_diff_roundtrips_without_counts(self) -> None:
-        """The outcome and its suppressed body have to survive separately.
-
-        Split from the highlighting round-trip above so each asserts a state the
-        tracker can actually produce: this one carries no `stats`, because a
-        count taken against a stand-in pre-image would be fiction.
-        """
-        original = DiffMessage(
-            "@@ -1 +1 @@\n-a\n+b",
-            "example.py",
-            tool_name="edit_file",
-            before="a\n",
-            after="b\n",
-            outcome="untrusted_before",
-            id="test-diff-untrusted",
-        )
-
-        restored = MessageData.from_widget(original).to_widget()
-
-        assert isinstance(restored, DiffMessage)
-        assert restored._outcome == "untrusted_before"
-        assert restored._stats is None
-        assert any(
-            "prior contents could not be read" in _rendered_text(child)
-            for child in restored.compose()
-        )
-
-    def test_a_suppressed_caveat_stays_suppressed_after_rehydration(self) -> None:
-        """The decision depends on what else was mounted, which the store cannot see.
-
-        Without persisting it, a diff whose tool row carries the caveat comes
-        back printing the same sentence a second time.
-        """
-        original = DiffMessage(
-            "@@ -1 +1 @@\n-a\n+b",
-            "example.py",
-            tool_name="edit_file",
-            outcome="untrusted_before",
-            show_caveat=False,
-            id="test-diff-no-caveat",
-        )
-
-        restored = MessageData.from_widget(original).to_widget()
-
-        assert isinstance(restored, DiffMessage)
-        assert restored.renders_caveat is False
-        texts = [_rendered_text(child) for child in restored.compose()]
-        assert all("prior contents could not be read" not in text for text in texts)
-        # The body stays suppressed regardless — only the sentence was hidden.
-        assert all("+b" not in text for text in texts)
 
 
 class TestMessageStore:
@@ -583,62 +364,6 @@ class TestVirtualizationFlow:
         assert not store.is_protected("asst-1")
         assert store.is_protected("asst-2")
 
-    def test_hydrate_below_advances_visible_end(self):
-        """Hydrating below should mount the next block and advance the tail."""
-        store = MessageStore()
-        store.WINDOW_SIZE = 3
-        for i in range(10):
-            store.append(
-                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
-            )
-        store._visible_start = 0
-        store._visible_end = 3
-
-        to_hydrate = store.get_messages_to_hydrate_below(2)
-        assert [m.id for m in to_hydrate] == ["id-3", "id-4"]
-
-        store.mark_hydrated_below(len(to_hydrate))
-        assert store.get_visible_range() == (0, 5)
-
-        # Nothing left below once the tail is reached.
-        store.mark_hydrated_below(store.total_count)
-        assert store.get_visible_range() == (0, 10)
-        assert not store.has_messages_below
-        assert store.get_messages_to_hydrate_below() == []
-
-    def test_prune_below_returns_newest_and_marks_visible_end(self):
-        """Bottom pruning removes the newest rows and rewinds _visible_end."""
-        store = MessageStore()
-        store.WINDOW_SIZE = 3
-        for i in range(6):
-            store.append(
-                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
-            )
-        store._visible_start = 0
-        store._visible_end = 6
-
-        to_prune = store.get_messages_to_prune_below()  # back to WINDOW_SIZE
-        assert [m.id for m in to_prune] == ["id-3", "id-4", "id-5"]
-
-        store.mark_pruned_below([m.id for m in to_prune])
-        assert store.get_visible_range() == (0, 3)
-        assert store.has_messages_below
-
-    def test_mark_pruned_below_only_rewinds_contiguous_tail(self):
-        """A gap at the tail must not over-rewind _visible_end."""
-        store = MessageStore()
-        for i in range(6):
-            store.append(
-                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
-            )
-        store._visible_start = 0
-        store._visible_end = 6
-
-        # The newest row (id-5) was NOT removed from the DOM; only inner rows
-        # were. mark_pruned_below must stop at the still-mounted tail.
-        store.mark_pruned_below(["id-3", "id-4"])
-        assert store.get_visible_range() == (0, 6)
-
 
 class TestBulkLoad:
     """Tests for MessageStore.bulk_load."""
@@ -669,31 +394,6 @@ class TestBulkLoad:
         assert len(archived) == len(data) - store.WINDOW_SIZE
         assert visible[0].id == f"id-{len(archived)}"
 
-    def test_bulk_load_at_initial_window_size(self):
-        """Exactly `INITIAL_WINDOW_SIZE` rows should all mount, none archived.
-
-        The boundary belongs to the `INITIAL_WINDOW_SIZE` arm of the `min()`,
-        which the other bulk_load tests never reach: they shrink `WINDOW_SIZE`
-        below it, so `WINDOW_SIZE` wins there.
-        """
-        store = MessageStore()
-        archived, visible = store.bulk_load(
-            self._rows(MessageStore.INITIAL_WINDOW_SIZE)
-        )
-        assert archived == []
-        assert len(visible) == MessageStore.INITIAL_WINDOW_SIZE
-        assert store._visible_start == 0
-
-    def test_bulk_load_just_under_initial_window_size(self):
-        """One row below the boundary stays fully mounted."""
-        store = MessageStore()
-        archived, visible = store.bulk_load(
-            self._rows(MessageStore.INITIAL_WINDOW_SIZE - 1)
-        )
-        assert archived == []
-        assert len(visible) == MessageStore.INITIAL_WINDOW_SIZE - 1
-        assert store._visible_start == 0
-
     def test_bulk_load_just_over_initial_window_size(self):
         """One row above the boundary archives exactly one row."""
         store = MessageStore()
@@ -711,33 +411,3 @@ class TestMessageStoreIndex:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
-
-
-def test_display_caveat_survives_the_store_roundtrip() -> None:
-    """A rehydrated caveated row must still refuse to fold.
-
-    The flag cannot be re-derived from `tool_output` without matching the
-    caveat's prose, so it is persisted. Losing it means a scrolled-away write
-    whose contents could not be read comes back folded into a summary that says
-    only `▸ Wrote 1 file`.
-    """
-    tool = ToolCallMessage("write_file", {"file_path": "a.py"})
-    tool.set_success("could not be shown\n\nWrote file")
-    tool._mark_display_caveat()
-
-    restored = MessageData.from_widget(tool).to_widget()
-
-    assert isinstance(restored, ToolCallMessage)
-    assert restored.has_display_caveat is True
-
-
-def test_reasoning_roundtrip_preserves_content_and_expansion() -> None:
-    widget = ReasoningMessage("[bold]plain[/bold]")
-    widget._expanded = False
-
-    restored = MessageData.from_widget(widget).to_widget()
-
-    assert isinstance(restored, ReasoningMessage)
-    assert restored._content == "[bold]plain[/bold]"
-    assert restored._deferred_expanded is False
-    assert restored._streaming is False

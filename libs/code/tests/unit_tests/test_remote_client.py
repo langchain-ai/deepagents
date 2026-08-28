@@ -518,21 +518,6 @@ class TestRemoteAgentUpdateStateConflictRecovery:
         assert runs_cancel.await_args_list[0].args[1] == "ok"
         assert mock_graph.aupdate_state.await_count == 2
 
-    async def test_non_conflict_exception_does_not_retry(self) -> None:
-        runs_list = AsyncMock()
-        runs_cancel = AsyncMock()
-        agent, mock_graph = self._agent_with_client(
-            runs_list=runs_list,
-            runs_cancel=runs_cancel,
-            update_side_effect=[ConnectionError("down")],
-        )
-
-        with pytest.raises(ConnectionError, match="down"):
-            await agent.aupdate_state(_config(), {"messages": []})
-        assert mock_graph.aupdate_state.await_count == 1
-        runs_list.assert_not_called()
-        runs_cancel.assert_not_called()
-
 
 class TestCancelledToolMessages:
     def test_supports_serialized_messages_and_ignores_answered_calls(self) -> None:

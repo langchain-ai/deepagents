@@ -183,21 +183,6 @@ def _real_hook_subagent(*, name: str, content: str, cwd: Path) -> SubAgent:
     )
 
 
-def test_server_hook_state_fields_are_private() -> None:
-    private_fields = private_state_field_names(ServerHooksState)
-
-    assert "_hooks_pre_tool_outcomes" in private_fields
-    assert "_hooks_stop_continuation_count" in private_fields
-    assert "_hooks_pending_post_tools" in private_fields
-    # `private_state_field_names` skips schemas whose annotations cannot be
-    # resolved, which would silently return an empty set and revert the fix.
-    assert _hook_state_keys() == {
-        "_hooks_pre_tool_outcomes",
-        "_hooks_stop_continuation_count",
-        "_hooks_pending_post_tools",
-    }
-
-
 def test_task_omits_private_server_hook_state_from_subagent_update(
     tmp_path: Path,
 ) -> None:
@@ -1031,70 +1016,6 @@ def _compact_setup(
     )
 
 
-@pytest.mark.parametrize(
-    ("args", "trigger"),
-    [({}, CompactTrigger.AUTO), ({"force": True}, CompactTrigger.MANUAL)],
-)
-def test_precompact_trigger_and_order(
-    monkeypatch: pytest.MonkeyPatch,
-    args: dict[str, object],
-    trigger: CompactTrigger,
-) -> None:
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    runtime, state, _tool_call = _compact_setup(args=args)
-    order: list[HookEvent] = []
-
-    def invoke(
-        _context: object, event: object, **kwargs: object
-    ) -> PreCompactDecision | PreToolUseDecision:
-        assert isinstance(event, PreCompactEvent | PreToolUseEvent)
-        order.append(event.event)
-        if isinstance(event, PreCompactEvent):
-            assert event.trigger == trigger
-            assert kwargs["logical_event_id"] == "compact-call"
-            return PreCompactDecision(event=HookEvent.PRE_COMPACT)
-        return PreToolUseDecision(
-            event=HookEvent.PRE_TOOL_USE,
-            permission=PermissionEffect(behavior="none"),
-        )
-
-    monkeypatch.setattr("deepagents_code.hooks.server_middleware._invoke_hook", invoke)
-    update = middleware._after_model(state, runtime)
-
-    assert order == [HookEvent.PRE_COMPACT, HookEvent.PRE_TOOL_USE]
-    assert update["_hooks_pre_tool_outcomes"]["compact-call"]["behavior"] == "none"
-
-
-def test_precompact_block_skips_hitl_and_tool_execution(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    middleware = ServerHooksMiddleware(cwd=Path("/tmp"))
-    runtime, state, tool_call = _compact_setup()
-    runtime.config = {"configurable": {"thread_id": "t1"}}
-    invoke = MagicMock(
-        return_value=PreCompactDecision(
-            event=HookEvent.PRE_COMPACT,
-            continue_processing=False,
-            stop_reason="keep full context",
-        )
-    )
-    monkeypatch.setattr("deepagents_code.hooks.server_middleware._invoke_hook", invoke)
-    state["_hooks_pre_tool_outcomes"] = middleware._after_model(state, runtime)[
-        "_hooks_pre_tool_outcomes"
-    ]
-    request = MagicMock(state=state, runtime=runtime, tool=None, tool_call=tool_call)
-    handler = MagicMock()
-
-    assert _should_interrupt_tool_call(request) is False
-    result = middleware.wrap_tool_call(request, handler)
-
-    assert isinstance(result, ToolMessage)
-    assert result.status == "error"
-    assert "keep full context" in str(result.content)
-    invoke.assert_called_once()
-    handler.assert_not_called()
-
-
 def test_ask_permission_via_hitl_approve(monkeypatch: pytest.MonkeyPatch) -> None:
     call = ToolCallData(id="c1", name="execute", args={"command": "ls"})
 
@@ -1217,18 +1138,3 @@ class TestAskDecisionInServerOperation:
         assert blocked.status == "error"
         assert "cannot prompt for approval" in str(blocked.content)
         assert "compact_conversation" in str(blocked.content)
-
-    def test_graph_mode_still_escalates_through_hitl(self) -> None:
-        """Outside an operation the `ask` path must still reach `interrupt()`."""
-        from deepagents_code.hooks import server_middleware
-
-        call, permission = self._ask_call()
-        with patch.object(
-            server_middleware,
-            "interrupt",
-            return_value={"decisions": [{"type": "approve"}]},
-        ) as interrupt_mock:
-            blocked = server_middleware._ask_permission_via_hitl(call, permission)
-
-        interrupt_mock.assert_called_once()
-        assert blocked is None

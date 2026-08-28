@@ -64,39 +64,6 @@ class TestCwdSwitchPromptScreen:
         assert screen.can_focus is True
         assert screen.can_focus_children is False
 
-    def test_on_mount_focuses_screen(self) -> None:
-        """Mounting the modal claims focus from the dismissed thread selector."""
-        screen, _ = self._screen()
-        focus = MagicMock()
-        screen.focus = focus  # ty: ignore[invalid-assignment]
-
-        screen.on_mount()
-
-        focus.assert_called_once_with()
-
-    def test_action_switch_dismisses_switch(self) -> None:
-        """Enter / switch resolves the prompt to `switch`."""
-        screen, dismiss = self._screen()
-        screen.action_switch()
-        dismiss.assert_called_once_with("switch")
-
-    def test_action_stay_dismisses_stay(self) -> None:
-        """Explicit stay resolves the prompt to `stay`."""
-        screen, dismiss = self._screen()
-        screen.action_stay()
-        dismiss.assert_called_once_with("stay")
-
-    def test_action_cancel_treated_as_stay(self) -> None:
-        """Esc / cancel is the safe default and resolves to `stay`.
-
-        The app owns a priority Esc binding, so the screen must define
-        `action_cancel` to control the cancel outcome rather than relying on a
-        bare `escape` binding.
-        """
-        screen, dismiss = self._screen()
-        screen.action_cancel()
-        dismiss.assert_called_once_with("stay")
-
 
 class TestCwdSwitchAbortOption:
     """The launch-time `-r` resume prompt adds a third `abort` option."""

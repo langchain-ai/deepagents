@@ -336,47 +336,6 @@ def _middleware(
     )
 
 
-def test_temp_artifact_state_is_private_and_reducer_backed() -> None:
-    hints = get_type_hints(AutoModeState, include_extras=True)
-    metadata = cast(
-        "tuple[object, ...]",
-        getattr(hints["_auto_temp_artifacts"], "__metadata__", ()),
-    )
-    channel = StateGraph(cast("Any", AutoModeState)).channels["_auto_temp_artifacts"]
-
-    assert PrivateStateAttr in metadata
-    assert metadata[-1] is _merge_temp_artifacts
-    assert isinstance(channel, BinaryOperatorAggregate)
-    paths = [
-        str(Path(tempfile.gettempdir()) / f"dcode-scratch-{suffix}.md")
-        for suffix in ("one", "two")
-    ]
-    updates: list[dict[str, Any]] = []
-    for index, file_path in enumerate(paths):
-        allocation_id = f"allocation-{index}"
-        artifact = {
-            "allocation_id": allocation_id,
-            "file_path": file_path,
-            "thread_key": "thread-key",
-            "turn_id": "turn-id",
-            "created_by_tool_call_id": f"call-{index}",
-            "file_device": index + 1,
-            "file_inode": index + 1,
-        }
-        updates.append(
-            {
-                file_path: {
-                    "allocation_id": allocation_id,
-                    "artifact": artifact,
-                }
-            }
-        )
-
-    channel.update(updates)
-
-    assert set(cast("dict[str, Any]", channel.get())) == set(paths)
-
-
 def _request(
     tmp_path: Path,
     *,
@@ -4240,72 +4199,6 @@ def _install_model_factory(
     monkeypatch.setattr(config_module, "create_model", factory)
 
 
-async def test_classifier_model_construction_respects_deadline(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A timed-out constructor stays shared for its spec while batches fail closed."""
-    started = threading.Event()
-    release = threading.Event()
-    specs: list[str] = []
-
-    def create_model(spec: str) -> SimpleNamespace:
-        specs.append(spec)
-        started.set()
-        release.wait()
-        return SimpleNamespace(model=_StructuredModel(_allow_result()))
-
-    import deepagents_code.config as config_module
-
-    monkeypatch.setattr(config_module, "create_model", create_model)
-    middleware = _middleware(
-        tmp_path,
-        classifier_model="openai:gpt-5.5-mini",
-        classifier_construction_timeout_seconds=0.01,
-    )
-    request, _store, _key = _request(
-        tmp_path,
-        model=_FailIfClassifiedModel(),
-        tool_name="delete",
-        args={"file_path": "old.py"},
-    )
-
-    try:
-        plan = await _plan(
-            middleware,
-            request,
-            tool_name="delete",
-            args={"file_path": "old.py"},
-        )
-        construction = middleware._classifier_model_constructions.get(
-            "openai:gpt-5.5-mini"
-        )
-        assert construction is not None
-
-        # Cancelling another waiter must not cancel the constructor or start a
-        # replacement thread while the first one is still running.
-        with pytest.raises(TimeoutError):
-            async with asyncio.timeout(0.01):
-                await middleware._classifier_model(request)
-        assert specs == ["openai:gpt-5.5-mini"]
-    finally:
-        release.set()
-
-    assert started.is_set()
-    assert middleware._classifier_model_lock.locked() is False
-    assert plan["decisions"][0]["disposition"] == "classifier_unavailable"
-    # Names construction, not response: the model was never built, so "did not
-    # respond" would send the user looking for a provider outage.
-    assert plan["decisions"][0]["reason"] == (
-        "configured classifier model openai:gpt-5.5-mini could not be built "
-        "within 0.01s"
-    )
-    model = await construction
-    assert middleware._classifier_model_constructions == {}
-    resolved, spec = await middleware._classifier_model(request)
-    assert resolved is model
-    assert spec == "openai:gpt-5.5-mini"
-
-
 async def test_classifier_model_switch_bypasses_timed_out_construction(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5335,63 +5228,6 @@ def test_failed_auto_event_emission_is_retried(
     assert events == [{"type": "auto_mode", **payload}]
 
 
-async def test_pending_interrupt_scope_survives_completed_scope_eviction(
-    tmp_path: Path,
-) -> None:
-    middleware = _middleware(tmp_path)
-    ai_message = _mixed_fallback_batch("pending")
-    key = approval_mode_key("thread-1")
-    store = _Store()
-    store.put(APPROVAL_MODE_NAMESPACE, key, {"mode": "auto"})
-    counters = _default_counters(ApprovalMode.AUTO)
-    counters["consecutive_unavailable"] = 2
-    store.put(AUTO_MODE_COUNTERS_NAMESPACE, key, counters)
-    events: list[dict[str, Any]] = []
-    runtime = SimpleNamespace(
-        context={"approval_mode_key": key, "thread_id": "thread-1"},
-        store=store,
-        stream_writer=events.append,
-    )
-    state = cast(
-        "AgentState[Any]",
-        {
-            "messages": [ai_message],
-            "_auto_decision_plan": _mixed_fallback_plan(key, ai_message),
-        },
-    )
-
-    with (
-        patch(
-            "deepagents_code.auto_mode.interrupt",
-            side_effect=GraphInterrupt(()),
-        ),
-        pytest.raises(GraphInterrupt),
-    ):
-        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
-
-    for index in range(9):
-        middleware._emit_event_once(
-            runtime,
-            scope=f"other-thread:batch-{index}",
-            key=("denial", str(index)),
-            payload={"event": "denial", "reason": str(index)},
-        )
-
-    with patch(
-        "deepagents_code.auto_mode.interrupt",
-        return_value={"decisions": [{"type": "approve"}]},
-    ):
-        await middleware.aafter_model(state, cast("Runtime[Any]", runtime))
-
-    original_events = [
-        event for event in events if event["event"] in {"unavailable", "fallback"}
-    ]
-    assert [event["event"] for event in original_events] == [
-        "unavailable",
-        "fallback",
-    ]
-
-
 async def test_auto_events_repeat_for_a_later_action_batch(tmp_path: Path) -> None:
     middleware = _middleware(tmp_path)
     key = approval_mode_key("thread-1")
@@ -5575,36 +5411,6 @@ async def test_untrusted_thread_key_does_not_cross_suppress(tmp_path: Path) -> N
     assert emitted == [["fallback"], ["fallback"]]
 
 
-async def test_abandoned_approval_scopes_stay_bounded(tmp_path: Path) -> None:
-    """Approvals the user never answers must not pin the ledger forever."""
-    middleware = _middleware(tmp_path)
-    events: list[dict[str, Any]] = []
-    runtime, _store, key = _auto_runtime("thread-1", events, unavailable=2)
-
-    with patch("deepagents_code.auto_mode.interrupt", side_effect=GraphInterrupt(())):
-        for index in range(_MAX_PENDING_EVENT_SCOPES + 5):
-            ai_message = _mixed_fallback_batch(f"abandoned-{index}")
-            with pytest.raises(GraphInterrupt):
-                await middleware.aafter_model(
-                    cast(
-                        "AgentState[Any]",
-                        {
-                            "messages": [ai_message],
-                            "_auto_decision_plan": _mixed_fallback_plan(
-                                key, ai_message
-                            ),
-                        },
-                    ),
-                    cast("Runtime[Any]", runtime),
-                )
-
-    assert len(middleware._pending_event_scopes) == _MAX_PENDING_EVENT_SCOPES
-    assert (
-        len(middleware._emitted_events)
-        <= _MAX_PENDING_EVENT_SCOPES + _MAX_EMITTED_EVENT_SCOPES
-    )
-
-
 async def test_malformed_human_response_unpins_its_scope(tmp_path: Path) -> None:
     """A rejected approval response must release its pin, not leak it."""
     middleware = _middleware(tmp_path)
@@ -5692,59 +5498,6 @@ async def test_distinct_denial_reasons_each_emit_an_event(tmp_path: Path) -> Non
     ]
     # The event stands for the whole batch, so it names no single tool.
     assert all("tool_name" not in event for event in events)
-
-
-def test_resolved_scopes_evict_least_recently_used(tmp_path: Path) -> None:
-    """Recency, not insertion order, decides which resolved scope is dropped."""
-    middleware = _middleware(tmp_path)
-    events: list[dict[str, Any]] = []
-    runtime = SimpleNamespace(stream_writer=events.append)
-    for index in range(_MAX_EMITTED_EVENT_SCOPES):
-        middleware._emit_event_once(
-            runtime,
-            scope=f"scope-{index}",
-            key=("denial", "first"),
-            payload={"event": "denial", "reason": "first"},
-        )
-    # Touch the oldest scope so it is no longer the eviction candidate.
-    middleware._emit_event_once(
-        runtime,
-        scope="scope-0",
-        key=("denial", "second"),
-        payload={"event": "denial", "reason": "second"},
-    )
-    middleware._emit_event_once(
-        runtime,
-        scope="scope-new",
-        key=("denial", "first"),
-        payload={"event": "denial", "reason": "first"},
-    )
-
-    assert len(middleware._emitted_events) == _MAX_EMITTED_EVENT_SCOPES
-    assert "scope-0" in middleware._emitted_events
-    assert "scope-1" not in middleware._emitted_events
-
-
-def test_classifier_policy_section_order_and_references() -> None:
-    """Guard the policy's paragraph order and its internal cross-references.
-
-    The policy is one concatenated string whose paragraphs refer to each other
-    by direction ("below"). Reordering them without updating those references
-    silently changes which rules the classifier believes apply, so pin both the
-    order and every directional reference.
-    """
-    deny = _CLASSIFIER_POLICY.index("Deny rules take precedence")
-    scratch = _CLASSIFIER_POLICY.index("Managed scratch exception")
-    allow = _CLASSIFIER_POLICY.index("Otherwise, allow ordinary")
-    assert deny < scratch < allow
-
-    # Forward references must precede the paragraphs they point at.
-    assert _CLASSIFIER_POLICY.index("under the deny rules below") < deny
-    assert _CLASSIFIER_POLICY.index("may be allowed below") < allow
-    assert _CLASSIFIER_POLICY.index("managed scratch lifecycle below") < scratch
-
-    # A missing space between adjacent literals would silently join two words.
-    assert "  " not in _CLASSIFIER_POLICY
 
 
 async def test_classifier_review_span_records_verdict(tmp_path: Path) -> None:

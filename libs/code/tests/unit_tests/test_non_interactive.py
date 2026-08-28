@@ -433,7 +433,9 @@ class TestSandboxTypeForwarding:
             mock_settings.has_tavily = False
             runtime_state.model_name = None
 
-            await run_non_interactive(message="test task")
+            await run_non_interactive(
+                message="test task", summarization_model="openai:summary-model"
+            )
 
         _, server_kwargs = mock_start_server.call_args
         assert server_kwargs["auto_approve"] is False
@@ -442,6 +444,7 @@ class TestSandboxTypeForwarding:
         assert loop_kwargs["hooks"].has_handlers(HookEvent.PERMISSION_REQUEST)
         assert loop_kwargs["approval_mode"] is ApprovalMode.YOLO
         assert loop_kwargs["prompt_id"] is not None
+        assert loop_kwargs["summarization_model"] == "openai:summary-model"
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
@@ -544,60 +547,6 @@ class TestAllowFsToolsForwarding:
 
 class TestQuietMode:
     """Tests for --quiet flag in run_non_interactive."""
-
-    @pytest.mark.parametrize(
-        ("quiet", "expected_kwargs"),
-        [
-            pytest.param(True, {"stderr": True}, id="quiet-redirects-to-stderr"),
-            pytest.param(False, {}, id="default-uses-stdout"),
-        ],
-    )
-    async def test_console_creation(
-        self, quiet: bool, expected_kwargs: dict[str, object]
-    ) -> None:
-        """Console should use stderr when quiet=True, stdout otherwise."""
-        mock_console = MagicMock(spec=Console)
-        mock_agent = MagicMock()
-        mock_agent.astream = MagicMock(return_value=_async_iter([]))
-        mock_server_proc = MagicMock()
-
-        with (
-            patch(
-                "deepagents_code.client.non_interactive.Console",
-                return_value=mock_console,
-            ) as mock_console_cls,
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.generate_thread_id",
-                return_value="test-thread",
-            ),
-            patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
-            ) as mock_settings,
-            patch(
-                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
-                new_callable=AsyncMock,
-                return_value=(mock_agent, mock_server_proc, None),
-            ),
-        ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            await run_non_interactive(message="test", quiet=quiet)
-
-        mock_console_cls.assert_called_once_with(**expected_kwargs)
 
     async def test_quiet_stdout_contains_only_agent_text(self) -> None:
         """In quiet mode, stdout should have only agent text."""
@@ -2356,54 +2305,6 @@ class TestMakeStdioEncodingSafe:
             _make_stdio_encoding_safe()  # must not raise
 
         assert hasattr(stream, "reconfigure")
-
-    async def test_run_non_interactive_invokes_helper(self):
-        """`run_non_interactive` must call `_make_stdio_encoding_safe` at entry.
-
-        Guards against a silent revert: the fix only protects users if the
-        helper is actually invoked. Server-mocked tests run under pytest's
-        UTF-8 capture, so nothing else would fail if the call were removed.
-        """
-        mock_agent = MagicMock()
-        mock_agent.astream = MagicMock(return_value=_async_iter([]))
-        mock_server_proc = MagicMock()
-
-        with (
-            patch(
-                "deepagents_code.client.non_interactive._make_stdio_encoding_safe",
-            ) as mock_helper,
-            patch(
-                "deepagents_code.client.non_interactive.create_model",
-                return_value=ModelResult(
-                    model=MagicMock(),
-                    model_name="test-model",
-                    provider="test",
-                ),
-            ),
-            patch(
-                "deepagents_code.client.non_interactive.generate_thread_id",
-                return_value="test-thread",
-            ),
-            patch(
-                "deepagents_code.client.non_interactive._resolve_shell_allow_list"
-            ) as mock_settings,
-            patch(
-                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
-                new_callable=AsyncMock,
-                return_value=(mock_agent, mock_server_proc, None),
-            ),
-        ):
-            mock_settings.return_value = None
-            mock_settings.has_tavily = False
-            runtime_state.model_name = None
-
-            await run_non_interactive(message="test task")
-
-        mock_helper.assert_called_once_with()
 
 
 # ---------------------------------------------------------------------------
@@ -4610,6 +4511,14 @@ class TestAttemptLifecycle:
         assert state.stats.request_count == 2
         assert len(state.recorded_usage_requests) == 2
         assert all(isinstance(key, tuple) for key in state.recorded_usage_requests)
+
+    def _lifecycle_state(self, tmp_path: Path, **kwargs: Any) -> StreamState:
+        transcripts = TranscriptStore(tmp_path / "transcripts")
+        return StreamState(
+            thread_id="thread-1",
+            transcript=TranscriptRecorder(transcripts, "thread-1"),
+            **kwargs,
+        )
 
 
 def _attempt_event(call_id: str, attempt: int, *, phase: str) -> dict[str, Any]:

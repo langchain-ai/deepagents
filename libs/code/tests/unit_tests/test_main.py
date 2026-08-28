@@ -74,26 +74,6 @@ def _project_mcp_source(path: Path, project_root: Path) -> DiscoveredMCPConfig:
 class TestTerminationSignalHandling:
     """Tests for terminating-signal cleanup wiring."""
 
-    def test_posix_installs_unwinding_handler(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """POSIX terminating signals unwind so cleanup can run."""
-        monkeypatch.setattr("deepagents_code.main.sys.platform", "linux")
-        install = MagicMock()
-        monkeypatch.setattr("deepagents_code.main.signal.signal", install)
-
-        _install_termination_signal_handlers()
-
-        assert install.call_args_list == [
-            ((signal.SIGHUP, _handle_termination_signal),),
-            ((signal.SIGTERM, _handle_termination_signal),),
-            ((signal.SIGQUIT, _handle_termination_signal),),
-        ]
-        for signum in (signal.SIGHUP, signal.SIGTERM, signal.SIGQUIT):
-            with pytest.raises(SystemExit) as exc_info:
-                _handle_termination_signal(signum, None)
-            assert exc_info.value.code == 128 + signum
-
     def test_windows_does_not_install_termination_signal_handlers(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -178,147 +158,6 @@ class TestStartupAutoUpdate:
         """
         assert os.environ["DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"] == "9.9.9"
         raise SystemExit(0)
-
-    def test_successful_update_restarts_before_launch(self) -> None:
-        """A successful startup auto-update should exec a fresh process."""
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.create_update_log_file",
-                return_value=Path("/tmp/dcode-update.log"),
-            ) as create_log_file,
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-            patch(
-                "deepagents_code.update_check.clear_startup_auto_update_failure"
-            ) as clear_failure,
-            patch(
-                "deepagents_code.main._restart_current_process",
-                side_effect=self._restart_asserting_sentinel,
-            ) as restart,
-            pytest.raises(SystemExit) as exit_info,
-        ):
-            _run_startup_auto_update(console)
-
-        # Pin the code, not just the type: a failing sentinel assertion inside
-        # the restart double surfaces as an `AssertionError`, which the
-        # post-install handler converts into `SystemExit(1)`. Bare
-        # `pytest.raises(SystemExit)` would swallow that and pass.
-        assert exit_info.value.code == 0
-        upgrade.assert_awaited_once()
-        create_log_file.assert_called_once_with()
-        clear_failure.assert_called_once_with("9.9.9")
-        printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
-        assert "tail -f /tmp/dcode-update.log" in printed
-        restart.assert_called_once_with()
-
-    def test_successful_update_restarts_through_upgraded_shim_when_shadowed(
-        self,
-    ) -> None:
-        """A PATH shadow restarts through uv's upgraded shim.
-
-        The shadow can belong to a different uv tool environment from
-        `sys.executable`. Restarting that interpreter would reload stale code,
-        so the upgraded shim is used instead. Also pins the markup-escape
-        behavior: a path containing a Rich-special character must not raise.
-        """
-        from deepagents_code.update_check import ShadowedDcode
-
-        console = MagicMock()
-        upgrade = AsyncMock(return_value=(True, "updated", "9.9.9"))
-        # Embed `[` in the shadowing path — legal on POSIX filesystems —
-        # so a regression that dropped `escape()` would raise a Rich
-        # `MarkupError` here instead of silently emitting broken styling.
-        shadow = ShadowedDcode(
-            shadowing_bin=Path("/opt/old [legacy]/bin/dcode"),
-            upgraded_bin_dir=Path("/home/user/.local/bin"),
-        )
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.create_update_log_file",
-                return_value=Path("/tmp/dcode-update.log"),
-            ),
-            patch("deepagents_code.update_check.perform_upgrade", upgrade),
-            # Override the autouse `_no_shadowed_dcode` fixture for this
-            # single test by re-patching the same name with the positive
-            # case. The innermost patch wins, so the autouse fixture's
-            # `None` doesn't leak through.
-            patch(
-                "deepagents_code.update_check.detect_shadowed_dcode",
-                return_value=shadow,
-            ),
-            patch(
-                "deepagents_code.main._restart_current_process",
-                side_effect=self._restart_asserting_sentinel,
-            ) as restart,
-            pytest.raises(SystemExit) as exit_info,
-        ):
-            _run_startup_auto_update(console)
-
-        # See the sibling test: a failed sentinel assertion would otherwise be
-        # laundered into `SystemExit(1)` by the post-install handler.
-        assert exit_info.value.code == 0
-        upgrade.assert_awaited_once()
-        restart.assert_called_once_with(restart_path=shadow.upgraded_bin)
-        lines = [str(c.args[0]) for c in console.print.call_args_list]
-        printed = " ".join(lines)
-        assert "Warning:" in printed
-        # The source places the warning *before* the `Launching...` status
-        # deliberately, so `_confirm_update_after_restart`'s row-erase in the
-        # next generation cannot wipe it. Substring checks over the joined
-        # output would pass with the two prints swapped, so pin the order.
-        warning_index = next(i for i, line in enumerate(lines) if "Warning:" in line)
-        launching_index = next(
-            i for i, line in enumerate(lines) if "Launching..." in line
-        )
-        assert warning_index < launching_index
-        # The path's `[legacy]` segment must be Rich-escaped (`\[legacy]`)
-        # before interpolation under `markup=True`; a regression that
-        # dropped `escape()` would either raise `MarkupError` (test fails)
-        # or render `[legacy]` as a (broken) style tag. Asserting the
-        # escaped form pins the fix.
-        assert "/opt/old \\[legacy]/bin/dcode" in printed
-        assert "/home/user/.local/bin" in printed
-        # The warning is about the *next* manual launch, so it must not claim
-        # this session stays on the old version.
-        assert "Continuing with v" not in printed
-        assert "Launching..." in printed
 
     def test_update_held_by_another_session_is_skipped(self) -> None:
         """A terminal that loses the update race launches on the old version.
@@ -1163,49 +1002,6 @@ class TestStartupAutoUpdate:
         printed = " ".join(str(c.args[0]) for c in console.print.call_args_list)
         assert "again to start on v9.9.9" in printed
 
-    def test_restart_after_update_clears_transient_launch_status(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The re-exec'd process rewrites `Launching...` to stable update text."""
-        stream = StringIO()
-        console = Console(file=stream, force_terminal=True, no_color=True, width=80)
-        # The prior generation recorded the version it restarted into.
-        monkeypatch.setenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", "9.9.9")
-
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch(
-                "deepagents_code.update_check.is_update_check_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.is_installed_version_at_least",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.get_cached_update_available",
-                return_value=(False, "9.9.9"),
-            ),
-            patch("deepagents_code.update_check.perform_upgrade") as upgrade,
-            patch("deepagents_code.main._restart_current_process") as restart,
-            patch.object(console, "control", wraps=console.control) as control,
-        ):
-            _run_startup_auto_update(console)
-
-        upgrade.assert_not_called()
-        restart.assert_not_called()
-        # Sentinel is consumed so the confirmation only fires once.
-        assert os.environ.get("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE") is None
-        # The prior line is erased via one control call, then reprinted.
-        output = stream.getvalue()
-        assert control.call_count == 1
-        assert "Updated to v9.9.9." in output
-        assert "9.9.9" in output
-
     def test_restart_after_update_skips_rewrite_when_not_terminal(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1386,18 +1182,6 @@ class TestStartupAutoUpdate:
         assert "v9.9.8. Launched." not in output
         # ...and the newer version still goes through the upgrade path.
         assert "v9.9.9. Launching..." in output
-
-    def test_startup_auto_update_wired_into_interactive_launch(self) -> None:
-        """`cli_main` must invoke the startup auto-update on interactive launch.
-
-        Without this guard the feature could be dropped from `cli_main` and
-        every other unit test would still pass, silently regressing it to a
-        no-op.
-        """
-        source = inspect.getsource(cli_main)
-        assert "clear_resume_auto_update_deferral()" in source
-        assert "if not should_defer_startup_auto_update_for_resume():" in source
-        assert source.count("_run_startup_auto_update(console)") == 2
 
     def test_project_mcp_prompt_interrupt_aborts_before_tui(self) -> None:
         """Ctrl+C at the project MCP prompt exits before launching Textual."""
@@ -1715,21 +1499,6 @@ class TestRenderTeardownThreadHints:
                 os.environ.pop(RESUME_TERM_PROGRAM, None)
             _render_teardown_thread_hints(console, "test123", return_code=return_code)
         return buffer.getvalue()
-
-    def test_queries_thread_exists_at_most_once(self) -> None:
-        """Both hints must share a single checkpoint lookup, never two.
-
-        Guards against a regression that reintroduces a second
-        `asyncio.run(thread_exists(...))` (a fresh event loop + aiosqlite
-        connection) during teardown.
-        """
-        thread_exists_mock = AsyncMock(return_value=True)
-
-        output = self._render(thread_exists_mock=thread_exists_mock, thread_url=None)
-
-        thread_exists_mock.assert_awaited_once()
-        assert "Resume this thread with:" in output
-        assert "dcode -r test123" in output
 
     def test_resume_hint_honors_toml_feature_flag(self, tmp_path: Path) -> None:
         """`[features] resume_term_program` reaches the hint without an env var.

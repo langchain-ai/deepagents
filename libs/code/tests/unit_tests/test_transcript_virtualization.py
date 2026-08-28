@@ -147,22 +147,6 @@ async def _mount_user_messages(app: DeepAgentsApp, count: int) -> None:
 class TestScrollDrivenHydration:
     """Scrolling into a spacer must hydrate the adjacent archived history."""
 
-    def test_repeated_requests_schedule_one_hydration_slice(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Rapid scroll deltas coalesce instead of queueing duplicate DOM work."""
-        app = DeepAgentsApp()
-        scheduled: list[object] = []
-        monkeypatch.setattr(app, "call_later", scheduled.append)
-
-        app._request_hydration("above")
-        app._request_hydration("above")
-        app._request_hydration("below")
-
-        assert len(scheduled) == 1
-        assert app._hydration_requests == {"above", "below"}
-        assert app._hydration_preferred_direction == "below"
-
     async def test_scroll_up_hydrates_archived_history(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

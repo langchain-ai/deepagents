@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import io
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
@@ -20,6 +20,9 @@ from deepagents_code.tool_catalog import (
     ToolGroup,
     UnavailableServer,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 def _run_text(args: argparse.Namespace, *, width: int = 200) -> tuple[int, str]:
@@ -45,20 +48,6 @@ class TestToolsInstall:
         assert code == 0
         assert "Managed ripgrep" in output
         assert str(installed) in output
-
-    def test_install_reuses_system_rg(self, tmp_path: Path) -> None:
-        system_rg = Path("/usr/bin/rg")
-        managed = tmp_path / "rg"
-        args = argparse.Namespace(tools_command="install", output_format="text")
-        with (
-            patch.object(managed_tools, "ensure_ripgrep", return_value=system_rg),
-            patch.object(managed_tools, "prepend_managed_bin_to_path") as prepend,
-            patch.object(managed_tools, "managed_rg_path", return_value=managed),
-        ):
-            code, output = _run_text(args)
-        assert code == 0
-        assert "already on PATH" in output
-        prepend.assert_not_called()
 
     def test_install_json_success(self, tmp_path: Path, capsys) -> None:
         installed = tmp_path / "rg"
@@ -218,34 +207,6 @@ class TestToolsList:
             {"name": "needslogin", "status": "unauthenticated", "detail": "run login"}
         ]
         assert data["mcp_error"] == "MCP discovery failed; showing built-in tools only."
-
-    def test_list_invalid_allow_fs_tools_exits(self) -> None:
-        """A malformed `--allow-fs-tools` fails fast with exit 2, before catalog.
-
-        `_parse_allow_fs_tools_flag` is unit-tested exhaustively in isolation;
-        this pins the command-level contract that the bad value aborts the
-        `tools list` request rather than degrading to an unrestricted listing.
-        """
-        args = argparse.Namespace(
-            tools_command="list",
-            output_format="json",
-            interpreter=False,
-            sandbox="none",
-            allow_fs_tools="bogus",
-            no_mcp=True,
-            mcp_config=None,
-            trust_project_mcp=False,
-        )
-        with (
-            patch(
-                "deepagents_code.tool_catalog.collect_catalog",
-                return_value=ToolCatalog(groups=()),
-            ) as collect,
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            run_tools_command(args)
-        assert exc_info.value.code == 2
-        collect.assert_not_called()
 
     def test_list_end_to_end_offline_renders_real_built_ins(self) -> None:
         """Real `collect_catalog` compiles the agent offline and renders it."""

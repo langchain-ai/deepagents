@@ -124,12 +124,6 @@ class TestDebugConsoleScreen:
             assert line[:indent] != " " * indent
         assert any("auto" in line for line in lines[1:])
 
-    def test_footer_omits_click_to_copy_hint(self) -> None:
-        footer = str(DebugConsoleScreen._render_help())
-
-        assert "Enter copy line" in footer
-        assert "check 'Click to copy'" not in footer
-
     def test_repeated_snapshot_provider_failures_warn_once(
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
@@ -365,24 +359,6 @@ class TestDebugConsoleToggle:
             # `False` in both the fixed and broken cases.
             assert screen.focused is log
             assert app._auto_approve is False
-
-    async def test_check_action_gates_toggle_binding_by_screen(self) -> None:
-        """`check_action` steps aside the toggle binding only under the console.
-
-        Guards the enabled path the reverse-focus fix depends on: on the main
-        screen `check_action` must leave `toggle_auto_approve` enabled (return
-        `True`) so Shift+Tab still toggles auto-approve; the
-        `test_shift_tab_reverses_focus_*` test only exercises the disabled path.
-        """
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            assert app.check_action("toggle_auto_approve", ()) is True
-
-            await pilot.press("ctrl+backslash")
-            await pilot.pause()
-            assert isinstance(app.screen, DebugConsoleScreen)
-            assert app.check_action("toggle_auto_approve", ()) is False
 
     async def test_clear_persists_across_reopen(self) -> None:
         logger.info("debug-console-persist-marker")

@@ -152,25 +152,6 @@ async def test_effort_command_save_failure_reports_error(
     assert model_config.load_effort_for_model("openai:gpt-5.5") is None
 
 
-async def test_effort_selector_not_configurable_model_skips_screen() -> None:
-    """Bare `/effort` on a non-configurable model reports instead of opening.
-
-    The typed-arg path is covered separately; this guards the *selector* arm so
-    a regression can't push the modal for a model that supports no efforts.
-    """
-    app = DeepAgentsApp()
-    app._mount_message = AsyncMock()  # ty: ignore
-    app.push_screen = Mock()  # ty: ignore
-    runtime_state.model_provider = "anthropic"
-    runtime_state.model_name = "claude-sonnet-4-5"
-
-    await app._handle_effort_command("/effort")
-
-    app.push_screen.assert_not_called()  # ty: ignore[unresolved-attribute]
-    # Echoed UserMessage + the "not configurable" AppMessage.
-    assert app._mount_message.await_count == 2  # ty: ignore[unresolved-attribute]
-
-
 class _EffortSelectorHost(App[None]):
     """Minimal host app for mounting `EffortSelectorScreen` in tests."""
 

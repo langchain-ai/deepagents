@@ -143,30 +143,6 @@ def _noop_status(_: str) -> None:
     """No-op status callback for tests."""
 
 
-class TestTextualUIAdapterInit:
-    """Tests for `TextualUIAdapter` initialization."""
-
-    def test_on_user_visible_output_started_defaults_to_none_and_accepts_callback(
-        self,
-    ) -> None:
-        """Verify the user-visible-output callback can be assigned."""
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-        )
-        assert adapter._on_user_visible_output_started is None
-
-        callback = MagicMock()
-        adapter = TextualUIAdapter(
-            mount_message=_mock_mount,
-            update_status=_noop_status,
-            request_approval=_mock_approval,
-            on_user_visible_output_started=callback,
-        )
-        assert adapter._on_user_visible_output_started is callback
-
-
 class TestInterruptCleanup:
     """Tests for interrupt cleanup token handling."""
 

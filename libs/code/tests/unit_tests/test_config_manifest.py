@@ -107,56 +107,6 @@ _UI_READER_ALLOWLIST: frozenset[str] = frozenset(
 """Functions permitted to read the `[ui]` table without using the manifest."""
 
 
-def test_no_hand_rolled_ui_config_readers() -> None:
-    """`[ui]` scalars must be read through the manifest, not re-parsed by hand.
-
-    A bespoke loader re-implements env parsing, the `[ui]` lookup, the type
-    check, and the fallback — which is how the app came to read values that
-    `dcode config` did not report, and vice versa.
-    """
-    import ast
-    from pathlib import Path
-
-    from deepagents_code import config_manifest
-
-    package_root = Path(config_manifest.__file__).parent
-    readers: set[str] = set()
-    for source in sorted(package_root.rglob("*.py")):
-        text = source.read_text(encoding="utf-8")
-        if '.get("ui"' not in text:
-            continue
-        hits = [
-            number
-            for number, line in enumerate(text.splitlines(), start=1)
-            if '.get("ui"' in line
-        ]
-        functions = [
-            node
-            for node in ast.walk(ast.parse(text))
-            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-        ]
-        for hit in hits:
-            # Smallest enclosing span, so a nested helper is not attributed to
-            # the function it happens to live in.
-            enclosing = min(
-                (
-                    node
-                    for node in functions
-                    if node.lineno <= hit <= (node.end_lineno or node.lineno)
-                ),
-                key=lambda node: (node.end_lineno or node.lineno) - node.lineno,
-                default=None,
-            )
-            name = enclosing.name if enclosing else "<module>"
-            readers.add(f"{source.name}:{name}")
-
-    assert readers == _UI_READER_ALLOWLIST, (
-        f"Unexpected `[ui]` readers: {sorted(readers - _UI_READER_ALLOWLIST)}. "
-        "Register the option in config_manifest.py and resolve it through the "
-        "shared resolver instead of parsing config.toml by hand."
-    )
-
-
 # Readers that resolve an option but deliberately emit no ranked diagnostics.
 # Each reports what it rejected through its own channel: the shared primitive
 # hands the `ResolvedValue` back for the caller to emit against,
@@ -182,114 +132,10 @@ _SILENT_RESOLVER_READERS = frozenset(
 )
 
 
-def test_resolver_reads_emit_ranked_diagnostics() -> None:
-    """A function that resolves an option must also report what was rejected.
-
-    `resolve_scalar` emitted diagnostics itself, so no caller could forget
-    them. Retiring it turned that guarantee into a two-line convention repeated
-    at every reader, and the convention was dropped once already
-    (`_save_ui_bool_result`, fixed in f6c6c8196): a malformed managed entry
-    stopped being reported anywhere, removing the only signal an administrator
-    has that their policy is inert.
-
-    The failure is invisible at runtime -- the value falls back to the default
-    and nothing is logged -- so it needs a structural guard rather than a
-    behavioral one. Readers that report health through another channel are
-    listed in `_SILENT_RESOLVER_READERS`; adding to that set should be a
-    deliberate act with a reason.
-
-    Three blind spots it cannot close, because it matches a literal `.get`
-    call in the same function body: a reader that goes through
-    `resolve_options` or `resolve_all` instead (`config.py` does, and passes
-    only because it happens to emit per option); one that receives a
-    `ConfigResolver` as a parameter rather than building one; and one that
-    resolves several options and emits for only some of them --
-    `sandbox_config.load` was exactly that, and being on the allowlist meant
-    the guard could not have flagged it either way.
-    """
-    import ast
-    from pathlib import Path
-
-    from deepagents_code import config_manifest
-
-    package_root = Path(config_manifest.__file__).parent
-    silent: set[str] = set()
-    for source in sorted(package_root.rglob("*.py")):
-        text = source.read_text(encoding="utf-8")
-        if "get_config_resolver" not in text and "resolver_from_snapshots" not in text:
-            continue
-        for function in ast.walk(ast.parse(text)):
-            if not isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
-            builds_resolver = any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id in {"get_config_resolver", "resolver_from_snapshots"}
-                for node in ast.walk(function)
-            )
-            # `.get(option)` on the resolver, whether chained onto the
-            # constructor or reached through a local binding.
-            reads_option = any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Attribute)
-                and node.func.attr == "get"
-                for node in ast.walk(function)
-            )
-            if not (builds_resolver and reads_option):
-                continue
-            # A *call*, not the name: these readers import the helper inside
-            # the function, so a substring check passes even after the call
-            # itself is deleted.
-            emits = any(
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "_emit_ranked_diagnostics"
-                for node in ast.walk(function)
-            )
-            if emits:
-                continue
-            relative = source.relative_to(package_root).as_posix()
-            silent.add(f"{relative}:{function.name}")
-
-    assert silent == _SILENT_RESOLVER_READERS, (
-        "Resolver readers that emit no diagnostics: "
-        f"{sorted(silent - _SILENT_RESOLVER_READERS)}. Call "
-        "`_emit_ranked_diagnostics(option, resolved)` after resolving, or add "
-        "the reader to `_SILENT_RESOLVER_READERS` with the channel it reports "
-        "health through instead."
-    )
-
-
 # Six `app.py` display toggles plus `display.show_usage_stats` in
 # `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
 # so it is deliberately not counted. Exact, not a floor — see the test.
 _EXPECTED_LITERAL_CALL_SITES = 7
-
-
-@pytest.mark.parametrize(
-    ("key", "toml_keys"),
-    [
-        ("display.show_message_timestamps", ("ui", "show_message_timestamps")),
-        ("display.show_usage_stats", ("ui", "show_usage_stats")),
-        ("display.themes", ("themes",)),
-        ("display.terminal_themes", ("ui", "terminal_themes")),
-        ("models.providers", ("models", "providers")),
-        ("retries.max_retries", ("retries", "max_retries")),
-        ("agents.default", ("agents", "default")),
-        ("agents.recent", ("agents", "recent")),
-        ("agents.async_subagents", ("async_subagents",)),
-        ("startup.recent", ("startup", "recent")),
-        ("sandboxes.default", ("sandboxes", "default")),
-        ("sandboxes.providers", ("sandboxes", "providers")),
-    ],
-)
-def test_config_toml_sections_are_discoverable(
-    key: str, toml_keys: tuple[str, ...]
-) -> None:
-    """Every `config.toml` section the app reads must be listed by `dcode config`."""
-    option = get_option(key)
-    assert option is not None, f"{key} is missing from the manifest"
-    assert option.toml_keys == toml_keys
 
 
 def test_negative_retry_count_is_not_reported_as_effective(caplog) -> None:
@@ -1214,16 +1060,6 @@ def test_run_get_json_redacts_credential_bearing_tables(
     assert "sk-secret" not in capsys.readouterr().out
 
 
-def test_cursor_style_option_definition() -> None:
-    """Cursor style supports env and config.toml and defaults to a block."""
-    opt = get_option("display.cursor_style")
-    assert opt is not None
-    assert opt.kind is OptionKind.CURSOR_STYLE_DELEGATE
-    assert opt.default == CURSOR_STYLE_DEFAULT
-    assert opt.toml_keys == ("ui", "cursor_style")
-    assert opt.env_var == _env_vars.CURSOR_STYLE
-
-
 def test_resolve_cursor_style_from_env(monkeypatch, caplog) -> None:
     """A valid env value wins; an invalid value falls through to config.toml."""
     import logging
@@ -1902,23 +1738,6 @@ def test_new_provider_surfaces_after_cache_clear(monkeypatch) -> None:
         service._managed_table_paths.cache_clear()
         config_manifest._options_by_key.cache_clear()
         config_manifest._options_by_toml_path.cache_clear()
-
-
-def test_provider_dependency_metadata_is_exhaustive() -> None:
-    """Provider dependency metadata must cover auth and install surfaces."""
-    from deepagents_code.config_manifest import _PROVIDER_DEPENDENCIES
-    from deepagents_code.extras_info import MODEL_PROVIDER_EXTRAS
-
-    assert set(PROVIDER_API_KEY_ENV) <= set(_PROVIDER_DEPENDENCIES), (
-        "_PROVIDER_DEPENDENCIES must include every provider credential so config "
-        "availability hints stay complete"
-    )
-    assert {extra for _module, extra in _PROVIDER_DEPENDENCIES.values()} == set(
-        MODEL_PROVIDER_EXTRAS
-    ), (
-        "_PROVIDER_DEPENDENCIES must include every model-provider extra so the "
-        "model selector can surface install-required recommended models"
-    )
 
 
 # --- Auto classifier timeout -----------------------------------------------

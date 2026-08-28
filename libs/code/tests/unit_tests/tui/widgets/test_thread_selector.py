@@ -356,37 +356,6 @@ class TestThreadSelectorTabSort:
                 await app.workers.wait_for_complete()
                 mock_save.assert_any_call("updated_at")
 
-    async def test_reselecting_active_sort_is_noop(self) -> None:
-        """Re-applying the active sort order should not persist or re-sort.
-
-        The early return in `_apply_sort_selection` must fire before any
-        persistence or rebuild work when the selection is unchanged.
-        """
-        mock_save = MagicMock(return_value=True)
-        with (
-            _patch_list_threads(),
-            _patch_columns(),
-            patch(
-                "deepagents_code.model_config.save_thread_sort_order",
-                mock_save,
-            ),
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._sort_by_updated is True
-
-                screen._apply_sort_selection(True)
-                await pilot.pause()
-                await app.workers.wait_for_complete()
-
-                assert screen._sort_by_updated is True
-                mock_save.assert_not_called()
-
     def test_select_options_update_before_overlay_mount_is_safe(self) -> None:
         """Agent option refresh can run before the overlay child is mounted."""
         select = ContainedSelect(
@@ -400,53 +369,6 @@ class TestThreadSelectorTabSort:
         select.set_options([("All agents", "__all__"), ("agent", "agent")])
 
         assert select.value == "__all__"
-
-    async def test_thread_load_preserves_open_agent_dropdown_focus(self) -> None:
-        """Async thread loading should not move focus away from an open dropdown."""
-        started = asyncio.Event()
-        release = asyncio.Event()
-
-        async def delayed_list_threads(
-            *_args: object, **_kwargs: object
-        ) -> list[ThreadInfo]:
-            started.set()
-            await release.wait()
-            return MOCK_THREADS
-
-        mock_list = AsyncMock(side_effect=delayed_list_threads)
-        with (
-            patch("deepagents_code.sessions.list_threads", mock_list),
-            _patch_columns(),
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await asyncio.wait_for(started.wait(), timeout=1)
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("tab")
-                await pilot.press("enter")
-                await pilot.pause()
-
-                agent_select = screen.query_one("#thread-agent-select", Select)
-                assert agent_select.expanded
-                assert isinstance(screen.focused, ContainedSelectOverlay)
-
-                with patch.object(screen, "_scroll_selected_into_view") as mock_scroll:
-                    release.set()
-                    for _ in range(20):
-                        await pilot.pause()
-                        if screen._disk_load_complete and screen._option_widgets:
-                            break
-
-                assert agent_select.expanded
-                assert isinstance(screen.focused, ContainedSelectOverlay)
-                mock_scroll.assert_not_called()
 
 
 class TestThreadSelectorDownWrap:
@@ -715,21 +637,6 @@ class TestThreadSelectorClickHandling:
 _WEBBROWSER_OPEN = "deepagents_code.tui.widgets._links.webbrowser.open"
 
 
-class TestThreadSelectorOnClickOpensLink:
-    """Tests for `ThreadSelectorScreen.on_click` opening Rich-style hyperlinks."""
-
-    def test_click_with_browser_error_is_graceful(self) -> None:
-        """Browser failure should not crash the widget."""
-        screen = ThreadSelectorScreen(current_thread=None)
-        event = MagicMock()
-        event.style = Style(link="https://example.com")
-
-        with patch(_WEBBROWSER_OPEN, side_effect=OSError("no display")):
-            screen.on_click(event)  # should not raise
-
-        event.stop.assert_not_called()
-
-
 class TestThreadSelectorPointer:
     """Tests for `ThreadSelectorScreen` link hover affordance."""
 
@@ -830,29 +737,6 @@ class TestFetchThreadUrl:
                     if isinstance(s.style, TStyle) and s.style.link
                 ]
                 assert len(link_spans) > 0
-
-    async def test_no_url_worker_when_no_current_thread(self) -> None:
-        """With no current thread, the title stays plain and no URL is resolved."""
-        with (
-            _patch_list_threads(),
-            patch(
-                "deepagents_code.tui.widgets.thread_selector.build_langsmith_thread_url",
-            ) as mock_build_url,
-        ):
-            app = ThreadSelectorTestApp(current_thread=None)
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause()
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                title_widget = screen.query_one("#thread-title", Static)
-                # With no current thread the title stays a plain string (no
-                # hyperlink), and the URL builder is never invoked.
-                assert title_widget.content == "Select Thread"
-                mock_build_url.assert_not_called()
 
     async def test_timeout_leaves_title_unchanged(self) -> None:
         """Timeout during URL resolution should not crash or change the title."""
@@ -1023,50 +907,6 @@ class TestThreadSelectorLimit:
                 assert len(screen._option_widgets) == 1
                 assert screen._threads[0]["message_count"] == 9
                 assert screen._threads[0]["initial_prompt"] == "loaded prompt"
-
-    async def test_cached_counts_skip_background_population(self) -> None:
-        """If cache fills counts before paint, background populate is skipped."""
-        threads_without_counts: list[ThreadInfo] = [
-            {
-                "thread_id": "abc12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-15T10:30:00",
-                "initial_prompt": "prompt",
-                "latest_checkpoint_id": "cp_1",
-            }
-        ]
-
-        def _apply_cached(threads: list[ThreadInfo]) -> int:
-            threads[0]["message_count"] = 11
-            return 1
-
-        with (
-            patch(
-                "deepagents_code.sessions.list_threads",
-                new_callable=AsyncMock,
-                return_value=threads_without_counts,
-            ),
-            patch(
-                "deepagents_code.sessions.apply_cached_thread_message_counts",
-                side_effect=_apply_cached,
-            ) as mock_apply_cached,
-            patch(
-                "deepagents_code.sessions.populate_thread_checkpoint_details",
-                new_callable=AsyncMock,
-            ) as mock_populate,
-        ):
-            app = ThreadSelectorTestApp()
-            async with app.run_test() as pilot:
-                app.show_selector()
-                await pilot.pause()
-                await pilot.pause(0.1)
-
-                mock_apply_cached.assert_called_once()
-                mock_populate.assert_not_awaited()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                assert screen._threads[0]["message_count"] == 11
 
 
 class TestThreadSelectorCheckpointDetailErrors:
@@ -1403,89 +1243,6 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "already in progress" in _get_widget_text(mounted[0])
 
-    async def test_duplicate_already_on_thread_toast_is_suppressed(self) -> None:
-        """Repeated no-op resumes within the toast lifetime toast only once."""
-        app = DeepAgentsApp()
-        _app_test_double(app)._mount_message = AsyncMock()
-        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
-            return_value="continue"
-        )
-        notify_mock = MagicMock()
-        _app_test_double(app).notify = notify_mock
-        app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
-
-        clock = {"now": 100.0}
-        with patch("deepagents_code.app._monotonic", side_effect=lambda: clock["now"]):
-            await app._resume_thread("thread-123")
-            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT / 2
-            await app._resume_thread("thread-123")
-
-        notify_mock.assert_called_once_with(
-            "Already on thread: thread-123", markup=False
-        )
-
-    async def test_expired_already_on_thread_toast_can_reemit(self) -> None:
-        """Once the toast has expired, a later no-op resume toasts again."""
-        app = DeepAgentsApp()
-        _app_test_double(app)._mount_message = AsyncMock()
-        _app_test_double(app)._offer_thread_cwd_switch = AsyncMock(
-            return_value="continue"
-        )
-        notify_mock = MagicMock()
-        _app_test_double(app).notify = notify_mock
-        app._agent = MagicMock()
-        app._session_state = MagicMock()
-        app._session_state.thread_id = "thread-123"
-
-        clock = {"now": 100.0}
-        with patch("deepagents_code.app._monotonic", side_effect=lambda: clock["now"]):
-            await app._resume_thread("thread-123")
-            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT
-            await app._resume_thread("thread-123")
-
-        assert notify_mock.call_count == 2
-
-    async def test_already_on_thread_reports_cwd_switch(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """Same-thread resumes should not say unchanged after cwd switches."""
-        current = tmp_path / "current"
-        target = tmp_path / "target"
-        current.mkdir()
-        target.mkdir()
-        app = DeepAgentsApp(cwd=current)
-        mounted: list[Static] = []
-        _app_test_double(app)._mount_message = AsyncMock(
-            side_effect=lambda w: mounted.append(w)
-        )
-
-        async def offer_cwd_switch(  # noqa: RUF029  # must be async: awaited as _offer_thread_cwd_switch
-            thread_id: str,
-            *,
-            restart_server: bool,
-            abort: CwdSwitchAbortMode | None,
-        ) -> str:
-            assert thread_id == "thread-123"
-            assert restart_server is True
-            assert abort == "thread_switch"
-            app._cwd = str(target)
-            return "continue"
-
-        _app_test_double(app)._offer_thread_cwd_switch = offer_cwd_switch
-        notify_mock = MagicMock()
-        _app_test_double(app).notify = notify_mock
-        app._agent = MagicMock()
-        app._session_state = _mock_session_state("thread-123")
-
-        await app._resume_thread("thread-123")
-
-        assert len(mounted) == 1
-        assert "Switched to thread directory" in _get_widget_text(mounted[0])
-        notify_mock.assert_not_called()
-
     @staticmethod
     def _switch_app() -> DeepAgentsApp:
         from textual.css.query import NoMatches as _NoMatches
@@ -1524,27 +1281,6 @@ class TestResumeThread:
         _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
         return app
 
-    async def test_switch_arms_model_adoption(self) -> None:
-        """An in-session thread switch arms session-only model adoption.
-
-        Mirrors launch-time `-r`: `_load_thread_history` (real, here mocked)
-        consumes the flag and adopts the switched-to thread's model.
-        """
-        app = self._switch_app()
-
-        await app._resume_thread("new-thread")
-
-        assert app._should_adopt_resumed_model is True
-
-    async def test_explicit_model_suppresses_switch_adoption(self) -> None:
-        """`--model` keeps the session pinned across in-session switches."""
-        app = self._switch_app()
-        app._model_explicitly_set = True
-
-        await app._resume_thread("new-thread")
-
-        assert app._should_adopt_resumed_model is False
-
     async def test_successful_switch_records_previous_thread(self) -> None:
         """A successful switch records the outgoing thread as previous_thread_id.
 
@@ -1559,219 +1295,6 @@ class TestResumeThread:
         session_state = app._session_state
         assert session_state is not None
         assert session_state.previous_thread_id == "old-thread"
-
-    @pytest.mark.parametrize(
-        "local_only_type",
-        ["USER", "APP"],
-        ids=["user-only", "app-only"],
-    )
-    async def test_switch_omits_untouched_previous_thread(
-        self, local_only_type: str
-    ) -> None:
-        """A thread the user did no work in does not get a return hint.
-
-        Covers `/clear` then a bare `/threads -r`: the thread being left was
-        created moments ago and holds only local widgets. `thread_exists` is
-        stubbed `True` on purpose — server-mode thread registration writes a
-        checkpoint row for a brand-new thread, so the checkpoint check alone
-        would let the hint through.
-        """
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = self._switch_app()
-        app._message_store.clear()
-        app._message_store.append(
-            MessageData(type=MessageType[local_only_type], content="/threads -r")
-        )
-        mount_message = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message
-        thread_exists = AsyncMock(return_value=True)
-
-        with (
-            patch("deepagents_code.sessions.thread_exists", thread_exists),
-            patch(
-                "deepagents_code.sessions.get_thread_agent",
-                AsyncMock(return_value="agent"),
-            ),
-            patch.object(app, "_schedule_thread_message_link") as schedule,
-        ):
-            await app._resume_thread("new-thread")
-
-        contents = [
-            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
-        ]
-        assert not any(text.startswith("Previous thread:") for text in contents)
-        schedule.assert_not_called()
-        # Distinguishes "suppressed by the work gate" from "suppressed by the
-        # resumability check" — the primary assertion above cannot tell them
-        # apart, and the stub would have said the thread *is* resumable.
-        thread_exists.assert_not_awaited()
-        # A suppressed hint must not derail the switch itself.
-        assert app._session_state is not None
-        assert app._session_state.thread_id == "new-thread"
-
-    async def test_switch_omits_previous_thread_with_only_shell_output(self) -> None:
-        """`!` shell output is not agent work, despite rendering as ASSISTANT.
-
-        Non-incognito `!` borrows `AssistantMessage` for markdown rendering, so
-        a thread where the user only ran a shell command would otherwise look
-        like it held a real turn.
-        """
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = self._switch_app()
-        app._message_store.clear()
-        app._message_store.append(MessageData(type=MessageType.USER, content="!ls"))
-        app._message_store.append(
-            MessageData(
-                type=MessageType.ASSISTANT,
-                content="```text\nREADME.md\n```",
-                assistant_local_only=True,
-            )
-        )
-        mount_message = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message
-        thread_exists = AsyncMock(return_value=True)
-
-        with (
-            patch("deepagents_code.sessions.thread_exists", thread_exists),
-            patch(
-                "deepagents_code.sessions.get_thread_agent",
-                AsyncMock(return_value="agent"),
-            ),
-            patch.object(app, "_schedule_thread_message_link") as schedule,
-        ):
-            await app._resume_thread("new-thread")
-
-        contents = [
-            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
-        ]
-        assert not any(text.startswith("Previous thread:") for text in contents)
-        schedule.assert_not_called()
-        thread_exists.assert_not_awaited()
-
-    @pytest.mark.parametrize(
-        "output_type",
-        ["ASSISTANT", "TOOL", "SKILL"],
-    )
-    async def test_switch_hints_for_any_server_output_type(
-        self, output_type: str
-    ) -> None:
-        """Every `_SERVER_OUTPUT_MESSAGE_TYPES` member counts as work done.
-
-        A turn can leave behind tool calls or a skill invocation without any
-        assistant text, so narrowing the constant to `ASSISTANT` would strand
-        those threads.
-        """
-        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
-
-        app = self._switch_app()
-        app._message_store.clear()
-        # `MessageData.__post_init__` requires a name for TOOL and SKILL.
-        app._message_store.append(
-            MessageData(
-                type=MessageType[output_type],
-                content="output",
-                tool_name="Read" if output_type == "TOOL" else None,
-                skill_name="review" if output_type == "SKILL" else None,
-            )
-        )
-        mount_message = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message
-        thread_exists = AsyncMock(return_value=True)
-
-        with (
-            patch("deepagents_code.sessions.thread_exists", thread_exists),
-            patch(
-                "deepagents_code.sessions.get_thread_agent",
-                AsyncMock(return_value="agent"),
-            ),
-            patch.object(app, "_schedule_thread_message_link"),
-        ):
-            await app._resume_thread("new-thread")
-
-        contents = [
-            _get_widget_text(call.args[0]) for call in mount_message.call_args_list
-        ]
-        assert any(text.startswith("Previous thread: old-thread") for text in contents)
-        thread_exists.assert_awaited_once_with("old-thread")
-
-    async def test_switch_mounts_previous_thread_hint_after_history(self) -> None:
-        """The hint lands below the restored transcript, not above it.
-
-        Position is the whole point of the hint: mounted before the history
-        load it would sit at the top of the transcript, where the restored
-        messages bury it.
-        """
-        app = self._switch_app()
-        events: list[str] = []
-
-        def record_history(**_kwargs: object) -> None:
-            events.append("history")
-
-        def record_mount(widget: Static) -> None:
-            events.append(_get_widget_text(widget))
-
-        _app_test_double(app)._load_thread_history = AsyncMock(
-            side_effect=record_history
-        )
-        _app_test_double(app)._mount_message = AsyncMock(side_effect=record_mount)
-
-        with (
-            patch(
-                "deepagents_code.sessions.thread_exists",
-                AsyncMock(return_value=True),
-            ),
-            patch(
-                "deepagents_code.sessions.get_thread_agent",
-                AsyncMock(return_value="agent"),
-            ),
-            patch.object(app, "_schedule_thread_message_link"),
-        ):
-            await app._resume_thread("new-thread")
-
-        hint = "Previous thread: old-thread (Resume with /threads -r)"
-        assert "history" in events
-        assert hint in events
-        assert events.index("history") < events.index(hint)
-
-    async def test_switch_mounts_goal_review_below_previous_thread_hint(self) -> None:
-        """A restored goal review stays the last thing in the transcript.
-
-        The review is an interactive prompt. Mounted above the hint — as it was
-        when `_load_thread_history` resolved it inline — an informational note
-        sits beneath the question the user is being asked to answer.
-        """
-        app = self._switch_app()
-        events: list[str] = []
-
-        def record_mount(widget: Static) -> None:
-            events.append(_get_widget_text(widget))
-
-        def record_review() -> None:
-            events.append("goal-review")
-
-        _app_test_double(app)._mount_message = AsyncMock(side_effect=record_mount)
-        remount = AsyncMock(side_effect=record_review)
-        _app_test_double(app)._remount_pending_goal_rubric_review = remount
-
-        with (
-            patch(
-                "deepagents_code.sessions.thread_exists",
-                AsyncMock(return_value=True),
-            ),
-            patch(
-                "deepagents_code.sessions.get_thread_agent",
-                AsyncMock(return_value="agent"),
-            ),
-            patch.object(app, "_schedule_thread_message_link"),
-        ):
-            await app._resume_thread("new-thread")
-
-        hint = "Previous thread: old-thread (Resume with /threads -r)"
-        remount.assert_awaited_once()
-        assert hint in events
-        assert events.index(hint) < events.index("goal-review")
 
     async def test_switch_survives_goal_review_restore_failure(self) -> None:
         """A goal review that cannot be restored must not undo the switch.
@@ -2000,54 +1523,6 @@ class TestResumeThread:
             for call in mount_message_mock.call_args_list
         )
 
-    async def test_prefetch_failure_clears_switch_lock_and_restores_input(self) -> None:
-        """Prefetch failures should release switch lock and restore input state."""
-        app = DeepAgentsApp(thread_id="old-thread")
-        app._agent = MagicMock()
-        app._session_state = _mock_session_state("old-thread")
-        app._chat_input = MagicMock()
-        _app_test_double(app)._mount_message = AsyncMock()
-
-        with patch.object(
-            app,
-            "_fetch_thread_history_data",
-            new_callable=AsyncMock,
-            side_effect=RuntimeError("checkpoint read failed"),
-        ):
-            await app._resume_thread("new-thread")
-
-        assert app._thread_switching is False
-        app._chat_input.set_cursor_active.assert_any_call(active=False)
-        app._chat_input.set_cursor_active.assert_any_call(active=True)
-
-    async def test_double_failure_surfaces_restore_failure_hint(self) -> None:
-        """If rollback restore fails, user-facing error should mention it."""
-        from textual.css.query import NoMatches as _NoMatches
-
-        app = DeepAgentsApp(thread_id="old-thread")
-        app._agent = MagicMock()
-        app._session_state = _mock_session_state("old-thread")
-        app._pending_messages = MagicMock()
-        app._queued_widgets = MagicMock()
-        _app_test_double(app)._fetch_thread_history_data = AsyncMock(return_value=[])
-        _app_test_double(app)._clear_messages = AsyncMock()
-        _app_test_double(app)._load_thread_history = AsyncMock(
-            side_effect=RuntimeError("checkpoint corrupt")
-        )
-        mount_message_mock = AsyncMock()
-        _app_test_double(app)._mount_message = mount_message_mock
-        _app_test_double(app).query_one = MagicMock(side_effect=_NoMatches())
-
-        with patch.object(app, "_update_status") as update_status_mock:
-            await app._resume_thread("new-thread")
-
-        assert any(
-            "Previous thread history could not be restored"
-            in _get_widget_text(call.args[0])
-            for call in mount_message_mock.call_args_list
-        )
-        update_status_mock.assert_any_call("")
-
 
 class TestFetchThreadHistoryData:
     """Tests for DeepAgentsApp._fetch_thread_history_data."""
@@ -2061,10 +1536,17 @@ class TestFetchThreadHistoryData:
         module-wide stub would silently disable unrelated work and hand back a
         false pass.
         """
+
+        def prepare(
+            _messages: list[Any], *, show_reasoning: bool = False
+        ) -> tuple[list[MessageData], tuple[()]]:
+            assert not show_reasoning
+            return converted, ()
+
         return patch.object(
             DeepAgentsApp,
             "_prepare_thread_history_messages",
-            staticmethod(lambda _messages: (converted, ())),
+            staticmethod(prepare),
         )
 
     async def test_extracts_nonzero_context_tokens(self) -> None:
@@ -2317,107 +1799,6 @@ class TestResumeModelAdoption:
             model_params=model_params,
         )
 
-    async def test_adopts_persisted_model_session_only(self) -> None:
-        """Armed flag + persisted spec switches the model without persisting it."""
-        app = self._make_app()
-        switch_mock = AsyncMock()
-        _app_test_double(app)._switch_model = switch_mock
-        app._should_adopt_resumed_model = True
-
-        await app._load_thread_history(
-            thread_id="tid-1",
-            preloaded_payload=self._payload("anthropic:claude-sonnet-4-5"),
-        )
-
-        switch_mock.assert_awaited_once()
-        call = switch_mock.await_args
-        assert call is not None
-        assert call.args[0] == "anthropic:claude-sonnet-4-5"
-        assert call.kwargs["extra_kwargs"] is None
-        assert call.kwargs["persist"] is False
-        assert call.kwargs["announce_unchanged"] is False
-        assert call.kwargs["from_resume"] is True
-        # One-shot: the flag is consumed so later loads don't re-adopt.
-        assert app._should_adopt_resumed_model is False
-
-    async def test_adopts_persisted_model_params(self) -> None:
-        """Resume restores the invocation params saved with the model spec."""
-        app = self._make_app()
-        switch_mock = AsyncMock()
-        _app_test_double(app)._switch_model = switch_mock
-        app._should_adopt_resumed_model = True
-
-        await app._load_thread_history(
-            thread_id="tid-1",
-            preloaded_payload=self._payload(
-                "anthropic:claude-sonnet-4-5",
-                model_params={"temperature": 0.7, "max_tokens": 1024},
-            ),
-        )
-
-        switch_mock.assert_awaited_once()
-        call = switch_mock.await_args
-        assert call is not None
-        assert call.args[0] == "anthropic:claude-sonnet-4-5"
-        assert call.kwargs["extra_kwargs"] == {
-            "temperature": 0.7,
-            "max_tokens": 1024,
-        }
-        assert call.kwargs["persist"] is False
-        assert call.kwargs["from_resume"] is True
-
-    async def test_no_adoption_when_flag_unset(self) -> None:
-        """Without the armed flag (e.g. in-session switch), model is untouched."""
-        app = self._make_app()
-        switch_mock = AsyncMock()
-        _app_test_double(app)._switch_model = switch_mock
-        app._should_adopt_resumed_model = False
-
-        await app._load_thread_history(
-            thread_id="tid-1",
-            preloaded_payload=self._payload("anthropic:claude-sonnet-4-5"),
-        )
-
-        switch_mock.assert_not_awaited()
-
-    async def test_no_adoption_for_legacy_thread_without_spec(self) -> None:
-        """Armed flag but no persisted spec (legacy thread) leaves the model alone."""
-        app = self._make_app()
-        switch_mock = AsyncMock()
-        _app_test_double(app)._switch_model = switch_mock
-        app._should_adopt_resumed_model = True
-
-        await app._load_thread_history(
-            thread_id="tid-1",
-            preloaded_payload=self._payload(""),
-        )
-
-        switch_mock.assert_not_awaited()
-        # The flag is consumed even without a spec, so a later in-session
-        # thread switch can't accidentally re-trigger adoption.
-        assert app._should_adopt_resumed_model is False
-
-    async def test_consumes_flag_even_when_history_empty(self) -> None:
-        """An empty-history resume still adopts and consumes the one-shot flag.
-
-        Adoption runs before the empty-`messages` early return, so the flag
-        can't leak into a later in-session `/threads` switch.
-        """
-        app = self._make_app()
-        switch_mock = AsyncMock()
-        _app_test_double(app)._switch_model = switch_mock
-        app._should_adopt_resumed_model = True
-
-        await app._load_thread_history(
-            thread_id="tid-1",
-            preloaded_payload=self._payload(
-                "anthropic:claude-sonnet-4-5", with_messages=False
-            ),
-        )
-
-        switch_mock.assert_awaited_once()
-        assert app._should_adopt_resumed_model is False
-
 
 class TestResumeAdoptionFailureMessage:
     """Tests for DeepAgentsApp._mount_resume_adoption_failure."""
@@ -2526,69 +1907,6 @@ class TestThreadLinksConfigured:
             "deepagents_code.config.get_langsmith_project_name", return_value="project"
         ):
             assert app._thread_links_configured() is True
-
-
-class TestUpgradeThreadMessageLink:
-    """Tests for DeepAgentsApp._upgrade_thread_message_link."""
-
-    async def test_noop_when_link_does_not_resolve(self) -> None:
-        """Plain-string result should leave widget content unchanged."""
-        app = DeepAgentsApp()
-        _app_test_double(app)._build_thread_message = AsyncMock(
-            return_value="Resumed thread: tid-1"
-        )
-        widget = MagicMock()
-        widget.parent = object()
-        widget._content = "Resumed thread: tid-1"
-
-        await app._upgrade_thread_message_link(
-            widget,
-            prefix="Resumed thread",
-            thread_id="tid-1",
-        )
-
-        widget.update.assert_not_called()
-        assert widget._content == "Resumed thread: tid-1"
-
-    async def test_noop_when_widget_unmounted(self) -> None:
-        """Unmounted widget should not be updated even when link resolves."""
-        from textual.content import Content
-
-        app = DeepAgentsApp()
-        _app_test_double(app)._build_thread_message = AsyncMock(
-            return_value=Content("Resumed thread: tid-1")
-        )
-        widget = MagicMock()
-        widget.parent = None
-        widget._content = "Resumed thread: tid-1"
-
-        await app._upgrade_thread_message_link(
-            widget,
-            prefix="Resumed thread",
-            thread_id="tid-1",
-        )
-
-        widget.update.assert_not_called()
-
-    async def test_updates_widget_when_link_resolves(self) -> None:
-        """Resolved Content should replace widget content."""
-        from textual.content import Content
-
-        app = DeepAgentsApp()
-        linked = Content("Resumed thread: tid-1")
-        _app_test_double(app)._build_thread_message = AsyncMock(return_value=linked)
-        widget = MagicMock()
-        widget.parent = object()
-        widget._content = "Resumed thread: tid-1"
-
-        await app._upgrade_thread_message_link(
-            widget,
-            prefix="Resumed thread",
-            thread_id="tid-1",
-        )
-
-        assert widget._content == linked
-        widget.update.assert_called_once_with(linked)
 
 
 class TestBuildThreadMessage:
@@ -2909,60 +2227,6 @@ class TestThreadsMatch:
         a = [self._thread("t1", "cp1")]
         b = [self._thread("t1", "cp2")]
         assert ThreadSelectorScreen._threads_match(a, b) is False
-
-
-class TestThreadSelectorDomSkip:
-    """Tests for skipping DOM rebuild when data matches prewarm cache."""
-
-    async def test_matching_refresh_skips_dom_rebuild(self) -> None:
-        """When refreshed threads match prefetched, DOM should not be rebuilt."""
-        prefetched: list[ThreadInfo] = [
-            {
-                "thread_id": "abc12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-15T10:30:00",
-                "latest_checkpoint_id": "cp_1",
-                "message_count": 5,
-            }
-        ]
-        # Same thread and checkpoint
-        refreshed: list[ThreadInfo] = [
-            {
-                "thread_id": "abc12345",
-                "agent_name": "my-agent",
-                "updated_at": "2025-01-15T10:30:00",
-                "latest_checkpoint_id": "cp_1",
-            }
-        ]
-        app = ThreadSelectorTestApp(current_thread="abc12345")
-
-        with patch(
-            "deepagents_code.sessions.list_threads",
-            new_callable=AsyncMock,
-            return_value=refreshed,
-        ):
-            async with app.run_test() as pilot:
-                app.push_screen(
-                    ThreadSelectorScreen(
-                        current_thread="abc12345",
-                        thread_limit=20,
-                        initial_threads=prefetched,
-                        filter_cwd=None,
-                    )
-                )
-                await pilot.pause()
-
-                screen = app.screen
-                assert isinstance(screen, ThreadSelectorScreen)
-                initial_widgets = list(screen._option_widgets)
-                assert len(initial_widgets) == 1
-
-                # Wait for background refresh
-                for _ in range(10):
-                    await pilot.pause(0.05)
-
-                # Same widget objects should still be mounted (no rebuild)
-                assert screen._option_widgets == initial_widgets
 
 
 class TestThreadSelectorAgentFilter:

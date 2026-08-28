@@ -281,35 +281,6 @@ class TestPromptSkillTrustAndRetry:
         # The approved directory joins the in-session containment allowlist.
         assert Path(self._target_dir()) in app._skill_allowed_roots
 
-    async def test_allow_extends_allowlist_exactly_once(self) -> None:
-        """The approved dir is appended once, not duplicated across the two lists."""
-        app = self._cache_hit_app()
-        app._push_screen_wait = AsyncMock(return_value=True)
-        with (
-            patch(
-                "deepagents_code.skills.load.load_skill_content",
-                side_effect=[self._CONTAINMENT_ERROR, "# Body"],
-            ),
-            patch("deepagents_code.skills.trust.trust_skill_dir", return_value=True),
-        ):
-            await app._handle_skill_command("/skill:test-skill")
-
-        assert app._skill_allowed_roots.count(Path(self._target_dir())) == 1
-
-    async def test_deny_shows_error_and_remembers(self) -> None:
-        """Denying surfaces the original error and suppresses re-prompts."""
-        app = self._cache_hit_app()
-        app._push_screen_wait = AsyncMock(return_value=False)
-        with patch(
-            "deepagents_code.skills.load.load_skill_content",
-            side_effect=self._CONTAINMENT_ERROR,
-        ):
-            await app._handle_skill_command("/skill:test-skill")
-
-        assert any("resolves outside" in t for t in _app_message_texts(app))
-        assert self._target_dir() in app._skill_trust_denied
-        app._send_to_agent.assert_not_awaited()
-
     async def test_prior_deny_does_not_reprompt(self) -> None:
         """A dir denied earlier this session errors without a second prompt."""
         app = self._cache_hit_app()

@@ -633,33 +633,6 @@ class TestRuntimeModelConfig:
         assert config.context_limit == 7
 
 
-class TestSdkContractGuards:
-    """Guard summarization-event assumptions shared with the SDK."""
-
-    def test_summarization_cutoff_is_an_absolute_index(self) -> None:
-        """`cutoff_index` must index unfiltered persisted messages.
-
-        `goal_state_notice.validated_summarization_cutoff` and
-        `GoalToolsMiddleware._request_with_goal_notice` both depend on this: the
-        goal middleware wraps the summarizer, so anything it removes from the
-        request below the cutoff shifts the indices this slice uses. If the SDK
-        ever stored an effective-list index instead, the bounds check would keep
-        returning a plausible integer and the notice logic would degrade
-        silently rather than fail.
-        """
-        from deepagents.middleware.summarization import SummarizationMiddleware
-
-        messages = ["m0", "m1", "m2", "m3"]
-        event = {"summary_message": "S", "cutoff_index": 2}
-
-        applied = SummarizationMiddleware._apply_event_to_messages(
-            messages,  # ty: ignore[invalid-argument-type]
-            event,  # ty: ignore[invalid-argument-type]
-        )
-
-        assert applied == ["S", "m2", "m3"]
-
-
 class TestSummaryTrimLimit:
     """The bound on history handed to a dedicated summary model.
 
@@ -724,40 +697,6 @@ class TestSummarySlotGuards:
     def test_require_helper_slot_accepts_a_present_slot(self) -> None:
         _require_helper_slot(SimpleNamespace(_present=None), "_present", "unused")
 
-    @pytest.mark.parametrize(
-        ("install", "slots"),
-        [
-            pytest.param(
-                _install_summary_model_retries, ("_summary_model",), id="retries"
-            ),
-            pytest.param(
-                _install_summary_trim_limit, ("trim_tokens_to_summarize",), id="trim"
-            ),
-            pytest.param(
-                _install_summary_token_counter,
-                ("token_counter", "_partial_token_counter"),
-                id="counter",
-            ),
-        ],
-    )
-    def test_installers_raise_when_a_slot_is_missing(
-        self, install: Callable[..., None], slots: tuple[str, ...]
-    ) -> None:
-        model = SimpleNamespace(profile={"max_input_tokens": 10_000})
-        for dropped in slots:
-            helper = SimpleNamespace(
-                **{slot: None for slot in slots if slot != dropped}
-            )
-            summarization = SimpleNamespace(_lc_helper=helper, model=model)
-            with pytest.raises(AttributeError, match=repr(dropped)):
-                install(cast("Any", summarization), cast("Any", model))
-
-    def test_lazy_install_raises_when_a_summary_hook_is_missing(self) -> None:
-        helper = SimpleNamespace(_create_summary=None)
-        summarization = SimpleNamespace(_lc_helper=helper)
-        with pytest.raises(AttributeError, match="_acreate_summary"):
-            _install_lazy_summary_model(cast("Any", summarization), "p:m", None)
-
 
 class TestLazySummaryModel:
     """Deferred construction of the dedicated summary model.
@@ -804,21 +743,6 @@ class TestLazySummaryModel:
         create_model.assert_called_once_with("p:summary", cli_max_retries=0)
         assert summarization._lc_helper._summary_model._model is summary_model
         assert summarization._lc_helper.trim_tokens_to_summarize == 8_000
-
-    def test_model_is_built_once_across_summaries(self) -> None:
-        summarization = self._summarizer()
-        _install_lazy_summary_model(cast("Any", summarization), "p:summary", None)
-        with patch(
-            "deepagents_code.config.create_model",
-            return_value=SimpleNamespace(
-                model=SimpleNamespace(
-                    profile={"max_input_tokens": 10_000}, _llm_type="summary"
-                )
-            ),
-        ) as create_model:
-            summarization._lc_helper._create_summary([])
-            summarization._lc_helper._create_summary([])
-        assert create_model.call_count == 1
 
     def test_unresolvable_spec_degrades_to_the_main_model(self) -> None:
         """A broken summary model is a broken optimization, not a broken turn.

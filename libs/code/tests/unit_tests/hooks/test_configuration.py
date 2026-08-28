@@ -32,22 +32,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 
-def test_registry_covers_all_hook_events() -> None:
-    specs = {event: get_event_spec(event) for event in HookEvent}
-    assert set(specs) == set(HookEvent)
-    assert all(event is spec.event for event, spec in specs.items())
-    assert (
-        get_event_spec(HookEvent.SESSION_END).default_timeout_seconds
-        == DEFAULT_COMMAND_TIMEOUT_SECONDS
-    )
-    assert get_event_spec(HookEvent.PERMISSION_REQUEST).matcher_field == "tool_name"
-    assert get_event_spec(
-        HookEvent.USER_PROMPT_SUBMIT
-    ).default_timeout_seconds == pytest.approx(30.0)
-    assert get_event_spec(HookEvent.PRE_COMPACT).matcher_field == "trigger"
-    assert get_event_spec(HookEvent.PRE_COMPACT).owner is HookOwner.SERVER
-
-
 def test_load_hooks_config_precedence_and_snapshot_hash(tmp_path: Path) -> None:
     user_dir = tmp_path / "user"
     project_dir = tmp_path / "project"

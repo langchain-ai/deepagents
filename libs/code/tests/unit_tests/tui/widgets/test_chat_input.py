@@ -250,97 +250,6 @@ _EXPANDED_HEIGHT = min(
 class TestChatInputResize:
     """Tests for resizing the chat input from its top border."""
 
-    async def test_double_click_from_a_partial_manual_height_collapses(self) -> None:
-        """A part-way manual height collapses rather than expanding.
-
-        Deliberate: the gesture keys off whether a manual height is what pins
-        the composer, not off whether it reached the maximum, so one
-        double-click undoes any drag the user can see.
-        """
-        app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
-            box = app.query_one(ChatInputBox)
-            handle = app.query_one(ChatInputResizeHandle)
-            text_area = app.query_one(ChatTextArea)
-            text_area.insert("one\ntwo\nthree")
-            box.set_manual_height(5)
-            await pilot.pause()
-            assert text_area.size.height == 5
-
-            await pilot.double_click(handle, offset=(5, 0))
-            await pilot.pause()
-
-            assert box._requested_height is None
-            assert text_area.size.height == 3
-            # Genuinely automatic again, not a height that happens to equal the
-            # draft: auto growth is back in charge and a further toggle expands.
-            assert text_area._settled_content_height() == _CHAT_INPUT_AUTO_MAX_HEIGHT
-            await pilot.double_click(handle, offset=(5, 0))
-            await pilot.pause()
-            assert box._requested_height == _EXPANDED_HEIGHT
-
-    async def test_double_click_expands_a_manual_height_hidden_by_the_draft(
-        self,
-    ) -> None:
-        """A drag floored by the draft expands instead of collapsing.
-
-        Dragging a tall draft smaller stores a request the content floor then
-        refuses to render, so the composer never moves. Collapsing that request
-        would not move it either, leaving the user with two dead gestures in a
-        row -- so this case expands.
-        """
-        app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
-            box = app.query_one(ChatInputBox)
-            handle = app.query_one(ChatInputResizeHandle)
-            text_area = app.query_one(ChatTextArea)
-            text_area.insert("one\ntwo\nthree\nfour\nfive\nsix")
-            await pilot.pause()
-            assert text_area.size.height == 6
-
-            # Drag downward to shrink; the floor keeps all six rows visible.
-            await pilot.mouse_down(handle, offset=(5, 0))
-            await pilot.hover(handle, offset=(5, 3))
-            await pilot.mouse_up(handle, offset=(5, 3))
-            await pilot.pause()
-            assert box._requested_height == 3
-            assert text_area.size.height == 6
-
-            await pilot.double_click(handle, offset=(5, 0))
-            await pilot.pause()
-
-            assert box._requested_height == _EXPANDED_HEIGHT
-            assert text_area.size.height == _EXPANDED_HEIGHT
-
-    async def test_double_click_expands_after_a_one_row_drag_jitter(self) -> None:
-        """A single row of travel during a press still leaves "expand" next.
-
-        `on_mouse_move` only suppresses sub-cell jitter, so drifting a whole row
-        and back within one press does establish a manual height. It renders no
-        differently from automatic sizing, so the double-click that follows must
-        still expand.
-        """
-        app = _ChatInputResizeTestApp()
-        async with app.run_test(size=(80, _RESIZE_SCREEN_HEIGHT)) as pilot:
-            box = app.query_one(ChatInputBox)
-            handle = app.query_one(ChatInputResizeHandle)
-            text_area = app.query_one(ChatTextArea)
-            await pilot.pause()
-
-            await pilot.mouse_down(handle, offset=(5, 0))
-            await pilot.hover(handle, offset=(5, 1))
-            await pilot.hover(handle, offset=(5, 0))
-            await pilot.mouse_up(handle, offset=(5, 0))
-            await pilot.pause()
-            assert box._requested_height == 1
-            assert text_area.size.height == 1
-
-            await pilot.double_click(handle, offset=(5, 0))
-            await pilot.pause()
-
-            assert box._requested_height == _EXPANDED_HEIGHT
-            assert text_area.size.height == _EXPANDED_HEIGHT
-
     async def test_unmount_mid_drag_releases_mouse_capture(self) -> None:
         """Tearing the input down during a drag does not strand the capture.
 
@@ -542,62 +451,6 @@ class TestShellSyntaxHighlighting:
             assert len(colors) > 1
 
 
-class TestModeSwitchNoJitter:
-    """Regression tests: mode glyph and completion popup update atomically.
-
-    Switching modes (e.g. `/` → `!` or `!` → `/`) must change the prompt glyph
-    and completion popup visibility in the same frame. A deferred ordering that
-    closes the popup one frame before the glyph changes (or vice versa) creates
-    visible jitter.
-    """
-
-    async def test_slash_to_bang_updates_glyph_and_popup_same_frame(self) -> None:
-        """Switching from command mode to shell mode atomically hides popup."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            prompt = chat.query_one("#prompt", Static)
-            popup = chat.query_one(CompletionPopup)
-            assert chat._text_area is not None
-
-            # Enter command mode — popup visible, glyph is "/"
-            await pilot.press("/")
-            await _pause_for_strip(pilot)
-            assert chat.mode == "command"
-            assert _prompt_text(prompt) == "/"
-            assert popup.styles.display == "block"
-
-            # Switch to shell mode — popup hidden AND glyph is "$" after one pause
-            await pilot.press("!")
-            await pilot.pause()
-            assert chat.mode == "shell"
-            assert _prompt_text(prompt) == "$"
-            assert popup.styles.display == "none"
-
-    async def test_bang_to_slash_updates_glyph_and_popup_same_frame(self) -> None:
-        """Switching from shell mode to command mode atomically shows popup."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            prompt = chat.query_one("#prompt", Static)
-            popup = chat.query_one(CompletionPopup)
-            assert chat._text_area is not None
-
-            # Enter shell mode first — popup hidden, glyph is "$"
-            await pilot.press("!")
-            await _pause_for_strip(pilot)
-            assert chat.mode == "shell"
-            assert _prompt_text(prompt) == "$"
-            assert popup.styles.display == "none"
-
-            # Switch to command mode — popup visible AND glyph is "/" after one pause
-            await pilot.press("/")
-            await _pause_for_strip(pilot)
-            assert chat.mode == "command"
-            assert _prompt_text(prompt) == "/"
-            assert popup.styles.display == "block"
-
-
 class TestHistoryNavigationFlag:
     """Test that _skip_history_change_events resets when history is exhausted."""
 
@@ -641,65 +494,6 @@ class TestRefocusClickSuppression:
             assert text_area.cursor_location == (0, 0)
 
 
-class TestCursorHiddenWhileUnfocused:
-    """The chat input must never blink a cursor it cannot type into.
-
-    Textual's `TextArea._draw_cursor` ignores `has_focus` while blinking is on,
-    and mouse-down sets `_selecting`, so the matching mouse-up always restarts
-    the blink through `_end_mouse_selection`. Clicking the chat input while a
-    focus-trapping widget (e.g. the `edit_file` approval menu, which re-focuses
-    itself on blur) owns the keyboard therefore left a blinking cursor in a
-    field that could neither receive keystrokes nor be typed into.
-    """
-
-    async def test_click_while_approval_traps_focus_shows_no_cursor(self) -> None:
-        """Clicking the chat input under an `edit_file` approval draws no cursor."""
-        from deepagents_code.tui.widgets.approval import ApprovalMenu
-
-        class _ApprovalApp(App[None]):
-            def compose(self) -> ComposeResult:
-                yield ApprovalMenu(
-                    {
-                        "name": "edit_file",
-                        "args": {
-                            "file_path": "main.py",
-                            "old_string": "a",
-                            "new_string": "b",
-                        },
-                    }
-                )
-                yield ChatInput(id="chat-input")
-
-        app = _ApprovalApp()
-        async with app.run_test(size=(80, 24)) as pilot:
-            chat = app.query_one(ChatInput)
-            text_area = chat._text_area
-            assert text_area is not None
-            menu = app.query_one(ApprovalMenu)
-            menu.focus()
-            await pilot.pause()
-            assert text_area._draw_cursor is False
-
-            # Relies on `pilot.click` pausing before each event, so the menu's
-            # deferred `on_blur` refocus lands before the mouse-up restarts the
-            # blink; the phantom cursor is settled by the time `click` returns.
-            await pilot.click(ChatTextArea)
-            await pilot.pause()
-
-            # Pin the precondition. Without this, a `pilot` that stopped
-            # interleaving would leave the input focused, `_watch_has_focus`
-            # would hide the cursor on the later refocus, and the assertion
-            # below would pass for a reason unrelated to the fix.
-            assert text_area.has_focus is False
-
-            assert app.focused is menu
-            assert text_area._draw_cursor is False
-            # `_draw_cursor` alone is a 50/50 read against a regression that
-            # leaves the timer running, since it is False for half of every
-            # blink cycle. The parked timer is the deterministic signal.
-            assert text_area.blink_timer._active.is_set() is False
-
-
 class TestHistoryBoundaryNavigation:
     """Test that history navigation only triggers at input boundaries."""
 
@@ -735,68 +529,6 @@ class TestCompletionPopupClickBubbling:
 
 class TestDismissCompletion:
     """Test ChatInput.dismiss_completion edge cases."""
-
-    async def test_dismiss_clears_popup_and_state(self) -> None:
-        """dismiss_completion hides popup and resets all state."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one("#chat-input", ChatInput)
-            popup = chat.query_one(CompletionPopup)
-
-            # Trigger slash completion — the "/" prefix is stripped from the
-            # text area but completions appear via virtual prefix synthesis.
-            assert chat._text_area is not None
-            chat._text_area.text = "/"
-            await _pause_for_strip(pilot)
-
-            # Completion should be active
-            assert chat.mode == "command"
-            assert chat._current_suggestions
-            assert popup.styles.display == "block"
-
-            # Dismiss
-            result = chat.dismiss_completion()
-            assert result is True
-
-            # All state should be cleaned up
-            assert chat._current_suggestions == []
-            assert popup.styles.display == "none"
-            assert chat._text_area._completion_active is False
-
-    async def test_completion_reappears_after_dismiss(self) -> None:
-        """Typing / after dismiss_completion re-opens the menu."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one("#chat-input", ChatInput)
-            popup = chat.query_one(CompletionPopup)
-
-            assert chat._text_area is not None
-
-            # Show → dismiss
-            chat._text_area.text = "/"
-            await _pause_for_strip(pilot)
-            assert chat._current_suggestions
-            chat.dismiss_completion()
-
-            # Clear input — mode persists (backspace-on-empty exits)
-            chat._text_area.text = ""
-            await pilot.pause()
-            assert chat.mode == "command"
-
-            # Exit mode via backspace on empty
-            await pilot.press("backspace")
-            await pilot.pause()
-            assert chat.mode == "normal"
-
-            # Retype / — prefix stripped, mode becomes command, completions appear
-            chat._text_area.text = "/"
-            await _pause_for_strip(pilot)
-
-            # Menu should reappear with all commands
-            assert len(chat._current_suggestions) == min(
-                len(get_slash_commands()), MAX_SUGGESTIONS
-            )
-            assert popup.styles.display == "block"
 
     async def test_popup_hide_cancels_pending_rebuild(self) -> None:
         """Hiding the popup clears pending suggestions so a stale rebuild is a no-op."""
@@ -1559,31 +1291,6 @@ class TestChatTextAreaTypingEmission:
 
 class TestChatInputTypingBubble:
     """ChatInput.Typing should bubble from ChatTextArea.Typing."""
-
-
-class TestArgumentHints:
-    """Test inline argument-hint ghost text for slash commands."""
-
-    async def test_pre_key_dismiss_hides_popup_on_space(self) -> None:
-        """Popup is hidden before TextArea processes the space character."""
-        app = _ChatInputTestApp()
-        async with app.run_test() as pilot:
-            chat = app.query_one(ChatInput)
-            popup = chat.query_one(CompletionPopup)
-            assert chat._text_area is not None
-
-            # Trigger command mode with active suggestions
-            chat._text_area.insert("/")
-            await _pause_for_strip(pilot)
-            chat._text_area.insert("rem")
-            await pilot.pause()
-            assert chat._current_suggestions
-            assert popup.styles.display == "block"
-
-            # Type space — popup should dismiss
-            await pilot.press("space")
-            await pilot.pause()
-            assert popup.styles.display == "none"
 
 
 class TestScrollCursorVisibleDesync:

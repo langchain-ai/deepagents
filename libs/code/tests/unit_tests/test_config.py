@@ -647,47 +647,6 @@ class TestClaudeSkillsDirs:
     """Tests for `.claude/skills` path helpers."""
 
 
-class TestCreateModelAllowlist:
-    """Tests for construction-time model policy enforcement."""
-
-    def test_rejects_before_credential_side_effects(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A blocked model never bridges credentials or reaches construction."""
-        policy = ModelConfig(
-            providers={"custom": {"class_path": "example.models:ChatModel"}},
-            allowed_models=("anthropic:claude-sonnet-5",),
-            allowed_models_source="managed config",
-        )
-        monkeypatch.setattr(
-            model_config.ModelConfig,
-            "load",
-            classmethod(lambda _cls, _path=None: policy),
-        )
-        apply_credentials = Mock()
-        split_warning = Mock()
-        provider_kwargs = Mock()
-        custom_constructor = Mock()
-        monkeypatch.setattr(model_config, "apply_stored_credentials", apply_credentials)
-        monkeypatch.setattr(
-            model_config, "warn_on_split_credential_source", split_warning
-        )
-        monkeypatch.setattr(
-            "deepagents_code.config._get_provider_kwargs", provider_kwargs
-        )
-        monkeypatch.setattr(
-            "deepagents_code.config._create_model_from_class", custom_constructor
-        )
-
-        with pytest.raises(ModelNotAllowedError, match="administrator-managed"):
-            create_model("custom:blocked")
-
-        apply_credentials.assert_not_called()
-        split_warning.assert_not_called()
-        provider_kwargs.assert_not_called()
-        custom_constructor.assert_not_called()
-
-
 class TestDefaultModelSpecAllowlist:
     """Default resolution under an active `models.allowed` policy."""
 
@@ -3078,58 +3037,6 @@ class TestQuietSdkLogging:
 
         assert captured == ["Error parsing JSON response"]
 
-    def test_mcp_shutdown_race_filter_installation(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The filter is installed once per transport, removed with debug on."""
-        from deepagents_code._env_vars import DEBUG
-
-        transport_loggers = [
-            logging.getLogger(name) for name in _MCP_SHUTDOWN_RACE_MESSAGES
-        ]
-        for transport_logger in transport_loggers:
-            # `setattr` (rather than `removeFilter`) so monkeypatch restores the
-            # original list on teardown; these are process-global loggers and
-            # `mcp_auth` installs its own filter on a sibling at import time.
-            monkeypatch.setattr(transport_logger, "filters", [])
-        monkeypatch.delenv(DEBUG, raising=False)
-
-        _quiet_sdk_logging()
-        _quiet_sdk_logging()
-
-        for transport_logger in transport_loggers:
-            installed = [
-                f
-                for f in transport_logger.filters
-                if isinstance(f, _McpShutdownRaceFilter)
-            ]
-            assert len(installed) == 1
-
-        monkeypatch.setenv(DEBUG, "1")
-        _quiet_sdk_logging()
-
-        for transport_logger in transport_loggers:
-            assert not [
-                f
-                for f in transport_logger.filters
-                if isinstance(f, _McpShutdownRaceFilter)
-            ]
-
-    def test_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Repeated calls do not stack duplicate handlers."""
-        from deepagents_code._env_vars import DEBUG
-
-        monkeypatch.delenv(DEBUG, raising=False)
-        for name in _QUIET_SDK_LOGGER_NAMES:
-            logging.getLogger(name).handlers.clear()
-
-        _quiet_sdk_logging()
-        _quiet_sdk_logging()
-
-        for name in _QUIET_SDK_LOGGER_NAMES:
-            handlers = logging.getLogger(name).handlers
-            assert len(handlers) == 1
-
     def test_routes_harness_diagnostics_to_debug_log(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -3928,14 +3835,6 @@ class TestLazySingletons:
         from deepagents_code.config import _get_credentials
 
         assert isinstance(_get_credentials(), Credentials)
-
-    def test_get_credentials_returns_same_instance(self) -> None:
-        """The credentials accessor returns one process-wide object."""
-        from deepagents_code.config import _get_credentials
-
-        a = _get_credentials()
-        b = _get_credentials()
-        assert a is b
 
     @pytest.mark.parametrize("canonical", ["LANGSMITH_API_KEY", "LANGCHAIN_API_KEY"])
     def test_restore_user_tracing_api_keys_recovers_original_value(

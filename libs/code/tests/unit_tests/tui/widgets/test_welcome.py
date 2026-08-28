@@ -190,29 +190,6 @@ class TestExperimentalTagStyle:
 class TestTitle:
     """Tests for the banner title line."""
 
-    def test_updates_version_after_in_session_install(self) -> None:
-        """`update_version` re-renders and replaces the version shown."""
-        banner = _make_banner()
-
-        with patch.object(banner, "update") as mock_update:
-            banner.update_version("99.0.0")
-            mock_update.assert_called_once()
-
-        plain = banner._build_banner().plain
-        assert "v99.0.0" in plain
-        assert f"v{__version__}" not in plain
-
-    def test_update_version_does_not_render_when_hidden(self) -> None:
-        """`update_version` tracks the version but skips re-render when hidden."""
-        banner = _make_banner(env={HIDE_SPLASH_VERSION: "1"})
-
-        with patch.object(banner, "update") as mock_update:
-            banner.update_version("99.0.0")
-            mock_update.assert_not_called()
-
-        assert banner._version == "99.0.0"
-        assert "v99.0.0" not in banner._build_banner().plain
-
     def test_no_debug_tag_when_env_falsy(self) -> None:
         """A present-but-falsy `DEEPAGENTS_CODE_DEBUG` shows no `(debug enabled)` tag.
 

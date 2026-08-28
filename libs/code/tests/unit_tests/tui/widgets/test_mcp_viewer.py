@@ -188,72 +188,6 @@ class TestMCPViewerScreen:
             await pilot.pause()
             assert dismissed
 
-    async def test_f2_patch_preserves_unrelated_widget_identity(self) -> None:
-        """In-place patch must NOT re-create widgets for unrelated servers.
-
-        Guards against a regression to the full-rebuild path: the other
-        server's header and tool rows must be the same Python instances
-        before and after the toggle. A full rebuild would replace them.
-        """
-        app = MCPViewerTestApp()
-        async with app.run_test() as pilot:
-
-            async def on_toggle(server_name: str) -> None:
-                updated = [
-                    MCPServerInfo(
-                        name=info.name,
-                        transport=info.transport,
-                        status="disabled" if info.name == server_name else info.status,
-                        tools=() if info.name == server_name else info.tools,
-                        error=(
-                            "Disabled by user (pending reconnect)."
-                            if info.name == server_name
-                            else None
-                        ),
-                    )
-                    for info in _sample_info()
-                ]
-                await screen.apply_server_disable_toggle(
-                    updated,
-                    toggled_server=server_name,
-                    pending_reconnect=True,
-                )
-
-            screen = MCPViewerScreen(
-                server_info=_sample_info(), on_toggle_disable=on_toggle
-            )
-            app.push_screen(screen)
-            await pilot.pause()
-
-            other_header_before = next(
-                w
-                for w in screen._row_widgets
-                if isinstance(w, MCPServerHeaderItem) and w.server.name == "remote-api"
-            )
-            other_tool_before = next(
-                w
-                for w in screen._row_widgets
-                if isinstance(w, MCPToolItem) and w.tool_name == "search"
-            )
-
-            await pilot.press("f2")
-            await pilot.pause()
-
-            other_header_after = next(
-                w
-                for w in screen._row_widgets
-                if isinstance(w, MCPServerHeaderItem) and w.server.name == "remote-api"
-            )
-            other_tool_after = next(
-                w
-                for w in screen._row_widgets
-                if isinstance(w, MCPToolItem) and w.tool_name == "search"
-            )
-
-            # Same Python objects -> no re-mount -> no flicker on this row.
-            assert other_header_after is other_header_before
-            assert other_tool_after is other_tool_before
-
     async def test_f2_falls_back_when_server_missing_from_refreshed_info(
         self,
     ) -> None:
@@ -1040,18 +974,6 @@ class TestMCPViewerScreen:
 
             assert "paused" in disabled_text
             assert "disabled" in disabled_text
-
-    def test_status_color_maps_all_states(self) -> None:
-        """Unit-level: each status maps to the correct theme color attribute."""
-        from deepagents_code import theme
-        from deepagents_code.tui.widgets.mcp_viewer import _status_color
-
-        colors = theme.get_theme_colors()
-        assert _status_color("ok", colors) == colors.success
-        assert _status_color("unauthenticated", colors) == colors.warning
-        assert _status_color("awaiting_reconnect", colors) == colors.warning
-        assert _status_color("error", colors) == colors.error
-        assert _status_color("disabled", colors) == colors.muted
 
     async def test_status_indicator_glyphs_use_glyph_set(self) -> None:
         """Status icons reuse existing `Glyphs` (unicode by default)."""

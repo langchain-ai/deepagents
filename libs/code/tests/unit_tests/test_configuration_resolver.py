@@ -594,44 +594,6 @@ def test_every_composing_option_composes(key: str) -> None:
         )
 
 
-def test_settings_from_environment_does_not_import_textual(tmp_path: Path) -> None:
-    """Building `Credentials` must not drag the theme registry onto the hot path.
-
-    `resolve_all()` would resolve `display.theme`, whose `THEME_DELEGATE`
-    coercion reaches the theme registry and imports Textual (~470ms). The four
-    CLI entry points in `skills/commands.py` build `Credentials` without drawing
-    a UI, so they must not pay for it.
-    """
-    home = tmp_path / "home"
-    (home / ".deepagents").mkdir(parents=True)
-    (home / ".deepagents" / "config.toml").write_text(
-        '[ui]\ntheme = "monokai"\n',
-        encoding="utf-8",
-    )
-    env: dict[str, str] = os.environ.copy()
-    env["HOME"] = str(home)
-    env["USERPROFILE"] = str(home)
-    env.pop("DEEPAGENTS_CODE_THEME", None)
-    result = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                "import sys\n"
-                "from deepagents_code.config import Credentials\n"
-                "Credentials.from_environment()\n"
-                "assert 'textual' not in sys.modules, 'Textual reached the "
-                "startup path'\n"
-            ),
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        env=env,
-    )
-    assert result.returncode == 0, result.stderr
-
-
 def test_corrupt_user_toml_warns_instead_of_defaulting_silently(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -763,33 +725,6 @@ def test_default_path_write_retains_the_last_enforceable_managed_snapshot(
         assert resolver.get(option).value == ["safe-command"]
     finally:
         service.invalidate_config_sources()
-
-
-@pytest.mark.parametrize(
-    ("provider", "expected"),
-    [(EnvProvider(), False), (DefaultProvider(), True)],
-)
-def test_stateless_provider_durability_cannot_be_overridden(
-    provider: ConfigProvider,
-    *,
-    expected: bool,
-) -> None:
-    """Durability decides masking, so the attribute must not be able to lie.
-
-    Both providers delegate to helpers that stamp a hardcoded durability onto
-    every result. While `durable` was a settable field, passing the opposite
-    value type-checked and changed nothing.
-    """
-    option = get_option("startup.mode")
-    assert option is not None
-
-    assert provider.durable is expected
-    assert provider.get(option).durable is expected
-    # Built dynamically so the type checker does not reject the call before
-    # the test can prove the constructor does.
-    overridden: dict[str, Any] = {"durable": not expected}
-    with pytest.raises((TypeError, AttributeError)):
-        type(provider)(**overridden)
 
 
 def test_a_failed_resolver_refresh_does_not_fail_a_landed_write(

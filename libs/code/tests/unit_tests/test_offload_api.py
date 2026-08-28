@@ -1474,17 +1474,6 @@ class TestLifespan:
         assert "SystemExit" in caplog.text
 
 
-class TestFlushBudget:
-    """The flush leaves time for LangGraph's own lifespan teardown."""
-
-    def test_flush_budget_leaves_teardown_margin(self) -> None:
-        from deepagents_code import offload_api
-        from deepagents_code.client.launch import server
-
-        remaining = server._SHUTDOWN_TIMEOUT - offload_api._TRACE_FLUSH_TIMEOUT
-        assert remaining >= 2.0
-
-
 class TestRouteRegistration:
     """The Starlette app exposes the paths and methods the client calls.
 

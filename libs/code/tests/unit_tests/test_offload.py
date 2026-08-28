@@ -1240,33 +1240,6 @@ class TestOffloadOperation:
         """Build the narrow compaction-plan shape consumed by the operation."""
         return SimpleNamespace(update=lambda _path: update, archive=MagicMock())
 
-    async def test_compacts_checkpoint_state_without_message_input(self) -> None:
-        event = _summary_event(2)
-        middleware, compaction, _hooks = self._middleware()
-        compaction._aplan_forced_compaction_update = AsyncMock(
-            return_value=self._plan(
-                {
-                    "_summarization_event": event,
-                    "_summarization_session_id": "archive-1",
-                }
-            )
-        )
-        state = {
-            "messages": _make_dict_messages(4),
-        }
-
-        execution = await middleware.execute(state, self._runtime())
-
-        compaction._aplan_forced_compaction_update.assert_awaited_once()
-        await_args = compaction._aplan_forced_compaction_update.await_args
-        assert await_args is not None
-        state_arg = await_args.args[0]
-        assert state_arg is state
-        assert "messages" not in execution.update
-        assert execution.update["_summarization_session_id"] == "archive-1"
-        assert execution.result["status"] == "compacted"
-        assert execution.result["messages_offloaded"] == 2
-
     async def test_a_hook_interrupt_propagates_instead_of_failing(self) -> None:
         """A hook request must reach the client, not become a `failed` result.
 

@@ -44,13 +44,17 @@ def _icacls_entries(path) -> list[str]:
 class TestConfigureDebugLogging:
     def test_adds_handler_when_env_set(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.add")
-        log_file = tmp_path / "debug.log"
+        log_file = tmp_path / "test-thread.log"
         log_file.touch(mode=0o644)
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
         assert any(isinstance(h, logging.FileHandler) for h in logger.handlers)
         assert logger.level == logging.DEBUG
         if os.name != "nt":
@@ -70,7 +74,7 @@ class TestConfigureDebugLogging:
         current user, is what proves the replacement DACL was applied and
         marked protected so inherited entries were dropped.
         """
-        log_file = tmp_path / "debug.log"
+        log_file = tmp_path / "test-thread.log"
         log_file.touch()
 
         _debug._prepare_debug_file(log_file)
@@ -88,18 +92,19 @@ class TestConfigureDebugLogging:
         """
         logger = logging.getLogger("test.debug.harden_fail")
         logger.handlers = []
-        log_file = tmp_path / "debug.log"
+        log_file = tmp_path / "test-thread.log"
         with (
             patch.dict(
                 os.environ,
                 {
                     "DEEPAGENTS_CODE_DEBUG": "1",
-                    "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file),
+                    "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
                 },
             ),
             patch.object(_debug, "_prepare_debug_file", side_effect=OSError("nope")),
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
         assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
         assert "Warning" in capsys.readouterr().err
 
@@ -114,16 +119,17 @@ class TestConfigureDebugLogging:
         logger.handlers = []
         victim = tmp_path / "victim.log"
         victim.touch()
-        link = tmp_path / "debug.log"
+        link = tmp_path / "test-thread.log"
         link.symlink_to(victim)
         with patch.dict(
             os.environ,
             {
                 "DEEPAGENTS_CODE_DEBUG": "1",
-                "DEEPAGENTS_CODE_DEBUG_FILE": str(link),
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(tmp_path),
             },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
         assert not any(isinstance(h, logging.FileHandler) for h in logger.handlers)
         assert "Warning" in capsys.readouterr().err
         logger.warning("must not be written through the symlink")
@@ -133,18 +139,23 @@ class TestConfigureDebugLogging:
         logger = logging.getLogger("test.debug.bad_level")
         with patch.dict(os.environ, {"DEEPAGENTS_CODE_LOG_LEVEL": "TRACE"}, clear=True):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
         assert logger.level == logging.INFO
         captured = capsys.readouterr()
         assert "DEEPAGENTS_CODE_LOG_LEVEL" in captured.err
 
     def test_custom_path_used(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.custom_path")
-        log_file = tmp_path / "custom.log"
+        log_file = tmp_path / "custom" / "test-thread.log"
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
         file_handlers = [
             h for h in logger.handlers if isinstance(h, logging.FileHandler)
         ]
@@ -157,46 +168,24 @@ class TestConfigureDebugLogging:
 
     def test_repeated_configuration_is_idempotent(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.idempotent")
-        log_file = tmp_path / "debug.log"
+        log_file = tmp_path / "test-thread.log"
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
 
         file_handlers = [
             h for h in logger.handlers if isinstance(h, logging.FileHandler)
         ]
         try:
             assert len(file_handlers) == 1
-        finally:
-            for h in file_handlers:
-                h.close()
-                logger.removeHandler(h)
-
-    def test_changed_path_swaps_handler(self, tmp_path) -> None:
-        """Re-configuring with a new path replaces the stale handler, not stacks."""
-        logger = logging.getLogger("test.debug.swap")
-        first = tmp_path / "first.log"
-        second = tmp_path / "second.log"
-        with patch.dict(
-            os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(first)},
-        ):
-            configure_debug_logging(logger)
-        with patch.dict(
-            os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(second)},
-        ):
-            configure_debug_logging(logger)
-
-        file_handlers = [
-            h for h in logger.handlers if isinstance(h, logging.FileHandler)
-        ]
-        try:
-            assert len(file_handlers) == 1
-            assert str(second) in file_handlers[0].baseFilename
         finally:
             for h in file_handlers:
                 h.close()
@@ -205,14 +194,18 @@ class TestConfigureDebugLogging:
     def test_untagged_handler_does_not_block_configuration(self, tmp_path) -> None:
         """A foreign FileHandler on the same path must not suppress our handler."""
         logger = logging.getLogger("test.debug.untagged")
-        log_file = tmp_path / "debug.log"
+        log_file = tmp_path / "test-thread.log"
         foreign = logging.FileHandler(str(log_file), mode="a")
         logger.addHandler(foreign)
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
 
         file_handlers = [
             h for h in logger.handlers if isinstance(h, logging.FileHandler)
@@ -232,12 +225,16 @@ class TestConfigureDebugLogging:
     def test_child_logger_propagates_to_configured_parent(self, tmp_path) -> None:
         logger = logging.getLogger("test.debug.parent")
         child = logging.getLogger("test.debug.parent.child")
-        log_file = tmp_path / "debug.log"
+        log_file = tmp_path / "test-thread.log"
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
 
         file_handlers = [
             h for h in logger.handlers if isinstance(h, logging.FileHandler)
@@ -402,12 +399,16 @@ class TestInstalledDebugLogPath:
     def test_returns_path_when_handler_installed(self, tmp_path) -> None:
         """The helper returns the path of the actually-installed handler."""
         logger = logging.getLogger("deepagents_code")
-        log_file = tmp_path / "installed.log"
+        log_file = tmp_path / "installed" / "test-thread.log"
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             configure_debug_logging(logger)
+            bind_debug_logging_to_thread("test-thread")
         installed = [
             h
             for h in logger.handlers
@@ -452,12 +453,16 @@ class TestInstalledDebugLogPath:
         logger = logging.getLogger("deepagents_code")
         original_handlers = list(logger.handlers)
         original_level = logger.level
-        log_file = tmp_path / "package.log"
+        log_file = tmp_path / "package" / "test-thread.log"
         with patch.dict(
             os.environ,
-            {"DEEPAGENTS_CODE_DEBUG": "1", "DEEPAGENTS_CODE_DEBUG_FILE": str(log_file)},
+            {
+                "DEEPAGENTS_CODE_DEBUG": "1",
+                "DEEPAGENTS_CODE_DEBUG_DIRECTORY": str(log_file.parent),
+            },
         ):
             importlib.reload(deepagents_code)
+            bind_debug_logging_to_thread("test-thread")
 
         new_handlers = [h for h in logger.handlers if h not in original_handlers]
         try:

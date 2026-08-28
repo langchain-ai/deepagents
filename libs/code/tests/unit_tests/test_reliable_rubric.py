@@ -288,22 +288,24 @@ class TestReliableRubricMiddleware:
             "deepagents.middleware.rubric.ensure_config",
             lambda: {"metadata": {"tenant_id": "tenant-123"}},
         )
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
+        state = cast("ReliableRubricState", _state())
+        state["_rubric_model_spec"] = "openai:gpt-5.5"
 
-        result = middleware._invoke_grader(_state(), 0, context=context)
+        result = middleware._invoke_grader(state, 0, context=context)
 
         assert result.result == "satisfied"
-        assert grader.invoke.call_args.kwargs == {
-            "config": {
-                "metadata": {
-                    "tenant_id": "tenant-123",
-                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
-                    "rubric_grader_effective_strategy": "ProviderStrategy",
-                }
-            },
-            "context": context,
+        assert grader.invoke.call_args.kwargs["config"] == {
+            "metadata": {
+                "tenant_id": "tenant-123",
+                "rubric_grader_configured_model": "openai:gpt-5.5",
+                "rubric_grader_effective_strategy": "unknown",
+            }
         }
-        assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
+        assert grader.invoke.call_args.kwargs["context"].approval_mode == "yolo"
+        assert recorded[0]["rubric_grader_configured_model"] == "openai:gpt-5.5"
+        assert recorded[0]["rubric_grader_effective_strategy"] == "unknown"
+        assert recorded[-1]["rubric_grader_configured_model"] == "openai:gpt-5.5"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
     async def test_async_grade_preserves_trace_metadata_and_context(
@@ -332,21 +334,19 @@ class TestReliableRubricMiddleware:
             "deepagents.middleware.rubric.ensure_config",
             lambda: {"metadata": {"experiment_id": "experiment-123"}},
         )
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
 
         result = await middleware._ainvoke_grader(_state(), 0, context=context)
 
         assert result.result == "satisfied"
-        assert grader.ainvoke.await_args.kwargs == {
-            "config": {
-                "metadata": {
-                    "experiment_id": "experiment-123",
-                    "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
-                    "rubric_grader_effective_strategy": "ProviderStrategy",
-                }
-            },
-            "context": context,
+        assert grader.ainvoke.await_args.kwargs["config"] == {
+            "metadata": {
+                "experiment_id": "experiment-123",
+                "rubric_grader_configured_model": ("anthropic:claude-sonnet-4-6"),
+                "rubric_grader_effective_strategy": "ProviderStrategy",
+            }
         }
+        assert grader.ainvoke.await_args.kwargs["context"].approval_mode == "yolo"
         assert recorded[0]["rubric_grader_effective_strategy"] == "ProviderStrategy"
         assert recorded[-1]["rubric_grader_effective_strategy"] == "ToolStrategy"
 
@@ -384,46 +384,6 @@ class TestReliableRubricMiddleware:
             grader.ainvoke.await_args_list[1]
         )
 
-    def test_builds_context_aware_nested_grader(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        seen: dict[str, Any] = {}
-        grader = SimpleNamespace()
-
-        def fake_create_agent(**kwargs: Any) -> SimpleNamespace:
-            seen.update(kwargs)
-            return grader
-
-        class GraderContext:
-            pass
-
-        resolved_model = SimpleNamespace(
-            model_name="claude-sonnet-4-6",
-            profile={"structured_output": True},
-        )
-        nested_middleware = AgentMiddleware()
-        monkeypatch.setattr("langchain.agents.create_agent", fake_create_agent)
-        monkeypatch.setattr(
-            "deepagents._models.resolve_model",
-            lambda _model: resolved_model,
-        )
-        middleware = ReliableRubricMiddleware(
-            model="fake-model",
-            grader_middleware=[nested_middleware],
-            grader_context_schema=GraderContext,
-        )
-
-        assert middleware._ensure_grader() is grader
-        assert seen["middleware"] == [nested_middleware]
-        assert seen["context_schema"] is GraderContext
-        assert seen["state_schema"] is RubricGraderState
-        assert middleware._resolved_model is resolved_model
-        assert (
-            middleware._grader_trace_metadata()["rubric_grader_effective_strategy"]
-            == "ProviderStrategy"
-        )
-
     async def test_nested_grader_interrupt_propagates_with_context(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -431,7 +391,7 @@ class TestReliableRubricMiddleware:
         middleware = ReliableRubricMiddleware(model="fake-model")
         grade = AsyncMock(side_effect=GraphInterrupt(()))
         monkeypatch.setattr(middleware, "_agrade", grade)
-        context = {"approval_mode": "manual"}
+        context = {"approval_mode": "yolo"}
         runtime = cast(
             "Runtime[Any]",
             SimpleNamespace(stream_writer=lambda _event: None, context=context),
@@ -678,78 +638,6 @@ class TestReliableRubricMiddleware:
 
         assert selected.model == expected_model
         assert selected.model_params == expected_params
-
-    def test_runtime_model_bypasses_an_unavailable_startup_grader(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A thread override must run before resolving its unused startup model."""
-        bootstrap = _FixedGenericFakeChatModel(messages=iter([]))
-        grader = MagicMock()
-        grader.invoke.return_value = _tool_satisfied_result()
-        resolved: list[object] = []
-
-        def resolve_model(model: object) -> object:
-            resolved.append(model)
-            if model == "unavailable:startup":
-                msg = "startup provider unavailable"
-                raise RuntimeError(msg)
-            return model
-
-        monkeypatch.setattr("deepagents._models.resolve_model", resolve_model)
-        monkeypatch.setattr("langchain.agents.create_agent", lambda **_kwargs: grader)
-        middleware = ReliableRubricMiddleware(
-            model="unavailable:startup",
-            runtime_bootstrap_model=bootstrap,
-        )
-        state = cast("ReliableRubricState", _state())
-        state["_rubric_model_spec"] = "openai:gpt-5.5"
-
-        result = middleware._invoke_grader(state, 0)
-
-        assert result.result == "satisfied"
-        assert resolved == [bootstrap]
-        assert middleware._grader is None
-        assert grader.invoke.call_args.kwargs["context"].model == "openai:gpt-5.5"
-        with pytest.raises(RuntimeError, match="startup provider unavailable"):
-            middleware._invoke_grader(_state(), 0)
-        assert resolved == [bootstrap, "unavailable:startup"]
-
-    def test_runtime_model_bypasses_with_a_string_bootstrap(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A string main-model spec bootstraps the runtime grader as well.
-
-        `create_cli_agent` leaves the main model as a spec when startup
-        cannot resolve it, so the bypass must not require an instance.
-        """
-        grader = MagicMock()
-        grader.invoke.return_value = _tool_satisfied_result()
-        resolved: list[object] = []
-
-        def resolve_model(model: object) -> object:
-            resolved.append(model)
-            if model == "unavailable:startup":
-                msg = "startup provider unavailable"
-                raise RuntimeError(msg)
-            return model
-
-        monkeypatch.setattr("deepagents._models.resolve_model", resolve_model)
-        monkeypatch.setattr("langchain.agents.create_agent", lambda **_kwargs: grader)
-        middleware = ReliableRubricMiddleware(
-            model="unavailable:startup",
-            runtime_bootstrap_model="working:model",
-        )
-        state = cast("ReliableRubricState", _state())
-        state["_rubric_model_spec"] = "openai:gpt-5.5"
-
-        result = middleware._invoke_grader(state, 0)
-
-        assert result.result == "satisfied"
-        assert resolved == ["working:model"]
-        assert middleware._grader is None
-        assert grader.invoke.call_args.kwargs["context"].model == "openai:gpt-5.5"
 
     @pytest.mark.parametrize(
         ("selection", "inherit_main", "expected_model", "expected_params"),

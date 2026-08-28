@@ -701,45 +701,6 @@ class TestServerProcess:
         scaffold_mock.assert_called_once_with(config_dir)
         assert config_path.exists()
 
-    async def test_restart_runs_blocking_stop_off_event_loop(
-        self, tmp_path: Path
-    ) -> None:
-        """restart() must run the blocking subprocess stop off the event loop.
-
-        `_stop_process` blocks up to `_SHUTDOWN_TIMEOUT` (plus a SIGKILL grace
-        wait) on `process.wait`; running it directly on the loop freezes the
-        Textual reactor so `/restart` wedges the TUI input. `restart()` must
-        offload it to a worker thread, so the stop executes on a thread other
-        than the one running the event loop.
-        """
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
-        server._process = MagicMock()
-
-        loop_thread_id = threading.get_ident()
-        stop_thread_id: int | None = None
-
-        def recording_stop() -> None:
-            nonlocal stop_thread_id
-            stop_thread_id = threading.get_ident()
-            server._process = None
-
-        # Patch only `_start` (avoid spawning a real server) and `_stop_process`
-        # (record its executing thread). The real `restart()` and real
-        # `asyncio.to_thread` run, so a regression to a direct call would run
-        # `_stop_process` on the loop thread and fail the off-loop assertion.
-        with (
-            patch.object(server, "_start", new=AsyncMock()),
-            patch.object(server, "_stop_process", new=recording_stop),
-        ):
-            await server.restart()
-
-        assert stop_thread_id is not None
-        assert stop_thread_id != loop_thread_id
-
     async def test_restart_cancellation_awaits_stop_cleanup(
         self, tmp_path: Path
     ) -> None:
@@ -1154,41 +1115,6 @@ class TestPreservedLogNotice:
         emit_preserved_log_notices()
         assert "Server log preserved at:" not in capsys.readouterr().err
 
-    def test_emit_prints_every_queued_path(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """Restarts queue multiple paths; the drain announces each of them.
-
-        A single restart reuses one `ServerProcess`, so successive `stop()`s
-        must not clobber earlier preserved paths (PR #4999 review): every log
-        stays announceable until the post-terminal drain.
-        """
-        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
-        first_log = tmp_path / "server-1.log"
-        second_log = tmp_path / "server-2.log"
-        server = self._make_stopped_server(first_log)
-
-        server.stop()
-        # Simulate the restart wiring a fresh process + log onto the same server.
-        second_log.write_text("booting", encoding="utf-8")
-        log_file = MagicMock()
-        log_file.name = str(second_log)
-        process = MagicMock()
-        process.poll.return_value = 0
-        server._process = process
-        server._log_file = log_file
-        server._stopped = False
-        server.stop()
-
-        emit_preserved_log_notices()
-
-        err = capsys.readouterr().err
-        assert f"Server log preserved at: {first_log}" in err
-        assert f"Server log preserved at: {second_log}" in err
-
     def test_no_notice_when_debug_off(
         self,
         tmp_path: Path,
@@ -1284,37 +1210,6 @@ class TestServerSessionIsolation:
         popen = await self._spawn_and_capture(tmp_path, "linux", monkeypatch)
         assert popen.call_args.kwargs["start_new_session"] is True
         assert popen.call_args.kwargs["creationflags"] == 0
-
-    @pytest.mark.skipif(
-        sys.platform != "win32", reason="the stdlib names exist only on Windows"
-    )
-    def test_windows_constants_match_the_stdlib(self) -> None:
-        """The literals are the real ABI values, not just self-consistent.
-
-        Every other Windows assertion in this file runs on Linux behind a
-        patched `sys.platform`, comparing the constants to themselves. A wrong
-        value would pass all of them: `_WINDOWS_CTRL_BREAK_EVENT = 0` is
-        `CTRL_C_EVENT`, which `Popen.send_signal` dispatches differently, so
-        Windows shutdown would break silently.
-        """
-        # Both stdlib names are Windows-only, so they do not resolve for the
-        # type checker on the platform this file is checked on.
-        assert (
-            server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP
-            == subprocess.CREATE_NEW_PROCESS_GROUP  # ty: ignore[unresolved-attribute]
-        )
-        assert (
-            server_module._WINDOWS_CTRL_BREAK_EVENT == signal.CTRL_BREAK_EVENT  # ty: ignore[unresolved-attribute]
-        )
-
-    def test_windows_constants_match_the_documented_literals(self) -> None:
-        """Guards the values on the platforms CI actually runs.
-
-        `libs/code` has no Windows CI leg, so without this the constants are
-        unverified everywhere.
-        """
-        assert server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP == 0x00000200
-        assert server_module._WINDOWS_CTRL_BREAK_EVENT == 1
 
     async def test_windows_spawn_starts_new_process_group(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

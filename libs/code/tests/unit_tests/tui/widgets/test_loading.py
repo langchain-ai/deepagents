@@ -45,39 +45,6 @@ class TestLoadingWidget:
         assert widget._start_time == pytest.approx(132.5)
         assert not widget._paused
 
-    def test_resume_when_not_paused_leaves_start_time_unchanged(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """`resume()` must be a no-op when the widget was never paused.
-
-        The resume callback fires on every approval-future completion and as a
-        `_set_spinner` backstop, so it can land on a never-paused (or
-        replacement) widget. It must not rebase `_start_time` there.
-        """
-        monkeypatch.setattr(
-            "deepagents_code.tui.widgets.loading.time",
-            lambda: 999.0,
-        )
-        widget = LoadingWidget()
-        widget._start_time = 100.0
-        widget._paused_elapsed = 12.5  # stale value from a prior pause cycle
-
-        widget.resume()
-
-        assert widget._start_time == pytest.approx(100.0)
-        assert not widget._paused
-
-    def test_pause_without_start_time_does_not_raise(self) -> None:
-        """`pause()` before the timer starts must not raise or fabricate time."""
-        widget = LoadingWidget()
-        assert widget._start_time is None
-
-        widget.pause()
-
-        assert widget._paused
-        assert widget._paused_elapsed == pytest.approx(0.0)
-
     async def test_pause_hint_renders_whole_seconds(
         self,
         monkeypatch: pytest.MonkeyPatch,

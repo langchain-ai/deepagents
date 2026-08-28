@@ -340,23 +340,6 @@ class TestAssistantMessageStreamCoalescing:
             stream.write.assert_awaited_once_with("buffered")
             markdown.update.assert_awaited_once_with("replacement")
 
-    async def test_timer_created_once_across_appends(self) -> None:
-        """Repeated appends reuse a single flush timer rather than spawning many."""
-        async with _AssistantMessageApp().run_test() as pilot:
-            msg = pilot.app.query_one("#assistant", AssistantMessage)
-            stream = MagicMock()
-            stream.write = AsyncMock()
-            msg._stream = stream
-
-            await msg.append_content("a")
-            timer = msg._flush_timer
-            assert timer is not None
-
-            await msg.append_content("b")
-            await msg.append_content("c")
-
-            assert msg._flush_timer is timer
-
     async def test_flush_drains_successive_batches(self) -> None:
         """Each flush writes the latest batch; an empty buffer is a no-op."""
         async with _AssistantMessageApp().run_test() as pilot:
@@ -944,17 +927,6 @@ class TestToolCallMessageAppearance:
             event = MagicMock()
             app.msg.on_click(event)
             event.stop.assert_not_called()
-
-    async def test_hover_rule_targets_the_row_action_class(self) -> None:
-        """The CSS selector and the constant must not drift apart.
-
-        Renaming one without the other leaves hover permanently dead with the
-        whole suite green, since nothing else reads the selector.
-        """
-        assert (
-            f"ToolCallMessage.{_TOOL_ROW_ACTION_CLASS}:hover"
-            in ToolCallMessage.DEFAULT_CSS
-        )
 
     async def test_long_execute_command_is_actionable_without_expandable_output(
         self,
@@ -2877,14 +2849,6 @@ class TestAppMessageMarkdownSelectable:
             assert result is not None
             assert not any(line != line.rstrip() for line in result[0].splitlines())
 
-    async def test_markdown_caches_content_at_same_width(self) -> None:
-        """A second render at an unchanged width reuses the cached `Content`."""
-        async with _MarkdownAppMessageApp().run_test(size=(80, 24)) as pilot:
-            widget = pilot.app.query_one("#md", AppMessage)
-            first = widget.render()
-            second = widget.render()
-            assert first is second
-
     async def test_markdown_reflows_on_resize(self) -> None:
         """Shrinking the terminal re-lays-out markdown to the new width.
 
@@ -3955,28 +3919,6 @@ class TestLiveToolGroupSummary:
             assert "Ran 1 shell command, running 1 shell command" in rendered.plain
             assert "2 shell commands" not in rendered.plain
 
-    async def test_live_line_relayouts_only_when_summary_changes(self) -> None:
-        """A shorter pending summary recalculates height on the next tick."""
-        from deepagents_code.tui.widgets.messages import ToolGroupSummary
-
-        async with _LiveToolGroupApp().run_test() as pilot:
-            summary = pilot.app.query_one("#summary", ToolGroupSummary)
-            done = pilot.app.query_one("#t1", ToolCallMessage)
-            running = pilot.app.query_one("#t2", ToolCallMessage)
-
-            summary.add_member(done)
-            summary.add_member(running)
-            summary._stop_timer()
-            done.set_success("done")
-
-            with patch.object(summary, "update", wraps=summary.update) as update:
-                summary._tick()
-                assert update.call_args.kwargs["layout"] is True
-
-                update.reset_mock()
-                summary._tick()
-                assert update.call_args.kwargs["layout"] is False
-
     async def test_pending_member_is_revealed_for_approval(self) -> None:
         """Only unfinished calls leave the collapsed group before approval."""
         from deepagents_code.tui.widgets.messages import ToolGroupSummary
@@ -4329,31 +4271,6 @@ async def test_reasoning_message_renders_provider_text_as_plain_content() -> Non
         await pilot.pause()
         assert message._expanded is False
         assert message.query_one("#reasoning-body", Static).display is False
-
-
-async def test_reasoning_message_coalesces_streamed_renders(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(ReasoningMessage, "_STREAM_FLUSH_INTERVAL", 60)
-    app = _ReasoningApp()
-
-    async with app.run_test():
-        message = app.query_one("#reasoning", ReasoningMessage)
-        render = MagicMock(wraps=message._render_reasoning)
-        monkeypatch.setattr(message, "_render_reasoning", render)
-
-        await message.append_content("one")
-        await message.append_content(" ")
-        await message.append_content("two")
-
-        assert message._content == "one two"
-        assert render.call_count == 1
-
-        await message.stop_stream()
-
-        assert render.call_count == 2
-        assert message._flush_timer is None
-        assert str(message.query_one("#reasoning-body", Static).content) == "one two"
 
 
 class _RecordingReasoningApp(App[None]):

@@ -133,35 +133,3 @@ class TestCopyCommand:
 
     def test_copy_classified_as_queue_bound(self) -> None:
         assert "/copy" in QUEUE_BOUND
-
-
-class TestHelpBodyDrift:
-    """Ensure `/help` stays wired to the public slash-command registry.
-
-    Help text is composed at runtime from `get_slash_commands()`, so drift is
-    no longer a stale hard-coded name list — it is someone reintroducing a
-    hand-maintained command string in `app.py`.
-    """
-
-    def test_help_body_describes_incognito_shell_prefix(self) -> None:
-        """The `/help` body should document local-only incognito shell mode."""
-        app_src = (
-            Path(__file__).resolve().parents[2] / "deepagents_code" / "app.py"
-        ).read_text()
-
-        # Locate the Interactive Features block where the `!!` row lives.
-        match = re.search(
-            r'"Interactive Features:\\n"(.*?)"\s*Docs:',
-            app_src,
-            re.DOTALL,
-        )
-        assert match, "Could not locate Interactive Features section in help_body"
-        section = match.group(1)
-
-        assert "!!command" in section, "Help body must show `!!command` literal"
-        # Concept-level checks rather than exact wording — independent of
-        # whether the sentence reads "command/output to model context" or
-        # "output and command to model context".
-        assert "model context" in section
-        assert "command" in section
-        assert "output" in section

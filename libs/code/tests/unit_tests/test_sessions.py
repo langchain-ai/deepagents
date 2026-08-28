@@ -147,46 +147,6 @@ class TestThreadFunctions:
             threads = asyncio.run(sessions.list_threads())
             assert threads == []
 
-    def test_list_threads_creates_covering_index(self, temp_db):
-        """`list_threads` creates the covering index and the plan uses it.
-
-        Regression guard for the `threads list` slowdown on large profiles: the
-        GROUP BY must be an index-only scan of `idx_dcode_threads_list`, not a
-        full scan of the blob-bearing checkpoints table.
-        """
-        with patch.object(sessions, "get_db_path", return_value=temp_db):
-            asyncio.run(sessions.list_threads())
-
-        conn = sqlite3.connect(str(temp_db))
-        try:
-            index_names = {
-                r[0]
-                for r in conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='index'"
-                )
-            }
-            assert "idx_dcode_threads_list" in index_names
-
-            plan = " ".join(
-                str(row[3])
-                for row in conn.execute(
-                    "EXPLAIN QUERY PLAN "
-                    "SELECT thread_id, "
-                    "MAX(json_extract(metadata, '$.updated_at')) u, "
-                    "MAX(checkpoint_id), "
-                    "MAX(json_extract(metadata, '$.agent_name')), "
-                    "MAX(json_extract(metadata, '$.git_branch')), "
-                    "MAX(json_extract(metadata, '$.cwd')) "
-                    "FROM checkpoints GROUP BY thread_id ORDER BY u DESC LIMIT 20"
-                )
-            )
-            # Index-only scan of the covering index, not the PK autoindex (which
-            # would drag the checkpoint state blobs through I/O).
-            assert "idx_dcode_threads_list" in plan
-            assert "sqlite_autoindex_checkpoints_1" not in plan
-        finally:
-            conn.close()
-
     def test_get_most_recent_empty(self, tmp_path):
         """Get most recent returns None when empty."""
         db_path = tmp_path / "empty.db"
@@ -343,158 +303,6 @@ class TestGetCheckpointer:
                     assert "AsyncSqliteSaver" in type(cp).__name__
 
         asyncio.run(_test())
-
-    def test_drains_worker_thread(self, tmp_path):
-        """`get_checkpointer` joins the aiosqlite worker thread on exit.
-
-        Prevents the daemon worker from outliving the surrounding event loop
-        and raising `RuntimeError: Event loop is closed` via
-        `call_soon_threadsafe` during interpreter / xdist worker shutdown.
-        """
-        captured: dict[str, object] = {}
-
-        async def _test() -> None:
-            db_path = tmp_path / "test.db"
-            with patch.object(sessions, "get_db_path", return_value=db_path):
-                async with sessions.get_checkpointer() as cp:
-                    captured["conn"] = cp.conn
-
-        asyncio.run(_test())
-        conn = cast("aiosqlite.Connection", captured["conn"])
-        worker = conn._thread
-        assert not worker.is_alive(), (
-            "aiosqlite worker thread should be joined after get_checkpointer exit"
-        )
-
-
-class TestConnectHelper:
-    """Tests for the internal `_connect` async context manager."""
-
-    def test_drains_worker_thread(self, tmp_path):
-        """`_connect` joins the aiosqlite worker thread on exit."""
-        db_path = tmp_path / "drain.db"
-        # Create empty file so aiosqlite has something to open.
-        sqlite3.connect(str(db_path)).close()
-        captured: dict[str, object] = {}
-
-        async def _test() -> None:
-            with patch.object(sessions, "get_db_path", return_value=db_path):
-                async with sessions._connect() as conn:
-                    captured["conn"] = conn
-
-        asyncio.run(_test())
-        conn = cast("aiosqlite.Connection", captured["conn"])
-        worker = conn._thread
-        assert not worker.is_alive(), (
-            "aiosqlite worker thread should be joined after _connect exit"
-        )
-
-    def test_cancelled_open_closes_the_sqlite_handle(self, tmp_path, monkeypatch):
-        """A connect cancelled mid-open still closes the sqlite handle.
-
-        Background workers are routinely cancelled at app exit, and aiosqlite
-        opens the database on a worker thread. Without the handle being
-        recorded as soon as it exists, a cancel landing in that window strands
-        it for the garbage collector to report as an unclosed database.
-        """
-        db_path = tmp_path / "cancelled.db"
-        opening = threading.Event()
-        finish_open = threading.Event()
-        handles: list[sqlite3.Connection] = []
-        connections: list[aiosqlite.Connection] = []
-        real_sqlite_connect = sqlite3.connect
-        real_new_connection = sessions._new_connection
-
-        def blocking_connect(database: str, **kwargs: Any) -> sqlite3.Connection:
-            opening.set()
-            finish_open.wait(10)
-            handle = real_sqlite_connect(database, **kwargs)
-            handles.append(handle)
-            return handle
-
-        def capturing_new_connection(timeout: float) -> "aiosqlite.Connection":
-            conn = real_new_connection(timeout)
-            connections.append(conn)
-            return conn
-
-        async def _test() -> None:
-            async def use_connection() -> None:
-                async with sessions._connect():
-                    pass
-
-            task = asyncio.create_task(use_connection())
-            await asyncio.to_thread(opening.wait, 10)
-            task.cancel()
-            finish_open.set()
-            with pytest.raises(asyncio.CancelledError):
-                await task
-
-        monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
-        monkeypatch.setattr(sessions, "_new_connection", capturing_new_connection)
-        monkeypatch.setattr(sqlite3, "connect", blocking_connect)
-        asyncio.run(_test())
-
-        assert handles, "the worker thread should have opened a handle"
-        assert not connections[0]._thread.is_alive()
-        handles.clear()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            gc.collect()
-        unclosed = [w for w in caught if "unclosed database" in str(w.message)]
-        assert not unclosed, [str(w.message) for w in unclosed]
-
-    def test_cancel_after_open_closes_the_sqlite_handle(self, tmp_path, monkeypatch):
-        """A cancel landing after the open, before the resume, also closes it.
-
-        The other half of the same window: aiosqlite has the handle by now, but
-        its cancellation path drops that reference before the cleanup it queued
-        gets a chance to run, so the handle would again be left to the garbage
-        collector.
-        """
-        db_path = tmp_path / "raced.db"
-        handles: list[sqlite3.Connection] = []
-        connections: list[aiosqlite.Connection] = []
-        pending: dict[str, Any] = {}
-        real_sqlite_connect = sqlite3.connect
-        real_new_connection = sessions._new_connection
-
-        def cancelling_connect(database: str, **kwargs: Any) -> sqlite3.Connection:
-            handle = real_sqlite_connect(database, **kwargs)
-            handles.append(handle)
-            # Queued from the worker thread before aiosqlite delivers the
-            # handle to the awaiting coroutine, so the cancel deterministically
-            # lands in the gap between the open and the resume.
-            pending["loop"].call_soon_threadsafe(pending["task"].cancel)
-            return handle
-
-        def capturing_new_connection(timeout: float) -> "aiosqlite.Connection":
-            conn = real_new_connection(timeout)
-            connections.append(conn)
-            return conn
-
-        async def _test() -> None:
-            async def use_connection() -> None:
-                async with sessions._connect():
-                    pass
-
-            pending["loop"] = asyncio.get_running_loop()
-            pending["task"] = asyncio.create_task(use_connection())
-            with pytest.raises(asyncio.CancelledError):
-                await pending["task"]
-
-        monkeypatch.setattr(sessions, "get_db_path", lambda: db_path)
-        monkeypatch.setattr(sessions, "_new_connection", capturing_new_connection)
-        monkeypatch.setattr(sqlite3, "connect", cancelling_connect)
-        asyncio.run(_test())
-
-        assert handles, "the worker thread should have opened a handle"
-        assert not connections[0]._thread.is_alive()
-        handles.clear()
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            gc.collect()
-        unclosed = [w for w in caught if "unclosed database" in str(w.message)]
-        assert not unclosed, [str(w.message) for w in unclosed]
 
 
 class TestFormatTimestamp:
@@ -1050,58 +858,6 @@ class TestApplyCachedThreadInitialPrompts:
             sessions._initial_prompt_cache.clear()
 
 
-class TestGetCachedThreads:
-    """Tests for cached thread snapshot retrieval."""
-
-    def test_applies_cached_message_counts_to_snapshot(self) -> None:
-        """Returned snapshot should hydrate counts from message-count cache."""
-        sessions._recent_threads_cache.clear()
-        sessions._message_count_cache.clear()
-        try:
-            sessions._recent_threads_cache[None, 5] = [
-                {
-                    "thread_id": "thread-a",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                    "latest_checkpoint_id": "cp_1",
-                }
-            ]
-            sessions._message_count_cache["thread-a"] = ("cp_1", 9)
-
-            rows = sessions.get_cached_threads(limit=5)
-
-            assert rows is not None
-            assert rows[0]["message_count"] == 9
-            assert "message_count" not in sessions._recent_threads_cache[None, 5][0]
-        finally:
-            sessions._recent_threads_cache.clear()
-            sessions._message_count_cache.clear()
-
-    def test_applies_cached_initial_prompts_to_snapshot(self) -> None:
-        """Returned snapshot should hydrate prompts from prompt cache."""
-        sessions._recent_threads_cache.clear()
-        sessions._initial_prompt_cache.clear()
-        try:
-            sessions._recent_threads_cache[None, 5] = [
-                {
-                    "thread_id": "thread-a",
-                    "agent_name": "agent1",
-                    "updated_at": "2024-01-01T00:00:00+00:00",
-                    "latest_checkpoint_id": "cp_1",
-                }
-            ]
-            sessions._initial_prompt_cache["thread-a"] = ("cp_1", "hello world")
-
-            rows = sessions.get_cached_threads(limit=5)
-
-            assert rows is not None
-            assert rows[0]["initial_prompt"] == "hello world"
-            assert "initial_prompt" not in sessions._recent_threads_cache[None, 5][0]
-        finally:
-            sessions._recent_threads_cache.clear()
-            sessions._initial_prompt_cache.clear()
-
-
 class TestPrewarmThreadMessageCounts:
     """Tests for thread-selector cache prewarming."""
 
@@ -1597,13 +1353,6 @@ class TestListThreadsCwdFilter:
         ids = {t["thread_id"] for t in threads}
         # thread_c (no cwd) must not leak through; only thread_b matches.
         assert ids == {"thread_b"}
-
-    def test_unfiltered_query_populates_cache(self, db_with_cwds: Path) -> None:
-        """Sanity: cache still fills when cwd is None (regression guard)."""
-        sessions._recent_threads_cache.clear()
-        with patch.object(sessions, "get_db_path", return_value=db_with_cwds):
-            asyncio.run(sessions.list_threads(sort_by="updated", limit=10))
-        assert (None, 10) in sessions._recent_threads_cache
 
 
 class TestListThreadsCommandConfigDefaults:

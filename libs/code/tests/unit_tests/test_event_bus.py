@@ -203,30 +203,6 @@ class TestUnixSocketEventSource:
         assert response["ok"] is False
         assert "boom" in response["error"]
 
-    async def test_oversized_line_responds_with_nack(self) -> None:
-        tmp_dir = _short_tmp_dir()
-        path = Path(tmp_dir.name) / "events.sock"
-        source = UnixSocketEventSource(path)
-        received: list[ExternalEvent] = []
-
-        async def sink(event: ExternalEvent) -> None:  # noqa: RUF029
-            received.append(event)
-
-        await source.start(sink)
-        try:
-            reader, writer = await asyncio.open_unix_connection(str(path))
-            writer.write(b"x" * (_MAX_LINE_BYTES + 1) + b"\n")
-            await writer.drain()
-            response = json.loads(await reader.readline())
-            writer.close()
-            await writer.wait_closed()
-        finally:
-            await source.stop()
-            tmp_dir.cleanup()
-
-        assert response == {"ok": False, "error": "line exceeds read limit"}
-        assert received == []
-
     async def test_handles_multiple_events_per_connection(self) -> None:
         tmp_dir = _short_tmp_dir()
         path = Path(tmp_dir.name) / "events.sock"

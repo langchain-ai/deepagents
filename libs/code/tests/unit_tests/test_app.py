@@ -138,6 +138,7 @@ from deepagents_code.tui.widgets.messages import (
     ErrorMessage,
     LazyToolGroupSummary,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -8736,6 +8737,49 @@ class TestRunAgentTaskMediaTracker:
             assert mock_execute.await_args is not None
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
             assert mock_execute.await_args.kwargs["sandbox_type"] is app._sandbox_type
+
+    async def test_run_agent_task_forwards_the_reasoning_preference(self) -> None:
+        """`_run_agent_task` must forward the resolved reasoning preference.
+
+        The preference resolving correctly proves nothing on its own: dropping
+        this kwarg leaves the flag, the env var, and `config.toml` all working
+        and the TUI silently never rendering reasoning.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._show_reasoning = True
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["show_reasoning"] is True
+
+    async def test_reasoning_expansion_syncs_to_message_store(self) -> None:
+        """Collapsing reasoning must survive transcript virtualization.
+
+        `update_message` rejects any field missing from `_UPDATABLE_FIELDS`, so
+        this also pins the registration the handler depends on.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = ReasoningMessage("thinking", id="reason-1")
+            await app._mount_message(widget)
+            await pilot.pause()
+            assert app._message_store.get_message("reason-1") is not None
+
+            widget.toggle_expanded()
+            await pilot.pause()
+
+            stored = app._message_store.get_message("reason-1")
+            assert stored is not None
+            assert stored.reasoning_expanded is False
 
     async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
         """Unexpected agent errors should stop/clear in-flight tool widgets."""
@@ -21640,6 +21684,32 @@ class TestToolsSlashCommand:
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 
+    def test_whitespace_only_blocks_preserve_separators(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": " "},
+                    {"type": "text", "text": "world"},
+                    {"type": "reasoning", "reasoning": "Think"},
+                    {"type": "reasoning", "reasoning": "\n"},
+                    {"type": "reasoning", "reasoning": "again"},
+                ]
+            ),
+            AIMessage(content=[{"type": "text", "text": " "}]),
+        ]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+
+        assert [(message.type, message.content) for message in result] == [
+            (MessageType.ASSISTANT, "Hello world"),
+            (MessageType.REASONING, "Think\nagain"),
+        ]
+
     async def test_event_loop_progresses_during_message_preparation(self) -> None:
         """The loop keeps running while a long history is prepared.
 
@@ -21661,10 +21731,12 @@ class TestFetchThreadHistoryData:
         # Bind before patching, or the call below re-enters this stub.
         real_prepare = DeepAgentsApp._prepare_thread_history_messages
 
-        def blocking_prepare(messages: list[Any]) -> object:
+        def blocking_prepare(
+            messages: list[Any], *, show_reasoning: bool = False
+        ) -> object:
             entered.set()
             release.wait(timeout=5)
-            return real_prepare(messages)
+            return real_prepare(messages, show_reasoning=show_reasoning)
 
         async def tick() -> None:
             nonlocal ticks
@@ -21715,9 +21787,11 @@ class TestFetchThreadHistoryData:
         prepare_threads: list[int] = []
         original_prepare = app._prepare_thread_history_messages
 
-        def capture_prepare(messages: list[Any]) -> object:
+        def capture_prepare(
+            messages: list[Any], *, show_reasoning: bool = False
+        ) -> object:
             prepare_threads.append(threading.get_ident())
-            return original_prepare(messages)
+            return original_prepare(messages, show_reasoning=show_reasoning)
 
         with patch.object(
             DeepAgentsApp,
@@ -21735,6 +21809,52 @@ class TestFetchThreadHistoryData:
         assert isinstance(payload.messages[1], MessageData)
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "Hi there!"
+
+    async def test_reasoning_preference_applies_to_restored_messages(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                AIMessage(
+                    content=[
+                        {"type": "text", "text": "Before "},
+                        {
+                            "type": "thinking",
+                            "thinking": "Thinking",
+                            "signature": "signed",
+                        },
+                        {"type": "text", "text": "after"},
+                    ],
+                    response_metadata={"model_provider": "anthropic"},
+                ),
+                AIMessage(
+                    content=" Answer ",
+                    additional_kwargs={"reasoning_content": "Checking"},
+                ),
+            ]
+        }
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        hidden = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = True
+        visible = await app._fetch_thread_history_data("t-1")
+
+        assert [(message.type, message.content) for message in hidden.messages] == [
+            (MessageType.ASSISTANT, "Before after"),
+            (MessageType.ASSISTANT, "Answer"),
+        ]
+        assert [(message.type, message.content) for message in visible.messages] == [
+            (MessageType.ASSISTANT, "Before "),
+            (MessageType.REASONING, "Thinking"),
+            (MessageType.ASSISTANT, "after"),
+            (MessageType.REASONING, "Checking"),
+            (MessageType.ASSISTANT, "Answer"),
+        ]
 
     async def test_server_mode_ensures_thread_before_fetching_state(self) -> None:
         """Server-mode history reads should fetch state through the remote server."""

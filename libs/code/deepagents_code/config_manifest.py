@@ -2157,6 +2157,17 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         toml_keys=("ui", "show_diff_line_numbers"),
     ),
     ConfigOption(
+        key="display.show_reasoning",
+        group="Display",
+        summary="Show provider-visible reasoning in local output (off by default).",
+        kind=OptionKind.BOOL,
+        default=False,
+        env_var=_env_vars.SHOW_REASONING,
+        toml_keys=("ui", "show_reasoning"),
+        cli_flag="--show-reasoning",
+        cli=CliSpec("--show-reasoning"),
+    ),
+    ConfigOption(
         key="display.show_scrollbar",
         group="Display",
         summary="Show the vertical scrollbar in the chat area (off by default).",

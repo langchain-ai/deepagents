@@ -2611,6 +2611,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--show-reasoning",
+        action="store_true",
+        default=None,
+        help="Show provider-visible reasoning (off by default).",
+    )
+
+    parser.add_argument(
         "--max-turns",
         dest="max_turns",
         type=positive_int,
@@ -6181,6 +6188,7 @@ def cli_main() -> None:
 
             # Non-interactive mode - execute single task and exit
             from deepagents_code.client.non_interactive import run_non_interactive
+            from deepagents_code.config_manifest import load_bool_display_preference
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
@@ -6218,6 +6226,9 @@ def cli_main() -> None:
                             startup_cmd=getattr(args, "startup_cmd", None),
                             quiet=args.quiet,
                             stream=not args.no_stream,
+                            show_reasoning=load_bool_display_preference(
+                                "display.show_reasoning", fallback=False
+                            ),
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),

@@ -82,6 +82,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -5863,6 +5864,167 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+async def test_reasoning_streams_separately_and_collapses_before_answer() -> None:
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "[bold]plain"},
+                        {"type": "reasoning", "reasoning": " "},
+                        {"type": "reasoning", "reasoning": "text[/bold]"},
+                        {"type": "reasoning", "reasoning": "\n"},
+                        {"type": "reasoning", "reasoning": "next line"},
+                        {"type": "text", "text": "answer"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=True,
+    )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    answer = next(widget for widget in mounted if isinstance(widget, AssistantMessage))
+    assert reasoning._content == "[bold]plain text[/bold]\nnext line"
+    assert reasoning._expanded is False
+    assert reasoning._streaming is False
+    assert answer._content == "answer"
+
+
+async def test_reasoning_is_drained_when_the_stream_errors_mid_turn() -> None:
+    """A mid-stream error must not lose reasoning the user already read.
+
+    The store records the widget at mount time with empty content, so the
+    `_sync_message_content` inside the drain is the only thing that ever writes
+    the accumulated text back. Skip it and the row survives on screen but comes
+    back blank the first time the transcript virtualizes.
+    """
+    mounted: list[object] = []
+    sync_message_content = MagicMock()
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[{"type": "reasoning", "reasoning": "half a "}]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+        sync_message_content=sync_message_content,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await execute_task_textual(
+            user_input="hi",
+            agent=_RaisingAgent(chunks, RuntimeError("boom")),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            show_reasoning=True,
+        )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    assert reasoning._streaming is False
+    sync_message_content.assert_any_call(reasoning.id, "half a ")
+
+
+@pytest.mark.parametrize(
+    ("show_reasoning", "namespace"),
+    [
+        pytest.param(False, (), id="preference-off"),
+        pytest.param(True, ("tools:task",), id="subagent-namespace"),
+    ],
+)
+async def test_reasoning_is_not_rendered(
+    show_reasoning: bool, namespace: tuple[str, ...]
+) -> None:
+    """Reasoning stays hidden when opted out, and for subagents either way.
+
+    The subagent case is carried by the pre-existing `is_main_agent` gate, which
+    drops every nested content block long before the reasoning branch. It is
+    pinned here so a future reasoning path that runs ahead of that gate cannot
+    start leaking subagent thoughts into the main transcript unnoticed.
+    """
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            namespace,
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "hidden"},
+                        {"type": "non_standard", "reasoning": "opaque"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=show_reasoning,
+    )
+
+    assert not any(isinstance(widget, ReasoningMessage) for widget in mounted)
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:

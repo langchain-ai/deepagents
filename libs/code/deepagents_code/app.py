@@ -68,6 +68,7 @@ from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SESSION_END_DRAIN_TIMEOUT_SECONDS,
 )
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -157,6 +158,7 @@ from deepagents_code.tui.widgets.messages import (
     ErrorMessage,
     LazyToolGroupSummary,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     ToolCallMessage,
@@ -322,18 +324,28 @@ _MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
 """DOM id for the spacer representing source messages below the mounted window."""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.APP, MessageType.SUMMARIZATION}
+    {MessageType.APP, MessageType.SUMMARIZATION, MessageType.REASONING}
 )
 """Message types that never receive a timestamp footer.
 
 App-status notes (e.g. "Resumed thread: ...", version/update notices, command
 feedback) are not conversation turns, so they do not get timestamp footers.
 `SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
-reason.
+reason. `REASONING` is part of the assistant turn that follows it rather than a
+turn of its own, so the answer's footer times the whole turn and a second footer
+above it would only add noise.
+"""
+
+_STREAMED_TEXT_WIDGETS = (AssistantMessage, ReasoningMessage)
+"""Widget types whose content is (re)written from a stored transcript row.
+
+A module-level tuple rather than an inline `A | B` union: the `isinstance`
+checks live in scroll-driven hydration comprehensions, and an inline union
+builds a fresh `types.UnionType` on every iteration.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.ASSISTANT, MessageType.TOOL, MessageType.SKILL}
+    {MessageType.ASSISTANT, MessageType.REASONING, MessageType.TOOL, MessageType.SKILL}
 )
 """Message types marking a thread the user did conversational work in.
 
@@ -357,6 +369,7 @@ brand-new thread as resumable. Threads holding only that state are
 intentionally treated as "nothing happened here" — `/rubric set` with no
 conversation is a config tweak, not work left behind.
 
+`REASONING` covers turns cut off before assistant text or a tool call arrives.
 `SKILL` is the loosest member: `SkillMessage` mounts just *before*
 `_send_to_agent`, which can bail out without reaching the server, so a
 `SKILL` row means a turn was attempted rather than completed. That
@@ -1405,6 +1418,15 @@ def _load_show_diff_line_numbers() -> bool:
     return _load_bool_display_preference(
         "display.show_diff_line_numbers", fallback=True
     )
+
+
+def _load_show_reasoning() -> bool:
+    """Resolve whether local output shows provider-visible reasoning.
+
+    Returns:
+        The resolved preference, defaulting to `False`.
+    """
+    return _load_bool_display_preference("display.show_reasoning", fallback=False)
 
 
 def _load_show_scrollbar() -> bool:
@@ -3363,6 +3385,9 @@ class DeepAgentsApp(App):
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
+        self._show_reasoning = _load_show_reasoning()
+        """Whether provider-visible reasoning is shown in the transcript."""
 
         self._terminal_progress_enabled = _load_terminal_progress_preference()
         """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
@@ -9054,7 +9079,7 @@ class DeepAgentsApp(App):
         assistant_updates = [
             widget.set_content(data.content)
             for widget, data, _footer in entries
-            if isinstance(widget, AssistantMessage) and data.content
+            if isinstance(widget, _STREAMED_TEXT_WIDGETS) and data.content
         ]
         if assistant_updates:
             try:
@@ -18200,6 +18225,7 @@ class DeepAgentsApp(App):
                 session_state=self._session_state,
                 adapter=self._ui_adapter,
                 backend=self._backend,
+                show_reasoning=self._show_reasoning,
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
@@ -18606,7 +18632,9 @@ class DeepAgentsApp(App):
             self._schedule_thread_cache_refresh()
 
     @staticmethod
-    def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
+    def _convert_messages_to_data(
+        messages: list[Any], *, show_reasoning: bool = False
+    ) -> list[MessageData]:
         """Convert LangChain messages into lightweight `MessageData` objects.
 
         This is a pure function with zero DOM operations. Tool call matching
@@ -18615,6 +18643,7 @@ class DeepAgentsApp(App):
 
         Args:
             messages: LangChain message objects from a thread checkpoint.
+            show_reasoning: Whether to include provider-visible reasoning blocks.
 
         Returns:
             Ordered list of `MessageData` ready for `MessageStore.bulk_load`.
@@ -18653,21 +18682,36 @@ class DeepAgentsApp(App):
                     result.append(MessageData(type=MessageType.USER, content=content))
 
             elif isinstance(msg, AIMessage):
-                # Extract text content
-                content = msg.content
-                text = ""
-                if isinstance(content, str):
-                    text = content.strip()
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text += block.get("text", "")
-                        elif isinstance(block, str):
-                            text += block
-                    text = text.strip()
+                # Accumulated separately from `result` so the runs of this one
+                # message can be merged and filtered without indexing back into
+                # the shared list.
+                runs: list[MessageData] = []
+                for block in msg.content_blocks:
+                    reasoning = reasoning_text(block) if show_reasoning else None
+                    if reasoning is not None:
+                        text = reasoning
+                        message_type = MessageType.REASONING
+                    elif block.get("type") == "text":
+                        text = block.get("text", "")
+                        if not isinstance(text, str):
+                            continue
+                        message_type = MessageType.ASSISTANT
+                    else:
+                        continue
+                    if runs and runs[-1].type == message_type:
+                        runs[-1].content += text
+                    else:
+                        runs.append(MessageData(type=message_type, content=text))
 
-                if text:
-                    result.append(MessageData(type=MessageType.ASSISTANT, content=text))
+                # A bare-string `msg.content` yields a single text block whose
+                # surrounding whitespace is transport padding, not layout.
+                if isinstance(msg.content, str):
+                    for run in runs:
+                        if run.type == MessageType.ASSISTANT:
+                            run.content = run.content.strip()
+                result.extend(
+                    run for run in runs if run.content and not run.content.isspace()
+                )
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):
@@ -18820,12 +18864,16 @@ class DeepAgentsApp(App):
 
     @staticmethod
     def _prepare_thread_history_messages(
-        messages: list[Any],
+        messages: list[Any], *, show_reasoning: bool = False
     ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
         """Deserialize and project checkpoint messages for a resumed thread.
 
         Blocking and CPU-bound over the whole history; callers must offload it
         with `asyncio.to_thread` rather than run it on the event loop.
+
+        Args:
+            messages: Serialized or deserialized messages from the checkpoint.
+            show_reasoning: Whether to include provider-visible reasoning blocks.
 
         Returns:
             Render data and validated messages for hook transcript projection.
@@ -18839,7 +18887,9 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import BaseMessage
 
-        data = DeepAgentsApp._convert_messages_to_data(messages)
+        data = DeepAgentsApp._convert_messages_to_data(
+            messages, show_reasoning=show_reasoning
+        )
         transcript_messages = tuple(
             message for message in messages if isinstance(message, BaseMessage)
         )
@@ -18883,6 +18933,7 @@ class DeepAgentsApp(App):
         data, transcript_messages = await asyncio.to_thread(
             self._prepare_thread_history_messages,
             messages,
+            show_reasoning=self._show_reasoning,
         )
         return replace(
             payload,
@@ -19330,7 +19381,7 @@ class DeepAgentsApp(App):
             assistant_updates = [
                 widget.set_content(msg_data.content)
                 for widget, msg_data in mounted
-                if isinstance(widget, AssistantMessage) and msg_data.content
+                if isinstance(widget, _STREAMED_TEXT_WIDGETS) and msg_data.content
             ]
             if assistant_updates:
                 assistant_results = await asyncio.gather(
@@ -19635,7 +19686,11 @@ class DeepAgentsApp(App):
 
     async def _mount_message(
         self,
-        widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
+        widget: Static
+        | AssistantMessage
+        | ReasoningMessage
+        | ToolCallMessage
+        | SkillMessage,
     ) -> bool:
         """Mount a message widget to the messages area.
 
@@ -20085,6 +20140,18 @@ class DeepAgentsApp(App):
             self._message_store.update_message(
                 event.widget.id,
                 tool_group_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurements([event.widget.id])
+
+    def on_reasoning_message_expansion_changed(
+        self,
+        event: ReasoningMessage.ExpansionChanged,
+    ) -> None:
+        """Keep reasoning expansion state across transcript virtualization."""
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                reasoning_expanded=event.expanded,
             )
             self._schedule_message_height_measurements([event.widget.id])
 
@@ -22358,6 +22425,9 @@ class DeepAgentsApp(App):
         for child in reversed(list(messages.children)):
             if isinstance(child, RubricResultMessage) and child._details:
                 child.toggle_details()
+                return
+            if isinstance(child, ReasoningMessage) and child.has_content:
+                child.toggle_expanded()
                 return
             if isinstance(child, LazyToolGroupSummary | ToolGroupSummary):
                 child.toggle()

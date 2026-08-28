@@ -1472,6 +1472,44 @@ def test_cli_main_forwards_recursion_limit_to_headless_server() -> None:
     assert run_mock.await_args.kwargs["recursion_limit"] == 3000  # ty: ignore
 
 
+@pytest.mark.parametrize(
+    ("argv_extra", "expected"),
+    [
+        pytest.param([], False, id="default-off"),
+        pytest.param(["--show-reasoning"], True, id="flag-on"),
+    ],
+)
+def test_cli_main_forwards_show_reasoning_to_headless(
+    argv_extra: list[str], expected: bool
+) -> None:
+    """`--show-reasoning` must reach the headless runner, not just resolve.
+
+    The flag resolving correctly proves nothing on its own: `cli_main` reads the
+    preference and passes it as a separate kwarg, and dropping that kwarg leaves
+    the flag parsing, the manifest binding intact, and the feature dead.
+    """
+    from deepagents_code.main import cli_main
+
+    run_mock = AsyncMock(return_value=0)
+    mock_stdin = MagicMock()
+    mock_stdin.isatty.return_value = True
+    with (
+        patch.object(sys, "argv", ["deepagents", "-n", "task", *argv_extra]),
+        patch.object(sys, "stdin", mock_stdin),
+        patch("deepagents_code.main.check_optional_tools", return_value=[]),
+        patch(
+            "deepagents_code.main._should_ensure_managed_ripgrep",
+            return_value=False,
+        ),
+        patch("deepagents_code.client.non_interactive.run_non_interactive", run_mock),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert run_mock.await_args.kwargs["show_reasoning"] is expected  # ty: ignore
+
+
 def test_cli_main_installs_the_shell_allow_list_before_dispatch() -> None:
     """`--shell-allow-list` must be resolvable by the time the agent is built.
 

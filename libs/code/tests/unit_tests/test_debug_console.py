@@ -1711,10 +1711,8 @@ class TestDebugConsoleToggle:
 
         Guards the enabled path the reverse-focus fix depends on: on the main
         screen `check_action` must leave `toggle_auto_approve` enabled (return
-        `True`) so shift+tab and ctrl+t still toggle auto-approve; the
+        `True`) so Shift+Tab still toggles auto-approve; the
         `test_shift_tab_reverses_focus_*` test only exercises the disabled path.
-        Branching on the action name (not the key) means the same gate covers
-        the `ctrl+t` binding, which also maps to `toggle_auto_approve`.
         """
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:

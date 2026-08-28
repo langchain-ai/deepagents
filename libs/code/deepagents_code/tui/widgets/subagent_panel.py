@@ -751,9 +751,9 @@ class SubagentPanel(Vertical):
             )
         self._update_cached("subagent-header-summary", Content.assemble(*parts))
         hint = (
-            "click or Ctrl+G to collapse"
+            "click or Ctrl+T to collapse"
             if self.expanded
-            else "click or Ctrl+G to expand"
+            else "click or Ctrl+T to expand"
         )
         self._update_cached("subagent-header-hint", Content.styled(hint, colors.muted))
 

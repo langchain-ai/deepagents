@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -774,6 +775,8 @@ def _tree_connectors() -> tuple[str, str]:
 def _render_text(sections: list[DiagnosticSection]) -> None:
     """Print the diagnostic sections as a styled tree to the console."""
     from rich.markup import escape
+    from rich.style import Style
+    from rich.text import Text
 
     from deepagents_code import theme
     from deepagents_code.config import console, get_glyphs
@@ -792,9 +795,16 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         for index, item in enumerate(section.items):
             connector = corner if index == len(section.items) - 1 else tee
             value_color = theme.MUTED if item.ok else "red"
+            url = (
+                f"https://github.com/langchain-ai/deepagents/commit/{item.value}"
+                if item.label == "Commit hash"
+                and re.fullmatch(r"[0-9a-fA-F]{7,40}", item.value)
+                else None
+            )
             console.print(
-                f"  {connector} {escape(item.label)}: "
-                f"[{value_color}]{escape(item.value)}[/{value_color}]",
+                f"  {connector} {escape(item.label)}: ",
+                Text(item.value, style=Style(color=value_color, link=url)),
+                sep="",
                 highlight=False,
             )
         console.print()

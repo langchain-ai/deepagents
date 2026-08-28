@@ -28,6 +28,7 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
+- Python extension loading (`extensions/`)
 - Persisted goal/rubric state notices (`goal_state_notice.py`, `goal_tools.py`,
   `goal_state_limits.py`)
 
@@ -55,6 +56,8 @@
 7. `DA_SERVER_*` environment variables are readable only by the CLI process and its child server subprocess (OS process isolation assumption).
 8. Users who set `class_path` in `config.toml` accept the same trust model as `pyproject.toml` build scripts — they control their own machine.
 9. Administrators deploy and protect the fixed `managed_config.toml` path with operating-system controls; the CLI does not validate its owner or mode and never writes it.
+10. User-directory, user-config, CLI, installed-plugin, and Python entry-point extensions are authorized by the user action that supplied them. Project extensions execute only after explicit, configured, or persisted trust.
+11. Extension backend routes cannot overlap dcode's local artifact or conversation-history storage. A sandboxed agent rejects direct `FilesystemBackend` and `LocalShellBackend` mounts, including subclasses; wrapper implementations are responsible for their own isolation because dcode does not recursively inspect arbitrary backend object graphs.
 
 ---
 

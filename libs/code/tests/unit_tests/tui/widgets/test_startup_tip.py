@@ -86,7 +86,7 @@ class TestStartupTip:
 
         tips = _active_tips(yolo_switcher_enabled=True)
 
-        assert "Press ctrl+x to compose prompts in code" in tips
+        assert "Press ctrl+g to compose prompts in code" in tips
         assert _TIP_EXTERNAL_EDITOR not in tips
 
     def test_active_tips_keeps_generic_editor_fallback(self) -> None:

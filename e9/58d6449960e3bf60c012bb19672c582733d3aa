@@ -1,0 +1,37 @@
+libs/code/deepagents_code/mcp_auth.py
+  s_77d05958005819::t_3d872f710fa67c 29,33,48,90,812,859,906-907,910,1008-1014,1130,1158,1165-1166,1172,1187-1191,1273,1595,1600,1627-1628,1686,2074,2104-2106,2124
+libs/code/deepagents_code/mcp_middleware.py
+  s_77d05958005819::t_52e6b5efd19ba5 105-106,109
+libs/code/deepagents_code/mcp_tools.py
+  s_77d05958005819::t_c118831978696c 48,1706,1731,1751-1754,1942-1946,1960,2040,2048,2059-2063,2066-2070,2110,2112-2113
+libs/code/pyproject.toml
+  s_77d05958005819::t_847bfc72f01eb3 31-32
+libs/code/tests/unit_tests/test_mcp_auth.py
+  s_77d05958005819::t_5dedfc885ac1a8 13,18,20,32-36,74-92,984,993-995,1050,1087,1092,1100,1167,1198,1208,1283,1289,1350,1381,1419,1422,2541-2586,2740,2748,2754,2767,2811,2816,2848,3053-3055,3146-3148,3181-3183,3226-3228,3260-3261,3711,3758,3760-3763,3799,3822,3867,4069,4072,4074
+libs/code/tests/unit_tests/test_mcp_oauth_ui.py
+  s_77d05958005819::t_9865cccadb5f89 16,22-23,143,146-153,297,300-306
+libs/code/tests/unit_tests/test_mcp_tools.py
+  s_77d05958005819::t_09ab82ba96aba7 105-109
+libs/code/tests/unit_tests/test_server_graph.py
+  s_77d05958005819::t_e08b74497f9932 160-162
+libs/code/tests/unit_tests/tui/widgets/test_mcp_login_modal.py
+  s_77d05958005819::t_334dd546dd797f 8,11,18-20,300,303-310
+libs/code/uv.lock
+  s_77d05958005819::t_8451a4e0b40add 1298,2749-2750,2756-2758,2836,2849-2851
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "e958d6449960e3bf60c012bb19672c582733d3aa",
+  "prompts": {},
+  "sessions": {
+    "s_77d05958005819": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "1e039ed4-c9a3-48b7-a104-b54aaf7e0ba8",
+        "model": "claude-opus-5"
+      },
+      "human_author": "Sydney Runkle <sydneymarierunkle@gmail.com>"
+    }
+  }
+}

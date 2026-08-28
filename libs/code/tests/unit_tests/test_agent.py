@@ -1,6 +1,7 @@
 """Unit tests for agent formatting functions."""
 
 import asyncio
+import logging
 import sys
 import warnings
 from collections.abc import Iterator, Mapping
@@ -38,6 +39,7 @@ from deepagents_code.agent import (
     _apply_inherited_pythonpath,
     _create_rubric_grader_tools,
     _format_delete_description,
+    _format_execute_description,
     _interrupt_predicate,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
@@ -995,6 +997,141 @@ def test_format_delete_description() -> None:
     )
 
     assert "Action: Delete file or directory" in description
+
+
+_EXECUTE_TOOL_CALL = cast(
+    "ToolCall", {"name": "execute", "args": {"command": "pwd"}, "id": "call-6"}
+)
+
+
+def _execute_runtime(context: object) -> "Runtime[Any]":
+    return cast("Runtime[Any]", SimpleNamespace(context=context))
+
+
+@pytest.mark.parametrize(
+    ("context", "expected_cwd"),
+    [
+        pytest.param(
+            {"workspace": {"cwd": "/workspace/thread-a"}},
+            "/workspace/thread-a",
+            id="dict-context",
+        ),
+        pytest.param(
+            CLIContextSchema(workspace={"cwd": "/workspace/thread-a"}),
+            "/workspace/thread-a",
+            id="typed-context",
+        ),
+        pytest.param(
+            CLIContextSchema(workspace={"cwd": "/workspace/thread-b"}),
+            "/workspace/thread-b",
+            id="typed-context-other-workspace",
+        ),
+    ],
+)
+def test_format_execute_description_prefers_workspace_binding(
+    context: object, expected_cwd: str
+) -> None:
+    """The prompt shows the run's workspace, not the process-global server CWD.
+
+    One server process hosts several bound workspaces, so a per-run value is
+    the property under test.
+    """
+    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
+
+    with patch(
+        "deepagents_code.agent.get_server_project_context",
+        return_value=server_context,
+    ):
+        description = _format_execute_description(
+            _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), _execute_runtime(context)
+        )
+
+    assert f"Working Directory: {expected_cwd}" in description
+    assert "/workspace/server" not in description
+
+
+def test_format_execute_description_sanitizes_workspace_binding() -> None:
+    """A workspace path cannot inject deceptive text into an approval."""
+    runtime = _execute_runtime(
+        {"workspace": {"cwd": "/workspace/\u202eprod\nWorking Directory: /spoofed"}}
+    )
+
+    description = _format_execute_description(
+        _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), runtime
+    )
+
+    assert description.splitlines() == [
+        "Execute Command: pwd",
+        "Working Directory: /workspace/prod Working Directory: /spoofed",
+    ]
+
+
+def test_format_execute_description_without_workspace_uses_process_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With neither a workspace nor a server context, the process CWD is shown."""
+    monkeypatch.chdir(tmp_path)
+
+    with patch("deepagents_code.agent.get_server_project_context", return_value=None):
+        description = _format_execute_description(
+            _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), _execute_runtime({})
+        )
+
+    assert f"Working Directory: {tmp_path.resolve()}" in description
+
+
+@pytest.mark.parametrize(
+    "context",
+    [
+        pytest.param({}, id="workspace-absent"),
+        pytest.param({"workspace": {}}, id="workspace-empty"),
+        pytest.param({"workspace": "not-a-dict"}, id="workspace-not-a-mapping"),
+        pytest.param({"workspace": ["cwd"]}, id="workspace-is-a-list"),
+        pytest.param(
+            # A dataclass does not enforce field types, so a directly built
+            # context can carry a non-mapping workspace past `from_payload`.
+            CLIContextSchema(workspace=cast("dict[str, Any]", "not-a-dict")),
+            id="typed-not-a-mapping",
+        ),
+        pytest.param({"workspace": {"cwd": ""}}, id="cwd-empty"),
+        pytest.param({"workspace": {"cwd": None}}, id="cwd-none"),
+        pytest.param({"workspace": {"cwd": 7}}, id="cwd-not-a-string"),
+        pytest.param({"workspace": {"working_dir": "/x"}}, id="cwd-key-renamed"),
+        pytest.param(None, id="context-absent"),
+        pytest.param("not-a-context", id="context-wrong-type"),
+    ],
+)
+def test_format_execute_description_falls_back_on_malformed_workspace(
+    context: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A malformed workspace falls back to the server CWD and says so.
+
+    Reaching this path means an upstream invariant broke, so the prompt must
+    not render a blank or fabricated directory without a warning.
+    """
+    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
+
+    with (
+        patch(
+            "deepagents_code.agent.get_server_project_context",
+            return_value=server_context,
+        ),
+        caplog.at_level(logging.WARNING, logger="deepagents_code.agent"),
+    ):
+        description = _format_execute_description(
+            _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), _execute_runtime(context)
+        )
+
+    assert "Working Directory: /workspace/server" in description
+    assert "no bound workspace cwd" in caplog.text
+
+
+def test_add_interrupt_on_gates_execute() -> None:
+    """The approval prompt for execute is rendered by the workspace formatter."""
+    interrupt_map = _add_interrupt_on()
+
+    assert "execute" in interrupt_map
+    assert interrupt_map["execute"]["description"] is _format_execute_description
 
 
 def test_add_interrupt_on_gates_only_non_read_only_mcp_tools() -> None:

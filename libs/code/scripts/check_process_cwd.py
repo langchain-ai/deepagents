@@ -81,6 +81,12 @@ _ALLOWLIST = {
         "config.py", "build_stream_config", "Path.cwd"
     ): "The client builds tracing metadata before sending a run.",
     CallSite(
+        "config.py", "Credentials.from_environment", "find_project_root"
+    ): "Client callers may omit `start_path`; server callers supply workspace context.",
+    CallSite(
+        "config.py", "Credentials._reload_values", "find_project_root"
+    ): "Client reloads may omit `start_path`; server callers supply workspace context.",
+    CallSite(
         "extensions/runtime.py", "_prepare", "Path.cwd"
     ): "Workspace server callers supply `cwd`; the fallback preserves direct loading.",
     CallSite(
@@ -138,6 +144,11 @@ _ALLOWLIST = {
         "tui/widgets/autocomplete.py", "FuzzyFileController.__init__", "Path.cwd"
     ): "File autocomplete runs in the client TUI.",
     CallSite(
+        "tui/widgets/autocomplete.py",
+        "FuzzyFileController.__init__",
+        "find_project_root",
+    ): "File autocomplete resolves its process or caller-provided directory first.",
+    CallSite(
         "tui/widgets/chat_input.py", "ChatInput.__init__", "Path.cwd"
     ): "The chat input runs in the client TUI.",
     CallSite(
@@ -152,6 +163,9 @@ _ALLOWLIST = {
     CallSite(
         "tui/widgets/welcome.py", "WelcomeBanner.__init__", "Path.cwd"
     ): "The welcome banner runs in the client TUI.",
+    CallSite(
+        "workspace.py", "resolve_workspace", "find_project_root"
+    ): "Workspace resolution validates and canonicalizes the request directory first.",
 }
 
 
@@ -184,14 +198,14 @@ class _Visitor(ast.NodeVisitor):
                         self.project_root_names.add(name)
 
     def _call_kind(self, node: ast.Call) -> str | None:
+        function = node.func
+        if isinstance(function, ast.Name) and function.id in self.project_root_names:
+            return "find_project_root"
         if node.args or node.keywords:
             return None
-        function = node.func
         if isinstance(function, ast.Name):
             if function.id in self.getcwd_names:
                 return "os.getcwd"
-            if function.id in self.project_root_names:
-                return "find_project_root"
             return None
         if not isinstance(function, ast.Attribute):
             return None

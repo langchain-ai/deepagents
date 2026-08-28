@@ -40,6 +40,26 @@ def test_new_process_cwd_read_fails_guard(tmp_path: Path) -> None:
     ]
 
 
+def test_nullable_project_root_read_fails_guard(tmp_path: Path) -> None:
+    """A nullable project-root argument must remain subject to review."""
+    package = tmp_path / "deepagents_code"
+    package.mkdir()
+    (package / "request_path.py").write_text(
+        "from deepagents_code.project_utils import find_project_root as root\n"
+        "\n"
+        "def handle_request(start_path=None):\n"
+        "    return root(start_path)\n",
+        encoding="utf-8",
+    )
+
+    check = cast("Any", _load_check())
+    check._ALLOWLIST = {}
+
+    assert check.find_violations(package) == [
+        "request_path.py:4: unreviewed find_project_root call in handle_request"
+    ]
+
+
 def test_current_package_matches_allowlist() -> None:
     """The reviewed package must have no new or stale entries."""
     check = cast("Any", _load_check())

@@ -206,6 +206,7 @@ async def workspace(request: Request) -> JSONResponse:
             trusted_config,
             config_fingerprint=server_config.workspace_fingerprint(),
         )
+        await get_server_runtime(binding)
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:

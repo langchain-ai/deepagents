@@ -458,36 +458,6 @@ class TestWorkspaceRuntime:
 
         make.assert_not_awaited()
 
-    async def test_graph_factory_maps_workspace_conflict_to_409(self) -> None:
-        from starlette.exceptions import HTTPException
-
-        from deepagents_code.workspace import WorkspaceConflictError
-
-        module = _import_fresh_server_graph()
-        binding = object()
-        runtime = SimpleNamespace(
-            execution_runtime=SimpleNamespace(context={"workspace": {"id": "one"}})
-        )
-        conflict = WorkspaceConflictError("workspace runtime conflict")
-        with (
-            patch(
-                "deepagents_code.workspace.require_thread_workspace",
-                new=AsyncMock(return_value=binding),
-            ),
-            patch.object(
-                module,
-                "_workspace_runtime",
-                new=AsyncMock(side_effect=conflict),
-            ),
-            pytest.raises(HTTPException) as exc_info,
-        ):
-            await module.make_graph(
-                {"configurable": {"thread_id": "thread-1"}}, runtime
-            )
-
-        assert exc_info.value.status_code == 409
-        assert exc_info.value.detail == "workspace runtime conflict"
-
 
 class TestStartupErrorMarker:
     """`emit_startup_failure` must produce the parser marker on stderr.

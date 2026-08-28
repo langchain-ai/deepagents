@@ -62,6 +62,7 @@ class TestWorkspaceRoute:
             to_payload=lambda: {"workspace_id": "workspace-1"},
         )
         threads = SimpleNamespace(create=AsyncMock(), update=AsyncMock())
+        runtime = AsyncMock()
         with (
             patch.object(ServerConfig, "from_env", return_value=server_config),
             patch.object(
@@ -69,6 +70,7 @@ class TestWorkspaceRoute:
                 "bind_thread_workspace",
                 new=AsyncMock(return_value=binding),
             ) as bind,
+            patch.object(offload_api, "get_server_runtime", new=runtime),
             patch.object(
                 offload_api,
                 "_thread_client",
@@ -84,6 +86,49 @@ class TestWorkspaceRoute:
             server_config.to_workspace_payload(),
             config_fingerprint=server_config.workspace_fingerprint(),
         )
+        runtime.assert_awaited_once_with(binding)
+
+    async def test_runtime_conflict_returns_409_before_thread_creation(
+        self, tmp_path
+    ) -> None:
+        """Workspace preflight reports a conflict before a streamed run starts."""
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        binding = object()
+        detail = "Cannot host this workspace because the sandbox is already owned."
+        with (
+            patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
+            patch.object(
+                offload_api,
+                "bind_thread_workspace",
+                new=AsyncMock(return_value=binding),
+            ),
+            patch.object(
+                offload_api,
+                "get_server_runtime",
+                new=AsyncMock(side_effect=WorkspaceConflictError(detail)),
+            ),
+            patch.object(
+                offload_api,
+                "_thread_client",
+            ) as thread_client,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app),
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/dcode/threads/thread-1/workspace",
+                    json={"cwd": str(tmp_path)},
+                )
+
+        assert response.status_code == 409
+        assert response.json() == {"detail": detail}
+        thread_client.assert_not_called()
 
     async def test_rejects_client_policy_mismatch(self, tmp_path) -> None:
         """A caller cannot choose privileged runtime configuration."""

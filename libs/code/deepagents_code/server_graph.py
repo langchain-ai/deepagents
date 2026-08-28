@@ -25,7 +25,6 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 # `typing.get_type_hints` at graph-load time. A name that only type checkers
 # can see fails to resolve, and the server then refuses to load the graph.
 from langgraph_sdk.runtime import ServerRuntime as LangGraphServerRuntime  # noqa: TC002
-from starlette.exceptions import HTTPException
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._server_config import ServerConfig
@@ -684,7 +683,6 @@ async def make_graph(
 
     Raises:
         ValueError: If execution context is missing or malformed.
-        HTTPException: If the workspace conflicts with process resources.
     """
     execution = runtime.execution_runtime if runtime is not None else None
     if execution is not None:
@@ -695,9 +693,6 @@ async def make_graph(
             raise ValueError(msg)
         from deepagents_code.workspace import require_thread_workspace
 
-        try:
-            binding = await require_thread_workspace(thread_id, context.workspace)
-            return (await _workspace_runtime(binding)).agent
-        except WorkspaceConflictError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        binding = await require_thread_workspace(thread_id, context.workspace)
+        return (await _workspace_runtime(binding)).agent
     return (await get_server_runtime()).agent

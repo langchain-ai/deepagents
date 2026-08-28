@@ -1472,6 +1472,10 @@ class TestNonInteractivePrompt:
         assert "**User request:** review this patch" in user_msg["content"]
         assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"
         assert user_msg["additional_kwargs"]["__skill"]["args"] == "review this patch"
+        assert (
+            mock_agent.astream.call_args.kwargs["config"]["metadata"]["ls_skill_name"]
+            == "code-review"
+        )
 
     async def test_initial_skill_missing_returns_error_without_starting_server(
         self,

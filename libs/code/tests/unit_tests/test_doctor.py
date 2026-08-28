@@ -761,9 +761,11 @@ class TestConfigurationSection:
 class TestRunDoctorCommand:
     """Tests for the text and JSON rendering paths."""
 
-    def _run_text(self) -> tuple[int, str]:
+    def _run_text(self, *, force_terminal: bool = False) -> tuple[int, str]:
         buf = io.StringIO()
-        test_console = Console(file=buf, highlight=False, width=200)
+        test_console = Console(
+            file=buf, force_terminal=force_terminal, highlight=False, width=200
+        )
         args = argparse.Namespace(output_format="text")
         with patch("deepagents_code.config.console", test_console):
             code = run_doctor_command(args)
@@ -790,6 +792,21 @@ class TestRunDoctorCommand:
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
+
+    def test_commit_hash_renders_as_link(self) -> None:
+        """Text output links the hash to GitHub."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="abc1234"):
+            _, output = self._run_text(force_terminal=True)
+
+        assert "https://github.com/langchain-ai/deepagents/commit/abc1234" in output
+
+    def test_invalid_commit_hash_renders_without_link(self) -> None:
+        """Text output leaves an invalid hash unlinked."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="not-a-sha"):
+            _, output = self._run_text(force_terminal=True)
+
+        assert "not-a-sha" in output
+        assert "https://github.com/langchain-ai/deepagents/commit/" not in output
 
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""

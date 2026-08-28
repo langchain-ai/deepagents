@@ -218,6 +218,14 @@ def show_help() -> None:
         "  --trust-project-hooks      Trust project hooks.json command handlers"
     )
     console.print(
+        "  --trust-project-extensions Trust project .deepagents/extensions Python "
+        "(experimental)"
+    )
+    console.print(
+        "  -e, --extension PATH       Load extension file or directory "
+        "(experimental, repeatable)"
+    )
+    console.print(
         "  --interpreter, --no-interpreter"
         "  Enable or disable JS interpreter (`js_eval`) middleware"
     )

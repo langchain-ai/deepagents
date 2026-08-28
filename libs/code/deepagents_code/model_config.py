@@ -3978,21 +3978,29 @@ def _save_toml_field(
             else:
                 data = {}
 
-            if section not in data:
-                data[section] = {}
-            data[section][field] = value
+            existing_section = data.get(section)
+            existing = (
+                existing_section.get(field)
+                if isinstance(existing_section, dict)
+                else None
+            )
+            unchanged = type(existing) is type(value) and existing == value
+            if not unchanged:
+                if section not in data:
+                    data[section] = {}
+                data[section][field] = value
 
-            # Write to temp file then rename so an interrupted write can't corrupt
-            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(config_path)
-            except BaseException:
-                # Clean up temp file on any failure
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
+                # Write to temp file then rename so an interrupted write can't corrupt
+                fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        tomli_w.dump(data, f)
+                    Path(tmp_path).replace(config_path)
+                except BaseException:
+                    # Clean up temp file on any failure
+                    with contextlib.suppress(OSError):
+                        Path(tmp_path).unlink()
+                    raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
         # payload; `ValueError` covers things like `os.fdopen` on a

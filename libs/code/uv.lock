@@ -939,7 +939,7 @@ wheels = [
 
 [[package]]
 name = "deepagents"
-version = "0.7.9"
+version = "0.7.10"
 source = { editable = "../deepagents" }
 dependencies = [
     { name = "langchain" },
@@ -990,7 +990,7 @@ test = [
 
 [[package]]
 name = "deepagents-acp"
-version = "0.0.10"
+version = "0.0.11"
 source = { editable = "../acp" }
 dependencies = [
     { name = "agent-client-protocol" },
@@ -1024,7 +1024,7 @@ test = [
 
 [[package]]
 name = "deepagents-code"
-version = "0.1.63"
+version = "0.1.64"
 source = { editable = "." }
 dependencies = [
     { name = "aiosqlite" },

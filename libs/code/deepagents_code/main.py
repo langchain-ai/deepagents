@@ -2756,6 +2756,21 @@ def parse_args() -> argparse.Namespace:
         "(required for headless/CI runs that should load repository hooks)",
     )
     parser.add_argument(
+        "--trust-project-extensions",
+        action="store_true",
+        help="Trust project-level `.deepagents/extensions/` Python extensions "
+        "(requires DEEPAGENTS_CODE_EXPERIMENTAL=1)",
+    )
+    parser.add_argument(
+        "-e",
+        "--extension",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Load an extension file or directory for this run; requires "
+        "DEEPAGENTS_CODE_EXPERIMENTAL=1 (repeatable)",
+    )
+    parser.add_argument(
         "--interpreter",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -2847,6 +2862,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if (
+        getattr(args, "trust_project_extensions", False)
+        or getattr(args, "extension", ())
+    ) and not is_env_truthy(EXPERIMENTAL):
+        parser.error(
+            "--extension and --trust-project-extensions require "
+            "DEEPAGENTS_CODE_EXPERIMENTAL=1"
+        )
     # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
     # distinct from an absent flag (just trimmed): an explicit blank is the
     # "inherit the main agent model" instruction and must override a classifier
@@ -3080,6 +3105,8 @@ async def run_textual_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     hook_trust: "WorkspaceTrust | None" = None,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     enable_interpreter: bool | None = None,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
@@ -3147,6 +3174,9 @@ async def run_textual_cli_async(
             whole-config decision).
         hook_trust: Policy deciding which workspaces may run project-scoped hook
             commands. `None` consults only the persisted trust store.
+        trust_project_extensions: Allow project-authored Python extensions for
+            this session.
+        extension_paths: Explicit one-run extension files or directories.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -3297,6 +3327,8 @@ async def run_textual_cli_async(
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
+        "trust_project_extensions": trust_project_extensions,
+        "extension_paths": extension_paths,
         "interactive": True,
         "recursion_limit": recursion_limit,
     }
@@ -4734,6 +4766,103 @@ def _check_project_hooks_trust(
     return WorkspaceTrust.none()
 
 
+def _check_project_extensions_trust(
+    *,
+    trust_flag: bool = False,
+) -> "bool | _TrustPromptOutcome":
+    """Resolve interactive trust for project-authored Python extensions.
+
+    Args:
+        trust_flag: Whether the CLI explicitly trusted project extensions.
+
+    Returns:
+        Whether project extensions may load, `INTERRUPTED` on Ctrl+C, or
+            `CANCELLED` when startup is aborted.
+    """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return False
+    from rich.console import Console
+
+    from deepagents_code.extensions.discovery import project_extensions_dir
+    from deepagents_code.extensions.settings import (
+        TrustPolicy,
+        load_extension_settings,
+    )
+    from deepagents_code.extensions.trust import (
+        is_project_extensions_trusted,
+        trust_project_extensions,
+    )
+    from deepagents_code.project_utils import ProjectContext
+
+    settings = load_extension_settings()
+    if not settings.enabled or settings.trust is TrustPolicy.NEVER:
+        return False
+
+    try:
+        context = ProjectContext.from_user_cwd(Path.cwd())
+        project_root = context.project_root or context.user_cwd
+        extensions_dir = project_extensions_dir(project_root)
+        if not extensions_dir.is_dir():
+            return False
+    except OSError:
+        logger.warning("Could not inspect project extensions", exc_info=True)
+        return False
+
+    if (
+        trust_flag
+        or settings.trust is TrustPolicy.ALWAYS
+        or is_project_extensions_trusted(project_root)
+    ):
+        return True
+
+    from rich.markup import escape
+
+    console = Console(stderr=True)
+    console.print()
+    console.print(
+        "[bold yellow]Project extensions run arbitrary Python in this "
+        "session.[/bold yellow]",
+        highlight=False,
+    )
+    console.print(
+        f"Extensions directory: {escape(str(extensions_dir))}", highlight=False
+    )
+    console.print(
+        "Only trust projects you control. Allow once loads these files as they "
+        f'are now; always allow trusts "{escape(str(project_root))}" for future '
+        "sessions and future edits.",
+        style="yellow",
+        highlight=False,
+    )
+    action = _select_trust_action(
+        console,
+        remember_label="Always allow extensions in this project",
+    )
+    if action in {
+        _TrustPromptOutcome.INTERRUPTED,
+        _TrustPromptOutcome.CANCELLED,
+    }:
+        return action
+    if action is _TrustAction.ALLOW_ONCE:
+        console.print(
+            "[dim]Allowing project extensions for this session.[/dim]",
+            highlight=False,
+        )
+        return True
+    if action is _TrustAction.REMEMBER:
+        if not trust_project_extensions(project_root):
+            console.print(
+                "[yellow]Extension trust could not be remembered; allowing "
+                "this session only.[/yellow]",
+                highlight=False,
+            )
+        return True
+    console.print("[dim]Project extensions skipped.[/dim]", highlight=False)
+    return False
+
+
 def _verify_interpreter_or_exit() -> None:
     """Run the interpreter pre-flight check; print and exit on failure.
 
@@ -6060,6 +6189,10 @@ def cli_main() -> None:
                             trust_project_hooks=getattr(
                                 args, "trust_project_hooks", False
                             ),
+                            trust_project_extensions=getattr(
+                                args, "trust_project_extensions", False
+                            ),
+                            extension_paths=tuple(getattr(args, "extension", ())),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             allow_fs_tools=allow_fs_tools,
@@ -6175,6 +6308,20 @@ def cli_main() -> None:
                 )
                 return
 
+            extensions_trust = _check_project_extensions_trust(
+                trust_flag=getattr(args, "trust_project_extensions", False),
+            )
+            if extensions_trust is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if extensions_trust is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; project extensions not loaded.[/dim]",
+                    highlight=False,
+                )
+                return
+
             # Run Textual TUI
             return_code = 0
             request_count = 0
@@ -6231,6 +6378,8 @@ def cli_main() -> None:
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
                         hook_trust=hook_trust,
+                        trust_project_extensions=bool(extensions_trust),
+                        extension_paths=tuple(getattr(args, "extension", ())),
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,

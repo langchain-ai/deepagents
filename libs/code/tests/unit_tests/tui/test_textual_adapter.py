@@ -1351,6 +1351,18 @@ class TestBuildStreamConfig:
         config = build_stream_config("t-yolo", assistant_id=None, auto_approve=True)
         assert config["metadata"]["dcode_auto_approve"] is True
 
+    def test_skill_name_included_when_invoked(self) -> None:
+        """Skill invocations should be identifiable in trace metadata."""
+        config = build_stream_config(
+            "t-skill", assistant_id=None, skill_name="code-review"
+        )
+        assert config["metadata"]["ls_skill_name"] == "code-review"
+
+    def test_skill_name_absent_by_default(self) -> None:
+        """Ordinary turns should not carry skill attribution."""
+        config = build_stream_config("t-no-skill", assistant_id=None)
+        assert "ls_skill_name" not in config["metadata"]
+
     def test_auto_approve_absent_when_inactive(self) -> None:
         """Manual-approval runs should not carry the auto-approve label."""
         config = build_stream_config("t-manual", assistant_id=None, auto_approve=False)
@@ -2860,6 +2872,29 @@ class TestExecuteTaskTextualTurnMarkers:
         assert second_meta["dcode_auto_approve"] is True
         # The session state itself reflects the latest turn.
         assert session_state.turn_number == 2
+
+    async def test_skill_name_reaches_stream_config(self) -> None:
+        """The TUI should attribute a skill invocation to the streamed trace."""
+        from deepagents_code.app import TextualSessionState
+
+        session_state = TextualSessionState(thread_id="thread-1", auto_approve=False)
+        agent = _SequencedAgent([[]])
+        adapter = TextualUIAdapter(
+            mount_message=_mock_mount,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+
+        await execute_task_textual(
+            user_input="review this",
+            agent=agent,
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+            skill_name="code-review",
+        )
+
+        assert agent.configs[0]["metadata"]["ls_skill_name"] == "code-review"
 
     async def test_auto_approve_absent_from_stream_config_when_disabled(self) -> None:
         """A manual-approval session must not label its trace as auto-approve.

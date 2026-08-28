@@ -131,6 +131,7 @@ jobs:
       - name: "🏷️ Resolve ripgrep bypass"
         id: ripgrep-bypass
         if: >-
+          inputs.working-directory == 'libs/deepagents' &&
           runner.os == 'Linux' &&
           github.event_name == 'pull_request' &&
           (startsWith(github.head_ref, 'release-please--') ||
@@ -181,6 +182,7 @@ jobs:
       - name: "🔍 Install ripgrep (strict)"
         id: ripgrep-strict
         if: >-
+          inputs.working-directory == 'libs/deepagents' &&
           runner.os == 'Linux' &&
           (github.event_name != 'pull_request' ||
           startsWith(github.head_ref, 'release-please--') ||
@@ -237,6 +239,7 @@ jobs:
       - name: "🔍 Install ripgrep (non-release PR)"
         id: ripgrep-install
         if: >-
+          inputs.working-directory == 'libs/deepagents' &&
           runner.os == 'Linux' &&
           github.event_name == 'pull_request' &&
           !startsWith(github.head_ref, 'release-please--') &&

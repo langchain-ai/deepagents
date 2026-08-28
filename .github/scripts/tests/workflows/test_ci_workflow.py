@@ -86,6 +86,7 @@ def _starts_with(value: Any, prefix: str) -> bool:
 _CONTEXT_PATHS = sorted(
     (
         "github.event.pull_request.title",
+        "inputs.working-directory",
         "github.event_name",
         "github.head_ref",
         "runner.os",
@@ -118,11 +119,13 @@ def _context(
     head_ref: str | None = None,
     title: str | None = None,
     runner_os: str = "Linux",
+    working_directory: str = "libs/deepagents",
 ) -> dict[str, Any]:
     return {
         "github.event_name": event_name,
         "github.head_ref": head_ref,
         "github.event.pull_request.title": title,
+        "inputs.working-directory": working_directory,
         "runner.os": runner_os,
     }
 
@@ -166,6 +169,21 @@ SELECTION_CASES = [
             title="fix(code): tighten grep bounds",
             runner_os="Windows",
         ),
+        None,
+    ),
+    (
+        "non-SDK package PR",
+        _context(
+            event_name="pull_request",
+            head_ref="mdrxy/ci/soft-timeout-ripgrep",
+            title="fix(code): tighten grep bounds",
+            working_directory="libs/code",
+        ),
+        None,
+    ),
+    (
+        "non-SDK package push",
+        _context(event_name="push", working_directory="libs/code"),
         None,
     ),
 ]
@@ -225,7 +243,7 @@ def test_ci_success_runs_gate_script_from_trusted_base_ref() -> None:
 
     step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
     # The base copy is preferred; the PR copy is only a bootstrap fallback.
-    assert '.ci-gate-base' in step["run"]
+    assert ".ci-gate-base" in step["run"]
     assert step["run"].index(".ci-gate-base") < step["run"].index(".ci-gate-pr")
     # No step may execute the helper from the default (untrusted) checkout.
     for s in steps:
@@ -551,6 +569,7 @@ def test_ripgrep_bypass_step_runs_only_where_the_strict_step_does() -> None:
 
     condition = " ".join(resolve["if"].split())
     assert condition == (
+        "inputs.working-directory == 'libs/deepagents' && "
         "runner.os == 'Linux' && github.event_name == 'pull_request' && "
         "(startsWith(github.head_ref, 'release-please--') || "
         "startsWith(github.event.pull_request.title, 'release('))"

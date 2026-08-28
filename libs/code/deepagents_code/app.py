@@ -29277,25 +29277,61 @@ class DeepAgentsApp(App):
         self, model_spec: str, extra: str | None
     ) -> None:
         """Install any provider extra, then apply a picker selection."""
-        from functools import partial
-
-        if extra and (self._agent_running or self._shell_running or self._connecting):
-            self._defer_action(
-                DeferredAction(
-                    kind="summarization_model_switch",
-                    execute=partial(
-                        self._apply_summarization_model_selection, model_spec, extra
-                    ),
-                )
-            )
-            self.notify(
-                "Summarization model will switch after current work finishes.",
-                markup=False,
-            )
+        if self._defer_summarization_model_install_if_busy(model_spec, extra):
             return
-        if extra and not await self._install_extra(extra, auto_restart=True):
+        if extra and not await self._install_summarization_model_extra(
+            extra, model_spec
+        ):
             return
         await self._set_summarization_model(model_spec)
+
+    def _defer_summarization_model_install_if_busy(
+        self, model_spec: str, extra: str | None
+    ) -> bool:
+        """Defer an install-backed summary selection while the app is busy.
+
+        Returns:
+            Whether the selection was deferred.
+        """
+        from functools import partial
+
+        if not extra or not (
+            self._agent_running or self._shell_running or self._connecting
+        ):
+            return False
+        self._defer_action(
+            DeferredAction(
+                kind="summarization_model_switch",
+                execute=partial(
+                    self._apply_summarization_model_selection, model_spec, extra
+                ),
+            )
+        )
+        self.notify(
+            "Summarization model will switch after current work finishes.",
+            markup=False,
+        )
+        return True
+
+    async def _install_summarization_model_extra(
+        self, extra: str, model_spec: str
+    ) -> bool:
+        """Install and authenticate a summary model provider.
+
+        Returns:
+            Whether model selection may continue.
+        """
+        if not await self._install_extra(extra, auto_restart=True):
+            return False
+        if await self._prompt_model_auth_if_needed(model_spec):
+            return True
+        await self._mount_message(
+            AppMessage(
+                f"Installed '{extra}'. Set {model_spec} after adding its "
+                "credentials with `/auth`."
+            )
+        )
+        return False
 
     async def _set_summarization_model(self, model_spec: str) -> None:
         """Validate and set the session's summarization model."""

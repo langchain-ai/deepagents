@@ -1697,9 +1697,13 @@ class TestSummarizationModelCommand:
         app._agent_running = True
         notify = Mock()
         install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=True)
         set_model = AsyncMock()
         app.notify = notify  # ty: ignore[invalid-assignment]
         app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
         app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
 
         await app._apply_summarization_model_selection(
@@ -1716,7 +1720,55 @@ class TestSummarizationModelCommand:
         await app._deferred_actions.pop().execute()
 
         install.assert_awaited_once_with("baseten", auto_restart=True)
+        authenticate.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
         set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
+    async def test_install_selection_prompts_for_credentials_before_setting(
+        self,
+    ) -> None:
+        """A newly installed provider must be authenticated before validation."""
+        app = DeepAgentsApp()
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=True)
+        set_model = AsyncMock()
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        install.assert_awaited_once_with("baseten", auto_restart=True)
+        authenticate.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+        set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
+    async def test_cancelled_post_install_auth_keeps_summary_model(self) -> None:
+        """Dismissing auth leaves the installed provider unapplied."""
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=False)
+        set_model = AsyncMock()
+        mount_message = AsyncMock()
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+        app._mount_message = mount_message  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        set_model.assert_not_awaited()
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+        assert mount_message.await_args is not None
+        mounted = str(mount_message.await_args.args[0]._content)
+        assert "Installed 'baseten'" in mounted
+        assert "/auth" in mounted
 
     async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
         """The grammar is a single bare spec -- no params, unlike `/model`."""

@@ -11,7 +11,7 @@ from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, Mod
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import CallbackManagerForLLMRun
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatResult
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
@@ -22,6 +22,7 @@ from deepagents.graph import create_deep_agent
 from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
+    _FORK_RECURSION_REFUSAL,
     _FORK_TASK_PREAMBLE,
     _PARENT_SYSTEM_MESSAGE_KEY,
     GENERAL_PURPOSE_SUBAGENT,
@@ -348,6 +349,69 @@ class TestSubagentMiddlewareInit:
         worker_system_message = worker_model.call_history[0]["messages"][0]
         assert worker_system_message.text == "PARENT_PROMPT\n\nMEMORY"
         assert worker_system_message.text.count("MEMORY") == 1
+
+    def test_forked_subagent_refuses_recursive_delegation(self) -> None:
+        """Test that a fork's model calling `task` again is refused, not delegated."""
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "delegate again", "subagent_type": "worker"},
+                                "id": "call_worker_2",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="worker done after refusal"),
+                ]
+            )
+        )
+        agent = create_deep_agent(
+            model=parent_model,
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="start")]},
+            config={"recursion_limit": 10},
+        )
+
+        assert len(worker_model.call_history) == 2
+
+        second_call_messages = worker_model.call_history[1]["messages"]
+        refusals = [m for m in second_call_messages if isinstance(m, ToolMessage) and m.content == _FORK_RECURSION_REFUSAL]
+        assert len(refusals) == 1
+
+        assert result["messages"][-1].text == "parent done"
 
     def test_create_sub_agent_compiles_declarative_spec(self) -> None:
         """The public helper should compile and invoke declarative specs."""

@@ -18,6 +18,7 @@ from textual.content import Content
 from textual.geometry import Offset
 from textual.widgets import Markdown, Static
 
+from deepagents_code import _textual_patches  # triggers patch
 from deepagents_code.tui.widgets.diff import _DiffRowStatic
 
 

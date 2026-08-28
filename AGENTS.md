@@ -49,7 +49,6 @@ Follow [the PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - For features and behavior-changing fixes, place one plain-English user-visible summary above `---`. It is the release note; do not add a release-note heading or repeat it below the divider. Omit it for chores, refactors, and test-only changes.
 - Below `---`, explain why the change is needed and why the approach is appropriate. Keep prose concise and public-reader friendly.
 - Do not cite line numbers. Prefer symbols or subsystems over full paths, and format code entities with backticks.
-- Add a collapsed test plan only for large or consequential changes. Call out areas needing careful review.
 
 ## Core development principles
 

@@ -423,15 +423,9 @@ class ServerConfig:
     """Absolute one-run extension files or directories from repeatable CLI flags."""
 
     def to_workspace_payload(self) -> dict[str, Any]:
-        """Return the workspace-dependent configuration sent with each run."""
+        """Return non-secret resource policy for a durable workspace binding."""
         return {
-            "model": self.model,
-            "summarization_model": self.summarization_model,
-            "model_params": self.model_params or {},
-            "cli_max_retries": self.cli_max_retries,
-            "profile_overrides": self.profile_overrides or {},
             "assistant_id": self.assistant_id,
-            "system_prompt": self.system_prompt,
             "auto_approve": self.auto_approve,
             "interrupt_shell_only": self.interrupt_shell_only,
             "shell_allow_list": self.shell_allow_list,
@@ -446,9 +440,6 @@ class ServerConfig:
                 self.interpreter_ptc_acknowledge_unsafe
             ),
             "allow_fs_tools": self.allow_fs_tools,
-            "rubric_model": self.rubric_model,
-            "rubric_max_iterations": self.rubric_max_iterations,
-            "auto_classifier_model": self.auto_classifier_model,
             "recursion_limit": self.recursion_limit,
             "sandbox_type": self.sandbox_type,
             "sandbox_id": self.sandbox_id,
@@ -460,6 +451,20 @@ class ServerConfig:
             "trust_project_extensions": self.trust_project_extensions,
             "extension_paths": list(self.extension_paths),
         }
+
+    def workspace_fingerprint(self) -> str:
+        """Fingerprint the full effective config without persisting its contents.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
+        import hashlib
+
+        values = self.to_env()
+        values.pop("CWD")
+        values.pop("PROJECT_ROOT")
+        serialized = json.dumps(values, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode()).hexdigest()
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.

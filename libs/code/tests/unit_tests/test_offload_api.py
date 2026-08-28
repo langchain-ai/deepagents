@@ -9,7 +9,7 @@ import re
 import threading
 import time
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
@@ -41,6 +41,52 @@ def _reset_offload_globals() -> Iterator[None]:
         offload_api._client = None
         offload_api._active_operations.clear()
         offload_api._operation_outcomes.clear()
+
+
+class TestWorkspaceRoute:
+    async def test_rejects_client_policy_mismatch(self, tmp_path) -> None:
+        """A caller cannot choose privileged runtime configuration."""
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(
+                return_value={
+                    "cwd": str(tmp_path),
+                    "workspace_config": {"auto_approve": True},
+                    "config_fingerprint": "attacker",
+                }
+            ),
+        )
+        server_config = ServerConfig(auto_approve=False)
+        with patch.object(
+            ServerConfig, "from_env", return_value=server_config
+        ) as from_env:
+            response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 409
+        from_env.assert_called_once_with()
+
+    async def test_malformed_policy_is_a_client_error(self, tmp_path) -> None:
+        """A non-object policy returns 422 instead of escaping as a 500."""
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(
+                return_value={
+                    "cwd": str(tmp_path),
+                    "workspace_config": ["not", "an", "object"],
+                    "config_fingerprint": "attacker",
+                }
+            ),
+        )
+        with patch.object(ServerConfig, "from_env", return_value=ServerConfig()):
+            response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 422
 
 
 class TestOperationPayload:
@@ -249,6 +295,41 @@ def _result(
 
 
 class TestExecuteOffload:
+    async def test_missing_workspace_binding_is_rejected(self) -> None:
+        """Offload never falls back to the process-global runtime."""
+        from deepagents_code import offload_api
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=_thread_state()),
+            update_state=AsyncMock(),
+        )
+        runtime = AsyncMock()
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(side_effect=WorkspaceConflictError("not bound")),
+            ),
+            patch.object(offload_api, "get_server_runtime", new=runtime),
+            pytest.raises(WorkspaceConflictError, match="not bound"),
+        ):
+            await offload_api._execute_offload(
+                "thread-1",
+                operation_id="operation-1",
+                context={},
+                hook_responses={},
+            )
+
+        runtime.assert_not_awaited()
+        threads.update_state.assert_not_awaited()
+
     """The route owns state hydration, validation, and atomic persistence."""
 
     def test_hydrates_persisted_summary_message(self) -> None:
@@ -331,6 +412,11 @@ class TestExecuteOffload:
                 offload_api,
                 "get_client",
                 return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
             ),
             patch.object(
                 offload_api,
@@ -612,6 +698,11 @@ class TestExecuteOffload:
             ),
             patch.object(
                 offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
+            ),
+            patch.object(
+                offload_api,
                 "get_server_runtime",
                 new=AsyncMock(
                     return_value=SimpleNamespace(
@@ -709,12 +800,22 @@ class TestExecuteOffload:
         operation: SimpleNamespace,
         prepared: object,
     ) -> Iterator[None]:
-        """Patch the client, runtime, and cost seams `_execute_offload` uses."""
+        """Patch the client, workspace, runtime, and cost seams used here."""
         with (
             patch.object(
                 offload_api,
                 "get_client",
                 return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
             ),
             patch.object(
                 offload_api,
@@ -1940,6 +2041,11 @@ class TestOffloadRoute:
                 offload_api,
                 "get_client",
                 return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
             ),
             patch.object(
                 offload_api,

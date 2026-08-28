@@ -1317,7 +1317,11 @@ class TestRemoteAgentWorkspace:
             ]
         )
         graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
-        agent.set_workspace("/workspace/project", {"enable_shell": True})
+        agent.set_workspace(
+            "/workspace/project",
+            {"enable_shell": True},
+            config_fingerprint="config-fingerprint",
+        )
 
         with patch.object(agent, "_get_graph", return_value=graph):
             first = await agent._workspace_for_thread(
@@ -1333,6 +1337,11 @@ class TestRemoteAgentWorkspace:
         assert first == repeated == {"workspace_id": "first"}
         assert second == {"workspace_id": "second"}
         assert post.await_count == 2
+        assert post.await_args_list[0].kwargs["json"] == {
+            "cwd": "/workspace/project",
+            "workspace_config": {"enable_shell": True},
+            "config_fingerprint": "config-fingerprint",
+        }
 
     async def test_binding_requires_explicit_workspace(self) -> None:
         agent = RemoteAgent("http://localhost:1234")
@@ -1482,7 +1491,6 @@ class TestServerOffload:
         assert first["context"] == {
             "model": "test:model",
             "workspace": {"workspace_id": "test-workspace"},
-            "workspace_config": {},
         }
         assert "messages" not in first
         assert first["operation_id"] == second["operation_id"]

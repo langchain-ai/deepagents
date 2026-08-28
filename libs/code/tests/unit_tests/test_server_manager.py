@@ -246,7 +246,7 @@ class TestStartServerAndGetAgent:
         mock_server.start = AsyncMock()
         mock_server.wait_for_graph_ready = AsyncMock()
         mock_server.url = "http://127.0.0.1:2024"
-        mock_agent = object()
+        mock_agent = MagicMock()
 
         with (
             patch.dict(os.environ, {}, clear=False),
@@ -321,7 +321,7 @@ class TestStartServerAndGetAgent:
             ) as mock_server_process,
             patch(
                 "deepagents_code.client.remote_client.RemoteAgent",
-                return_value=object(),
+                return_value=MagicMock(),
             ),
         ):
             await start_server_and_get_agent(
@@ -373,7 +373,7 @@ class TestStartServerAndGetAgent:
             ),
             patch(
                 "deepagents_code.client.remote_client.RemoteAgent",
-                return_value=object(),
+                return_value=MagicMock(),
             ),
         ):
             await start_server_and_get_agent(
@@ -750,6 +750,24 @@ class TestServerSession:
 
         mock_mcp.cleanup.assert_awaited_once()
         mock_server.stop.assert_called_once()
+
+    async def test_forwards_cwd(self) -> None:
+        """The context manager forwards the explicit workspace."""
+        mock_server = MagicMock()
+        mock_server.stop = MagicMock()
+
+        with patch(
+            "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+            new_callable=AsyncMock,
+            return_value=(MagicMock(), mock_server, None),
+        ) as start:
+            async with server_session(assistant_id="agent", cwd="/workspace/project"):
+                pass
+
+        start.assert_awaited_once()
+        await_args = start.await_args
+        assert await_args is not None
+        assert await_args.kwargs["cwd"] == "/workspace/project"
 
     async def test_forwards_summarization_model(self) -> None:
         """The context manager forwards the dedicated summary model.

@@ -32,10 +32,11 @@ from deepagents_code.offload_middleware import (
     _archive_lock,
     unchanged_offload_result,
 )
-from deepagents_code.server_graph import get_server_runtime
+from deepagents_code.server_graph import _workspace_runtime as get_server_runtime
 from deepagents_code.workspace import (
     WorkspaceConflictError,
     bind_thread_workspace,
+    canonical_workspace_config,
     require_thread_workspace,
 )
 
@@ -181,12 +182,30 @@ async def workspace(request: Request) -> JSONResponse:
             {"detail": "request body must be an object"}, status_code=422
         )
     try:
+        from deepagents_code._server_config import ServerConfig
+
+        server_config = ServerConfig.from_env()
+        trusted_config = server_config.to_workspace_payload()
+        _, trusted_policy_fingerprint = canonical_workspace_config(trusted_config)
+        _, claimed_policy_fingerprint = canonical_workspace_config(
+            body.get("workspace_config")
+        )
+        claimed_config_fingerprint = body.get("config_fingerprint")
+        if (
+            claimed_policy_fingerprint != trusted_policy_fingerprint
+            or claimed_config_fingerprint != server_config.workspace_fingerprint()
+        ):
+            return JSONResponse(
+                {"detail": "workspace configuration does not match server policy"},
+                status_code=409,
+            )
         binding = await bind_thread_workspace(
             thread_id,
             body.get("cwd"),
-            body.get("workspace_config"),
+            trusted_config,
+            config_fingerprint=server_config.workspace_fingerprint(),
         )
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
@@ -300,9 +319,9 @@ class _OffloadConflictError(RuntimeError):
 class _OffloadUnavailableError(RuntimeError):
     """The server runtime could not be built, so no operation can run.
 
-    `get_server_runtime` converts a construction failure into a startup-error
-    marker and `sys.exit(1)`. That barrier was written for the `langgraph.json`
-    graph factory, where exiting is right; reached from a request handler it
+    Runtime construction can emit a startup-error marker and `sys.exit(1)`.
+    That barrier was written for the `langgraph.json` graph factory, where
+    exiting is right; reached from a request handler it
     would kill the server process mid-request, and `SystemExit` is a
     `BaseException`, so the route's own handler could not turn it into a
     response. Server-owned offload cannot run without that runtime, so report
@@ -339,7 +358,6 @@ _CONTEXT_DICT_FIELDS = (
     "model_params",
     "profile_overrides",
     "workspace",
-    "workspace_config",
 )
 
 _TRANSPORT_MODEL_PARAM_KEYS = frozenset(
@@ -879,12 +897,10 @@ async def _execute_offload(
         checkpoint_id = _checkpoint_id(before)
         context = _checkpoint_model_context(context, state)
         context["thread_id"] = thread_id
-        if context.get("workspace"):
-            await require_thread_workspace(
-                thread_id,
-                context.get("workspace"),
-                context.get("workspace_config"),
-            )
+        binding = await require_thread_workspace(
+            thread_id,
+            context.get("workspace"),
+        )
         namespace = f"dcode_offload:{operation_id}"
         info = ExecutionInfo(
             checkpoint_id=checkpoint_id,
@@ -898,12 +914,7 @@ async def _execute_offload(
             if schema is None:
                 msg = "Offload requires workspace runtime context."
                 raise _OffloadConflictError(msg)
-            if schema.workspace:
-                from deepagents_code.server_graph import _workspace_runtime
-
-                server = await _workspace_runtime(schema)
-            else:
-                server = await get_server_runtime()
+            server = await get_server_runtime(binding)
         except SystemExit as exc:
             msg = (
                 "The server could not build its agent runtime, so /offload is "

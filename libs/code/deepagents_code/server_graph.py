@@ -14,14 +14,12 @@ from __future__ import annotations
 import asyncio
 import atexit
 import dataclasses
-import hashlib
-import json
 import logging
 import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
-from deepagents_code import __version__
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
@@ -40,6 +38,7 @@ if TYPE_CHECKING:
 
     from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.offload_middleware import OffloadOperation
+    from deepagents_code.workspace import WorkspaceBinding
 
 logger = logging.getLogger(__name__)
 
@@ -544,40 +543,41 @@ def _build_graph_factory(
 
 
 _get_runtime = _build_runtime_factory()
-_workspace_runtimes: dict[str, ServerRuntime] = {}
+_MAX_WORKSPACE_RUNTIMES = 32
+_workspace_runtimes: OrderedDict[str, ServerRuntime] = OrderedDict()
 _workspace_runtime_locks: dict[str, asyncio.Lock] = {}
 
 
-async def _workspace_runtime(context: CLIContextSchema) -> ServerRuntime:
-    """Build or reuse the runtime configured for a validated workspace.
+async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
+    """Build or reuse a runtime from the persisted workspace resource policy.
 
     Returns:
         The runtime selected by the binding's immutable resource key.
-    """
-    from deepagents_code.workspace import WorkspaceBinding
 
-    binding = WorkspaceBinding(**context.workspace)
-    serialized = json.dumps(
-        context.workspace_config, sort_keys=True, separators=(",", ":")
-    )
-    fingerprint = hashlib.sha256(serialized.encode()).hexdigest()
-    config_key = f"{binding.resource_key}:{__version__}:{fingerprint}"
-    runtime = _workspace_runtimes.get(config_key)
+    Raises:
+        RuntimeError: If the authoritative server configuration has changed.
+    """
+    runtime = _workspace_runtimes.get(binding.resource_key)
     if runtime is not None:
+        _workspace_runtimes.move_to_end(binding.resource_key)
         return runtime
-    lock = _workspace_runtime_locks.setdefault(config_key, asyncio.Lock())
+    lock = _workspace_runtime_locks.setdefault(binding.resource_key, asyncio.Lock())
     async with lock:
-        runtime = _workspace_runtimes.get(config_key)
+        runtime = _workspace_runtimes.get(binding.resource_key)
         if runtime is None:
-            allowed = {field.name for field in dataclasses.fields(ServerConfig)}
-            values = {
-                key: value
-                for key, value in context.workspace_config.items()
-                if key in allowed and key not in {"cwd", "project_root"}
-            }
-            values["cwd"] = binding.cwd
-            values["project_root"] = binding.project_root
-            config = ServerConfig(**values)
+            config = ServerConfig.from_env()
+            current_config = dataclasses.replace(
+                config,
+                cwd=binding.cwd,
+                project_root=binding.project_root,
+            )
+            if (
+                current_config.workspace_fingerprint() != binding.config_fingerprint
+                or current_config.to_workspace_payload() != binding.workspace_config()
+            ):
+                msg = "Server configuration changed after the workspace was bound."
+                raise RuntimeError(msg)
+            config = current_config
             project_context = ProjectContext(
                 user_cwd=Path(binding.cwd),
                 project_root=Path(binding.project_root)
@@ -588,7 +588,10 @@ async def _workspace_runtime(context: CLIContextSchema) -> ServerRuntime:
                 config_override=config,
                 project_context_override=project_context,
             )
-            _workspace_runtimes[config_key] = runtime
+            _workspace_runtimes[binding.resource_key] = runtime
+            if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
+                evicted_key, _ = _workspace_runtimes.popitem(last=False)
+                _workspace_runtime_locks.pop(evicted_key, None)
     return runtime
 
 
@@ -626,10 +629,6 @@ async def make_graph(
             raise ValueError(msg)
         from deepagents_code.workspace import require_thread_workspace
 
-        await require_thread_workspace(
-            thread_id,
-            context.workspace,
-            context.workspace_config,
-        )
-        return (await _workspace_runtime(context)).agent
+        binding = await require_thread_workspace(thread_id, context.workspace)
+        return (await _workspace_runtime(binding)).agent
     return (await get_server_runtime()).agent

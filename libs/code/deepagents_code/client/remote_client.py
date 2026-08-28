@@ -332,6 +332,7 @@ class RemoteAgent:
         self._graph: Any = None
         self._workspaces: dict[str, dict[str, Any]] = {}
         self._workspace_config: dict[str, Any] = {}
+        self._workspace_config_fingerprint: str | None = None
         self._workspace_cwd: str | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
@@ -389,7 +390,6 @@ class RemoteAgent:
         workspace = await self._workspace_for_thread(config)
         operation_context = dict(context)
         operation_context["workspace"] = workspace
-        operation_context["workspace_config"] = self._workspace_config
         # The operation reads and writes thread state over HTTP, so the thread's
         # live row must exist first. Checkpoint persistence and registration are
         # separate on the dev server (see `aensure_thread`), so a resumed thread
@@ -529,7 +529,6 @@ class RemoteAgent:
 
         payload = dict(context) if isinstance(context, Mapping) else {}
         payload["workspace"] = await self._workspace_for_thread(config)
-        payload["workspace_config"] = self._workspace_config
 
         extra_stream_kwargs: dict[str, Any] = {}
         replica_project = get_langsmith_replica_project()
@@ -817,7 +816,11 @@ class RemoteAgent:
         graph = self._get_graph()
         response = await graph.client.http.post(
             f"/dcode/threads/{thread_id}/workspace",
-            json={"cwd": cwd, "workspace_config": self._workspace_config},
+            json={
+                "cwd": cwd,
+                "workspace_config": self._workspace_config,
+                "config_fingerprint": self._workspace_config_fingerprint,
+            },
         )
         if not isinstance(response, dict) or not isinstance(
             response.get("workspace"), dict
@@ -832,10 +835,13 @@ class RemoteAgent:
         self,
         cwd: str,
         config: Mapping[str, Any],
+        *,
+        config_fingerprint: str,
     ) -> None:
         """Configure the explicit workspace used when binding threads."""
         self._workspace_cwd = cwd
         self._workspace_config = dict(config)
+        self._workspace_config_fingerprint = config_fingerprint
         self._workspaces.clear()
 
     async def aensure_thread(self, config: dict[str, Any]) -> None:

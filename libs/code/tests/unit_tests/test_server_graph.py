@@ -665,6 +665,68 @@ class TestServerGraph:
         assert await_args.kwargs["project_context"] is project_context
 
 
+class TestWorkspaceRuntime:
+    """Workspace runtimes retain trusted server-only configuration."""
+
+    async def test_uses_full_server_config_and_replaces_only_workspace_paths(
+        self, tmp_path
+    ) -> None:
+        from deepagents_code.workspace import resolve_workspace
+
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(
+            model="trusted:model",
+            system_prompt="trusted prompt",
+            model_params={"api_key": "secret"},
+            auto_approve=True,
+        )
+        binding = resolve_workspace(
+            str(tmp_path),
+            bound_config.to_workspace_payload(),
+            config_fingerprint=bound_config.workspace_fingerprint(),
+        )
+        runtime = module.ServerRuntime(object(), object(), object())
+        with (
+            patch.object(ServerConfig, "from_env", return_value=bound_config),
+            patch.object(
+                module, "_make_graphs", new=AsyncMock(return_value=runtime)
+            ) as make,
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        call = make.await_args
+        assert call is not None
+        config = call.kwargs["config_override"]
+        assert config.model == "trusted:model"
+        assert config.system_prompt == "trusted prompt"
+        assert config.model_params == {"api_key": "secret"}
+        assert config.cwd == binding.cwd
+        assert config.project_root == binding.project_root
+
+    async def test_rejects_server_config_drift(self, tmp_path) -> None:
+        from deepagents_code.workspace import resolve_workspace
+
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(model="trusted:model")
+        binding = resolve_workspace(
+            str(tmp_path),
+            bound_config.to_workspace_payload(),
+            config_fingerprint=bound_config.workspace_fingerprint(),
+        )
+        with (
+            patch.object(
+                ServerConfig,
+                "from_env",
+                return_value=ServerConfig(model="changed:model"),
+            ),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            pytest.raises(RuntimeError, match="configuration changed"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
+
+
 class TestStartupErrorMarker:
     """`emit_startup_failure` must produce the parser marker on stderr.
 

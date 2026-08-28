@@ -326,8 +326,83 @@ class TestWorkspaceRuntime:
         assert config.cwd == binding.cwd
         assert config.project_root == binding.project_root
 
-    async def test_rejects_server_config_drift(self, tmp_path) -> None:
+    async def test_sandbox_refuses_second_workspace_and_keeps_first(
+        self, tmp_path
+    ) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(sandbox_type="daytona")
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        first = resolve_workspace(
+            str(first_dir),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        second = resolve_workspace(
+            str(second_dir),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        first_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=first_runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(first) is first_runtime
+            with pytest.raises(
+                WorkspaceConflictError,
+                match=(
+                    "Cannot host this workspace because a runtime for another "
+                    "workspace already exists and the configured sandbox is "
+                    "process-wide"
+                ),
+            ):
+                await module._workspace_runtime(second)
+            assert await module._workspace_runtime(first) is first_runtime
+
+        make.assert_awaited_once()
+
+    async def test_without_sandbox_builds_second_workspace(self, tmp_path) -> None:
         from deepagents_code.workspace import resolve_workspace
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig()
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        bindings = [
+            resolve_workspace(
+                str(directory),
+                config.to_workspace_payload(),
+                config_fingerprint=config.workspace_fingerprint(),
+            )
+            for directory in (first_dir, second_dir)
+        ]
+        runtimes = [
+            module.ServerRuntime(object(), object(), object()),
+            module.ServerRuntime(object(), object(), object()),
+        ]
+        make = AsyncMock(side_effect=runtimes)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert [
+                await module._workspace_runtime(binding) for binding in bindings
+            ] == (runtimes)
+
+        assert make.await_count == 2
+
+    async def test_rejects_server_config_drift(self, tmp_path) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
 
         module = _import_fresh_server_graph()
         bound_config = ServerConfig(model="trusted:model")
@@ -343,11 +418,41 @@ class TestWorkspaceRuntime:
                 return_value=ServerConfig(model="changed:model"),
             ),
             patch.object(module, "_make_graphs", new=AsyncMock()) as make,
-            pytest.raises(RuntimeError, match="configuration changed"),
+            pytest.raises(WorkspaceConflictError, match="configuration changed"),
         ):
             await module._workspace_runtime(binding)
 
         make.assert_not_awaited()
+
+    async def test_graph_factory_maps_workspace_conflict_to_409(self) -> None:
+        from starlette.exceptions import HTTPException
+
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        binding = object()
+        runtime = SimpleNamespace(
+            execution_runtime=SimpleNamespace(context={"workspace": {"id": "one"}})
+        )
+        conflict = WorkspaceConflictError("workspace runtime conflict")
+        with (
+            patch(
+                "deepagents_code.workspace.require_thread_workspace",
+                new=AsyncMock(return_value=binding),
+            ),
+            patch.object(
+                module,
+                "_workspace_runtime",
+                new=AsyncMock(side_effect=conflict),
+            ),
+            pytest.raises(HTTPException) as exc_info,
+        ):
+            await module.make_graph(
+                {"configurable": {"thread_id": "thread-1"}}, runtime
+            )
+
+        assert exc_info.value.status_code == 409
+        assert exc_info.value.detail == "workspace runtime conflict"
 
 
 class TestStartupErrorMarker:

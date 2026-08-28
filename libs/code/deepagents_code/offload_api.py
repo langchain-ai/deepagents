@@ -919,6 +919,8 @@ async def _execute_offload(
                 msg = "Offload requires workspace runtime context."
                 raise _OffloadConflictError(msg)
             server = await get_server_runtime(binding)
+        except WorkspaceConflictError as exc:
+            raise _OffloadConflictError(str(exc)) from exc
         except SystemExit as exc:
             msg = (
                 "The server could not build its agent runtime, so /offload is "

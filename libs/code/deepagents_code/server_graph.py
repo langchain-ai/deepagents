@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any, NamedTuple
 # `typing.get_type_hints` at graph-load time. A name that only type checkers
 # can see fails to resolve, and the server then refuses to load the graph.
 from langgraph_sdk.runtime import ServerRuntime as LangGraphServerRuntime  # noqa: TC002
+from starlette.exceptions import HTTPException
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._server_config import ServerConfig
@@ -35,6 +36,7 @@ from deepagents_code._startup_error import (
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+from deepagents_code.workspace import WorkspaceConflictError
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -549,8 +551,8 @@ def _build_graph_factory(
 
 _get_runtime = _build_runtime_factory()
 _MAX_WORKSPACE_RUNTIMES = 32
-_workspace_runtimes: OrderedDict[str, ServerRuntime] = OrderedDict()
-_workspace_runtime_locks: dict[str, asyncio.Lock] = {}
+_workspace_runtimes: OrderedDict[str, tuple[str, ServerRuntime]] = OrderedDict()
+_workspace_runtime_lock = asyncio.Lock()
 
 
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
@@ -558,46 +560,51 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
 
     Returns:
         The runtime selected by the binding's immutable resource key.
-
-    Raises:
-        RuntimeError: If the authoritative server configuration has changed.
     """
-    runtime = _workspace_runtimes.get(binding.resource_key)
-    if runtime is not None:
+    cached = _workspace_runtimes.get(binding.resource_key)
+    if cached is not None:
         _workspace_runtimes.move_to_end(binding.resource_key)
+        return cached[1]
+    async with _workspace_runtime_lock:
+        cached = _workspace_runtimes.get(binding.resource_key)
+        if cached is not None:
+            _workspace_runtimes.move_to_end(binding.resource_key)
+            return cached[1]
+        config = ServerConfig.from_env()
+        current_config = dataclasses.replace(
+            config,
+            cwd=binding.cwd,
+            project_root=binding.project_root,
+        )
+        if (
+            current_config.workspace_fingerprint() != binding.config_fingerprint
+            or current_config.to_workspace_payload() != binding.workspace_config()
+        ):
+            reason = "the server configuration changed after this workspace was bound"
+            conflict = WorkspaceConflictError.from_reason(reason)
+            raise conflict
+        if current_config.sandbox_type and any(
+            workspace_id != binding.workspace_id
+            for workspace_id, _ in _workspace_runtimes.values()
+        ):
+            reason = (
+                "a runtime for another workspace already exists and the configured "
+                "sandbox is process-wide"
+            )
+            conflict = WorkspaceConflictError.from_reason(reason)
+            raise conflict
+        project_context = ProjectContext(
+            user_cwd=Path(binding.cwd),
+            project_root=Path(binding.project_root) if binding.project_root else None,
+        )
+        runtime = await _make_graphs(
+            config_override=current_config,
+            project_context_override=project_context,
+        )
+        _workspace_runtimes[binding.resource_key] = (binding.workspace_id, runtime)
+        if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
+            _workspace_runtimes.popitem(last=False)
         return runtime
-    lock = _workspace_runtime_locks.setdefault(binding.resource_key, asyncio.Lock())
-    async with lock:
-        runtime = _workspace_runtimes.get(binding.resource_key)
-        if runtime is None:
-            config = ServerConfig.from_env()
-            current_config = dataclasses.replace(
-                config,
-                cwd=binding.cwd,
-                project_root=binding.project_root,
-            )
-            if (
-                current_config.workspace_fingerprint() != binding.config_fingerprint
-                or current_config.to_workspace_payload() != binding.workspace_config()
-            ):
-                msg = "Server configuration changed after the workspace was bound."
-                raise RuntimeError(msg)
-            config = current_config
-            project_context = ProjectContext(
-                user_cwd=Path(binding.cwd),
-                project_root=Path(binding.project_root)
-                if binding.project_root
-                else None,
-            )
-            runtime = await _make_graphs(
-                config_override=config,
-                project_context_override=project_context,
-            )
-            _workspace_runtimes[binding.resource_key] = runtime
-            if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
-                evicted_key, _ = _workspace_runtimes.popitem(last=False)
-                _workspace_runtime_locks.pop(evicted_key, None)
-    return runtime
 
 
 async def get_server_runtime() -> ServerRuntime:
@@ -624,6 +631,7 @@ async def make_graph(
 
     Raises:
         ValueError: If execution context is missing or malformed.
+        HTTPException: If the workspace conflicts with process resources.
     """
     execution = runtime.execution_runtime if runtime is not None else None
     if execution is not None:
@@ -634,6 +642,9 @@ async def make_graph(
             raise ValueError(msg)
         from deepagents_code.workspace import require_thread_workspace
 
-        binding = await require_thread_workspace(thread_id, context.workspace)
-        return (await _workspace_runtime(binding)).agent
+        try:
+            binding = await require_thread_workspace(thread_id, context.workspace)
+            return (await _workspace_runtime(binding)).agent
+        except WorkspaceConflictError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     return (await get_server_runtime()).agent

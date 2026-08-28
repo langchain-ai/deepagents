@@ -289,6 +289,55 @@ class TestExecuteOffload:
         runtime.assert_not_awaited()
         threads.update_state.assert_not_awaited()
 
+    async def test_runtime_workspace_conflict_is_rejected(self) -> None:
+        """Runtime conflicts use the same offload 409 path as binding conflicts."""
+        from deepagents_code import offload_api
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        threads = SimpleNamespace(
+            get=AsyncMock(return_value={"status": "idle"}),
+            get_state=AsyncMock(return_value=_thread_state()),
+            update_state=AsyncMock(),
+        )
+        detail = (
+            "Cannot host this workspace because a runtime for another workspace "
+            "already exists and the configured sandbox is process-wide."
+        )
+        with (
+            patch.object(
+                offload_api,
+                "get_client",
+                return_value=SimpleNamespace(threads=threads),
+            ),
+            patch.object(
+                offload_api,
+                "require_thread_workspace",
+                new=AsyncMock(return_value=object()),
+            ),
+            patch.object(
+                offload_api,
+                "get_server_runtime",
+                new=AsyncMock(side_effect=WorkspaceConflictError(detail)),
+            ),
+        ):
+            response = await offload_api.offload(
+                SimpleNamespace(  # ty: ignore[invalid-argument-type]
+                    path_params={"thread_id": "thread-1"},
+                    json=AsyncMock(
+                        return_value={
+                            "operation_id": "operation-1",
+                            "context": {"workspace": {}},
+                        }
+                    ),
+                )
+            )
+
+        assert response.status_code == 409
+        import json
+
+        assert json.loads(bytes(response.body)) == {"detail": detail}
+        threads.update_state.assert_not_awaited()
+
     async def test_missing_workspace_context_is_rejected(self) -> None:
         from deepagents_code import offload_api
 

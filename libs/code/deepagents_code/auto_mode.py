@@ -2528,6 +2528,73 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
+        """Review one batch inside a span that survives the review failing.
+
+        A deadline *cancels* the inner `ainvoke` rather than raising into it, and
+        LangChain closes its run from `on_llm_error`, which never sees a
+        `CancelledError`. Timed-out reviews therefore left a run with a null
+        `end_time` and no error — invisible to any error rate built on the
+        project. This span is closed on the way out, so deadlines and
+        construction faults land as real errors. The inner run stays orphaned:
+        nothing here can close a run that was cancelled rather than failed.
+
+        Args:
+            request: Resolved primary-model request for the current batch.
+            calls: Tool calls this batch must review.
+            all_calls: Every tool call in the turn, for context.
+            dispositions: Dispositions already decided for this turn.
+            tools: Tool objects by name.
+
+        Returns:
+            Validated classifier verdict for the batch.
+        """
+        from langsmith import trace
+
+        # Names only: arguments can carry file contents and secrets.
+        async with trace(
+            name="auto_classifier_review",
+            run_type="chain",
+            inputs={
+                "tool_count": len(calls),
+                "tools": [call["name"] for call in calls],
+                "classifier_model": self._classifier_model_label(request),
+            },
+            tags=["dcode:auto"],
+            metadata={"lc_source": "auto_mode_classifier"},
+        ) as span:
+            batch = await self._review_batch(
+                request, calls, all_calls, dispositions, tools
+            )
+            span.end(outputs={"decision_count": len(batch.decisions)})
+            return batch
+
+    async def _review_batch(
+        self,
+        request: ModelRequest,
+        calls: Sequence[ToolCall],
+        all_calls: Sequence[ToolCall],
+        dispositions: Mapping[str, str],
+        tools: Mapping[str, BaseTool],
+    ) -> AutoDecisionBatch:
+        """Build the classifier, ask it for a verdict, and validate the reply.
+
+        Args:
+            request: Resolved primary-model request for the current batch.
+            calls: Tool calls this batch must review.
+            all_calls: Every tool call in the turn, for context.
+            dispositions: Dispositions already decided for this turn.
+            tools: Tool objects by name.
+
+        Returns:
+            Validated classifier verdict for the batch.
+
+        Raises:
+            _ClassifierConstructionDeadlineExceededError: If the model could not
+                be built within its budget.
+            _ClassifierDeadlineExceededError: If the classifier did not answer
+                within its budget.
+            TimeoutError: If the provider raised a timeout of its own.
+        """
         # Construction and inference get separate budgets: a cold provider
         # import must not eat the time reserved for the verdict, and the two
         # failures need different reasons. Constructor threads cannot be

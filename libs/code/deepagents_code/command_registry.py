@@ -56,6 +56,9 @@ class SlashCommand:
     aliases: tuple[str, ...] = ()
     """Alternative names (e.g. `("/q",)` for `/quit`)."""
 
+    experimental: bool = False
+    """Whether autocomplete requires experimental mode."""
+
     def to_entry(self) -> CommandEntry:
         """Project this command into a `CommandEntry` for autocomplete.
 
@@ -247,6 +250,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Show token usage",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="cost",
+    ),
+    SlashCommand(
+        name="/extensions",
+        description="List loaded Python extensions and their provenance",
+        bypass_tier=BypassTier.QUEUED,
+        experimental=True,
     ),
     SlashCommand(
         name="/tools",
@@ -479,7 +488,14 @@ def get_slash_commands() -> list[CommandEntry]:
     Returns:
         Autocomplete entries derived from `COMMANDS`.
     """
-    return [command.to_entry() for command in COMMANDS]
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    experimental = is_env_truthy(EXPERIMENTAL)
+    return [
+        command.to_entry()
+        for command in COMMANDS
+        if experimental or not command.experimental
+    ]
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

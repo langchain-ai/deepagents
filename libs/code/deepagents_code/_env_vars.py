@@ -256,6 +256,12 @@ values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
 """
 
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading installed-plugin and trusted-project Python extensions."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -487,10 +493,9 @@ repo file, so a project `.env` cannot disable itself.
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
-Parsed as an integer by the config manifest. Values below the LangGraph floor
-(`25`) or above the manifest ceiling are ignored with a logged warning, falling
-back to `config.toml` then the default. See `[runtime].recursion_limit` and the
-`--recursion-limit` CLI flag.
+Parsed as an integer by the config manifest. Values outside the accepted range
+are ignored with a logged warning, falling back to `config.toml`. See
+`[runtime].recursion_limit` and the `--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"

@@ -2050,6 +2050,8 @@ async def run_non_interactive(
     rubric_max_iterations: int | None = None,
     recursion_limit: int | None = None,
     trust_project_hooks: bool = False,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     output_format: OutputFormat = "text",
     time_limit: float | None = None,
 ) -> int:
@@ -2086,6 +2088,8 @@ async def run_non_interactive(
         rubric_max_iterations=rubric_max_iterations,
         recursion_limit=recursion_limit,
         trust_project_hooks=trust_project_hooks,
+        trust_project_extensions=trust_project_extensions,
+        extension_paths=extension_paths,
         output_format=output_format,
     )
     try:
@@ -2137,6 +2141,8 @@ async def _run_non_interactive(
     rubric_max_iterations: int | None = None,
     recursion_limit: int | None = None,
     trust_project_hooks: bool = False,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     output_format: OutputFormat = "text",
 ) -> int:
     """Run a single task non-interactively and exit.
@@ -2213,12 +2219,17 @@ async def _run_non_interactive(
         rubric_max_iterations: Grader iterations per rubric attempt; `None`
             uses the middleware default.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env / `config.toml` / default at agent-build time.
+            from runtime configuration at agent-build time.
         trust_project_hooks: When `True`, load project-scoped
             `.deepagents/hooks.json` handlers.
 
             Defaults to `False` so untrusted repositories cannot execute hook
             commands without an explicit `--trust-project-hooks` opt-in.
+        trust_project_extensions: Allow project-authored Python extensions.
+
+            Defaults to `False`; persisted or configured trust may still grant
+            project loading inside the server.
+        extension_paths: Explicit one-run extension files or directories.
         output_format: Output mode. JSON mode emits exactly one result document
             on stdout and routes human-readable diagnostics to stderr.
 
@@ -2239,6 +2250,7 @@ async def _run_non_interactive(
         await _run_startup_command(startup_cmd.strip(), console, quiet=effective_quiet)
 
     message_kwargs: dict[str, Any] | None = None
+    skill_name: str | None = None
     if initial_skill and initial_skill.strip():
         from deepagents_code.skills.invocation import (
             build_skill_invocation_envelope,
@@ -2323,6 +2335,7 @@ async def _run_non_interactive(
         envelope = build_skill_invocation_envelope(skill, content, message)
         message = envelope.prompt
         message_kwargs = envelope.message_kwargs
+        skill_name = envelope.skill_name
 
     try:
         result = create_model(
@@ -2429,6 +2442,7 @@ async def _run_non_interactive(
             turn_id=str(turn_id),
             turn_number=1,
             auto_approve=use_auto_approve,
+            skill_name=skill_name,
         )
 
         if not effective_quiet:
@@ -2459,6 +2473,8 @@ async def _run_non_interactive(
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=extension_paths,
             interactive=False,
         ) as (agent, _server_proc):
             # Collect MCP preload result (ran concurrently with server startup)

@@ -1028,8 +1028,9 @@ class TestJsonOutput:
                 return_value="test-thread",
             ),
             patch(
-                "deepagents_code.client.non_interactive.settings",
-            ) as mock_settings,
+                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+                return_value=None,
+            ),
             patch(
                 "deepagents_code.client.non_interactive._run_agent_loop",
                 new=fake_loop,
@@ -1042,9 +1043,7 @@ class TestJsonOutput:
             patch.object(sys, "stdout", stdout_buf),
             patch.object(sys, "stderr", stderr_buf),
         ):
-            mock_settings.shell_allow_list = None
-            mock_settings.has_tavily = False
-            mock_settings.model_name = None
+            runtime_state.model_name = None
             exit_code = await run_non_interactive(
                 message="task",
                 output_format="json",
@@ -1730,6 +1729,10 @@ class TestNonInteractivePrompt:
         assert "**User request:** review this patch" in user_msg["content"]
         assert user_msg["additional_kwargs"]["__skill"]["name"] == "code-review"
         assert user_msg["additional_kwargs"]["__skill"]["args"] == "review this patch"
+        assert (
+            mock_agent.astream.call_args.kwargs["config"]["metadata"]["ls_skill_name"]
+            == "code-review"
+        )
 
     async def test_initial_skill_missing_returns_error_without_starting_server(
         self,

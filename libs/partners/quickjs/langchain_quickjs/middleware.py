@@ -49,7 +49,10 @@ from langchain_quickjs._snapshot import (
     sign_snapshot,
     verify_snapshot,
 )
-from langchain_quickjs._subagent import find_subagent_task_tool
+from langchain_quickjs._subagent import (
+    SUBAGENT_INVOCATION_CONFIG_KEY,
+    find_subagent_task_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,33 +108,35 @@ def _resolve_mode(
 
 
 def _resolve_thread_id(fallback: str) -> str:
-    """Extract `thread_id` from langgraph config or use `fallback`.
+    """Extract a REPL identity from LangGraph config or use `fallback`.
 
-    The fallback is a middleware-instance-scoped id: when the caller
-    didn't configure a `thread_id` (common for ad-hoc
-    `agent.invoke(...)` in tests or single-shot scripts), we still need
-    all resolver calls within one CodeInterpreterMiddleware lifetime to return the
-    same id — otherwise `wrap_model_call` installs tools on one REPL
-    and the eval tool looks up a different one, and the model sees
-    `ReferenceError: tools is not defined`.
+    A subagent invocation receives a distinct configurable identity so parallel
+    child agents cannot share or evict one another's QuickJS context.
     """
     try:
         config = get_config()
     except RuntimeError:
         # Not running inside a Runnable — test / bare-call path.
         return fallback
-    thread_id = config.get("configurable", {}).get("thread_id") if config else None
-    if thread_id is not None:
-        return str(thread_id)
-    return fallback
+    configurable = config.get("configurable", {}) if config else {}
+    if not isinstance(configurable, dict):
+        configurable = {}
+    thread_id = configurable.get("thread_id")
+    if thread_id is None:
+        thread_id = fallback
+    invocation_id = configurable.get(SUBAGENT_INVOCATION_CONFIG_KEY)
+    if invocation_id is not None:
+        return f"{thread_id}::subagent:{invocation_id}"
+    return str(thread_id)
 
 
 @beta()
 class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT]):
     """Middleware exposing a JS REPL to the agent.
 
-    Each LangGraph thread gets its own QuickJS slot (worker + runtime +
-    context), so globals from one conversation cannot leak into another.
+    Each agent invocation gets its own QuickJS slot (worker + runtime + context).
+    Ordinary turns share a conversation slot, while subagent invocations receive
+    private identities.
 
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all

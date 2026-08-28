@@ -564,8 +564,9 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
 
             Passed through to [`create_agent`][langchain.agents.create_agent].
         code_mode: When `True` (default), models receive only the QuickJS `eval`
-            schema and use host capabilities from JavaScript. Set to `False` to
-            preserve direct model-bound tools.
+            schema and use host capabilities from JavaScript. Nested subagents
+            remain eval-only but do not receive a nested task bridge. Set to
+            `False` to preserve direct model-bound tools.
 
     Returns:
         A configured deep agent.
@@ -636,7 +637,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         code_mode and not has_per_tool_hitl and not any(middleware_instance.name == "CodeInterpreterMiddleware" for middleware_instance in middleware)
     )
 
-    def _code_interpreter_middleware() -> AgentMiddleware[Any, Any, Any]:
+    def _code_interpreter_middleware(*, subagents: bool = True) -> AgentMiddleware[Any, Any, Any]:
         """Create the final middleware that reduces model tools to QuickJS."""
         try:
             from langchain_core._api import suppress_langchain_beta_warning  # noqa: PLC0415
@@ -645,7 +646,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             msg = "Code mode requires langchain-quickjs. Install the `deepagents[quickjs]` extra or set `code_mode=False`."
             raise ImportError(msg) from e
         with suppress_langchain_beta_warning():
-            return CodeInterpreterMiddleware(ptc="all", model_tool_mode="eval_only")
+            return CodeInterpreterMiddleware(ptc="all", model_tool_mode="eval_only", subagents=subagents)
 
     # The built-in tool-usage guidance prose duplicates the tools' own schema
     # descriptions, so the deepagents-owned middleware (filesystem / subagent /
@@ -741,7 +742,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 subagent_interrupt_on,
             )
             if use_code_mode and not subagent_interrupt_on:
-                subagent_middleware.append(_code_interpreter_middleware())
+                subagent_middleware.append(_code_interpreter_middleware(subagents=False))
 
             # Inherit parent tools unless the subagent declares its own.
             # Descriptions are rewritten; exclusion is handled by middleware.
@@ -807,7 +808,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         if _profile.excluded_tools:
             gp_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
         if use_code_mode:
-            gp_middleware.append(_code_interpreter_middleware())
+            gp_middleware.append(_code_interpreter_middleware(subagents=False))
 
         general_purpose_spec: SubAgent = {
             **GENERAL_PURPOSE_SUBAGENT,

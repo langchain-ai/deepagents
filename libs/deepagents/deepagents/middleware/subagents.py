@@ -34,6 +34,12 @@ from deepagents.middleware.filesystem import FilesystemPermission
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
+SUBAGENT_INVOCATION_CONFIG_KEY = "__deepagents_subagent_invocation"
+"""Configurable key identifying one subagent invocation's private runtime."""
+
+SUBAGENT_DEPTH_CONFIG_KEY = "__deepagents_subagent_depth"
+"""Configurable key tracking nested subagent depth."""
+
 
 class SubAgent(TypedDict):
     """Specification for an agent.
@@ -401,6 +407,25 @@ def _get_subagent_response_format(
     return value
 
 
+def _subagent_config(runtime: ToolRuntime) -> RunnableConfig:
+    """Build child config with a private invocation identity and depth."""
+    if not runtime.tool_call_id:
+        msg = "Tool call ID is required for subagent invocation"
+        raise ValueError(msg)
+    configurable = runtime.config.get("configurable", {})
+    if not isinstance(configurable, dict):
+        configurable = {}
+    raw_depth = configurable.get(SUBAGENT_DEPTH_CONFIG_KEY)
+    depth = raw_depth if isinstance(raw_depth, int) and not isinstance(raw_depth, bool) else 0
+    return {
+        "configurable": {
+            "ls_agent_type": "subagent",
+            SUBAGENT_INVOCATION_CONFIG_KEY: runtime.tool_call_id,
+            SUBAGENT_DEPTH_CONFIG_KEY: depth + 1,
+        }
+    }
+
+
 def _build_task_tool(  # noqa: C901, PLR0915
     subagents: Sequence[SubAgent | CompiledSubAgent],
     task_description: str | None = None,
@@ -563,8 +588,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
         # `recursion_limit`) and parent metadata propagates (deepagents#3634).
         # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+        # (e.g. duplicate `tags`); the private invocation keys are intentionally
+        # added so runtime middleware can isolate concurrent child agents.
+        subagent_config = _subagent_config(runtime)
         with _subagent_tracing_context():
             result = subagent.invoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)
@@ -591,8 +617,9 @@ def _build_task_tool(  # noqa: C901, PLR0915
         # the subagent's bound config still wins collisions (e.g. `lc_agent_name`,
         # `recursion_limit`) and parent metadata propagates (deepagents#3634).
         # Forwarding those keys explicitly would double-count under the merge
-        # (e.g. duplicate `tags`), so we only stamp the subagent tracing tag.
-        subagent_config: RunnableConfig = {"configurable": {"ls_agent_type": "subagent"}}
+        # (e.g. duplicate `tags`); the private invocation keys are intentionally
+        # added so runtime middleware can isolate concurrent child agents.
+        subagent_config = _subagent_config(runtime)
         with _subagent_tracing_context():
             result = await subagent.ainvoke(subagent_state, subagent_config)
         return _return_command_with_state_update(result, runtime.tool_call_id)

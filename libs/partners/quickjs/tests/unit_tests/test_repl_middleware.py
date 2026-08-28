@@ -35,6 +35,7 @@ from langchain_quickjs._subagent import (
     _runtime_with_response_format,
     call_subagent_task_tool,
 )
+from langchain_quickjs.middleware import _resolve_thread_id
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -320,6 +321,38 @@ def test_system_prompt_mentions_mode_call() -> None:
     base_prompt = mw._base_prompt(ptc_attached=False)
     assert "fresh sandboxed REPL for each invocation" in base_prompt
     assert "does not persist across tool calls" in base_prompt
+
+
+def test_subagent_invocation_scopes_repl_identity() -> None:
+    with patch(
+        "langchain_quickjs.middleware.get_config",
+        return_value={
+            "configurable": {
+                "thread_id": "thread-1",
+                "__deepagents_subagent_invocation": "call-1",
+            }
+        },
+    ):
+        assert _resolve_thread_id("fallback") == "thread-1::subagent:call-1"
+
+
+def test_subagent_invocation_slots_are_isolated() -> None:
+    registry = _Registry(
+        memory_limit=64 * 1024 * 1024,
+        timeout=5.0,
+        capture_console=True,
+        max_stdout_chars=4_000,
+    )
+    try:
+        first = registry.get("thread::subagent:call-1")
+        second = registry.get("thread::subagent:call-2")
+        assert first is not second
+        assert first.eval_sync("globalThis.value = 'first'").result == "first"
+        assert second.eval_sync("globalThis.value = 'second'").result == "second"
+        assert first.eval_sync("value").result == "first"
+        assert second.eval_sync("value").result == "second"
+    finally:
+        registry.close()
 
 
 def test_default_mode_is_thread() -> None:
@@ -863,6 +896,27 @@ async def test_mode_call_resets_state_between_tool_calls() -> None:
 # ---------------------------------------------------------------------------
 # Async path (v0.2 native `eval_async`)
 # ---------------------------------------------------------------------------
+
+
+async def test_nested_task_dispatch_is_rejected(repl: _ThreadREPL) -> None:
+    task_tool = _task_tool_for_runnable(
+        RunnableLambda(lambda _state, _config: {"messages": [AIMessage(content="ok")]})
+    )
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {"__deepagents_subagent_depth": 1}},
+        stream_writer=lambda _chunk: None,
+        tools=[task_tool],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+    outcome = await repl.eval_async(
+        "await task({description: 'nested', subagentType: 'worker'})",
+        outer_runtime=runtime,
+    )
+    assert outcome.error_type == "RuntimeError"
+    assert "Nested task dispatch is disabled" in outcome.error_message
 
 
 async def test_async_eval_basic(repl: _ThreadREPL) -> None:

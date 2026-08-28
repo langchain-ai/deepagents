@@ -42,6 +42,7 @@ from langchain_quickjs._format import (
 )
 from langchain_quickjs._ptc import is_valid_js_identifier, to_camel_case
 from langchain_quickjs._subagent import (
+    SUBAGENT_DEPTH_CONFIG_KEY,
     call_subagent_task_tool,
     find_subagent_task_tool,
 )
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _MAX_TASK_CALLS_PER_THREAD = 32
+_MAX_SUBAGENT_DEPTH = 1
 _TASK_FUNCTION_NAME = "task"
 
 
@@ -118,6 +120,16 @@ class _TaskBridgeError(RuntimeError):
         super().__init__(self.error_message)
 
 
+def _subagent_depth(runtime: Any) -> int:
+    """Return the nested subagent depth carried by the outer runtime."""
+    config = getattr(runtime, "config", None)
+    configurable = config.get("configurable", {}) if isinstance(config, dict) else {}
+    value = configurable.get(SUBAGENT_DEPTH_CONFIG_KEY)
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
+
+
 @dataclass(frozen=True, slots=True)
 class _PTCState:
     """Per-eval PTC state (reset on each eval call)."""
@@ -125,6 +137,7 @@ class _PTCState:
     remaining_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
+    subagent_depth: int = 0
 
     def consume_call_budget(
         self, *, function_name: str, max_ptc_calls: int | None
@@ -696,6 +709,9 @@ class _ThreadREPL:
             if state is None:
                 msg = "task bridge called outside active eval"
                 raise ConcurrentEvalError(msg)
+            if state.subagent_depth >= _MAX_SUBAGENT_DEPTH:
+                msg = "Nested task dispatch is disabled for code-mode subagents"
+                raise _TaskBridgeError(RuntimeError(msg))
             task_calls = self._task_calls
             if task_calls is None:
                 msg = "task call limiter not initialized"
@@ -910,6 +926,7 @@ class _ThreadREPL:
             remaining_calls=self._max_ptc_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
+            subagent_depth=_subagent_depth(outer_runtime),
         )
         try:
             # Drive any final-expression Promise (e.g. a bare async
@@ -1018,11 +1035,10 @@ class _Slot:
 
 @dataclass
 class _Registry:
-    """Per-thread Runtime registry.
+    """Runtime registry keyed by conversation and invocation identity.
 
-    Each LangGraph `thread_id` gets its own `_Slot` (worker + Runtime
-    + Context). Eviction is driven externally via `evict(thread_id)` —
-    typically from the middleware's `after_agent` hook.
+    Each key gets its own `_Slot` (worker + Runtime + Context). Eviction is
+    driven externally via `evict(thread_id)`, typically from middleware hooks.
     """
 
     memory_limit: int

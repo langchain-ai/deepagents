@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import urllib.request
@@ -10,15 +11,25 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from deepagents_code.plugins._json import json_object
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     _download_marketplace,
     _HttpsOnlyRedirectHandler,
     _redact_url_credentials,
     _run_git,
+    materialize_plugin_source,
     parse_marketplace_source,
+    unresolved_source_message,
 )
-from deepagents_code.plugins.models import UrlMarketplaceSource
+from deepagents_code.plugins.models import (
+    GitSubdirectoryPluginSource,
+    LocalPluginSource,
+    MarketplacePluginEntry,
+    PluginMarketplace,
+    UrlMarketplaceSource,
+    UrlPluginSource,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -192,3 +203,172 @@ def test_run_git_redacts_credentials_from_timeout(
         _run_git(["clone"])
 
     assert "secret" not in str(exc_info.value)
+
+
+def _marketplace(
+    root: Path, entry: MarketplacePluginEntry, **metadata: str
+) -> PluginMarketplace:
+    return PluginMarketplace(
+        name="my-plugins",
+        root=root,
+        manifest_path=root / ".claude-plugin" / "marketplace.json",
+        metadata=json_object(metadata),
+        plugins=(entry,),
+    )
+
+
+@pytest.mark.parametrize("declared", ["plugins/my-plugin", "./plugins/my-plugin"])
+def test_materialize_local_source_accepts_bare_and_dotted_paths(
+    declared: str, tmp_path: Path
+) -> None:
+    (tmp_path / "plugins" / "my-plugin").mkdir(parents=True)
+    entry = MarketplacePluginEntry(
+        name="my-plugin", source=LocalPluginSource(source_type="local", path=declared)
+    )
+
+    resolved = materialize_plugin_source(_marketplace(tmp_path, entry), entry)
+
+    assert resolved == tmp_path / "plugins" / "my-plugin"
+
+
+@pytest.mark.parametrize("plugin_root", ["nested", "./nested"])
+def test_materialize_local_source_applies_plugin_root(
+    plugin_root: str, tmp_path: Path
+) -> None:
+    (tmp_path / "nested" / "my-plugin").mkdir(parents=True)
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=LocalPluginSource(source_type="local", path="my-plugin"),
+    )
+
+    resolved = materialize_plugin_source(
+        _marketplace(tmp_path, entry, pluginRoot=plugin_root), entry
+    )
+
+    assert resolved == tmp_path / "nested" / "my-plugin"
+
+
+@pytest.mark.parametrize(
+    "declared", ["../escape", "./../escape", "/etc", "", "./", "plugins/../../escape"]
+)
+def test_materialize_local_source_rejects_paths_outside_the_marketplace(
+    declared: str, tmp_path: Path
+) -> None:
+    entry = MarketplacePluginEntry(
+        name="my-plugin", source=LocalPluginSource(source_type="local", path=declared)
+    )
+
+    assert materialize_plugin_source(_marketplace(tmp_path, entry), entry) is None
+
+
+@pytest.mark.parametrize("declared", ["skills", "./skills"])
+def test_materialize_git_subdir_source_accepts_bare_and_dotted_paths(
+    declared: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    (clone / "skills").mkdir(parents=True)
+    monkeypatch.setattr(
+        "deepagents_code.plugins.marketplace._materialize_plugin_repository",
+        lambda *_args, **_kwargs: clone,
+    )
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url="https://github.com/acme-corp/monorepo.git",
+            path=declared,
+        ),
+    )
+
+    resolved = materialize_plugin_source(_marketplace(tmp_path, entry), entry)
+
+    assert resolved == clone / "skills"
+
+
+def test_materialize_git_subdir_source_rejects_escaping_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    monkeypatch.setattr(
+        "deepagents_code.plugins.marketplace._materialize_plugin_repository",
+        lambda *_args, **_kwargs: clone,
+    )
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url="https://github.com/acme-corp/monorepo.git",
+            path="../outside",
+        ),
+    )
+
+    assert materialize_plugin_source(_marketplace(tmp_path, entry), entry) is None
+
+
+def test_unresolved_source_message_names_the_rejected_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    monkeypatch.setattr(
+        "deepagents_code.plugins.marketplace._materialize_plugin_repository",
+        lambda *_args, **_kwargs: clone,
+    )
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url="https://github.com/acme-corp/monorepo.git",
+            path="../outside",
+        ),
+    )
+    rejections: list[str] = []
+
+    materialize_plugin_source(
+        _marketplace(tmp_path, entry), entry, rejections=rejections
+    )
+
+    message = unresolved_source_message("my-plugin@my-plugins", entry, rejections)
+    assert "unsupported source" not in message
+    assert "plugins.my-plugin.source.path: path must not contain '..'" in message
+
+
+def test_unresolved_source_message_reports_unsupported_sources(tmp_path: Path) -> None:
+    """A source that resolves to no repository is still reported as unsupported.
+
+    A marketplace JSON URL is not a plugin repository, so nothing is cloned and
+    no path is rejected.
+    """
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=UrlPluginSource(
+            source_type="url", url="https://user:hunter2@example.com/plugins.json"
+        ),
+    )
+    rejections: list[str] = []
+
+    resolved = materialize_plugin_source(
+        _marketplace(tmp_path, entry), entry, rejections=rejections
+    )
+
+    assert resolved is None
+    message = unresolved_source_message("my-plugin@my-plugins", entry, rejections)
+    assert "unsupported source" in message
+    assert "hunter2" not in message
+
+
+def test_materialize_plugin_source_logs_rejected_paths(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=LocalPluginSource(source_type="local", path="../outside"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        materialize_plugin_source(_marketplace(tmp_path, entry), entry)
+
+    assert (
+        "ignoring plugins.my-plugin.source: path must not contain '..'" in caplog.text
+    )

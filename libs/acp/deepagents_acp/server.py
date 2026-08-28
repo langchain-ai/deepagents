@@ -267,7 +267,7 @@ class AgentServerACP(ACPAgent):
         self._session_modes: dict[str, str] = {}
         self._session_mode_states: dict[str, SessionModeState] = {}
         self._session_models: dict[str, str] = {}  # Track current model per session
-        self._cancelled = False
+        self._cancelled_sessions: set[str] = set()  # Per-session cancellation
         self._session_plans: dict[str, list[dict[str, Any]]] = {}
         self._session_cwds: dict[str, str] = {}
         self._session_mcp_servers: dict[str, list[McpServer]] = {}
@@ -506,8 +506,8 @@ class AgentServerACP(ACPAgent):
         return SetSessionConfigOptionResponse(config_options=config_options)
 
     async def cancel(self, session_id: str, **kwargs: Any) -> None:  # noqa: ARG002  # ACP protocol interface parameters
-        """Cancel the current execution."""
-        self._cancelled = True
+        """Cancel the current execution for the given session."""
+        self._cancelled_sessions.add(session_id)
 
     async def _log_text(self, session_id: str, text: str) -> None:
         """Send a text message update to the client."""
@@ -969,8 +969,8 @@ class AgentServerACP(ACPAgent):
             self._agent.checkpointer = MemorySaver()  # Guarded by getattr check above
         agent = self._agent
 
-        # Reset cancellation flag for new prompt
-        self._cancelled = False
+        # Reset cancellation flag for this session's new prompt
+        self._cancelled_sessions.discard(session_id)
 
         # Convert ACP content blocks to LangChain multimodal content format
         content_blocks = []
@@ -1000,8 +1000,8 @@ class AgentServerACP(ACPAgent):
 
         while current_state is None or current_state.interrupts:
             # Check for cancellation
-            if self._cancelled:
-                self._cancelled = False  # Reset for next prompt
+            if session_id in self._cancelled_sessions:
+                self._cancelled_sessions.discard(session_id)  # Reset for next prompt
                 return PromptResponse(stop_reason="cancelled")
 
             pending_interrupts: Sequence[Interrupt] = ()
@@ -1019,8 +1019,8 @@ class AgentServerACP(ACPAgent):
 
                 _namespace, stream_mode, data = stream_chunk
                 # Check for cancellation during streaming
-                if self._cancelled:
-                    self._cancelled = False  # Reset for next prompt
+                if session_id in self._cancelled_sessions:
+                    self._cancelled_sessions.discard(session_id)  # Reset for next prompt
                     return PromptResponse(stop_reason="cancelled")
 
                 if stream_mode == "updates":

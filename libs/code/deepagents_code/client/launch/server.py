@@ -27,7 +27,7 @@ from deepagents_code._paths import (
     PATHS,
     export_profile_env,
 )
-from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
+from deepagents_code.config import _INHERITED_PYTHONPATH_ENV, _dotenv_loaded_values
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -401,6 +401,9 @@ def _build_server_env() -> dict[str, str]:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
+    for key, value in _dotenv_loaded_values.items():
+        if env.get(key) == value:
+            env.pop(key)
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"

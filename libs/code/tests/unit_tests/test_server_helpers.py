@@ -63,6 +63,22 @@ class TestBuildServerEnv:
             assert key not in env
         assert "PATH" in env
 
+    def test_strips_values_injected_by_client_dotenv_loader(self) -> None:
+        """A client project value does not become server launch state."""
+        import deepagents_code.config as config_mod
+
+        config_mod._dotenv_loaded_values["WORKSPACE_VALUE"] = "first"
+        try:
+            with patch.dict(os.environ, {"WORKSPACE_VALUE": "first"}, clear=False):
+                env = _build_server_env()
+            assert "WORKSPACE_VALUE" not in env
+
+            with patch.dict(os.environ, {"WORKSPACE_VALUE": "changed"}, clear=False):
+                env = _build_server_env()
+            assert env["WORKSPACE_VALUE"] == "changed"
+        finally:
+            config_mod._dotenv_loaded_values.pop("WORKSPACE_VALUE", None)
+
     def test_relays_pythonpath_off_server_interpreter(self) -> None:
         """A launch `PYTHONPATH` is kept off the server but carried for `execute`."""
         with patch.dict(os.environ, {"PYTHONPATH": "src"}):

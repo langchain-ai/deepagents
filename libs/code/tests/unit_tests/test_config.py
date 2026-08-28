@@ -196,6 +196,145 @@ class TestRuntimeDotenvReload:
             config_mod._dotenv_loaded_values.clear()
 
 
+class TestWorkspaceDotenvEnvironment:
+    """Workspace previews stay isolated without replacing the process environment."""
+
+    def test_conflicting_workspaces_resolve_independently(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Construction-time consumers read each workspace's immutable snapshot."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.providers import EnvProvider
+        from deepagents_code.configuration.types import Found
+        from deepagents_code.mcp_config import resolve_mcp_server_env
+        from deepagents_code.model_config import resolve_env_var
+
+        first = tmp_path / "first"
+        second = tmp_path / "second"
+        first.mkdir()
+        second.mkdir()
+        (first / ".env").write_text(
+            "OPENAI_API_KEY=first-key\nDEEPAGENTS_CODE_TEST_VALUE=first\nGOOGLE_CLOUD_LOCATION=first-region\n",
+            encoding="utf-8",
+        )
+        (second / ".env").write_text(
+            "OPENAI_API_KEY=second-key\nDEEPAGENTS_CODE_TEST_VALUE=second\nGOOGLE_CLOUD_LOCATION=second-region\n",
+            encoding="utf-8",
+        )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+        option = get_option("credentials.google_cloud_location")
+        assert option is not None
+
+        for workspace, expected in ((first, "first"), (second, "second")):
+            env = config_mod._preview_dotenv_environ(start_path=workspace)
+            with config_mod.use_environment(env):
+                assert resolve_env_var("TEST_VALUE") == expected
+                assert (
+                    resolve_mcp_server_env(
+                        "srv", {"command": "${DEEPAGENTS_CODE_TEST_VALUE}"}
+                    )["command"]
+                    == expected
+                )
+                snapshot = config_mod.Credentials.snapshot_from_environment(
+                    start_path=workspace
+                )
+                assert snapshot.openai_api_key == f"{expected}-key"
+                assert EnvProvider().get(option).result == Found(f"{expected}-region")
+
+        assert "OPENAI_API_KEY" not in os.environ
+        assert "DEEPAGENTS_CODE_TEST_VALUE" not in os.environ
+
+    def test_workspace_only_tracing_is_active(self) -> None:
+        """Tracing flags and project resolve from the workspace snapshot."""
+        import deepagents_code.config as config_mod
+
+        with config_mod.use_environment(
+            {
+                "LANGSMITH_API_KEY": "lsv2-workspace",
+                "LANGSMITH_TRACING": "true",
+                "LANGSMITH_PROJECT": "workspace-traces",
+            }
+        ):
+            assert config_mod.get_langsmith_project_name() == "workspace-traces"
+
+    def test_environment_binding_is_immutable_and_restored(self) -> None:
+        """Bindings copy inputs and reset after exceptions."""
+        import os
+
+        from deepagents_code.config import active_environment, use_environment
+
+        source = {"VALUE": "workspace"}
+        error = RuntimeError("boom")
+
+        def fail() -> None:
+            with use_environment(source):
+                source["VALUE"] = "changed"
+                assert active_environment()["VALUE"] == "workspace"
+                with pytest.raises(TypeError):
+                    active_environment()["VALUE"] = "forbidden"  # ty: ignore[invalid-assignment]
+                raise error
+
+        with pytest.raises(RuntimeError):
+            fail()
+        assert active_environment() is os.environ
+
+    def test_preview_interpolates_prior_dotenv_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Later values interpolate earlier values from the same file."""
+        import deepagents_code.config as config_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text(
+            "BASE=project\nCOMPOSED=${BASE}-value\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("BASE", "shell")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        env = config_mod._preview_dotenv_environ(start_path=workspace)
+
+        assert env["BASE"] == "shell"
+        assert env["COMPOSED"] == "project-value"
+
+    def test_preview_preserves_shell_project_global_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Immutable snapshots retain existing first-write-wins behavior."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "SHELL_VALUE=project\nPROJECT_VALUE=project\n",
+            encoding="utf-8",
+        )
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "SHELL_VALUE=global\nPROJECT_VALUE=global\nGLOBAL_VALUE=global\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("SHELL_VALUE", "shell")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.delenv("GLOBAL_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["SHELL_VALUE"] == "shell"
+        assert env["PROJECT_VALUE"] == "project"
+        assert env["GLOBAL_VALUE"] == "global"
+
+
 class TestProjectDotenvDeniedKeys:
     """A cloned repo must not set user-level environment values."""
 
@@ -806,6 +945,179 @@ class TestDefaultModelSpecAllowlist:
             model_config.NoAllowedModelCredentialsError, match="No discoverable"
         ):
             _get_default_model_spec()
+
+
+class TestWorkspaceStoredCredentials:
+    """Stored auth remains workspace-local during server model construction."""
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_stored_key_and_endpoint_do_not_mutate_process_environment(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Scoped model creation passes stored auth explicitly."""
+        import os
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "openai" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda provider: (
+                "https://stored.example/v1" if provider == "openai" else None
+            ),
+        )
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+
+        with use_environment({}):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "stored-key"
+        assert kwargs["base_url"] == "https://stored.example/v1"
+        assert "OPENAI_API_KEY" not in os.environ
+        assert "OPENAI_BASE_URL" not in os.environ
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_stored_native_key_clears_workspace_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A stored native key is not sent to a workspace gateway URL."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "openai" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda _provider: None,
+        )
+
+        with use_environment({"OPENAI_BASE_URL": "https://workspace.example/v1"}):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "stored-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_explicit_key_does_not_use_stored_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A caller-supplied key is not paired with another key's endpoint."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "openai" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda _provider: "https://stored.example/v1",
+        )
+        with use_environment({}):
+            create_model(
+                "openai:gpt-5.5",
+                extra_kwargs={"api_key": "caller-key"},
+            )
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "caller-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_stored_anthropic_key_clears_endpoint_and_headers(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A native Anthropic key gets explicit native transport settings."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda provider: "stored-key" if provider == "anthropic" else None,
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url",
+            lambda _provider: None,
+        )
+        with use_environment(
+            {
+                "ANTHROPIC_BASE_URL": "https://workspace.example/v1",
+                "ANTHROPIC_CUSTOM_HEADERS": "X-Api-Key: gateway-key",
+            }
+        ):
+            create_model("anthropic:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "stored-key"
+        assert kwargs["base_url"] == "https://api.anthropic.com"
+        assert kwargs["default_headers"] == {}
+
+    def test_bare_claude_provider_uses_workspace_credentials(self) -> None:
+        """Bare model inference reads the active workspace snapshot."""
+        from deepagents_code.config import detect_provider, use_environment
+
+        with use_environment(
+            {
+                "GOOGLE_CLOUD_PROJECT": "workspace-project",
+                "GOOGLE_CLOUD_LOCATION": "us-central1",
+            }
+        ):
+            assert detect_provider("claude-sonnet-4-6") == "google_anthropic_vertex"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_vertex_uses_active_workspace_project_and_not_api_key(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Vertex project settings come from the workspace snapshot."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key",
+            lambda _provider: None,
+        )
+
+        with use_environment(
+            {
+                "GOOGLE_CLOUD_PROJECT": "workspace-project",
+                "GOOGLE_CLOUD_LOCATION": "us-central1",
+            }
+        ):
+            create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["project"] == "workspace-project"
+        assert kwargs["location"] == "us-central1"
+        assert "api_key" not in kwargs
 
 
 class TestCreateModelProfileExtraction:
@@ -1520,6 +1832,27 @@ class TestLangsmithSecretRedaction:
         redacted = str(kwargs["anonymizer"]([{"text": f"key={secret}"}]))
         assert secret not in redacted
         assert "[SECRET_DETECTED]" in redacted
+
+    def test_workspace_environment_configures_redaction(self) -> None:
+        """Workspace-only tracing settings configure the SDK client."""
+        from deepagents_code.config import use_environment
+
+        client = object()
+        with (
+            use_environment(
+                {
+                    "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "lsv2_workspace",
+                    "DEEPAGENTS_CODE_LANGSMITH_TRACING": "true",
+                }
+            ),
+            patch("deepagents_code.config_manifest.load_config_toml", return_value={}),
+            patch("langsmith.Client", return_value=client) as client_cls,
+            patch("langsmith.configure") as configure,
+        ):
+            assert configure_langsmith_secret_redaction() is True
+
+        configure.assert_called_once_with(client=client)
+        assert client_cls.call_args.kwargs["api_key"] == "lsv2_workspace"
 
     def test_skips_client_configuration_when_redaction_disabled(
         self,

@@ -1,0 +1,197 @@
+# Fork-vs-handoff cost/cache demo workflow for Deep Agents subagents.
+#
+# Manual only (workflow_dispatch) -- this spends real model tokens on a live
+# PR review and is not wired to pull_request/push, so it never runs on a PR
+# or merge. Runs fork_cache_demo.py once per selected mode against a real
+# PR's diff, then (when both "fork" and "handoff" ran) compares the two
+# runs' locally-captured metrics: cache-read tokens, token/tool-call cost,
+# wall-clock, and delegation-directive size.
+#
+# LangSmith tracing is enabled automatically when LANGSMITH_API_KEY is
+# present in the `evals` environment, purely so a human can inspect the run
+# visually afterward -- the printed/uploaded metrics come from
+# fork_cache_demo.py's own callback handler, not from LangSmith, so tracing
+# being off does not affect the comparison.
+#
+# Required secrets (in the `evals` environment):
+#   ANTHROPIC_API_KEY  — needed for anthropic: models (the default)
+#   OPENAI_API_KEY     — needed for openai: models
+#   LANGSMITH_API_KEY  — optional; enables tracing when present
+
+name: "🍴 Fork cache demo"
+run-name: >-
+  🍴 Fork cache demo — PR #${{ inputs.pr_number }} (${{ inputs.repo }}) / ${{ inputs.modes }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "owner/repo to pull the PR diff from"
+        type: string
+        required: true
+        default: "langchain-ai/deepagents"
+      pr_number:
+        description: "PR number to use as the review substrate"
+        type: string
+        required: true
+      model:
+        description: "provider:model spec passed to init_chat_model"
+        type: string
+        default: "anthropic:claude-sonnet-4-6"
+      modes:
+        description: "Comma-separated modes to run. Include both to get the comparison job; a single mode just runs and uploads its own metrics."
+        type: string
+        default: "fork,handoff"
+      lenses:
+        description: "Comma-separated review lenses (= subagent names delegated to)"
+        type: string
+        default: "correctness,backcompat,tests,performance,api_design"
+      allowed_path_prefix:
+        description: "Repo-relative directory the reviewer subagents' read_repo_file tool may read from"
+        type: string
+        default: "libs"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fork-cache-demo-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prep:
+    name: "🔧 Parse modes"
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: "📝 Log dispatch inputs"
+        env:
+          REPO: ${{ inputs.repo }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          MODEL: ${{ inputs.model }}
+          MODES: ${{ inputs.modes }}
+          LENSES: ${{ inputs.lenses }}
+          ALLOWED_PATH_PREFIX: ${{ inputs.allowed_path_prefix }}
+        run: |
+          {
+            echo "### 🍴 Fork cache demo dispatch inputs"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| \`repo\` | \`${REPO}\` |"
+            echo "| \`pr_number\` | \`${PR_NUMBER}\` |"
+            echo "| \`model\` | \`${MODEL}\` |"
+            echo "| \`modes\` | \`${MODES}\` |"
+            echo "| \`lenses\` | \`${LENSES}\` |"
+            echo "| \`allowed_path_prefix\` | \`${ALLOWED_PATH_PREFIX}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: "🧮 Build mode matrix"
+        id: set-matrix
+        env:
+          MODES: ${{ inputs.modes }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          modes = [m.strip() for m in os.environ["MODES"].split(",") if m.strip()]
+          valid = {"fork", "handoff"}
+          unknown = [m for m in modes if m not in valid]
+          if unknown:
+              raise SystemExit(f"::error::Unknown mode(s): {unknown}; must be 'fork' or 'handoff'")
+          if not modes:
+              raise SystemExit("::error::No modes given")
+
+          matrix = json.dumps({"mode": modes})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"matrix={matrix}\n")
+          PY
+
+  demo:
+    name: "🍴 Run (${{ matrix.mode }})"
+    needs: prep
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prep.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    environment: evals
+    timeout-minutes: 20
+    env:
+      MODEL: ${{ inputs.model }}
+      # Trace-level LangSmith tracing only, purely for visual inspection --
+      # this script's own metrics come from its callback handler, not
+      # LangSmith. Tracing turns on only when the secret is present (no
+      # warnings when absent), same idiom as clbench.yml.
+      LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
+      LANGSMITH_PROJECT: fork-cache-demo-${{ matrix.mode }}-${{ github.run_id }}
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "🐍 Set up Python + UV"
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.12"
+          cache-suffix: fork-cache-demo
+          working-directory: libs/evals
+
+      - name: "📦 Install Dependencies"
+        working-directory: libs/evals
+        run: uv sync --group test --locked
+
+      - name: "🍴 Run fork_cache_demo.py"
+        working-directory: libs/evals
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(inputs.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+        run: |
+          uv run python ../../.github/scripts/evals/fork_cache_demo.py \
+            --repo "${{ inputs.repo }}" \
+            --pr "${{ inputs.pr_number }}" \
+            --mode "${{ matrix.mode }}" \
+            --model "$MODEL" \
+            --lenses "${{ inputs.lenses }}" \
+            --allowed-prefix "${{ inputs.allowed_path_prefix }}" \
+            --out-json "../../_fork_cache_demo/${{ matrix.mode }}.json"
+
+      - name: "📤 Upload metrics"
+        if: ${{ always() && hashFiles(format('_fork_cache_demo/{0}.json', matrix.mode)) != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: fork-cache-demo-${{ matrix.mode }}
+          path: _fork_cache_demo/${{ matrix.mode }}.json
+          if-no-files-found: error
+
+  compare:
+    name: "📊 Compare fork vs handoff"
+    needs: demo
+    if: ${{ always() && needs.demo.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: "📋 Checkout Code"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "⬇️ Download metrics"
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          pattern: fork-cache-demo-*
+          path: _fork_cache_demo
+          merge-multiple: true
+
+      - name: "📊 Compare"
+        # Only meaningful once both modes ran; a single-mode dispatch has
+        # nothing to diff against, so just say so rather than failing.
+        run: |
+          if [ -f _fork_cache_demo/fork.json ] && [ -f _fork_cache_demo/handoff.json ]; then
+            python3 .github/scripts/evals/compare_fork_cache_demo.py \
+              --fork-json _fork_cache_demo/fork.json \
+              --handoff-json _fork_cache_demo/handoff.json
+          else
+            echo "## Fork cache demo" >> "$GITHUB_STEP_SUMMARY"
+            echo "" >> "$GITHUB_STEP_SUMMARY"
+            echo "Only one mode was dispatched (\`${{ inputs.modes }}\`); nothing to compare. See that mode's own job log/artifact for its metrics." >> "$GITHUB_STEP_SUMMARY"
+          fi

@@ -21,19 +21,6 @@ curl -LsSf https://langch.in/dcode | bash
 DEEPAGENTS_CODE_EXTRAS="nvidia,ollama" curl -LsSf https://langch.in/dcode | bash
 ```
 
-Add or remove an optional extra after installation:
-
-```bash
-dcode install ollama       # or /install ollama in the TUI
-dcode uninstall ollama     # or /uninstall ollama in the TUI
-```
-
-Removing an extra rebuilds the tool environment with the remaining extras. The
-`openai`, `anthropic`, `google-genai`, and `quickjs` extras are base dependencies,
-so they cannot be removed. An extra that arrived through `all-providers` or
-`all-sandboxes` cannot be removed on its own either — remove the composite extra,
-then reinstall the extras you want individually.
-
 Run:
 
 ```bash

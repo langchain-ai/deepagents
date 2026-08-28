@@ -272,6 +272,24 @@ class ApprovalMenu(Container):
             ),
         )
 
+    def _get_minimal_description(self) -> Content | None:
+        """Get supplemental details for a minimal execute approval.
+
+        Returns:
+            Styled supplemental details, or `None` when none are available.
+        """
+        request = self._action_requests[0]
+        description = request.get("description")
+        if not isinstance(description, str) or not description:
+            return None
+
+        command_raw = str(request.get("args", {}).get("command", ""))
+        command = strip_dangerous_unicode(command_raw)
+        details = description.replace(f"Execute Command: {command}\n", "", 1)
+        if not details:
+            return None
+        return Content.from_markup("[dim]$details[/dim]", details=details)
+
     def compose(self) -> ComposeResult:
         """Compose the widget with Static children.
 
@@ -316,6 +334,9 @@ class ApprovalMenu(Container):
                 classes="approval-command",
             )
             yield self._command_widget
+            description = self._get_minimal_description()
+            if description is not None:
+                yield Static(description, classes="approval-description")
 
         # Tool info - only for non-minimal tools (diffs, writes show actual content)
         if not self._is_minimal:

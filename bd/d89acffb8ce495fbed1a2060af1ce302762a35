@@ -1,0 +1,54 @@
+libs/deepagents/deepagents/graph.py
+  h_3e3c9c8a17c7af 567-569,640,649,745,811
+libs/deepagents/deepagents/middleware/subagents.py
+  h_3e3c9c8a17c7af 37-42,410-428,591-593,620-622
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message.md
+  h_3e3c9c8a17c7af 16-21,61,63-66,81,83-87,145-147,231,233-237,351,361-369
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235,359,374-382
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills.md
+  h_3e3c9c8a17c7af 139-144,184,186-189,204,206-210,268-270,354,356-360,474,484-492
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend.md
+  h_3e3c9c8a17c7af 32-37,77,79-82,97,99-103,161-163,247,249-253,377,392-400
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sandbox_default.md
+  h_3e3c9c8a17c7af 28-33,73,75-78,93,95-99,157-159,243,245-249,373,388-396
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235,390,400-408
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235,349,359-367
+libs/deepagents/tests/unit_tests/test_subagents.py
+  h_3e3c9c8a17c7af 38-44,61-78
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  h_3e3c9c8a17c7af 36-41,81,83-86,101,103-107,165-167,251,253-257,480-482,501-516
+libs/partners/quickjs/langchain_quickjs/_repl.py
+  h_3e3c9c8a17c7af 45,59,123-132,140,712-714,929,1038,1040-1041
+libs/partners/quickjs/langchain_quickjs/_subagent.py
+  h_3e3c9c8a17c7af 18-22,25-26
+libs/partners/quickjs/langchain_quickjs/middleware.py
+  h_3e3c9c8a17c7af 52-55,111-114,121-130,137-139
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_call.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_turn.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_call.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_turn.md
+  h_3e3c9c8a17c7af 14-19,59,61-64,79,81-85,143-145,229,231-235
+libs/partners/quickjs/tests/unit_tests/test_repl_middleware.py
+  h_3e3c9c8a17c7af 38,326-357,901-921
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "bdd89acffb8ce495fbed1a2060af1ce302762a35",
+  "prompts": {},
+  "humans": {
+    "h_3e3c9c8a17c7af": {
+      "author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

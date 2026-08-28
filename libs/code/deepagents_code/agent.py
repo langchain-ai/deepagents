@@ -1801,15 +1801,11 @@ def _format_execute_description(
 ) -> str:
     """Format execute tool call for approval prompt.
 
-    The working directory shown is the one the command runs in. The run's
-    bound workspace supplies it: `require_thread_workspace` matches every
-    field of the claimed context against the durable binding before the run
-    starts, so the value is server-validated and not a client claim. A run
-    with no workspace -- the in-process `Pregel` path -- falls back to the
-    server project context, then to the process CWD. Both fallbacks are
-    process-global, so on a server hosting several bound workspaces they can
-    name a directory the command will not run in; the warning below marks
-    that.
+    The working directory comes from the run's bound workspace, which
+    `require_thread_workspace` validates against the durable binding before
+    the run starts. A run with no workspace falls back to the process-global
+    server project context and then the process CWD; both can name a
+    directory the command will not run in, so the fallback warns.
 
     Returns:
         Formatted description string for the execute tool call.
@@ -1817,9 +1813,6 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    # `from_payload` is the single conversion point for the two context
-    # shapes (in-process dataclass, remote JSON dict); it also normalizes a
-    # malformed `workspace` to `{}`.
     context = CLIContextSchema.from_payload(runtime.context)
     workspace = context.workspace if context is not None else {}
     effective_cwd = workspace.get("cwd") if isinstance(workspace, dict) else None
@@ -1837,7 +1830,7 @@ def _format_execute_description(
             if project_context is not None
             else str(Path.cwd())
         )
-    display_cwd = sanitize_control_chars(str(effective_cwd), collapse_whitespace=False)
+    display_cwd = sanitize_control_chars(effective_cwd, collapse_whitespace=False)
     lines = [f"Execute Command: {command}", f"Working Directory: {display_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)

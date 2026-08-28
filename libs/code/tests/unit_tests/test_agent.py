@@ -999,16 +999,43 @@ def test_format_delete_description() -> None:
     assert "Action: Delete file or directory" in description
 
 
-def test_format_execute_description_prefers_workspace_binding() -> None:
-    """The prompt shows the run's workspace, not the server CWD (dict context)."""
-    tool_call = cast(
-        "ToolCall",
-        {"name": "execute", "args": {"command": "pwd"}, "id": "call-6"},
-    )
-    runtime = cast(
-        "Runtime[Any]",
-        SimpleNamespace(context={"workspace": {"cwd": "/workspace/thread-a"}}),
-    )
+_EXECUTE_TOOL_CALL = cast(
+    "ToolCall", {"name": "execute", "args": {"command": "pwd"}, "id": "call-6"}
+)
+
+
+def _execute_runtime(context: object) -> "Runtime[Any]":
+    return cast("Runtime[Any]", SimpleNamespace(context=context))
+
+
+@pytest.mark.parametrize(
+    ("context", "expected_cwd"),
+    [
+        pytest.param(
+            {"workspace": {"cwd": "/workspace/thread-a"}},
+            "/workspace/thread-a",
+            id="dict-context",
+        ),
+        pytest.param(
+            CLIContextSchema(workspace={"cwd": "/workspace/thread-a"}),
+            "/workspace/thread-a",
+            id="typed-context",
+        ),
+        pytest.param(
+            CLIContextSchema(workspace={"cwd": "/workspace/thread-b"}),
+            "/workspace/thread-b",
+            id="typed-context-other-workspace",
+        ),
+    ],
+)
+def test_format_execute_description_prefers_workspace_binding(
+    context: object, expected_cwd: str
+) -> None:
+    """The prompt shows the run's workspace, not the process-global server CWD.
+
+    One server process hosts several bound workspaces, so a per-run value is
+    the property under test.
+    """
     server_context = ProjectContext(user_cwd=Path("/workspace/server"))
 
     with patch(
@@ -1016,67 +1043,21 @@ def test_format_execute_description_prefers_workspace_binding() -> None:
         return_value=server_context,
     ):
         description = _format_execute_description(
-            tool_call, cast("AgentState[Any]", None), runtime
+            _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), _execute_runtime(context)
         )
 
-    assert "Working Directory: /workspace/thread-a" in description
+    assert f"Working Directory: {expected_cwd}" in description
     assert "/workspace/server" not in description
-
-
-def test_format_execute_description_varies_by_workspace_binding() -> None:
-    """Each run formats with its own bound working directory (typed context).
-
-    One server process hosts several bound workspaces, so a per-run value is
-    the property under test.
-    """
-    tool_call = cast(
-        "ToolCall",
-        {"name": "execute", "args": {"command": "pwd"}, "id": "call-7"},
-    )
-    contexts = [
-        CLIContextSchema(workspace={"cwd": "/workspace/thread-a"}),
-        CLIContextSchema(workspace={"cwd": "/workspace/thread-b"}),
-    ]
-    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
-
-    with patch(
-        "deepagents_code.agent.get_server_project_context",
-        return_value=server_context,
-    ):
-        descriptions = [
-            _format_execute_description(
-                tool_call,
-                cast("AgentState[Any]", None),
-                cast("Runtime[Any]", SimpleNamespace(context=context)),
-            )
-            for context in contexts
-        ]
-
-    assert "Working Directory: /workspace/thread-a" in descriptions[0]
-    assert "Working Directory: /workspace/thread-b" in descriptions[1]
-    assert "/workspace/server" not in descriptions[0]
-    assert "/workspace/server" not in descriptions[1]
 
 
 def test_format_execute_description_sanitizes_workspace_binding() -> None:
     """A workspace path cannot inject deceptive text into an approval."""
-    tool_call = cast(
-        "ToolCall",
-        {"name": "execute", "args": {"command": "pwd"}, "id": "call-8"},
-    )
-    runtime = cast(
-        "Runtime[Any]",
-        SimpleNamespace(
-            context={
-                "workspace": {
-                    "cwd": "/workspace/\u202eprod\nWorking Directory: /spoofed"
-                }
-            }
-        ),
+    runtime = _execute_runtime(
+        {"workspace": {"cwd": "/workspace/\u202eprod\nWorking Directory: /spoofed"}}
     )
 
     description = _format_execute_description(
-        tool_call, cast("AgentState[Any]", None), runtime
+        _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), runtime
     )
 
     assert description.splitlines() == [
@@ -1085,40 +1066,33 @@ def test_format_execute_description_sanitizes_workspace_binding() -> None:
     ]
 
 
-def test_format_execute_description_without_workspace_uses_existing_fallback(
+def test_format_execute_description_without_workspace_uses_process_cwd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A run without a workspace keeps the server and process CWD fallbacks."""
-    tool_call = cast(
-        "ToolCall",
-        {"name": "execute", "args": {"command": "pwd"}, "id": "call-9"},
-    )
-    runtime = cast("Runtime[Any]", SimpleNamespace(context={}))
-    server_context = ProjectContext(user_cwd=Path("/workspace/server"))
-
-    with patch(
-        "deepagents_code.agent.get_server_project_context",
-        return_value=server_context,
-    ):
-        server_description = _format_execute_description(
-            tool_call, cast("AgentState[Any]", None), runtime
-        )
-
+    """With neither a workspace nor a server context, the process CWD is shown."""
     monkeypatch.chdir(tmp_path)
+
     with patch("deepagents_code.agent.get_server_project_context", return_value=None):
-        process_description = _format_execute_description(
-            tool_call, cast("AgentState[Any]", None), runtime
+        description = _format_execute_description(
+            _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), _execute_runtime({})
         )
 
-    assert "Working Directory: /workspace/server" in server_description
-    assert f"Working Directory: {tmp_path.resolve()}" in process_description
+    assert f"Working Directory: {tmp_path.resolve()}" in description
 
 
 @pytest.mark.parametrize(
     "context",
     [
+        pytest.param({}, id="workspace-absent"),
+        pytest.param({"workspace": {}}, id="workspace-empty"),
         pytest.param({"workspace": "not-a-dict"}, id="workspace-not-a-mapping"),
         pytest.param({"workspace": ["cwd"]}, id="workspace-is-a-list"),
+        pytest.param(
+            # A dataclass does not enforce field types, so a directly built
+            # context can carry a non-mapping workspace past `from_payload`.
+            CLIContextSchema(workspace=cast("dict[str, Any]", "not-a-dict")),
+            id="typed-not-a-mapping",
+        ),
         pytest.param({"workspace": {"cwd": ""}}, id="cwd-empty"),
         pytest.param({"workspace": {"cwd": None}}, id="cwd-none"),
         pytest.param({"workspace": {"cwd": 7}}, id="cwd-not-a-string"),
@@ -1135,11 +1109,6 @@ def test_format_execute_description_falls_back_on_malformed_workspace(
     Reaching this path means an upstream invariant broke, so the prompt must
     not render a blank or fabricated directory without a warning.
     """
-    tool_call = cast(
-        "ToolCall",
-        {"name": "execute", "args": {"command": "pwd"}, "id": "call-10"},
-    )
-    runtime = cast("Runtime[Any]", SimpleNamespace(context=context))
     server_context = ProjectContext(user_cwd=Path("/workspace/server"))
 
     with (
@@ -1150,7 +1119,7 @@ def test_format_execute_description_falls_back_on_malformed_workspace(
         caplog.at_level(logging.WARNING, logger="deepagents_code.agent"),
     ):
         description = _format_execute_description(
-            tool_call, cast("AgentState[Any]", None), runtime
+            _EXECUTE_TOOL_CALL, cast("AgentState[Any]", None), _execute_runtime(context)
         )
 
     assert "Working Directory: /workspace/server" in description

@@ -290,8 +290,10 @@ class ApprovalMenu(Container):
     def _get_minimal_description(self) -> Static | None:
         """Get supplemental details for a minimal execute approval.
 
-        The command has its own widget, so drop the first line the formatter
-        reserves for it and keep the rest.
+        The command has its own widget, so drop the formatter's
+        `Execute Command:` line and keep the rest. Auto-mode fallbacks prefix
+        the description with a review notice ahead of that line, so match the
+        line itself rather than assuming it is first.
 
         Returns:
             Widget holding the supplemental details, or `None` when there are
@@ -300,7 +302,10 @@ class ApprovalMenu(Container):
         description = self._action_requests[0].get("description")
         if not isinstance(description, str):
             return None
-        details = description.partition("\n")[2]
+        lines = description.splitlines()
+        details = "\n".join(
+            line for line in lines if not line.startswith("Execute Command:")
+        ).strip()
         if not details:
             return None
         return _description_widget(details)

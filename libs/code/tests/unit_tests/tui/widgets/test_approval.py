@@ -100,6 +100,32 @@ class TestExecuteToolMinimalDisplay:
             )
             assert rendered_command.plain == "pwd"
 
+    def test_auto_fallback_keeps_review_notice(self) -> None:
+        """An Auto fallback description keeps its notice, not a duplicate command."""
+        from textual.content import Content
+
+        menu = ApprovalMenu(
+            {
+                "name": "execute",
+                "args": {"command": "pwd"},
+                "description": (
+                    "Auto human fallback: this action needs your review.\n\n"
+                    "Execute Command: pwd\n"
+                    "Working Directory: /workspace/thread-a"
+                ),
+            }
+        )
+
+        widget = menu._get_minimal_description()
+
+        assert widget is not None
+        rendered = widget.render()
+        assert isinstance(rendered, Content)
+        assert rendered.plain == (
+            "Auto human fallback: this action needs your review.\n\n"
+            "Working Directory: /workspace/thread-a"
+        )
+
 
 class TestSecurityWarnings:
     """Tests for approval-level Unicode/URL warning collection."""

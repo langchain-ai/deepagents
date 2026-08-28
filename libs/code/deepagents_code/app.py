@@ -18445,8 +18445,8 @@ class DeepAgentsApp(App):
                 collapsed.extend(group)
         return collapsed
 
-    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
-        """Fetch thread state values for a thread.
+    async def _get_thread_state(self, thread_id: str) -> Any | None:  # noqa: ANN401
+        """Fetch the checkpoint state snapshot for a thread.
 
         In server mode the LangGraph dev server starts with an empty in-memory
         thread store, so `aget_state` returns empty state for any thread that
@@ -18459,20 +18459,29 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to fetch from checkpoint storage.
 
         Returns:
+            The state snapshot, or `None` when no state is available.
+        """
+        if not self._agent:
+            return None
+
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+        if remote := self._remote_agent():
+            await remote.aensure_thread(dict(config))
+
+        return await self._agent.aget_state(config)
+
+    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
+        """Fetch thread state values for a thread.
+
+        Args:
+            thread_id: Thread ID to fetch from checkpoint storage.
+
+        Returns:
             Thread state values keyed by channel name. Returns an empty dict
                 when no checkpointed values are available.
         """
-        if not self._agent:
-            return {}
-
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        remote_config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
-
-        if remote := self._remote_agent():
-            await remote.aensure_thread(remote_config)
-
-        state = await self._agent.aget_state(config)
-
+        state = await self._get_thread_state(thread_id)
         if state and state.values:
             return dict(state.values)
         return {}
@@ -28227,17 +28236,19 @@ class DeepAgentsApp(App):
             self._on_tokens_update(tokens)
 
     async def _resumed_thread_has_pending_work(self) -> bool:
-        """Return whether the current checkpoint still contains unfinished work."""
-        if not self._lc_thread_id or not self._agent:
+        """Return whether the current checkpoint still contains unfinished work.
+
+        Returns `False` for local agents: recovery, like compaction, is a
+        server-mode operation, so there is no prompt to offer without a remote.
+
+        Returns:
+            Whether the resumed thread has a queued node, task, or interrupt.
+        """
+        from deepagents_code.client.remote_client import state_has_pending_work
+
+        if not self._lc_thread_id or self._remote_agent() is None:
             return False
-        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
-        if remote := self._remote_agent():
-            remote_config: dict[str, Any] = {
-                "configurable": {"thread_id": self._lc_thread_id}
-            }
-            await remote.aensure_thread(remote_config)
-        state = await self._agent.aget_state(config)
-        return bool(state and (state.next or state.tasks or state.interrupts))
+        return state_has_pending_work(await self._get_thread_state(self._lc_thread_id))
 
     async def _cancel_pending_work_and_compact(self) -> None:
         """Discard a confirmed stale step, then compact the preserved thread."""
@@ -28251,9 +28262,7 @@ class DeepAgentsApp(App):
         """Perform recovery while the caller holds the agent-running reservation."""
         remote = self._remote_agent()
         if remote is None or not self._lc_thread_id:
-            await self._mount_message(
-                ErrorMessage("The interrupted operation could not be cancelled safely.")
-            )
+            # Unreachable: the prompt is only offered when both are present.
             return
         config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
         try:

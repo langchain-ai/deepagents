@@ -166,8 +166,32 @@ def _require_thread_id(config: Mapping[str, Any] | None) -> str:
     return thread_id
 
 
+def state_has_pending_work(state: object) -> bool:
+    """Return whether a checkpoint snapshot still holds unfinished graph work.
+
+    Single definition of "pending" shared by the app-side detector and the
+    post-recovery verification, so the two cannot drift apart.
+
+    Args:
+        state: A `StateSnapshot`-shaped object, or `None`.
+
+    Returns:
+        Whether the snapshot has a queued node, task, or interrupt.
+    """
+    if state is None:
+        return False
+    return bool(
+        getattr(state, "next", None)
+        or getattr(state, "tasks", None)
+        or getattr(state, "interrupts", None)
+    )
+
+
 def _cancelled_tool_messages(values: object) -> list[Any]:
     """Build terminal results for tool calls left unanswered by a lost run.
+
+    Blocking and CPU-bound over the whole checkpoint history; async callers
+    must offload it with `asyncio.to_thread`.
 
     Returns:
         Error results for every unanswered tool call in checkpoint history.
@@ -183,13 +207,6 @@ def _cancelled_tool_messages(values: object) -> list[Any]:
     answered = {
         message.tool_call_id for message in messages if isinstance(message, ToolMessage)
     }
-    calls = [
-        call
-        for message in messages
-        if isinstance(message, AIMessage)
-        for call in message.tool_calls
-        if call["id"] not in answered
-    ]
     return [
         ToolMessage(
             content="Tool call cancelled because the previous session ended.",
@@ -197,7 +214,10 @@ def _cancelled_tool_messages(values: object) -> list[Any]:
             tool_call_id=call["id"],
             status="error",
         )
-        for call in calls
+        for message in messages
+        if isinstance(message, AIMessage)
+        for call in message.tool_calls
+        if call["id"] not in answered
     ]
 
 
@@ -672,23 +692,31 @@ class RemoteAgent:
     async def aabandon_pending_work(self, config: Mapping[str, Any]) -> None:
         """Cancel active runs and discard checkpointed work without replaying it.
 
+        The state writes go through `aupdate_state` so they inherit its HTTP
+        409 recovery: this method runs on exactly the threads whose run was
+        cancelled out from under the client, which is when 409s occur.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
         Raises:
             RuntimeError: If pending work remains after the state update.
         """
         thread_id = _require_thread_id(config)
         prepared = _prepare_config(config)
-        graph = self._get_graph()
-        await _cancel_active_runs(graph, thread_id)
-        state = await graph.aget_state(prepared)
-        cancelled = _cancelled_tool_messages(getattr(state, "values", None))
+        await _cancel_active_runs(self._get_graph(), thread_id)
+        state = await self.aget_state(prepared)
+        cancelled = await asyncio.to_thread(
+            _cancelled_tool_messages, getattr(state, "values", None)
+        )
         if cancelled:
-            await graph.aupdate_state(
-                prepared, {"messages": cancelled}, as_node="tools"
+            await self.aupdate_state(prepared, {"messages": cancelled}, as_node="tools")
+        await self.aupdate_state(prepared, None, as_node="__end__")
+        if state_has_pending_work(await self.aget_state(prepared)):
+            msg = (
+                f"Pending graph work remained on thread {thread_id} after "
+                "clearing checkpoint state"
             )
-        await graph.aupdate_state(prepared, None, as_node="__end__")
-        state = await graph.aget_state(prepared)
-        if state and (state.next or state.tasks or state.interrupts):
-            msg = "The interrupted operation could not be cancelled safely."
             raise RuntimeError(msg)
 
     async def aput_store_item(

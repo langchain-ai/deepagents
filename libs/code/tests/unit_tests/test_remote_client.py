@@ -935,31 +935,39 @@ class TestCancelledToolMessages:
         assert _cancelled_tool_messages(values) == []
 
 
+def _pending_state(values: dict[str, Any]) -> SimpleNamespace:
+    """Snapshot stub for a thread with a queued `tools` step."""
+    return SimpleNamespace(
+        values=values, next=("tools",), tasks=(object(),), interrupts=()
+    )
+
+
+def _idle_state() -> SimpleNamespace:
+    """Snapshot stub for a thread with nothing left to run."""
+    return SimpleNamespace(values={}, next=(), tasks=(), interrupts=())
+
+
 class TestRemoteAgentAbandonPendingWork:
-    async def test_cancels_runs_clears_checkpoint_and_verifies(self) -> None:
+    def _agent_with_states(self, *states: Any) -> tuple[RemoteAgent, MagicMock]:
+        """RemoteAgent whose mock graph returns `states` from successive reads."""
         agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
-        runs_list = AsyncMock(return_value=[])
         mock_client = MagicMock()
-        mock_client.runs.list = runs_list
+        mock_client.runs.list = AsyncMock(return_value=[])
         mock_graph = MagicMock()
         mock_graph._validate_client.return_value = mock_client
         mock_graph.aupdate_state = AsyncMock()
-        mock_graph.aget_state = AsyncMock(
-            side_effect=[
-                SimpleNamespace(
-                    values={"messages": []},
-                    next=("tools",),
-                    tasks=(object(),),
-                    interrupts=(),
-                ),
-                SimpleNamespace(values={}, next=(), tasks=(), interrupts=()),
-            ]
-        )
+        mock_graph.aget_state = AsyncMock(side_effect=list(states))
         agent._graph = mock_graph
+        return agent, mock_graph
+
+    async def test_cancels_runs_clears_checkpoint_and_verifies(self) -> None:
+        agent, mock_graph = self._agent_with_states(
+            _pending_state({"messages": []}), _idle_state()
+        )
 
         await agent.aabandon_pending_work(_config())
 
-        assert runs_list.await_count == 2
+        assert mock_graph._validate_client.return_value.runs.list.await_count == 2
         mock_graph.aupdate_state.assert_awaited_once()
         state_update = mock_graph.aupdate_state.await_args
         assert state_update is not None
@@ -970,33 +978,19 @@ class TestRemoteAgentAbandonPendingWork:
     async def test_terminalizes_dangling_tool_call_before_clearing(self) -> None:
         from langchain_core.messages import AIMessage
 
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
-        mock_client = MagicMock()
-        mock_client.runs.list = AsyncMock(return_value=[])
-        mock_graph = MagicMock()
-        mock_graph._validate_client.return_value = mock_client
-        mock_graph.aupdate_state = AsyncMock()
-        mock_graph.aget_state = AsyncMock(
-            side_effect=[
-                SimpleNamespace(
-                    values={
-                        "messages": [
-                            AIMessage(
-                                content="",
-                                tool_calls=[
-                                    {"name": "shell", "args": {}, "id": "call-1"}
-                                ],
-                            )
-                        ]
-                    },
-                    next=("tools",),
-                    tasks=(object(),),
-                    interrupts=(),
-                ),
-                SimpleNamespace(values={}, next=(), tasks=(), interrupts=()),
-            ]
+        agent, mock_graph = self._agent_with_states(
+            _pending_state(
+                {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "shell", "args": {}, "id": "call-1"}],
+                        )
+                    ]
+                }
+            ),
+            _idle_state(),
         )
-        agent._graph = mock_graph
 
         await agent.aabandon_pending_work(_config())
 
@@ -1009,31 +1003,11 @@ class TestRemoteAgentAbandonPendingWork:
         assert mock_graph.aupdate_state.await_args_list[1].args[1] is None
 
     async def test_raises_when_pending_work_remains(self) -> None:
-        agent = RemoteAgent(url="http://localhost:8123", graph_name="agent")
-        mock_client = MagicMock()
-        mock_client.runs.list = AsyncMock(return_value=[])
-        mock_graph = MagicMock()
-        mock_graph._validate_client.return_value = mock_client
-        mock_graph.aupdate_state = AsyncMock()
-        mock_graph.aget_state = AsyncMock(
-            side_effect=[
-                SimpleNamespace(
-                    values={"messages": []},
-                    next=("tools",),
-                    tasks=(object(),),
-                    interrupts=(),
-                ),
-                SimpleNamespace(
-                    values={"messages": []},
-                    next=("tools",),
-                    tasks=(object(),),
-                    interrupts=(),
-                ),
-            ]
+        agent, _ = self._agent_with_states(
+            _pending_state({"messages": []}), _pending_state({"messages": []})
         )
-        agent._graph = mock_graph
 
-        with pytest.raises(RuntimeError, match="could not be cancelled safely"):
+        with pytest.raises(RuntimeError, match="Pending graph work remained"):
             await agent.aabandon_pending_work(_config())
 
 

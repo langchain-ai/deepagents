@@ -25,7 +25,7 @@ async def test_abandon_pending_tool_work_never_executes_tool(
     tmp_path: Path,
 ) -> None:
     from langchain_core.messages import AIMessage
-    from langgraph.checkpoint.memory import MemorySaver
+    from langgraph.checkpoint.memory import InMemorySaver
     from langgraph.graph import END, START, StateGraph
 
     calls: list[str] = []
@@ -46,7 +46,7 @@ async def test_abandon_pending_tool_work_never_executes_tool(
     builder.add_edge(START, "model")
     builder.add_edge("model", "tools")
     builder.add_edge("tools", END)
-    graph = builder.compile(checkpointer=MemorySaver())
+    graph = builder.compile(checkpointer=InMemorySaver())
     config: RunnableConfig = {"configurable": {"thread_id": "pending-recovery"}}
     await graph.aupdate_state(
         config,

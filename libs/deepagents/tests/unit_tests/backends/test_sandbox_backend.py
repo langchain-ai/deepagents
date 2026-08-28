@@ -6,6 +6,7 @@ temp files with a server-side replace script, and command templates format
 correctly.
 """
 
+import asyncio
 import base64
 import json
 import os
@@ -13,7 +14,7 @@ import re
 import stat
 import subprocess
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import pytest
 
@@ -34,7 +35,9 @@ from deepagents.backends.sandbox import (
     _build_grep_cmd,
     _build_read_cmd,
     _check_preflight_result,
+    _glob_search_root,
     _map_edit_error,
+    _parse_glob_output,
     _parse_grep_output,
     _parse_read_output,
 )
@@ -1825,7 +1828,7 @@ def test_glob_script_keeps_absolute_pattern_under_search_root(tmp_path: Path) ->
     output = _run_glob_script(workspace, "/src/*.py")
     records = [json.loads(line) for line in output.strip().split("\n") if line]
 
-    assert [record["path"] for record in records] == [str(Path("src") / "ok.py")]
+    assert [record["path"] for record in records] == [str(PurePosixPath("src") / "ok.py")]
     assert str(outside / "secret.py") not in output
 
 
@@ -2060,6 +2063,221 @@ def test_glob_empty_returns_empty_matches() -> None:
 
     assert result.error is None
     assert result.matches == []
+
+
+# -- glob output parsing: partial and malformed results ------------------------
+
+
+def test_glob_absolutizes_search_root_relative_paths() -> None:
+    """The script reports relative paths; `deny` rules only match absolute ones."""
+    resp = ExecuteResponse(output=json.dumps({"path": "sub/b.py", "is_dir": False}), exit_code=0)
+
+    result = _parse_glob_output(resp, "/workspace")
+
+    assert result.matches == [{"path": "/workspace/sub/b.py", "is_dir": False}]
+
+
+def test_glob_absolutizes_against_root_search_path() -> None:
+    """A `/` search root must not produce a doubled slash."""
+    resp = ExecuteResponse(output=json.dumps({"path": "a.py", "is_dir": False}), exit_code=0)
+
+    result = _parse_glob_output(resp, "/")
+
+    assert result.matches == [{"path": "/a.py", "is_dir": False}]
+
+
+def test_glob_propagates_transport_truncation() -> None:
+    """`ExecuteResponse.truncated` must reach `GlobResult`, or a clipped list reads as complete."""
+    resp = ExecuteResponse(
+        output=json.dumps({"path": "a.py", "is_dir": False}),
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+def test_glob_keeps_complete_matches_before_transport_clipped_line() -> None:
+    """A clipped final JSONL record must not discard its complete predecessors."""
+    resp = ExecuteResponse(
+        output='{"path": "a.py", "is_dir": false}\n{"path": "b.py", "is_d',
+        exit_code=0,
+        truncated=True,
+    )
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.error is None
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+def test_glob_walk_warning_marks_result_truncated() -> None:
+    """A budget-exhausted or partial walk is valid but incomplete."""
+    lines = [
+        json.dumps({"path": "a.py", "is_dir": False}),
+        json.dumps({"warning": "truncated"}),
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.truncated is True
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+
+
+@pytest.mark.parametrize(
+    "output",
+    [
+        pytest.param("Traceback (most recent call last):\nRecursionError: boom", id="traceback"),
+        pytest.param("sh: 1: python3: not found", id="no_interpreter"),
+        pytest.param('{"path": "a.py", "is_dir": false}\n{"path": "b.py", "is_d', id="clipped_line"),
+        pytest.param("5", id="non_dict_json"),
+        pytest.param('{"is_dir": false}', id="missing_path"),
+    ],
+)
+def test_glob_unparseable_output_is_an_error_not_an_empty_search(output: str) -> None:
+    """Silently skipping unreadable lines turns any remote crash into "no files found".
+
+    `2>&1` merges stderr into stdout, so a traceback, a missing interpreter or a
+    transport-clipped line all arrive here as non-JSON.
+    """
+    resp = ExecuteResponse(output=output, exit_code=0)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "unexpected output" in result.error
+
+
+@pytest.mark.parametrize(
+    ("exit_code", "output"),
+    [
+        pytest.param(137, "", id="sigkill_no_output"),
+        pytest.param(127, "", id="missing_interpreter"),
+        pytest.param(1, '{"path": "a.py", "is_dir": false}', id="partial_then_failure"),
+    ],
+)
+def test_glob_nonzero_exit_is_an_error_not_an_empty_search(exit_code: int, output: str) -> None:
+    """A killed helper must not report "no files found" with full confidence.
+
+    This is the most damaging failure a search tool has: the agent concludes the
+    files do not exist and may recreate them. The partial case matters too -- a
+    crash after some matches must not be presented as an exhaustive result.
+    """
+    resp = ExecuteResponse(output=output, exit_code=exit_code)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "glob helper failed" in result.error
+
+
+def test_glob_empty_output_preserves_transport_truncation() -> None:
+    """Output clipped to nothing is not a confident empty result."""
+    resp = ExecuteResponse(output="", exit_code=0, truncated=True)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches == []
+    assert result.truncated is True
+    assert result.truncation_reason == "transport"
+
+
+def test_glob_empty_output_without_truncation_is_a_clean_empty_result() -> None:
+    """The ordinary "nothing matched" case stays untruncated."""
+    result = _parse_glob_output(ExecuteResponse(output="", exit_code=0), "/w")
+
+    assert result.matches == []
+    assert result.truncated is False
+    assert result.truncation_reason is None
+
+
+def test_glob_walk_warning_does_not_excuse_a_trailing_traceback() -> None:
+    """The clipped-final-line exemption belongs to transport truncation only.
+
+    A walk that self-reported a budget warning cannot produce a torn JSON
+    record, so a trailing traceback after one must still be a hard error --
+    otherwise the exemption swallows exactly the crash it was built to surface.
+    """
+    lines = [
+        json.dumps({"path": "a.py", "is_dir": False}),
+        json.dumps({"warning": "truncated"}),
+        "Traceback (most recent call last):",
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0, truncated=False)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "unexpected output" in result.error
+
+
+def test_glob_transport_truncation_still_excuses_a_clipped_final_line() -> None:
+    """The exemption itself must keep working when the transport did clip."""
+    lines = [
+        json.dumps({"path": "a.py", "is_dir": False}),
+        '{"path": "b.py", "is_d',
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0, truncated=True)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches == [{"path": "/w/a.py", "is_dir": False}]
+    assert result.truncated is True
+
+
+def test_glob_unreadable_subtree_is_distinguished_from_budget() -> None:
+    """The two truncation causes need opposite advice, so they must not collapse."""
+    budget = _parse_glob_output(ExecuteResponse(output=json.dumps({"warning": "truncated"}), exit_code=0), "/w")
+    unreadable = _parse_glob_output(
+        ExecuteResponse(
+            output=json.dumps({"warning": "walk_errors", "count": 2, "sample": ["PermissionError:./x"]}),
+            exit_code=0,
+        ),
+        "/w",
+    )
+
+    assert budget.truncation_reason == "budget"
+    assert unreadable.truncation_reason == "unreadable"
+
+
+def test_glob_unreadable_outranks_budget_when_both_are_reported() -> None:
+    """`unreadable` is the cause narrowing cannot fix, so it must not be masked."""
+    lines = [
+        json.dumps({"warning": "walk_errors", "count": 1, "sample": ["PermissionError:./x"]}),
+        json.dumps({"warning": "truncated"}),
+    ]
+    resp = ExecuteResponse(output="\n".join(lines), exit_code=0)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.truncation_reason == "unreadable"
+
+
+def test_glob_non_string_path_is_an_error_not_a_crash() -> None:
+    """A non-`str` path would raise inside `_absolutize_glob_path`."""
+    resp = ExecuteResponse(output=json.dumps({"path": 5, "is_dir": False}), exit_code=0)
+
+    result = _parse_glob_output(resp, "/w")
+
+    assert result.matches is None
+    assert result.error is not None
+
+
+def test_glob_pattern_too_broad_is_distinct_from_traversal() -> None:
+    """Over-broad and rejected patterns need different codes to be actionable."""
+    too_broad = _parse_glob_output(ExecuteResponse(output=json.dumps({"error": "pattern_too_broad"}), exit_code=0), "/w")
+    traversal = _parse_glob_output(ExecuteResponse(output=json.dumps({"error": "invalid_pattern"}), exit_code=0), "/w")
+
+    assert too_broad.error == "Path '/w': pattern_too_broad"
+    assert traversal.error == "Path '/w': invalid_pattern"
 
 
 # -- _map_edit_error coverage for new codes -----------------------------------
@@ -2400,3 +2618,41 @@ class TestSandboxDelete:
         assert result.path is None
         assert result.error is not None
         assert "not found" in result.error
+
+
+class _HangingSandbox(MockSandbox):
+    """Sandbox whose async execute never returns, standing in for a wedged host."""
+
+    async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109  # Mirrors the BaseSandbox.aexecute signature under test
+        await asyncio.sleep(3600)
+        msg = "unreachable"
+        raise AssertionError(msg)
+
+
+@pytest.mark.asyncio
+async def test_aglob_is_bounded_by_a_transport_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The script's own TIME_BUDGET bounds only the walk, not the round-trip.
+
+    Without an outer bound a wedged sandbox hangs the caller indefinitely, and
+    `aglob` was the one search entry point with no such bound.
+    """
+    monkeypatch.setattr("deepagents.backends.sandbox.ASYNC_GLOB_TIMEOUT", 0.05)
+    be = _HangingSandbox()
+
+    result = await be.aglob("*.py", "/w")
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "timed out" in result.error
+
+
+def test_glob_search_root_is_forced_absolute() -> None:
+    """A relative root yields relative matches, which bypass every deny rule.
+
+    `_check_fs_permission` only matches `deny` patterns against absolute paths,
+    so a relative path silently escapes them (see test_permissions.py).
+    """
+    assert _glob_search_root("workspace") == "/workspace"
+    assert _glob_search_root("/workspace") == "/workspace"
+    assert _glob_search_root(None) == "/"
+    assert _glob_search_root("") == "/"

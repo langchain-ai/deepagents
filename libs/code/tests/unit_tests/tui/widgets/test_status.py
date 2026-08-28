@@ -7,15 +7,28 @@ from typing import TYPE_CHECKING
 import pytest
 from textual import events
 from textual.app import App, ComposeResult
-from textual.geometry import Size
+from textual.content import Content
+from textual.geometry import Offset, Size
 from textual.widgets import Static
 
+from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
 from deepagents_code.config import reset_glyphs_cache
-from deepagents_code.tui.widgets.status import BranchLabel, ModelLabel, StatusBar
+from deepagents_code.tui.widgets.status import (
+    _PICKER_ACTIONS,
+    _PICKER_STYLES,
+    _PICKER_TARGET_META,
+    PICKER_TARGETS,
+    BranchLabel,
+    ModelLabel,
+    StatusBar,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from rich.style import Style
+    from textual.pilot import Pilot
 
 
 @pytest.fixture(autouse=True)
@@ -26,11 +39,80 @@ def reset_glyphs_between_tests() -> Iterator[None]:
     reset_glyphs_cache()
 
 
-class StatusBarApp(App):
+class StatusBarApp(App[None]):
     """Minimal app that mounts a StatusBar for testing."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.opened_pickers: list[str] = []
+        self.unhandled_clicks = 0
 
     def compose(self) -> ComposeResult:
         yield StatusBar(id="status-bar")
+
+    def action_open_model_selector(self) -> None:
+        self.opened_pickers.append("model")
+
+    def action_open_effort_selector(self) -> None:
+        self.opened_pickers.append("effort")
+
+    def on_click(self, event: events.Click) -> None:
+        """Count clicks that reach the app, standing in for the real handler.
+
+        `DeepAgentsApp.on_click` refocuses the chat input, so a picker click must
+        not bubble here while a plain click must.
+        """
+        del event
+        self.unhandled_clicks += 1
+
+
+class TestTwoLineMetrics:
+    async def test_layout_and_metrics(self) -> None:
+        async with StatusBarApp().run_test(size=(120, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_model(provider="openai", model="gpt-5.6", effort="high")
+            bar.set_cache_tokens(12_500, 750, input_tokens=15_625)
+            bar.set_context_limit(200_000)
+            bar.set_tokens(12_500)
+            bar.set_cost(0.42)
+            bar.branch = "main"
+            await pilot.pause()
+
+            session = pilot.app.query_one(".status-session")
+            metrics = pilot.app.query_one(".status-metrics")
+            cache = pilot.app.query_one("#cache-display")
+            context = pilot.app.query_one("#tokens-display")
+            assert bar.size.height == 2
+            assert metrics.region.y == session.region.y + 1
+            assert cache.region.x == metrics.region.x
+            assert context.region.right == metrics.region.right
+            assert str(cache.render()) == ("Cache 80% hit • 12.5K read / 750 write")
+            assert str(context.render()) == "Context: 6% / Tokens: 12.5K • $0.42"
+
+    async def test_context_percentage_color_thresholds(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            colors = theme.get_theme_colors(bar)
+
+            assert bar._percent_color(60.0) == colors.muted
+            assert bar._percent_color(60.1) == colors.warning
+            assert bar._percent_color(80.0) == colors.warning
+            assert bar._percent_color(80.1) == colors.error
+
+    @pytest.mark.parametrize(
+        ("read", "color"),
+        [(59, "error"), (60, "warning"), (90, "muted")],
+    )
+    async def test_cache_hit_rate_colors(self, read: int, color: str) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            colors = theme.get_theme_colors(bar)
+            bar.set_cache_tokens(read, 0, input_tokens=100 if read else 0)
+            cache = pilot.app.query_one("#cache-display")
+            cache.styles.width = 9
+            rendered = cache.render()
+            assert isinstance(rendered, Content)
+            assert rendered.spans[-1].style == getattr(colors, color)
 
 
 class TestApprovalModeDisplay:
@@ -49,6 +131,7 @@ class TestApprovalModeDisplay:
             indicator = pilot.app.query_one("#auto-approve-indicator", Static)
             assert str(indicator.render()) == label
             assert indicator.has_class(mode)
+            assert indicator.styles.background.a == 1
 
 
 class TestCwdDisplay:
@@ -79,10 +162,10 @@ class TestCwdDisplay:
             branch = pilot.app.query_one("#branch-display")
             assert cwd.display is False
             assert branch.display is True
-            assert branch.styles.padding.left == 1
+            assert branch.styles.padding.left == 0
 
-    async def test_cwd_owns_left_gap_after_auto_approve_pill(self) -> None:
-        """The cwd keeps visible spacing when transient status slots are hidden."""
+    async def test_cwd_follows_model_without_a_leading_gap(self) -> None:
+        """The cwd owns only its trailing gap on the model/workspace line."""
         async with StatusBarApp().run_test() as pilot:
             cwd = pilot.app.query_one("#cwd-display")
             connection = pilot.app.query_one("#connection-indicator")
@@ -90,7 +173,7 @@ class TestCwdDisplay:
 
             assert connection.display is False
             assert status.display is False
-            assert cwd.styles.padding.left == 1
+            assert cwd.styles.padding.left == 0
             assert cwd.styles.padding.right == 1
 
 
@@ -312,14 +395,14 @@ class TestResizePriority:
             await pilot.pause()
             branch = pilot.app.query_one("#branch-display")
             assert branch.display is True
-            assert branch.styles.padding.left == 1
+            assert branch.styles.padding.left == 0
 
-    async def test_branch_removes_fallback_gap_when_cwd_returns(self) -> None:
-        """Resizing wide again restores branch spacing to the cwd-visible layout."""
+    async def test_branch_keeps_alignment_when_cwd_returns(self) -> None:
+        """Resizing wide again does not introduce a leading branch gap."""
         async with StatusBarApp().run_test(size=(50, 24)) as pilot:
             branch = pilot.app.query_one("#branch-display")
             await pilot.pause()
-            assert branch.styles.padding.left == 1
+            assert branch.styles.padding.left == 0
 
             await pilot.resize_terminal(120, 24)
             await pilot.pause()
@@ -381,8 +464,19 @@ class TestResizePriority:
 class TestEdgeAlignment:
     """Tests that the status bar spans the full terminal width."""
 
+    async def test_approval_badge_is_flush_with_the_left_edge(self) -> None:
+        """The approval badge should occupy the session row's left edge."""
+        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_approval_mode("auto")
+            await pilot.pause()
+            indicator = pilot.app.query_one("#auto-approve-indicator", Static)
+            cwd = pilot.app.query_one("#cwd-display", Static)
+            assert indicator.region.x == bar.region.x
+            assert cwd.region.x == indicator.region.right + 1
+
     async def test_model_label_is_flush_with_the_right_edge(self) -> None:
-        """The model name should end on the last column, not short of it."""
+        """The model should occupy the session row's rightmost columns."""
         async with StatusBarApp().run_test(size=(80, 24)) as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_model(provider="fireworks", model="kimi-k3")
@@ -390,20 +484,6 @@ class TestEdgeAlignment:
             model = pilot.app.query_one("#model-display", ModelLabel)
             assert model.styles.padding.right == 0
             assert model.content_region.right == bar.region.right
-
-    async def test_approval_pill_is_flush_with_the_left_edge(self) -> None:
-        """The pill's background starts on column 0; only its text is inset.
-
-        The pill keeps its horizontal padding — that padding is filled with the
-        pill's background color, so it reads as part of the badge rather than as
-        a gap that narrows the bar.
-        """
-        async with StatusBarApp().run_test(size=(80, 24)) as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            bar.set_approval_mode("auto")
-            await pilot.pause()
-            pill = pilot.app.query_one("#auto-approve-indicator", Static)
-            assert pill.region.x == bar.region.x
 
 
 class TestTokenDisplay:
@@ -415,7 +495,7 @@ class TestTokenDisplay:
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert "5.0K" in str(display.render())
+            assert "5K" in str(display.render())
 
     async def test_show_pending_tokens_shows_unknown_placeholder(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -425,15 +505,15 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            assert str(display.render()) == "Context: ... / Tokens: ... • $0.00"
 
-    async def test_show_pending_tokens_before_count_leaves_display_empty(self) -> None:
+    async def test_show_pending_tokens_before_count_keeps_zero_state(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == ""
+            assert str(display.render()) == "Context: 0% / Tokens: 0 • $0.00"
 
     async def test_set_tokens_after_pending_restores_display(self) -> None:
         """Regression: set_tokens must refresh even when value is unchanged.
@@ -452,7 +532,7 @@ class TestTokenDisplay:
             bar.set_tokens(5000)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert "5.0K" in str(display.render())
+            assert "5K" in str(display.render())
 
     async def test_show_pending_tokens_after_count_change_keeps_placeholder(
         self,
@@ -468,7 +548,7 @@ class TestTokenDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "... tokens"
+            assert str(display.render()) == "Context: ... / Tokens: ... • $0.00"
 
     async def test_cost_update_while_pending_keeps_the_placeholder(self) -> None:
         """A mid-turn cost update must not resurrect the stale token count.
@@ -488,8 +568,8 @@ class TestTokenDisplay:
             await pilot.pause()
 
             display = str(pilot.app.query_one("#tokens-display").render())
-            assert "... tokens" in display
-            assert "5.0K" not in display
+            assert "Tokens: ..." in display
+            assert "5K" not in display
             assert "$1.25" in display
 
     async def test_accurate_count_replaces_the_placeholder_with_cost(self) -> None:
@@ -507,7 +587,7 @@ class TestTokenDisplay:
 
             display = str(pilot.app.query_one("#tokens-display").render())
             assert "7.5K" in display
-            assert "... tokens" not in display
+            assert "Tokens: ..." not in display
             assert "$1.25" in display
 
     def test_show_pending_tokens_without_mount_is_noop(self) -> None:
@@ -522,7 +602,7 @@ class TestTokenDisplay:
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             rendered = str(display.render())
-            assert "5.0K+" in rendered
+            assert "5K+" in rendered
 
     async def test_approximate_after_pending_restores_with_plus(self) -> None:
         """Interrupted restore: same value + approximate should show count with '+'."""
@@ -536,7 +616,7 @@ class TestTokenDisplay:
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             rendered = str(display.render())
-            assert "5.0K+" in rendered
+            assert "5K+" in rendered
 
     async def test_exact_count_clears_plus(self) -> None:
         """A non-approximate set_tokens after an approximate one should drop '+'."""
@@ -548,17 +628,18 @@ class TestTokenDisplay:
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
             rendered = str(display.render())
-            assert "8.0K" in rendered
+            assert "8K" in rendered
             assert "+" not in rendered
 
-    async def test_empty_tokens_hidden_on_mount(self) -> None:
-        """An empty token slot is hidden so its padding adds no gap."""
+    async def test_zero_context_and_cost_are_visible_on_mount(self) -> None:
+        """The lower-right metrics should not be blank before the first request."""
         async with StatusBarApp().run_test() as pilot:
             display = pilot.app.query_one("#tokens-display")
-            assert display.display is False
+            assert display.display is True
+            assert str(display.render()) == "Context: 0% / Tokens: 0 • $0.00"
 
-    async def test_set_tokens_shows_then_zero_hides(self) -> None:
-        """A positive count reveals the token slot; zeroing hides it again."""
+    async def test_set_tokens_then_zero_restores_zero_state(self) -> None:
+        """Zeroing a positive count restores visible placeholders."""
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_tokens(5000)
@@ -567,7 +648,18 @@ class TestTokenDisplay:
             assert display.display is True
             bar.set_tokens(0)
             await pilot.pause()
-            assert display.display is False
+            assert display.display is True
+            assert str(display.render()) == "Context: 0% / Tokens: 0 • $0.00"
+
+    async def test_unknown_context_limit_shows_dashes_with_tokens(self) -> None:
+        """With no known limit, a non-zero count renders `--` for the percentage."""
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            bar.set_context_limit(None)
+            bar.set_tokens(5000)
+            await pilot.pause()
+            display = pilot.app.query_one("#tokens-display")
+            assert str(display.render()) == "Context: -- / Tokens: 5K • $0.00"
 
 
 class TestCostDisplay:
@@ -580,7 +672,7 @@ class TestCostDisplay:
             bar.set_cost(0.42)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert "12.5K tokens" in rendered
+            assert "Tokens: 12.5K" in rendered
             assert "$0.42" in rendered
 
     async def test_cost_displays_without_tokens(self) -> None:
@@ -589,25 +681,29 @@ class TestCostDisplay:
             bar.set_cost(1.25)
             await pilot.pause()
             display = pilot.app.query_one("#tokens-display")
-            assert str(display.render()) == "$1.25"
+            assert str(display.render()) == "Context: 0% / Tokens: 0 • $1.25"
             assert display.display is True
 
-    async def test_zero_cost_is_hidden(self) -> None:
+    async def test_zero_cost_is_visible(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
+            # A `None` limit renders `--` only once tokens are non-zero, so pin
+            # the limit rather than inheriting `runtime_state.model_context_limit`.
+            bar.set_context_limit(None)
             bar.set_tokens(5000)
             bar.set_cost(0.0)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert rendered == "5.0K tokens"
-            assert "$" not in rendered
+            assert rendered == "Context: -- / Tokens: 5K • $0.00"
 
     async def test_sub_cent_cost_uses_display_floor(self) -> None:
         async with StatusBarApp().run_test() as pilot:
             bar = pilot.app.query_one("#status-bar", StatusBar)
             bar.set_cost(0.0045)
             await pilot.pause()
-            assert str(pilot.app.query_one("#tokens-display").render()) == "<$0.01"
+            assert str(pilot.app.query_one("#tokens-display").render()) == (
+                "Context: 0% / Tokens: 0 • <$0.01"
+            )
 
     async def test_approximate_token_marker_survives_cost_update(self) -> None:
         async with StatusBarApp().run_test() as pilot:
@@ -616,7 +712,7 @@ class TestCostDisplay:
             bar.set_cost(0.42)
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert "5.0K+ tokens" in rendered
+            assert "Tokens: 5K+" in rendered
             assert "$0.42" in rendered
 
     async def test_pending_tokens_keep_cost_visible(self) -> None:
@@ -628,7 +724,7 @@ class TestCostDisplay:
             bar.show_pending_tokens()
             await pilot.pause()
             rendered = str(pilot.app.query_one("#tokens-display").render())
-            assert "... tokens" in rendered
+            assert "Tokens: ..." in rendered
             assert "$0.42" in rendered
 
 
@@ -783,8 +879,8 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 0 0 2 -> content width = 9, fits "kimi-k2p6" but not
-            # the full "fireworks:kimi-k2p6" (19 chars).
+            # This width fits "kimi-k2p6" but not the full
+            # "fireworks:kimi-k2p6" (19 chars).
             label.styles.width = 11
             await pilot.pause()
             assert str(label.render()) == "kimi-k2p6"
@@ -795,7 +891,7 @@ class TestModelLabelPrefixStripping:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = "fireworks"
             label.model = "accounts/fireworks/models/kimi-k2p6"
-            # padding 0 0 0 2 -> content width = 5, smaller than "kimi-k2p6" (9).
+            # Two columns are padding, leaving five for truncated content.
             label.styles.width = 7
             await pilot.pause()
             rendered = str(label.render())
@@ -890,21 +986,432 @@ class TestModelLabelPrefixStripping:
             label.provider = ""
             label.model = "o1"
             label.effort = "medium"
-            # padding 0 0 0 2 -> content width = 6: too narrow for "o1 medium"
-            # (9) and below len("medium") + 2, but wide enough for bare "o1".
-            label.styles.width = 8
+            # Six columns are too narrow for "o1 medium" but fit bare "o1".
+            label.styles.width = 6
             await pilot.pause()
             assert str(label.render()) == "o1"
 
     async def test_no_provider_no_stripping(self) -> None:
         """Without a provider, the model name is passed through unchanged."""
-        async with StatusBarApp().run_test() as pilot:
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
             label = pilot.app.query_one("#model-display", ModelLabel)
             label.provider = ""
             label.model = "accounts/fireworks/models/kimi-k2p6"
             await pilot.pause()
             rendered = str(label.render())
             assert "accounts/fireworks/models/kimi-k2p6" in rendered
+
+
+class TestPickerTargetRegistries:
+    """Tests that the picker mappings stay total over `PickerTarget`."""
+
+    def test_actions_cover_every_target(self) -> None:
+        """A new `PickerTarget` without an action would `KeyError` on click."""
+        assert set(_PICKER_ACTIONS) == PICKER_TARGETS
+
+    def test_styles_cover_every_target(self) -> None:
+        """A new `PickerTarget` without a style would `KeyError` on render."""
+        assert set(_PICKER_STYLES) == PICKER_TARGETS
+
+
+class TestModelLabelClickTargets:
+    """Tests for the model and effort status-bar click targets."""
+
+    @staticmethod
+    def _offset_for_target(label: ModelLabel, target: str) -> Offset:
+        x = label.content_region.x - label.region.x
+        for segment in label.render_line(0):
+            if (
+                segment.style is not None
+                and segment.style.meta.get(_PICKER_TARGET_META) == target
+            ):
+                return Offset(x, 0)
+            x += segment.cell_length
+        msg = f"No rendered segment for {target}"
+        raise AssertionError(msg)
+
+    @staticmethod
+    def _style_at(label: ModelLabel, x: int) -> Style | None:
+        """Return the style of the painted cell at `x`, as Textual would report it.
+
+        `render_line` yields segments, not cells, so walk their widths rather
+        than indexing the segment list.
+        """
+        cell = label.content_region.x - label.region.x
+        for segment in label.render_line(0):
+            if cell <= x < cell + segment.cell_length:
+                return segment.style
+            cell += segment.cell_length
+        msg = f"No painted cell at x={x}"
+        raise AssertionError(msg)
+
+    @classmethod
+    def _app_mouse_event(
+        cls,
+        event_type: type[events.MouseDown | events.MouseUp],
+        label: ModelLabel,
+        offset: Offset,
+    ) -> events.MouseDown | events.MouseUp:
+        """Build an app-level mouse event that follows Textual's real input path."""
+        target = label.content_region.offset + offset
+        return event_type(
+            None,
+            x=target.x,
+            y=target.y,
+            delta_x=0,
+            delta_y=0,
+            button=1,
+            shift=False,
+            meta=False,
+            ctrl=False,
+            screen_x=target.x,
+            screen_y=target.y,
+            style=cls._style_at(label, offset.x),
+        )
+
+    @staticmethod
+    def _rendered_targets(label: ModelLabel) -> dict[str, tuple[str, bool]]:
+        """Collect picker targets from painted output, not from `render`.
+
+        Reading `render_line` is what makes the assertions fail if
+        `_hovered_target` ever stops repainting the widget.
+        """
+        targets: dict[str, tuple[str, bool]] = {}
+        for segment in label.render_line(0):
+            style = segment.style
+            if style is None:
+                continue
+            meta_target = style.meta.get(_PICKER_TARGET_META)
+            if meta_target is None:
+                continue
+            # Adjacent segments can split one span, so accumulate by target.
+            previous = targets.pop(meta_target, None)
+            merged = (previous[0] if previous else "") + segment.text
+            # `Style.underline` is tri-state; only "set" matters here.
+            targets[meta_target] = (merged, bool(style.underline))
+        return {
+            span_text: (target, underline)
+            for target, (span_text, underline) in targets.items()
+        }
+
+    async def test_model_and_effort_have_distinct_targets(self) -> None:
+        """Each visible label should expose its corresponding picker target."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
+            }
+
+    async def test_clicks_dispatch_distinct_app_actions(self) -> None:
+        """Ordinary clicks should open the picker represented by each span."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            model_offset = self._offset_for_target(label, "model")
+            effort_offset = self._offset_for_target(label, "effort")
+            await pilot.click(label, offset=model_offset)
+            await pilot.click(label, offset=effort_offset)
+            await pilot.pause()
+
+            assert app.opened_pickers == ["model", "effort"]
+
+    async def test_picker_clicks_do_not_bubble(self) -> None:
+        """A target click must not race the app's chat-input refocus handler."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            model_offset = self._offset_for_target(label, "model")
+            await pilot.click(label, offset=model_offset)
+            await pilot.pause()
+
+            assert app.unhandled_clicks == 0
+            assert app.opened_pickers == ["model"]
+
+    async def test_slow_click_that_refocuses_app_is_inert(self) -> None:
+        """A focus-restoring press stays inert even when its release is delayed."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            await pilot.pause()
+            offset = self._offset_for_target(label, "model")
+
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            app.post_message(events.AppFocus())
+            app.post_message(self._app_mouse_event(events.MouseDown, label, offset))
+            await pilot.pause(0.25)
+            app.post_message(self._app_mouse_event(events.MouseUp, label, offset))
+            await pilot.pause()
+
+            assert app.opened_pickers == []
+            assert app.unhandled_clicks == 0
+
+            await pilot.click(label, offset=offset)
+            await pilot.pause()
+            assert app.opened_pickers == ["model"]
+
+    async def test_keyboard_refocus_does_not_block_click(self) -> None:
+        """A refocus without an adjacent mouse press must not consume a later click."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            await pilot.pause()
+
+            app.post_message(events.AppBlur())
+            await pilot.pause()
+            app.post_message(events.AppFocus())
+            await pilot.pause()
+            await pilot.click(label, offset=self._offset_for_target(label, "model"))
+            await pilot.pause()
+
+            assert app.opened_pickers == ["model"]
+
+    async def test_click_ignores_non_left_buttons(self) -> None:
+        """Textual reports a Click for any button, so only the left one counts."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            offset = self._offset_for_target(label, "model")
+            target = label.content_region.offset + offset
+            label.post_message(
+                events.Click(
+                    label,
+                    x=offset.x,
+                    y=offset.y,
+                    delta_x=0,
+                    delta_y=0,
+                    button=3,
+                    shift=False,
+                    meta=False,
+                    ctrl=False,
+                    screen_x=target.x,
+                    screen_y=target.y,
+                    style=self._style_at(label, offset.x),
+                )
+            )
+            await pilot.pause()
+
+            assert app.opened_pickers == []
+
+    async def test_double_click_opens_one_picker(self) -> None:
+        """A chained click should not stack a second picker on the first."""
+        app = StatusBarApp()
+        async with app.run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            offset = self._offset_for_target(label, "model")
+            await pilot.click(label, offset=offset, times=2)
+            await pilot.pause()
+
+            assert app.opened_pickers == ["model"]
+            assert app.unhandled_clicks == 0
+
+    @pytest.mark.parametrize("target", ["model", "effort"])
+    async def test_hover_underlines_only_the_target(self, target: str) -> None:
+        """An ordinary pointer move should expose the target affordance."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            offset = self._offset_for_target(label, target)
+            await self._move(pilot, label, offset)
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", target == "model"),
+                "high": ("effort", target == "effort"),
+            }
+            assert label.styles.pointer == "pointer"
+
+    async def test_hover_moves_the_underline_between_targets(self) -> None:
+        """Sliding from the model span to the effort span should move the hint.
+
+        Both spans set the same pointer shape, so this transition changes no CSS
+        rule and repaints only because the hint reactive asks for it.
+        """
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            await self._move(pilot, label, self._offset_for_target(label, "model"))
+            await self._move(pilot, label, self._offset_for_target(label, "effort"))
+
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", True),
+            }
+            assert label.styles.pointer == "pointer"
+
+    async def test_hover_off_target_clears_the_underline(self) -> None:
+        """Moving onto the separator should drop the previous target's hint."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            effort_offset = self._offset_for_target(label, "effort")
+            await self._move(pilot, label, self._offset_for_target(label, "model"))
+            # The cell before the effort span is the unstyled separator.
+            await self._move(pilot, label, effort_offset + Offset(-1, 0))
+
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
+            }
+            assert label.styles.pointer == "default"
+
+    async def test_leaving_the_label_clears_the_affordance(self) -> None:
+        """`on_leave` should drop both the underline and the pointer shape."""
+        async with StatusBarApp().run_test(size=(150, 24)) as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "openai"
+            label.model = "gpt-5.5"
+            label.effort = "high"
+            await pilot.pause()
+
+            await self._move(pilot, label, self._offset_for_target(label, "model"))
+            assert label.styles.pointer == "pointer"
+
+            label.post_message(events.Leave(label))
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "openai:gpt-5.5": ("model", False),
+                "high": ("effort", False),
+            }
+            assert label.styles.pointer == "default"
+
+    @classmethod
+    async def _move(
+        cls,
+        pilot: Pilot[None],
+        label: ModelLabel,
+        offset: Offset,
+    ) -> None:
+        """Post a mouse move at `offset` within `label`."""
+        target = label.content_region.offset + offset
+        label.post_message(
+            events.MouseMove(
+                label,
+                x=offset.x,
+                y=offset.y,
+                delta_x=0,
+                delta_y=0,
+                button=0,
+                shift=False,
+                meta=False,
+                ctrl=False,
+                screen_x=target.x,
+                screen_y=target.y,
+                style=cls._style_at(label, offset.x),
+            )
+        )
+        await pilot.pause()
+
+    async def test_truncated_model_keeps_both_targets(self) -> None:
+        """The left-truncated rung should still expose model and effort targets.
+
+        This is the narrow layout where the affordance matters most, and the
+        only rung that renders an ellipsis alongside a surviving effort span.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "claude-opus-4-preview"
+            label.effort = "high"
+            label.styles.width = 15
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "\u2026preview": ("model", False),
+                "high": ("effort", False),
+            }
+
+    async def test_provider_dropped_rung_keeps_both_targets(self) -> None:
+        """Dropping the provider should leave both spans clickable."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "anthropic"
+            label.model = "claude-opus-4"
+            label.effort = "xhigh"
+            # Wide enough for the bare model plus effort, too narrow for the
+            # provider prefix (the label reserves two cells of its own).
+            label.styles.width = 22
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {
+                "claude-opus-4": ("model", False),
+                "xhigh": ("effort", False),
+            }
+
+    async def test_hidden_effort_has_no_click_target(self) -> None:
+        """The narrow-layout fallback should expose only the visible model target."""
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "o1"
+            label.effort = "medium"
+            label.styles.width = 6
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {"o1": ("model", False)}
+
+    @pytest.mark.parametrize(
+        ("width", "expected"),
+        [(4, "\u20264"), (3, "\u2026")],
+    )
+    async def test_ellipsis_only_rungs_keep_the_model_target(
+        self, width: int, expected: str
+    ) -> None:
+        """Even a fully truncated model should stay clickable.
+
+        Covers both narrow rungs: a left-truncated tail, and the bare ellipsis
+        that a single content cell leaves room for.
+        """
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = ""
+            label.model = "claude-opus-4"
+            label.effort = "high"
+            label.styles.width = width
+            await pilot.pause()
+
+            assert self._rendered_targets(label) == {expected: ("model", False)}
 
 
 class TestConnectionIndicator:

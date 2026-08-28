@@ -80,6 +80,17 @@ rather than forcing the default). Also settable via `[ui].collapse_pastes` in
 config.toml.
 """
 
+CURSOR_BLINK = "DEEPAGENTS_CODE_CURSOR_BLINK"
+"""Blink the chat input cursor.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or blank)
+for a steady cursor. Parsed by `classify_env_bool` (an unrecognized value falls
+through to the config value rather than forcing the default). A blank value —
+empty or whitespace-only — counts as `false` because the option declares
+`empty_env_is_false`, so it overrides `config.toml` instead of falling through.
+Also settable via `[ui].cursor_blink` in config.toml.
+"""
+
 CURSOR_STYLE = "DEEPAGENTS_CODE_CURSOR_STYLE"
 """Chat input cursor style (`block` or `underline`).
 
@@ -117,6 +128,27 @@ Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
 as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
+DEBUG_COLD_CACHE = "DEEPAGENTS_CODE_DEBUG_COLD_CACHE"
+"""Force the cold prompt-cache warning modal on every interactive send.
+
+Set to a truthy value when launching the interactive TUI to make
+`_cold_cache_warning_for` synthesize a warning from the current model and
+context, bypassing the provider-policy, token-floor, cache-window, and
+cost-threshold gates as well as both session and persisted suppression. Lets
+the modal be exercised without waiting out a provider cache window.
+
+The flag is re-read on every send and nothing clears it, so the modal fires
+for the life of the process, not just once.
+
+When the active model has no documented cache policy, `debug_stand_in_policy`
+supplies an Anthropic-shaped placeholder. On a non-Anthropic model the modal
+will therefore cite Anthropic's retention window, and the dollar figures are
+illustrative rather than real estimates.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
+"""
+
 DEBUG_CONSOLE_CLICK_TO_COPY = "DEEPAGENTS_CODE_DEBUG_CONSOLE_CLICK_TO_COPY"
 r"""Enable click-to-copy in the `Ctrl+\` Debug Console when enabled.
 
@@ -132,11 +164,30 @@ checkbox will not appear to "stick" across restarts while the env var remains
 set.
 """
 
-DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+DEBUG_DEP_FLOOR = "DEEPAGENTS_CODE_DEBUG_DEP_FLOOR"
+"""Synthesize a stale editable-dependency floor mismatch at launch.
 
-DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
-"""Default path for the debug log when `DEBUG_FILE` is unset."""
+Set to a truthy value to short-circuit `_collect_violations` to a hard-coded
+fake below-floor dependency, bypassing the editable-install gate and the real
+version comparison. Both channels are then reachable without a genuinely stale
+environment: the blocking pre-TUI continue/mute/abort prompt on an interactive
+terminal launch, and the one-off stderr warning everywhere else.
+
+Note that muting the synthetic mismatch writes a real dismissal for this
+checkout; it re-arms on its own once the fake mismatch changes or the var is
+unset.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
+DEBUG_DIRECTORY = "DEEPAGENTS_CODE_DEBUG_DIRECTORY"
+"""Directory for per-thread debug logs (default: `DEFAULT_DEBUG_DIRECTORY`)."""
+
+DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
+"""Deprecated debug file path; its parent is used when `DEBUG_DIRECTORY` is unset."""
+
+DEFAULT_DEBUG_DIRECTORY = "/tmp/deepagents_debug"  # noqa: S108  # opt-in debug logs
+"""Default directory for debug logs when no debug path override is set."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.
@@ -149,6 +200,21 @@ the debug run does not continue into TUI or server startup, and it does not
 persist trust decisions.
 
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
+DEBUG_MODEL_SWITCH = "DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH"
+"""Force the model-switch confirmation modal on every model change.
+
+Set to a truthy value when launching the interactive TUI to make
+`_confirm_and_switch_model` show `ModelSwitchWarningScreen` for every switch
+to a different model, bypassing the `warnings.model_switch_token_threshold`
+gate. Lets the modal — including the deferred path that queues behind an
+active turn — be exercised without growing a thread past the token threshold.
+The modal shows the real current/target models and the live context-token
+count, which may be 0.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS"
@@ -193,6 +259,12 @@ values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
 """
 
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading installed-plugin and trusted-project Python extensions."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
+
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
 
@@ -236,6 +308,18 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
+"""Days an offloaded conversation-history archive is kept before the startup
+sweep deletes it.
+
+Archives live under `~/.deepagents/conversation_history/` and are removed by a
+best-effort background sweep at startup once their age exceeds the window.
+Non-negative integers only: `0` disables the sweep entirely, and an
+unparseable or negative value falls through to the next config source. Also
+settable via `[history].retention_days` in config.toml (managed config takes
+precedence).
+"""
+
 INVOKED_AS = "DEEPAGENTS_CODE_INVOKED_AS"
 """Internal sentinel carrying the command name the user launched with.
 
@@ -254,7 +338,7 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
-"""Toggle LangSmith secret redaction for agent traces (defaults to off)."""
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
 
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
@@ -266,6 +350,18 @@ Only the first listed project is used: the LangGraph server mirrors a run to a
 single extra project, so any additional entries are dropped (with a warning).
 The value is comma-separated for forward-compatibility, not because multiple
 destinations are written today.
+"""
+
+LAUNCH_TERM_PROGRAM = "DEEPAGENTS_CODE_LAUNCH_TERM_PROGRAM"
+"""Internal sentinel recording the `TERM_PROGRAM` present when `dcode` started.
+
+Not user-facing. The resume hint echoes `TERM_PROGRAM` only when the launch
+environment supplied it (an inline `TERM_PROGRAM=x dcode`, a terminal's own
+export, or a shell alias), so the value set by a project or global `.env` file
+*after* launch must not leak in. The app itself never sets `TERM_PROGRAM`, so
+`cli_main` snapshotting the variable here at entry means a set sentinel always
+marks an explicit launch value; the update re-exec inherits it unchanged,
+which is correct because the relaunch runs the command the user typed.
 """
 
 LEGACY_ENABLED_PROJECT_MCP_SERVERS = "DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS"
@@ -355,6 +451,13 @@ option declares `empty_env_is_false`. Other tokens are parsed by
 user-supplied key is always preserved.
 """
 
+PLUGIN_AUTO_UPDATE = "DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE"
+"""Toggle background updates for installed marketplace plugins.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to disable every plugin update regardless of its manifest setting.
+"""
+
 PLUGIN_CACHE_DIR = "DEEPAGENTS_CODE_PLUGIN_CACHE_DIR"
 """Override the plugin install/marketplace cache root.
 
@@ -377,13 +480,25 @@ request. Also the escape hatch for hosts embedding this package that manage
 process, so an embedder that starts its own would otherwise race this one.
 """
 
+READ_PROJECT_DOTENV = "DEEPAGENTS_CODE_READ_PROJECT_DOTENV"
+"""Toggle loading the *project* `.env` (the one found walking up from cwd).
+
+Enabled by default, preserving the historical behavior of applying the nearest
+project `.env` to the process environment (`override=False`, shell exports
+win). Set to a falsy value (`0`, `false`, `no`, `off`) — or `[startup]`
+`read_project_dotenv = false` in config.toml — to skip the project file
+entirely, as defense-in-depth against a cloned repo whose `.env` carries
+hostile values the dotenv denylist does not yet enumerate. The global
+`~/.deepagents/.env` is unaffected. This is user-controlled process env, not a
+repo file, so a project `.env` cannot disable itself.
+"""
+
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
-Parsed as an integer by the config manifest. Values below the LangGraph floor
-(`25`) or above the manifest ceiling are ignored with a logged warning, falling
-back to `config.toml` then the default. See `[runtime].recursion_limit` and the
-`--recursion-limit` CLI flag.
+Parsed as an integer by the config manifest. Values outside the accepted range
+are ignored with a logged warning, falling back to `config.toml`. See
+`[runtime].recursion_limit` and the `--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
@@ -396,12 +511,21 @@ version), skips auto-updating to break out of an otherwise endless
 upgrade/restart loop. Set and read internally across `os.execv`.
 """
 
+RESUME_TERM_PROGRAM = "DEEPAGENTS_CODE_RESUME_TERM_PROGRAM"
+"""Include launch-time `TERM_PROGRAM` in teardown resume commands.
+
+Disabled by default and enabled by default in experimental or debug mode. An
+explicit boolean (`1`/`true`/`yes`/`on`, or `0`/`false`/`no`/`off`) overrides
+that mode-dependent default, as does an empty value, which reads as false. Also
+settable as `[features].resume_term_program` in config.toml.
+"""
+
 RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
 """Select how ripgrep is provisioned: `managed` (default) or `system`.
 
-`managed` downloads the pinned, SHA-256-verified upstream binary into
-`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
-rely on their distro package / existing toolchain instead; the install script's
+`managed` downloads the pinned, SHA-256-verified upstream binary into the dcode
+installation (no sudo). `system` skips that download so power users can rely on
+their distro package / existing toolchain instead; the install script's
 `system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
 reused under either setting. Unrecognized values fall back to `managed`. See
 `managed_tools.ripgrep_installer`."""
@@ -422,6 +546,27 @@ Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to hide replica tracing details from the splash while leaving tracing active.
 """
 
+SHOW_MESSAGE_TIMESTAMPS = "DEEPAGENTS_CODE_SHOW_MESSAGE_TIMESTAMPS"
+"""Show the timestamp footer under each chat message when enabled.
+
+Off by default; use the `/timestamps` slash command or
+`[ui].show_message_timestamps` in config.toml to toggle. Parsed by
+`classify_env_bool` (an unrecognized or empty value falls through to the config
+value rather than forcing the default). While this env var is set it outranks
+the persisted value, so a `/timestamps` toggle will not appear to "stick"
+across restarts.
+"""
+
+SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
+"""Show provider-visible reasoning in local TUI and headless output.
+
+Off by default; use `[ui].show_reasoning` in config.toml to persist it. Parsed
+by `classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). A recognized value outranks the config value
+but loses to `--show-reasoning`, which is the only way to change the setting for
+a single run.
+"""
+
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
 """Show the vertical scrollbar in the chat area when enabled.
 
@@ -439,6 +584,18 @@ SHOW_URL_OPEN_TOAST = "DEEPAGENTS_CODE_SHOW_URL_OPEN_TOAST"
 
 Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
 to suppress the success toast while still opening URLs normally.
+"""
+
+SHOW_USAGE_STATS = "DEEPAGENTS_CODE_SHOW_USAGE_STATS"
+"""Print the session usage-statistics table when a session ends.
+
+Defaults to enabled; set to a falsy value (`0`, `false`, `no`, `off`, or empty)
+to suppress the table. Applies to both the TUI teardown and the headless
+`-x`/`--execute` run, which is why the option carries an env var at all: a CI
+runner can set one, but rarely has a `~/.deepagents/config.toml` to edit.
+
+Suppressing only the table is narrower than `--quiet`, which silences the rest
+of the headless teardown output too.
 """
 
 SPLASH_SHOW_CWD = "DEEPAGENTS_CODE_SPLASH_SHOW_CWD"
@@ -466,6 +623,19 @@ only reads canonical names, picks it up). The value you exported in your own
 shell is unaffected, since a process cannot change its parent's environment.
 Off by default; set to a truthy value (`1`, `true`, `yes`, `on`) to suppress
 the warning when this coexistence is expected. Parsed by `is_env_truthy`.
+"""
+
+TERMINAL_PROGRESS = "DEEPAGENTS_CODE_TERMINAL_PROGRESS"
+"""Report agent activity as `OSC 9;4` taskbar/dock/tab progress.
+
+Enabled by default; set to a falsy value (`0`, `false`, `no`, `off`, or blank)
+to stop emitting the sequence on terminals that render it poorly. Parsed by
+`classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). A blank value — empty or whitespace-only —
+counts as `false` because the option declares `empty_env_is_false`, so it
+overrides `config.toml` instead of falling through. Also settable via
+`[ui].terminal_progress` in config.toml. `NO_TERMINAL_ESCAPE` suppresses the
+sequence regardless.
 """
 
 THEME = "DEEPAGENTS_CODE_THEME"

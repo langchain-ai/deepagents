@@ -17,7 +17,7 @@ from langchain_core.language_models import LanguageModelInput
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.content import ContentBlock
-from langchain_core.outputs import ChatResult
+from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.tools import BaseTool, tool
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -147,6 +147,28 @@ class FixedGenericFakeChatModel(GenericFakeChatModel):
         **kwargs: Any,
     ) -> ChatResult:
         self.captured_messages.append(messages)
+        return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
+
+
+class SummaryFilteringModel(FixedGenericFakeChatModel):
+    """Serves summarization's summary-generation call separately from the action script.
+
+    A summarization event makes an extra model call to write the summary, in
+    addition to the normal turn's call. Detecting that call by the summary
+    prompt's `<messages>` marker and returning a canned summary lets the scripted
+    `messages` iterator hold only the agent's turn-by-turn actions, without
+    predicting when summarization fires.
+    """
+
+    def _generate(
+        self,
+        messages: list[BaseMessage],
+        stop: list[str] | None = None,
+        run_manager: CallbackManagerForLLMRun | None = None,
+        **kwargs: Any,
+    ) -> ChatResult:
+        if any(isinstance(m.content, str) and "<messages>" in m.content for m in messages):
+            return ChatResult(generations=[ChatGeneration(message=AIMessage(content="summary"))])
         return super()._generate(messages, stop=stop, run_manager=run_manager, **kwargs)
 
 
@@ -3162,6 +3184,152 @@ class TestArtifactsRoot:
         default_ls = backend.ls("/conversation_history/")
         assert not default_ls.entries, "No files should be written to /conversation_history/ when artifacts_root is set"
 
+    @staticmethod
+    def _offloaded_history_names(backend: CompositeBackend) -> list[str]:
+        """Return the basenames of offloaded history files under the artifacts root."""
+        entries = backend.ls("/workspace/conversation_history/").entries or []
+        return [e["path"].rsplit("/", 1)[-1] for e in entries if e["path"].endswith(".md")]
+
+    def _summarizing_agent(self, backend: CompositeBackend) -> CompiledStateGraph:
+        fake_model = FakeChatModelWithHistory(
+            messages=iter(
+                [
+                    AIMessage(content="summary goes here"),
+                    AIMessage(content="response"),
+                ]
+            )
+        )
+        fake_model.profile = {"max_input_tokens": 200_000}
+        return create_deep_agent(model=fake_model, backend=backend, checkpointer=InMemorySaver())
+
+    @staticmethod
+    def _messages_over_threshold() -> list[BaseMessage]:
+        small = "x" * 10_000 * NUM_CHARS_PER_TOKEN
+        large = "x" * 50_000 * NUM_CHARS_PER_TOKEN
+        return [
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content=small),
+            AIMessage(content=large),
+            HumanMessage(content="query"),
+        ]
+
+    def test_offload_path_uses_session_id_not_thread_id(self) -> None:
+        """The offload history file is named by an internal session id, not the thread_id."""
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+        agent = self._summarizing_agent(backend)
+
+        thread_id = "conversation-alpha"
+        agent.invoke({"messages": self._messages_over_threshold()}, {"configurable": {"thread_id": thread_id}})
+
+        names = self._offloaded_history_names(backend)
+        assert names, "expected conversation history offloaded"
+        assert all(name.startswith("session_") for name in names)
+        assert all(thread_id not in name for name in names)
+
+    def test_offload_ignores_caller_supplied_session_id(self) -> None:
+        """A `_summarization_session_id` supplied on invoke input does not name the file.
+
+        The session id is a `PrivateStateAttr`, so LangGraph does not load it
+        from caller input; the internally generated id is used instead.
+        """
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+        agent = self._summarizing_agent(backend)
+
+        supplied = "caller-supplied-id"
+        agent.invoke(
+            {"messages": self._messages_over_threshold(), "_summarization_session_id": supplied},
+            {"configurable": {"thread_id": "conversation-beta"}},
+        )
+
+        names = self._offloaded_history_names(backend)
+        assert names, "expected conversation history offloaded"
+        assert all(name.startswith("session_") for name in names)
+        assert f"{supplied}.md" not in names
+
+    def test_parent_and_subagent_offload_to_separate_files(self) -> None:
+        """A parent and a sub-agent that both summarize write to separate history files.
+
+        Both share one backend under a single thread. The parent summarizes its
+        oversized opening context, then delegates to a sub-agent that loops tool
+        calls until its own context crosses the threshold and summarizes too.
+        The two offloads land in distinct files rather than overwriting one.
+        """
+        backend = CompositeBackend(
+            default=StoreBackend(store=InMemoryStore(), namespace=lambda _ctx: ("filesystem",)),
+            routes={},
+            artifacts_root="/workspace",
+        )
+
+        @tool(description="Return a block of filler text.")
+        def filler() -> str:
+            # ~10k tokens: accumulates toward the summarization threshold but
+            # stays under the 20k-token per-result eviction limit.
+            return "x" * 40_000
+
+        subagent_model = SummaryFilteringModel(
+            messages=iter(
+                [
+                    *(
+                        AIMessage(
+                            content="",
+                            tool_calls=[{"name": "filler", "args": {}, "id": f"filler_{i}", "type": "tool_call"}],
+                        )
+                        for i in range(5)
+                    ),
+                    AIMessage(content="subagent done"),
+                ]
+            )
+        )
+        subagent_model.profile = {"max_input_tokens": 50_000}
+
+        worker: SubAgent = {
+            "name": "worker",
+            "description": "Does a chunk of work.",
+            "system_prompt": "Do the work.",
+            "model": subagent_model,
+            "tools": [filler],
+        }
+
+        parent_model = SummaryFilteringModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "do it", "subagent_type": "worker"},
+                                "id": "call_task",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Done."),
+                ]
+            )
+        )
+        parent_model.profile = {"max_input_tokens": 200_000}
+
+        agent = create_deep_agent(model=parent_model, backend=backend, subagents=[worker], checkpointer=InMemorySaver())
+
+        agent.invoke({"messages": self._messages_over_threshold()}, {"configurable": {"thread_id": "shared-thread"}})
+
+        names = self._offloaded_history_names(backend)
+        assert len(names) >= 2, f"expected separate parent and sub-agent history files, got {names}"
+        assert len(set(names)) == len(names), f"history files collided: {names}"
+        assert all(name.startswith("session_") for name in names)
+
     def test_create_deep_agent_no_composite_backend(self) -> None:
         """A non-composite backend defaults artifacts_root to '/' (root prefix)."""
 
@@ -4333,6 +4501,7 @@ class TestRubricMiddlewareEndToEnd:
                     self._grader_call(
                         result="satisfied",
                         explanation="ok now",
+                        criteria=[{"name": "tests", "passed": True}],
                         call_id="grader_2",
                     ),
                 ]
@@ -4416,6 +4585,110 @@ class TestRubricMiddlewareEndToEnd:
         results = [e["result"] for e in state["_rubric_evaluations"]]
         assert results == ["needs_revision", "max_iterations_reached"]
 
+    def test_undercounted_criteria_retries_then_downgrades_then_recovers(self) -> None:
+        """Full lifecycle of the criterion-coverage guard through a real graph.
+
+        Iteration 0 establishes and freezes the criterion list. Iteration 1
+        grades only one of the three, so the middleware feeds the count back
+        and regrades; the retry still under-reports while claiming
+        `satisfied`, so the verdict is downgraded and the agent is told the
+        rubric could not be fully verified. Iteration 2 grades all three and
+        the run terminates.
+        """
+        rubric = "- Tests cover the new branch\n- Public API is documented\n- Changelog updated"
+        criterion_names = ["Tests cover the new branch", "Public API is documented", "Changelog updated"]
+        main_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(content="first attempt"),
+                    AIMessage(content="second attempt"),
+                    AIMessage(content="third attempt"),
+                ]
+            )
+        )
+        grader_model = FixedGenericFakeChatModel(
+            messages=iter(
+                [
+                    # Iteration 0: full accounting, one failure.
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="changelog is missing",
+                        criteria=[
+                            {"name": criterion_names[0], "passed": True},
+                            {"name": criterion_names[1], "passed": True},
+                            {"name": criterion_names[2], "passed": False, "gap": "no changelog entry"},
+                        ],
+                        call_id="grader_1",
+                    ),
+                    # Iteration 1: covers one of three, so it gets corrected.
+                    self._grader_call(
+                        result="needs_revision",
+                        explanation="changelog still missing",
+                        criteria=[{"name": criterion_names[2], "passed": False, "gap": "still nothing"}],
+                        call_id="grader_2",
+                    ),
+                    # Iteration 1 retry: claims success, still under-reports.
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="everything looks fine",
+                        criteria=[{"name": criterion_names[2], "passed": True}],
+                        call_id="grader_3",
+                    ),
+                    # Iteration 2: full accounting, all passing.
+                    self._grader_call(
+                        result="satisfied",
+                        explanation="all three verified",
+                        criteria=[{"name": name, "passed": True} for name in criterion_names],
+                        call_id="grader_4",
+                    ),
+                ]
+            )
+        )
+
+        agent = create_deep_agent(
+            model=main_model,
+            middleware=[RubricMiddleware(model=grader_model, max_iterations=5)],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": "rubric-e2e-undercount"}}
+        result = agent.invoke(
+            {"messages": [HumanMessage(content="ship the feature")], "rubric": rubric},
+            config=config,
+        )
+
+        state = agent.get_state(config).values
+
+        # The criterion list was frozen on the first pass and never re-derived.
+        assert state["_rubric_criteria"] == criterion_names
+
+        # Four model calls: three iterations plus one retry.
+        payloads = [str(batch[-1].content) for batch in grader_model.captured_messages]
+        assert len(payloads) == 4
+        assert "A previous attempt returned only 1 of the 3 criteria in the rubric." in payloads[2]
+        assert "regrading after an unusable response" in payloads[2]
+        # Both iteration-1 calls replay the frozen checklist, not just the prose.
+        for payload in payloads[1:]:
+            assert "Return exactly 3 entries" in payload
+            assert "2. Public API is documented" in payload
+
+        # The retry's `satisfied` could not end the loop.
+        evaluations = state["_rubric_evaluations"]
+        assert [e["result"] for e in evaluations] == ["needs_revision", "needs_revision", "satisfied"]
+        assert [e["unverified"] for e in evaluations] == [False, True, False]
+        assert "everything looks fine" in evaluations[1]["explanation"]
+        assert state["_rubric_status"] == "satisfied"
+        assert state["_rubric_iterations"] == 3
+
+        injected = [m for m in result["messages"] if m.additional_kwargs.get("lc_source") == RUBRIC_GRADER_MESSAGE_SOURCE]
+        assert len(injected) == 2
+        # Iteration 0 fed back real defects plus a no-regression instruction.
+        assert "no changelog entry" in injected[0].content
+        assert "Criteria already satisfied -- do not regress these:" in injected[0].content
+        assert "- Public API is documented" in injected[0].content
+        # Iteration 1 fed back a verification gap, explicitly not a defect list.
+        assert "could not verify every criterion" in injected[1].content
+        assert "not a list of confirmed defects" in injected[1].content
+
     def test_no_rubric_is_noop(self) -> None:
         """Without a rubric on invocation state the middleware does not call the grader."""
         main_model = FixedGenericFakeChatModel(messages=iter([AIMessage(content="hello")]))
@@ -4485,6 +4758,10 @@ class TestRubricMiddlewareEndToEnd:
                     self._grader_call(
                         result="satisfied",
                         explanation="ok",
+                        # A criterion is required for this to be a usable
+                        # verdict; without one the coverage gate downgrades it
+                        # and the agent loops, which this test does not model.
+                        criteria=[{"name": "whatever", "passed": True}],
                         call_id="grader_1",
                     )
                 ]

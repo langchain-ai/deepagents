@@ -10,10 +10,13 @@ from uuid import uuid4
 from acp import (
     Agent as ACPAgent,
     InitializeResponse,
+    LoadSessionResponse,
     NewSessionResponse,
     PromptResponse,
     SetSessionConfigOptionResponse,
     SetSessionModeResponse,
+    audio_block,
+    image_block,
     run_agent as run_acp_agent,
     schema as _acp_schema,
     start_edit_tool_call,
@@ -27,7 +30,9 @@ from acp import (
 from acp.exceptions import RequestError
 from acp.schema import (
     AgentCapabilities,
+    AgentMessageChunk,
     AgentPlanUpdate,
+    AgentThoughtChunk,
     AudioContentBlock,
     ClientCapabilities,
     EmbeddedResourceContentBlock,
@@ -48,6 +53,7 @@ from acp.schema import (
     ToolCallStart,
     ToolCallUpdate,
     ToolKind,
+    UserMessageChunk,
 )
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, StateBackend
@@ -68,7 +74,7 @@ from deepagents_acp.utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Sequence
+    from collections.abc import Callable, Mapping, Sequence
 
     from acp.interfaces import Client
     from deepagents.graph import Checkpointer
@@ -86,6 +92,10 @@ McpServer: TypeAlias = HttpMcpServer | SseMcpServer | McpServerStdio
 
 _MCP_SERVER_TYPES = (HttpMcpServer, SseMcpServer, McpServerStdio)
 """Runtime MCP server classes used to detect legacy positional `new_session` calls."""
+
+_ACP_MODE_METADATA_KEY = "acp_mode"
+_ACP_MODEL_METADATA_KEY = "acp_model"
+_ACP_SESSION_METADATA_KEY = "acp_session"
 
 
 def _normalize_new_session_args(
@@ -123,6 +133,85 @@ def _is_mcp_servers(
     return all(isinstance(server, _MCP_SERVER_TYPES) for server in mcp_servers)
 
 
+def _content_block(
+    block: Mapping[str, Any],
+) -> TextContentBlock | ImageContentBlock | AudioContentBlock | None:
+    """Convert one normalized LangChain content block into an ACP block.
+
+    Returns `None` when the block has no ACP equivalent, so callers skip it.
+    Empty text is dropped because it renders nothing.
+    """
+    block_type = block.get("type")
+    if block_type == "text":
+        text = block.get("text")
+        return text_block(text) if isinstance(text, str) and text else None
+    data = block.get("base64")
+    mime_type = block.get("mime_type")
+    if not (isinstance(data, str) and isinstance(mime_type, str)):
+        return None
+    if block_type == "image":
+        return image_block(data, mime_type, uri=block.get("url"))
+    if block_type == "audio":
+        return audio_block(data, mime_type)
+    return None
+
+
+def _content_blocks(
+    message: Any,
+) -> list[TextContentBlock | ImageContentBlock | AudioContentBlock]:
+    """Convert normalized user-message content into ACP blocks.
+
+    Reasoning blocks are not expected on user messages. They have no ACP
+    equivalent here and are dropped.
+    """
+    return [block for item in message.content_blocks if (block := _content_block(item))]
+
+
+def _visible_reasoning(block: Mapping[str, Any]) -> str | None:
+    """Return reasoning text a provider exposed in plaintext, or `None`.
+
+    Redacted or encrypted reasoning arrives as a `non_standard` block with no
+    `reasoning` string, so it never returns here. Whitespace is kept: reasoning
+    streams one delta at a time, and a delta that holds only a space or a line
+    break carries the word and paragraph breaks of the finished thought.
+    """
+    reasoning = block.get("reasoning")
+    if block.get("type") != "reasoning" or not isinstance(reasoning, str):
+        return None
+    return reasoning or None
+
+
+def _content_updates(
+    message: Any,
+    message_id: str | None = None,
+) -> list[AgentMessageChunk | AgentThoughtChunk]:
+    """Convert normalized assistant content into ordered ACP updates.
+
+    Both the live stream and session replay project through this function, so
+    block ordering and block-type support cannot drift between them. Live
+    chunks carry no message ID; replay passes the persisted one.
+    """
+    updates: list[AgentMessageChunk | AgentThoughtChunk] = []
+    for block in message.content_blocks:
+        if reasoning := _visible_reasoning(block):
+            updates.append(
+                AgentThoughtChunk(
+                    session_update="agent_thought_chunk",
+                    content=text_block(reasoning),
+                    message_id=message_id,
+                )
+            )
+        elif content := _content_block(block):
+            updates.append(
+                AgentMessageChunk(
+                    session_update="agent_message_chunk",
+                    content=content,
+                    message_id=message_id,
+                )
+            )
+    return updates
+
+
 @dataclass(frozen=True, slots=True)
 class AgentSessionContext:
     """Context for an agent session, including working directory, mode, and model."""
@@ -143,6 +232,7 @@ class AgentServerACP(ACPAgent):
         *,
         modes: SessionModeState | None = None,
         models: list[dict[str, str]] | None = None,
+        load_sessions: bool = False,
     ) -> None:
         """Initialize the ACP agent server with the given agent factory or compiled graph.
 
@@ -151,11 +241,15 @@ class AgentServerACP(ACPAgent):
             modes: Optional mode configuration (deprecated, use config_options instead)
             models: Optional list of available models with 'value', 'name', and optionally
               'description'
+            load_sessions: Advertise and implement durable `session/load`. The agent graph
+              must use a checkpointer that survives server restarts.
         """
         super().__init__()
         self._cwd = ""
         self._agent_factory = agent
         self._agent: CompiledStateGraph | None = None
+        self._agent_session_id: str | None = None
+        self._load_sessions = load_sessions
 
         if isinstance(agent, CompiledStateGraph):
             if modes is not None:
@@ -260,9 +354,10 @@ class AgentServerACP(ACPAgent):
         return InitializeResponse(
             protocol_version=protocol_version,
             agent_capabilities=AgentCapabilities(
+                load_session=self._load_sessions,
                 prompt_capabilities=PromptCapabilities(
                     image=True,
-                )
+                ),
             ),
         )
 
@@ -279,13 +374,10 @@ class AgentServerACP(ACPAgent):
         self._session_cwds[session_id] = cwd
         self._session_mcp_servers[session_id] = mcp_servers
 
-        # Initialize session state
-        if self._modes is not None:
-            self._session_modes[session_id] = self._modes.current_mode_id
-            self._session_mode_states[session_id] = self._modes
+        self._initialize_session_options(session_id)
 
-        if self._models is not None and len(self._models) > 0:
-            self._session_models[session_id] = self._models[0]["value"]
+        if self._load_sessions:
+            await self._persist_session(session_id)
 
         # Build config options if we have modes or models
         config_options = None
@@ -297,6 +389,42 @@ class AgentServerACP(ACPAgent):
             session_id=session_id,
             modes=self._modes if self._modes is not None else None,
             config_options=config_options,
+        )
+
+    async def load_session(
+        self,
+        cwd: str,
+        session_id: str,
+        additional_directories: list[str] | None = None,  # noqa: ARG002  # capability is not advertised
+        mcp_servers: list[McpServer] | None = None,
+        **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
+    ) -> LoadSessionResponse:
+        """Restore and replay a persisted ACP session."""
+        if not self._load_sessions:
+            method = "session/load"
+            raise RequestError.method_not_found(method)
+
+        self._session_cwds[session_id] = cwd
+        agent = self._checkpointed_agent(session_id)
+        metadata = (await agent.aget_state(self._session_config(session_id))).metadata or {}
+        if metadata.get(_ACP_SESSION_METADATA_KEY) is not True:
+            self._forget_session(session_id)
+            raise RequestError.resource_not_found(session_id)
+        if metadata.get("cwd") != cwd:
+            self._forget_session(session_id)
+            raise RequestError.invalid_params(
+                {"cwd": "must match the working directory used to create the session"}
+            )
+
+        self._session_mcp_servers[session_id] = list(mcp_servers or [])
+        self._initialize_session_options(session_id)
+        if self._restore_session_options(session_id, metadata):
+            self._reset_agent(session_id)
+
+        await self._replay_session(session_id, agent)
+        return LoadSessionResponse(
+            modes=self._session_mode_states.get(session_id),
+            config_options=self._build_config_options(session_id) or None,
         )
 
     async def set_session_mode(
@@ -314,6 +442,8 @@ class AgentServerACP(ACPAgent):
                 current_mode_id=mode_id,
             )
             self._reset_agent(session_id)
+            if self._load_sessions:
+                await self._persist_session(session_id)
         return SetSessionModeResponse()
 
     async def set_config_option(
@@ -349,6 +479,8 @@ class AgentServerACP(ACPAgent):
                     current_mode_id=value,
                 )
                 self._reset_agent(session_id)
+                if self._load_sessions:
+                    await self._persist_session(session_id)
 
         elif config_id == "model":
             # Handle model switching
@@ -363,6 +495,8 @@ class AgentServerACP(ACPAgent):
                 self._session_models[session_id] = value
                 # Reset the agent to use the new model
                 self._reset_agent(session_id)
+                if self._load_sessions:
+                    await self._persist_session(session_id)
         else:
             msg = f"Unknown config option: {config_id}"
             raise RequestError(-32602, msg)
@@ -616,6 +750,181 @@ class AgentServerACP(ACPAgent):
             raw_input=tool_args,
         )
 
+    def _initialize_session_options(self, session_id: str) -> None:
+        """Initialize mode and model state for a new or loaded session."""
+        if self._modes is not None:
+            self._session_modes[session_id] = self._modes.current_mode_id
+            self._session_mode_states[session_id] = self._modes
+        if self._models:
+            self._session_models[session_id] = self._models[0]["value"]
+
+    def _restore_session_options(self, session_id: str, metadata: Mapping[str, Any]) -> bool:
+        """Restore persisted mode and model selections.
+
+        Returns:
+            Whether restoring the selections requires rebuilding a factory agent.
+        """
+        changed = False
+        saved_mode = metadata.get(_ACP_MODE_METADATA_KEY)
+        if (
+            self._modes is not None
+            and isinstance(saved_mode, str)
+            and any(mode.id == saved_mode for mode in self._modes.available_modes)
+        ):
+            state = self._session_mode_states[session_id]
+            self._session_modes[session_id] = saved_mode
+            self._session_mode_states[session_id] = SessionModeState(
+                available_modes=state.available_modes,
+                current_mode_id=saved_mode,
+            )
+            changed = saved_mode != self._modes.current_mode_id
+
+        saved_model = metadata.get(_ACP_MODEL_METADATA_KEY)
+        if (
+            self._models
+            and isinstance(saved_model, str)
+            and any(model["value"] == saved_model for model in self._models)
+        ):
+            self._session_models[session_id] = saved_model
+            changed = changed or saved_model != self._models[0]["value"]
+        return changed
+
+    def _session_config(self, session_id: str) -> RunnableConfig:
+        """Build the LangGraph config and durable metadata for an ACP session."""
+        metadata = {
+            _ACP_SESSION_METADATA_KEY: True,
+            "cwd": self._session_cwds[session_id],
+        }
+        if session_id in self._session_modes:
+            metadata[_ACP_MODE_METADATA_KEY] = self._session_modes[session_id]
+        if session_id in self._session_models:
+            metadata[_ACP_MODEL_METADATA_KEY] = self._session_models[session_id]
+        return {"configurable": {"thread_id": session_id}, "metadata": metadata}
+
+    def _checkpointed_agent(self, session_id: str) -> CompiledStateGraph:
+        """Return the session agent, requiring a configured checkpointer."""
+        if self._agent is None or self._agent_session_id != session_id:
+            self._reset_agent(session_id)
+        if self._agent is None or getattr(self._agent, "checkpointer", None) is None:
+            msg = "session/load requires an agent compiled with a checkpointer"
+            raise RuntimeError(msg)
+        return self._agent
+
+    async def _persist_session(self, session_id: str) -> None:
+        """Write the current ACP session metadata to its checkpoint thread."""
+        agent = self._checkpointed_agent(session_id)
+        await agent.aupdate_state(self._session_config(session_id), {}, as_node="__start__")
+
+    async def _replay_session(
+        self,
+        session_id: str,
+        agent: CompiledStateGraph,
+    ) -> None:
+        """Replay persisted conversation entries before `session/load` returns."""
+        snapshots = [
+            snapshot
+            async for snapshot in agent.aget_state_history(self._session_config(session_id))
+        ]
+        messages: dict[str, Any] = {}
+        for snapshot in reversed(snapshots):
+            for message in snapshot.values.get("messages", []):
+                messages[message.id] = message
+
+        active_tool_calls: dict[str, dict[str, Any]] = {}
+        for message in messages.values():
+            if message.type == "human":
+                await self._replay_human_message(session_id, message.id, message)
+            elif message.type == "ai":
+                await self._replay_ai_message(session_id, message.id, message, active_tool_calls)
+            elif message.type == "tool":
+                await self._replay_tool_message(session_id, message, active_tool_calls)
+
+    async def _replay_human_message(
+        self,
+        session_id: str,
+        message_id: str,
+        message: Any,
+    ) -> None:
+        """Replay one persisted user message."""
+        for block in _content_blocks(message):
+            await self._conn.session_update(
+                session_id=session_id,
+                update=UserMessageChunk(
+                    session_update="user_message_chunk",
+                    content=block,
+                    message_id=message_id,
+                ),
+                source="DeepAgent",
+            )
+
+    async def _replay_ai_message(
+        self,
+        session_id: str,
+        message_id: str,
+        message: Any,
+        active_tool_calls: dict[str, dict[str, Any]],
+    ) -> None:
+        """Replay one persisted assistant message and its tool calls."""
+        for update in _content_updates(message, message_id):
+            await self._conn.session_update(
+                session_id=session_id,
+                update=update,
+                source="DeepAgent",
+            )
+        for tool_call in message.tool_calls:
+            tool_id = tool_call.get("id")
+            if tool_id is None:
+                continue
+            tool_name = tool_call["name"]
+            tool_args = tool_call["args"]
+            active_tool_calls[tool_id] = {"name": tool_name, "args": tool_args}
+            await self._conn.session_update(
+                session_id=session_id,
+                update=self._create_tool_call_start(tool_id, tool_name, tool_args),
+                source="DeepAgent",
+            )
+            if tool_name == "write_todos":
+                await self._handle_todo_update(
+                    session_id,
+                    tool_args.get("todos", []),
+                    log_plan=False,
+                )
+
+    async def _replay_tool_message(
+        self,
+        session_id: str,
+        message: Any,
+        active_tool_calls: dict[str, dict[str, Any]],
+    ) -> None:
+        """Replay one persisted tool result."""
+        tool_info = active_tool_calls.get(message.tool_call_id)
+        if tool_info is None or tool_info["name"] == "edit_file":
+            return
+        content = "".join(
+            block["text"] for block in message.content_blocks if block.get("type") == "text"
+        )
+        if tool_info["name"] == "execute":
+            content = format_execute_result(
+                command=str(tool_info["args"].get("command", "")),
+                result=content,
+            )
+        await self._conn.session_update(
+            session_id=session_id,
+            update=update_tool_call(
+                tool_call_id=message.tool_call_id,
+                status="failed" if message.status == "error" else "completed",
+                content=[tool_content(text_block(content))],
+            ),
+            source="DeepAgent",
+        )
+
+    def _forget_session(self, session_id: str) -> None:
+        """Discard state created while validating a session."""
+        self._session_cwds.pop(session_id, None)
+        if self._agent_session_id == session_id:
+            self._agent = None
+            self._agent_session_id = None
+
     def _reset_agent(self, session_id: str) -> None:
         """Reset the agent instance, re-creating it from the factory if applicable."""
         cwd = self._session_cwds.get(session_id)
@@ -631,6 +940,7 @@ class AgentServerACP(ACPAgent):
             model = self._session_models.get(session_id) if self._models is not None else None
             context = AgentSessionContext(cwd=self._cwd, mode=mode, model=model)
             self._agent = self._agent_factory(context)
+        self._agent_session_id = session_id
 
     async def prompt(  # noqa: C901, PLR0912, PLR0915  # Complex streaming protocol handler with many branches
         self,
@@ -646,7 +956,9 @@ class AgentServerACP(ACPAgent):
         **kwargs: Any,  # noqa: ARG002  # ACP protocol interface parameter
     ) -> PromptResponse:
         """Process a user prompt and stream the agent response."""
-        if self._agent is None:
+        if self._agent is None or (
+            self._agent_session_id is not None and self._agent_session_id != session_id
+        ):
             self._reset_agent(session_id)
 
         if self._agent is None:
@@ -677,7 +989,7 @@ class AgentServerACP(ACPAgent):
             elif isinstance(block, EmbeddedResourceContentBlock):
                 content_blocks.extend(convert_embedded_resource_block_to_content_blocks(block))
         # Stream the deep agent response with multimodal content
-        config: RunnableConfig = {"configurable": {"thread_id": session_id}}
+        config = self._session_config(session_id)
 
         # Track active tool calls and accumulate chunks by index
         active_tool_calls = {}
@@ -754,14 +1066,6 @@ class AgentServerACP(ACPAgent):
 
                 message_chunk, _metadata = data
 
-                # Process tool call chunks
-                await self._process_tool_call_chunks(
-                    session_id,
-                    message_chunk,
-                    active_tool_calls,
-                    tool_call_accumulator,
-                )
-
                 if isinstance(message_chunk, str):
                     if not _namespace:
                         await self._log_text(text=message_chunk, session_id=session_id)
@@ -797,26 +1101,27 @@ class AgentServerACP(ACPAgent):
                             session_id=session_id, update=update, source="DeepAgent"
                         )
 
-                elif message_chunk.content:
-                    # content can be a string or a list of content blocks
-                    if isinstance(message_chunk.content, str):
-                        text = message_chunk.content
-                    elif isinstance(message_chunk.content, list):
-                        # Extract text from content blocks
-                        text = ""
-                        for block in message_chunk.content:
-                            if isinstance(block, dict) and block.get("type") == "text":
-                                text += block.get("text", "")
-                            elif isinstance(block, str):
-                                text += block
-                    else:
-                        text = str(message_chunk.content)
+                # Only the top-level graph reports to the client. Subagent text
+                # and reasoning stay internal.
+                elif not _namespace:
+                    for update in _content_updates(message_chunk):
+                        await self._conn.session_update(
+                            session_id=session_id,
+                            update=update,
+                            source="DeepAgent",
+                        )
 
-                    if text and not _namespace:
-                        await self._log_text(text=text, session_id=session_id)
+                # Emitted after the content above so a chunk that carries both
+                # keeps the block order that session replay uses.
+                await self._process_tool_call_chunks(
+                    session_id,
+                    message_chunk,
+                    active_tool_calls,
+                    tool_call_accumulator,
+                )
 
             # After streaming completes, check if we need to exit the loop
-            # The loop continues while there are interrupts (line 467)
+            # The loop continues while there are interrupts
             # We get the current state to check the loop condition
             current_state = await agent.aget_state(config)
             if pending_interrupts:

@@ -1,5 +1,6 @@
 """Tests for resume-state persistence and token display callbacks."""
 
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast, get_type_hints
 
@@ -15,6 +16,7 @@ from deepagents_code.resume_state import (
     _extract_context_tokens,
     coerce_goal_proposal_kind,
     coerce_goal_status,
+    coerce_model_spec,
 )
 
 
@@ -36,6 +38,39 @@ class TestResumeState:
         """ResumeState declares the `_model_params` channel."""
         assert "_model_params" in ResumeState.__annotations__
 
+    def test_last_model_request_timestamp_is_private(self) -> None:
+        """Cache timing must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_model_request_at"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_last_cache_model_spec_is_private(self) -> None:
+        """Cache identity must persist without entering public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_cache_model_spec"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_state_has_last_cache_endpoint_field(self) -> None:
+        """ResumeState declares the `_last_cache_endpoint` channel.
+
+        Without the annotation LangGraph silently drops the
+        `_checkpoint_command` write, so endpoint-change detection never fires
+        again -- and the `configurable_model` tests would stay green, because
+        they assert on the `Command.update` dict rather than on what the schema
+        accepts.
+        """
+        assert "_last_cache_endpoint" in ResumeState.__annotations__
+
+    def test_last_cache_endpoint_is_private(self) -> None:
+        """The endpoint identity must not enter public graph I/O.
+
+        It can embed a proxy hostname and path, so it belongs to the same
+        private set as the spec and timestamp it is checkpointed beside.
+        """
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_last_cache_endpoint"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
     def test_sticky_rubric_field_is_private(self):
         """Persistent TUI rubrics must not leak through the public schema."""
         # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the
@@ -45,6 +80,12 @@ class TestResumeState:
         # sentinel rather than matching the source text.
         hints = get_type_hints(ResumeState, include_extras=True)
         metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
+        assert PrivateStateAttr in metadata
+
+    def test_rubric_model_spec_is_private(self) -> None:
+        """The thread-local grader selection must not enter public graph I/O."""
+        hints = get_type_hints(ResumeState, include_extras=True)
+        metadata = getattr(hints["_rubric_model_spec"], "__metadata__", ())
         assert PrivateStateAttr in metadata
 
     def test_pending_goal_kind_is_private(self) -> None:
@@ -62,6 +103,17 @@ class TestResumeState:
     def test_middleware_exposes_state_schema(self):
         """ResumeStateMiddleware registers the correct state schema."""
         assert ResumeStateMiddleware.state_schema is ResumeState
+
+
+class TestCoerceRubricModelSpec:
+    """Tests for checkpointed grader model coercion."""
+
+    def test_accepts_nonblank_string(self) -> None:
+        assert coerce_model_spec(" openai:gpt-5.5 ") == "openai:gpt-5.5"
+
+    @pytest.mark.parametrize("value", [None, "", "   ", 1, {}])
+    def test_rejects_malformed_values(self, value: object) -> None:
+        assert coerce_model_spec(value) is None
 
 
 class TestCoerceGoalStatus:
@@ -340,6 +392,35 @@ class TestCostDisplayCallbacks:
         assert app._session_cost_usd == pytest.approx(1.25)
         assert app._displayed_cost_usd == pytest.approx(1.25)
 
+    def test_cost_threshold_warns_once_per_thread(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # `DeepAgentsApp` reads the threshold through the shared resolver, whose
+        # user tier is the `DEFAULT_CONFIG_PATH` file `_isolate_state_dir`
+        # redirects under `tmp_path`.
+        (tmp_path / "config.toml").write_text(
+            "[warnings]\nsession_cost_threshold_usd = 1.0\n", encoding="utf-8"
+        )
+        app = DeepAgentsApp()
+        notifications: list[str] = []
+        monkeypatch.setattr(
+            app,
+            "notify",
+            lambda message, **_: notifications.append(message),
+        )
+
+        app._set_session_cost(1.0)
+        app._set_session_cost(1.01)
+        app._set_session_cost(2.0)
+
+        assert len(notifications) == 1
+        assert "$1.01" in notifications[0]
+        assert "/offload" in notifications[0]
+        assert "/clear" in notifications[0]
+
+        app._reset_thread_usage(1.5)
+        assert len(notifications) == 2
+
     def test_streamed_estimate_shows_ahead_of_the_server_total(self) -> None:
         """Spend the graph has not reported yet still moves the display."""
         app = DeepAgentsApp()
@@ -576,13 +657,14 @@ class TestCostDisplayCallbacks:
 
         summary = app._format_cost_summary()
 
-        assert "Estimated thread cost: $0.42" in summary
-        assert "By type since this thread was loaded:" in summary
-        assert "Assistant: $0.32" in summary
-        assert "Offload: $0.10" in summary
-        assert "openai:gpt-5.5: $0.42" in summary
-        assert "claude-sonnet-4-6" not in summary
-        assert "detailed usage metadata was unavailable" not in summary
+        assert summary == (
+            "Estimated thread cost: $0.42\n\n"
+            "By type since this thread was loaded:\n"
+            "- Assistant: $0.32\n"
+            "- Offload: $0.10\n\n"
+            "By model since this thread was loaded:\n"
+            "- openai:gpt-5.5: $0.42"
+        )
 
     def test_cost_summary_warns_when_current_details_are_incomplete(self) -> None:
         """Checkpoint spend missing from streamed stats is called out."""
@@ -656,12 +738,17 @@ class TestCostDisplayCallbacks:
 
         summary = app._format_cost_summary()
 
-        assert "Estimated cost for priced requests: $0.00" in summary
-        assert "1 of 2 recorded requests is included." in summary
-        assert "example:unknown-model — 1 request" in summary
-        assert "The full thread cost may be higher." in summary
-        assert "example:free-model: $0.00" in summary
-        assert "The recorded request was priced at $0.00." not in summary
+        assert summary == (
+            "Estimated cost for priced requests: $0.00\n\n"
+            "1 of 2 recorded requests is included.\n\n"
+            "Pricing was unavailable for:\n"
+            "- example:unknown-model — 1 request\n"
+            "The full thread cost may be higher.\n\n"
+            "By type since this thread was loaded:\n"
+            "- Assistant: $0.00\n\n"
+            "By model since this thread was loaded:\n"
+            "- example:free-model: $0.00"
+        )
 
     @pytest.mark.parametrize(
         ("request_count", "expected"),

@@ -28,7 +28,7 @@ dependencies = [
     "harbor[langsmith]>=0.20.0,<0.21.0",
     "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
-    "langsmith>=0.10.9,<0.11.0",
+    "langsmith>=0.10.9",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
@@ -120,6 +120,18 @@ override-dependencies = [
     "python-multipart>=0.0.32",
     # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
     "protobuf>=7.35.1",
+    # tox-dev/filelock#675: in 3.29.7 an `AsyncFileLock` acquire raises a spurious
+    # "Deadlock" whenever another asyncio task on the same loop already holds that
+    # path. Harbor takes exactly that lock around its Docker image builds, so every
+    # trial that starts while a peer is still building dies. Fixed in 3.30.3.
+    # `deepagents-code` caps filelock at `<3.30` and 3.29.7 is the last 3.29, so an
+    # override is the only way to reach the fix. Leave that cap alone: 3.30+ runs a
+    # blocking temp-dir probe at import time, which trips Blockbuster on the dcode
+    # async server startup path. This override is safe because it is scoped to the
+    # eval harness, where harbor imports filelock eagerly in a plain process with no
+    # Blockbuster active, and it does not reach the sandbox venv, which installs
+    # `deepagents-code` directly and so resolves filelock under that cap.
+    "filelock>=3.30.3",
 ]
 
 [tool.uv.sources]

@@ -5,18 +5,29 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import tempfile
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 
+# Select a synthetic launch profile before pytest imports any test module (and
+# therefore before any `deepagents_code` module can freeze `PATHS`). Function-
+# scoped fixtures are too late for this launch-time setting. Keep the temporary
+# directory alive for the worker process; its contents are synthetic fixtures,
+# never the developer's real profile or dotenv files.
+_TEST_PROFILE_HOME = tempfile.TemporaryDirectory(prefix="deepagents-code-tests-")
+os.environ["DEEPAGENTS_HOME"] = _TEST_PROFILE_HOME.name
+
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine, Generator
+    from collections.abc import Callable, Coroutine, Generator, Iterator, Mapping
     from pathlib import Path
 
     from textual.pilot import Pilot
     from textual.screen import Screen
 
+    from deepagents_code._paths import DeepAgentsPathSnapshot
     from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.config_manifest import ConfigOption
 
 
 class DrainModalCommands(Protocol):
@@ -118,7 +129,7 @@ def _restore_os_environ() -> Generator[None, None, None]:
 def _clear_langsmith_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent LangSmith env vars loaded from .env from leaking into tests.
 
-    `deepagents_code.config` loads dotenv lazily on first `settings` access
+    `deepagents_code.config` loads dotenv lazily on first `credentials` access
     (via `_ensure_bootstrap()` / `_load_dotenv()`, which reads values with
     `dotenv.dotenv_values()`) and may inject `LANGSMITH_*` variables from a
     local `.env` file. Because those mutations persist in `os.environ`, they
@@ -165,16 +176,16 @@ def _disable_langsmith_batching(monkeypatch: pytest.MonkeyPatch) -> None:
 def _clear_tavily_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent a Tavily key loaded from .env from leaking into tests.
 
-    Like `LANGSMITH_*`, the lazy dotenv load on first `settings` access (see
+    Like `LANGSMITH_*`, the lazy dotenv load on first `credentials` access (see
     `_clear_langsmith_env`) may inject `TAVILY_API_KEY` from a developer's
     local `.env`.
-    A leaked key flips `settings.has_tavily` to `True`, which silently changes
+    A leaked key flips `credentials.has_tavily` to `True`, which silently changes
     onboarding behavior: the launch sequence short-circuits the Tavily step on
     a dev machine but runs it on CI, so a test that reaches the step passes
     locally yet hangs (real screen push) or writes a credential on CI.
 
     Each test that *needs* a Tavily key should set it explicitly via
-    `monkeypatch.setenv` or patch `settings.has_tavily`.
+    `monkeypatch.setenv` or patch `credentials.has_tavily`.
     """
     for key in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
         monkeypatch.delenv(key, raising=False)
@@ -185,7 +196,7 @@ def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent developer MCP trust decisions from changing unit-test behavior.
 
     These may already be present in `os.environ` before any fixture runs:
-    `deepagents_code.config` loads dotenv lazily on first `settings` access
+    `deepagents_code.config` loads dotenv lazily on first `credentials` access
     (via `_ensure_bootstrap()` / `_load_dotenv()`) and injects them from the
     developer's global `~/.deepagents/.env`. The dangerous allowlist adds
     project-agnostic trust decisions, so leaving it set changes trust-list and
@@ -203,12 +214,44 @@ def _clear_project_mcp_trust_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_user_hooks_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Prevent the developer's real hook config from reaching hook loading.
+
+    `_isolate_price_overrides` already redirects
+    `model_config.DEFAULT_CONFIG_DIR`, but `hooks.loading` and `hooks.runtime`
+    bind that name with a `from` import at module import. Whether they see the
+    redirect is therefore an ordering accident: imported lazily inside a test
+    they pick up `tmp_path`, but imported at collection -- which is what a
+    whole-suite run does -- they keep the developer's real `~/.deepagents`.
+
+    A `SessionEnd` entry there is the damaging case. Any `DeepAgentsApp` that
+    finishes startup during a test loads it, and `App.exit()` consults
+    `self._hooks.has_handlers(SESSION_END)` and takes the deferred-teardown
+    branch when handlers exist, so `TestExitGracefulWorkerHandoff`'s
+    synchronous-exit assertions fail. It reads as load-dependent flakiness
+    because those tests race app startup, and it never reproduces in CI, where
+    no such file exists.
+
+    Rebind both to the same `tmp_path` the price-override fixture uses, so all
+    three names agree on the user config directory, and drop the legacy
+    loader's parse cache in case it already holds real entries. Tests needing
+    hook config patch these explicitly, which still wins inside the test body.
+    """
+    for module in ("deepagents_code.hooks.loading", "deepagents_code.hooks.runtime"):
+        monkeypatch.setattr(f"{module}.DEFAULT_CONFIG_DIR", tmp_path)
+
+    import deepagents_code.hooks.legacy as hooks_legacy
+
+    monkeypatch.setattr(hooks_legacy, "_hooks_config", None)
+
+
+@pytest.fixture(autouse=True)
 def _clear_debug_notifications_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Prevent the debug-notifications override from changing suppression tests.
 
     `DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS` may be loaded from the developer's
     global `~/.deepagents/.env` when `deepagents_code.config` loads dotenv
-    lazily on first `settings` access, before fixtures run. When set, the
+    lazily on first `credentials` access, before fixtures run. When set, the
     notification suppression path skips persistence -- it removes the entry
     without calling `suppress_warning` -- so tests asserting that a suppression
     is persisted (or that a failed suppression keeps the row) break. Tests that
@@ -360,6 +403,7 @@ def _clear_update_env(
     monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+    monkeypatch.setenv("DEEPAGENTS_CODE_PLUGIN_AUTO_UPDATE", "0")
 
     if _self_manages_update_check(request):
         monkeypatch.delenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raising=False)
@@ -407,7 +451,13 @@ def _skip_managed_tool_downloads(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_behavior_override_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prevent developer behavior overrides from changing default-path tests."""
+    """Prevent developer behavior overrides from changing default-path tests.
+
+    `DEEPAGENTS_HOME` is deliberately *not* cleared here. This module sets it
+    at collection time so nothing touches the developer's real profile, and any
+    subprocess a test spawns inherits `os.environ`. Deleting it would send such
+    a child back to `~/.deepagents`.
+    """
     for key in (
         "DEEPAGENTS_CODE_CURSOR_STYLE",
         "DEEPAGENTS_CODE_EXPERIMENTAL",
@@ -531,6 +581,54 @@ def _isolate_global_dotenv(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> N
     )
 
 
+def redirect_managed_config(monkeypatch: pytest.MonkeyPatch, path: Path) -> None:
+    """Point every managed-config seam at `path`.
+
+    The snapshot loader resolves through `resolve_managed_path`, error messages
+    render `managed_config_path`, and both names are also bound at import time
+    in the modules that read them. Patching one seam leaves a test reading the
+    developer's real host policy file — or, worse, silently reading nothing —
+    so they are redirected together.
+    """
+    from deepagents_code.configuration import paths, service
+    from deepagents_code.configuration.paths import ResolvedManagedPath
+
+    for module in (paths, service):
+        monkeypatch.setattr(module, "managed_config_path", lambda **_kwargs: path)
+        monkeypatch.setattr(
+            module,
+            "resolve_managed_path",
+            lambda **_kwargs: ResolvedManagedPath(path),
+        )
+
+
+@pytest.fixture(autouse=True)
+def _isolate_managed_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[None]:
+    """Point managed config at a missing file and reset its process cache.
+
+    The managed path is fixed per platform, so without this the suite reads
+    whatever policy the developer's machine (or a CI image) has installed, and
+    unrelated tests change behavior. The snapshot is cached process-wide, so it
+    is also cleared on both sides of every test.
+    """
+    from deepagents_code.configuration import service
+
+    absent = tmp_path / "absent-managed_config.toml"
+    redirect_managed_config(monkeypatch, absent)
+    # The "expected a table" dedup set is process-global. Left alone, the first
+    # test to trip it decides what every later test sees, and the suite runs in
+    # random order.
+    from deepagents_code import config_manifest
+
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
+    yield
+    config_manifest._warned_non_table_paths.clear()
+    service.invalidate_config_sources()
+
+
 @pytest.fixture(autouse=True)
 def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Redirect app-managed state and config away from the developer's data."""
@@ -541,6 +639,13 @@ def _isolate_state_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         tmp_path / "config.toml",
     )
     monkeypatch.setattr("deepagents_code.onboarding.DEFAULT_STATE_DIR", state_dir)
+    # Installation-scoped and resolved at import time, so patching profile state
+    # above does not move it. Left unpatched, update-path tests would contend
+    # with this checkout's real tool-environment lock.
+    monkeypatch.setattr(
+        "deepagents_code.update_check.UPDATE_LOCK_FILE",
+        state_dir / "update.lock",
+    )
     # Keep ordinary create/amend goal tests free of the one-time preference
     # modal without writing files into `tmp_path` (that would pollute git and
     # empty-tree assertions). Dedicated prompt coverage clears this env var.
@@ -649,3 +754,201 @@ def wait_for_modal() -> WaitForModal:
         raise AssertionError(msg)
 
     return _wait
+
+
+@pytest.hookimpl(wrapper=True)
+def pytest_sessionfinish() -> Generator[None, None, None]:
+    """Close any debug-log file handlers still attached at session end.
+
+    Companion to `_close_leaked_debug_handlers`, which is setup-only and so
+    sweeps *before* each test — leaving nothing to sweep after the last one. A
+    handler installed during that final test would otherwise stay attached, and
+    its file open, for the remainder of the process.
+
+    This is a tidiness guarantee, not a warning fix: `logging.shutdown()` runs
+    at `atexit` and closes still-attached handlers, so an unswept handler does
+    not produce a `ResourceWarning` at interpreter exit.
+    """
+    try:
+        return (yield)
+    finally:
+        _sweep_debug_handlers()
+
+
+def _sweep_debug_handlers() -> None:
+    """Detach and close leaked `configure_debug_logging` file handlers.
+
+    `configure_debug_logging` tags the `FileHandler`s it installs with
+    `_DEBUG_HANDLER_ATTR`. Leaving one attached is not itself the bug: the
+    logger holds a strong reference, so the handler is not collected. The
+    failure comes one step later, when some *other* test clears or replaces
+    that logger's handlers and drops the last reference — the GC then reports
+    the unclosed file as a `PytestUnraisableExceptionWarning` against whichever
+    test happens to be running, which is why the blame lands on an innocent
+    test.
+    """
+    import logging
+
+    from deepagents_code._debug import _DEBUG_HANDLER_ATTR
+
+    for name in list(logging.root.manager.loggerDict):
+        target = logging.getLogger(name)
+        for handler in target.handlers[:]:
+            if isinstance(handler, logging.FileHandler) and getattr(
+                handler, _DEBUG_HANDLER_ATTR, False
+            ):
+                target.removeHandler(handler)
+                handler.close()
+
+
+@pytest.fixture
+def sweep_debug_handlers() -> Callable[[], None]:
+    """Expose `_sweep_debug_handlers` so tests can pin its behaviour.
+
+    The sweep runs autouse at setup, before any test body, so a test cannot
+    otherwise observe it acting on handlers the test itself installed.
+    """
+    return _sweep_debug_handlers
+
+
+@pytest.fixture(autouse=True)
+def _close_leaked_debug_handlers() -> None:
+    """Sweep debug-log file handlers installed before each test starts.
+
+    `deepagents_code.__init__` calls `configure_debug_logging` at import time,
+    so a `DEEPAGENTS_CODE_DEBUG` exported in the environment (a developer shell,
+    or a CI runner configured that way) attaches a real file handler to the
+    package logger before collection — and per-test checks then blame whichever
+    test first clears that logger's handlers. `config._quiet_sdk_logging` is the
+    other producer, tagging handlers on every SDK and MCP transport logger it
+    touches; the sweep walks the whole `loggerDict`, so both are in scope.
+
+    Individual tests are responsible for closing handlers they install
+    themselves; this only catches ones leaked from import time or from a prior
+    test that forgot. Sweeping rather than failing on a stray handler does mean
+    a test that forgets to close its own now passes quietly — accepted because
+    the goal here is to stop misattributed failures, and a detect-and-fail
+    variant would reintroduce them for the import-time handler nobody owns.
+    """
+    _sweep_debug_handlers()
+
+
+def resolve_option_for_test(
+    option: ConfigOption[object],
+    *,
+    toml_data: dict[str, Any],
+    managed_toml_data: dict[str, Any] | None = None,
+) -> tuple[Any, str]:
+    """Resolve `option` through production code, returning `(value, source)`.
+
+    Stand-in for the retired `resolve_scalar` wrapper. It delegates to
+    `_resolve_option` rather than rebuilding the resolver, so the assertions
+    that ride on it -- especially the `caplog` ones -- exercise the shipped
+    resolution and diagnostics path instead of a copy maintained in the test
+    suite. Three modules kept private copies that did rebuild it, which left
+    roughly forty logging assertions verifying test scaffolding.
+
+    Args:
+        option: Manifest option to resolve.
+        toml_data: User `config.toml` table for this resolution.
+        managed_toml_data: Managed table. Omit for the process snapshot, which
+            `_isolate_managed_config` points at an absent file and
+            `redirect_managed_config` repoints per test.
+
+    Returns:
+        The resolved value and its compatibility source label.
+    """
+    from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
+        _resolve_option,
+    )
+
+    resolved = _resolve_option(
+        option, toml_data=toml_data, managed_toml_data=managed_toml_data
+    )
+    _emit_ranked_diagnostics(option, resolved)
+    return resolved.value, _ranked_source(resolved)
+
+
+_PATHS_BINDING_MODULES: tuple[str, ...] = (
+    "agent",
+    "app",
+    "client.launch.server",
+    "config",
+    "main",
+    "managed_tools",
+    "mcp_auth",
+    "mcp_tools",
+    "model_config",
+    "skills.commands",
+    "tui.widgets.agent_selector",
+    "tui.widgets.auth",
+    "tui.widgets.launch_init",
+    "tui.widgets.model_selector",
+    "tui.widgets.notification_center",
+    "ui",
+    "update_check",
+)
+"""Modules that bind `PATHS` with `from ... import PATHS` at import time.
+
+Those bindings are made once, so patching `deepagents_code._paths.PATHS` alone
+does **not** reach them — only the late-bound `get_deepagents_home()` readers
+follow it. `install_profile_snapshot` patches every name here so a test does
+not have to know which binding style its subject uses.
+
+Do not maintain this by hand.
+`test_paths.TestPathsBindingModulesDrift` parses every module under
+`deepagents_code` and fails when this tuple does not match what it finds. A
+module missing here is the dangerous direction: `install_profile_snapshot`
+would silently not patch it, and the test using the fixture would read the
+developer's real profile and still pass.
+"""
+
+
+class InstallProfileSnapshot(Protocol):
+    """Install a synthetic frozen path snapshot for the duration of a test."""
+
+    def __call__(
+        self,
+        root: Path | str | None,
+        *,
+        launch_home: Path,
+    ) -> DeepAgentsPathSnapshot:
+        """Install the snapshot and return it."""
+        ...
+
+
+@pytest.fixture
+def install_profile_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> InstallProfileSnapshot:
+    """Return a callable that installs a synthetic `PATHS` snapshot.
+
+    `PATHS` is a frozen launch-time snapshot, so a test that needs a different
+    profile root must replace the whole object — in `_paths` *and* in every
+    module that bound it at import.
+
+    Returns:
+        A callable taking the configured `DEEPAGENTS_HOME` value (or `None` for
+        the default profile) plus the launch home, returning the snapshot.
+    """
+    import sys
+
+    from deepagents_code._paths import _capture_paths
+
+    def _install(
+        root: Path | str | None, *, launch_home: Path
+    ) -> DeepAgentsPathSnapshot:
+        configured = None if root is None else str(root)
+        snapshot = _capture_paths(configured, launch_home=launch_home)
+        monkeypatch.setattr("deepagents_code._paths.PATHS", snapshot)
+        # Patch only what is already imported. Importing the rest would pull
+        # `app`/`main` into every test that just needs a profile root.
+        for name in _PATHS_BINDING_MODULES:
+            module = sys.modules.get(f"deepagents_code.{name}")
+            if module is not None:
+                monkeypatch.setattr(module, "PATHS", snapshot, raising=False)
+        return snapshot
+
+    return _install

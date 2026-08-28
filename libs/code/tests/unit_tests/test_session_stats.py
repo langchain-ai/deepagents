@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from io import StringIO
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk
@@ -13,13 +15,21 @@ from deepagents_code._session_stats import (
     ModelStats,
     RecordedRequest,
     SessionStats,
+    UsageLedgerKey,
     classify_usage_kind,
     finalize_recorded_requests,
     format_cost,
+    format_cost_estimate,
     format_token_count,
     print_usage_table,
     record_message_usage,
+    record_model_usage_event,
+    usage_table_enabled,
 )
+from deepagents_code.cost_tracking import MODEL_USAGE_EVENT_VERSION
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 class TestFormatCost:
@@ -39,6 +49,48 @@ class TestFormatCost:
     )
     def test_format(self, cost_usd: float, expected: str) -> None:
         assert format_cost(cost_usd) == expected
+
+
+class TestFormatCostEstimate:
+    """Tests for the rounded, approximate cost formatting used for estimates."""
+
+    @pytest.mark.parametrize(
+        ("cost_usd", "expected"),
+        [
+            # Edge conventions match `format_cost`.
+            (0.0, "$0.00"),
+            (-1.0, "$0.00"),
+            (0.0001, "<$0.01"),
+            (0.009, "<$0.01"),
+            # Sub-dime values keep cent-level precision and round upward.
+            (0.01, "~$0.01"),
+            (0.042, "~$0.05"),
+            (0.0999, "~$0.10"),
+            # Two significant figures from a dime upward, always rounding up
+            # so an upper-bound estimate never understates the cost.
+            (0.6234, "~$0.63"),
+            (0.5062, "~$0.51"),
+            (0.999, "~$1.0"),
+            (1.234, "~$1.3"),
+            (1.25, "~$1.3"),
+            (1.15, "~$1.2"),
+            (1.0, "~$1.0"),
+            (9.9, "~$9.9"),
+            (9.99, "~$10"),
+            (12.34, "~$13"),
+            (99.9, "~$100"),
+            (123.4, "~$130"),
+            (999.9, "~$1000"),
+        ],
+    )
+    def test_format(self, cost_usd: float, expected: str) -> None:
+        assert format_cost_estimate(cost_usd) == expected
+
+    def test_rounds_up_to_preserve_upper_bound(self) -> None:
+        """A displayed upper bound must never be lower than the estimate."""
+        assert format_cost_estimate(0.105) == "~$0.11"
+        assert format_cost_estimate(0.115) == "~$0.12"
+        assert format_cost_estimate(1.24) == "~$1.3"
 
 
 class TestFormatTokenCount:
@@ -391,7 +443,7 @@ class TestRecordMessageUsage:
         delta and merges again, doubling the request's tokens and cost.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
 
         finalize_recorded_requests(ledger)
@@ -407,7 +459,7 @@ class TestRecordMessageUsage:
     def test_round_boundary_does_not_break_incremental_chunks(self) -> None:
         """Chunks within one round must still revise, not start a new request."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(stats, self._chunk(1_000, 60), recorded_requests=ledger)
         record_message_usage(stats, self._chunk(0, 40), recorded_requests=ledger)
@@ -423,7 +475,7 @@ class TestRecordMessageUsage:
         accumulator no longer has, so the status bar and `/cost` disagree.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         first = record_message_usage(
             stats,
             self._chunk(1_000, 60, names_model=False),
@@ -463,7 +515,7 @@ class TestRecordMessageUsage:
     def test_retracting_a_kind_s_only_request_drops_its_row(self) -> None:
         """An all-zero kind row would show as an empty line in the breakdown."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         record_message_usage(
             stats, self._chunk(1_000, 60), kind="subagent", recorded_requests=ledger
         )
@@ -483,7 +535,7 @@ class TestRecordMessageUsage:
         must survive too, so token counts cannot stand in for stream position.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         for output_tokens in (34, 33, 33):
             record_message_usage(
@@ -507,7 +559,7 @@ class TestRecordMessageUsage:
         fallback-model row and a real-model row in the breakdown.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(
             stats,
@@ -557,7 +609,7 @@ class TestRecordMessageUsage:
     def test_split_stream_costs_the_same_as_an_unsplit_one(self) -> None:
         """Chunking is a transport detail; it must not change the estimate."""
         split = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         for chunk in (
             self._chunk(1_000, 60, names_model=False),
             self._chunk(0, 40, names_model=True),
@@ -592,7 +644,7 @@ class TestRecordMessageUsage:
         would leave the token readout above the count the cost was based on.
         """
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(
             stats,
@@ -618,7 +670,7 @@ class TestRecordMessageUsage:
     def test_correction_only_chunk_still_revises_the_request(self) -> None:
         """A correction with no positive counts must not be discarded."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
         record_message_usage(stats, self._chunk(-200, 0), recorded_requests=ledger)
@@ -630,7 +682,7 @@ class TestRecordMessageUsage:
     def test_cached_token_details_survive_the_merge(self) -> None:
         """Cache buckets carry their own rates, so merging must keep them."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         for output_tokens in (60, 40):
             message = AIMessageChunk(
@@ -656,13 +708,15 @@ class TestRecordMessageUsage:
         record_message_usage(uncached, self._chunk(1_000, 100), recorded_requests={})
 
         # Cache reads are cheaper than ordinary input, so losing the detail in
-        # the merge would silently overprice the request.
+        # the merge would silently overprice the request or status metric.
         assert stats.total_cost_usd < uncached.total_cost_usd
+        assert stats.cache_read_tokens == 800
+        assert stats.cache_write_tokens == 0
 
     def test_reports_message_delta_and_running_request_tokens(self) -> None:
         """Pricing needs a delta while context display needs the running total."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         first = record_message_usage(
             stats, self._chunk(1_000, 60), recorded_requests=ledger
@@ -685,7 +739,7 @@ class TestRecordMessageUsage:
     def test_completed_message_replay_is_recorded_once(self) -> None:
         """A resumed stream replays a completed message; it must not re-count."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         message = AIMessage(
             content="done",
             id="run-1",
@@ -707,7 +761,7 @@ class TestRecordMessageUsage:
     def test_completed_replay_after_chunks_is_not_added_on_top(self) -> None:
         """Chunks mark their ID so a later whole-message replay is skipped."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         record_message_usage(stats, self._chunk(1_000, 100), recorded_requests=ledger)
         replay = record_message_usage(
@@ -731,7 +785,7 @@ class TestRecordMessageUsage:
     def test_usage_without_an_id_is_always_recorded(self) -> None:
         """Anthropic's usage-bearing chunk carries no ID, so it cannot dedupe."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
 
         for _ in range(2):
             record_message_usage(
@@ -746,7 +800,7 @@ class TestRecordMessageUsage:
     def test_unusable_message_is_not_entered_in_the_ledger(self) -> None:
         """An unusable first pass must not suppress the real usage later."""
         stats = SessionStats()
-        ledger: dict[str, RecordedRequest] = {}
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
         empty = AIMessage(
             content="",
             id="run-1",
@@ -794,6 +848,394 @@ class TestRecordMessageUsage:
 
         assert record_message_usage(stats, SimpleNamespace(usage_metadata=None)) is None
         assert record_message_usage(stats, SimpleNamespace()) is None
+        assert stats.request_count == 0
+
+
+class TestAttemptScopedUsage:
+    """Attempt-scoped dedupe for retries that reuse a provider message ID."""
+
+    @staticmethod
+    def _chunk(
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        names_model: bool = True,
+    ) -> AIMessageChunk:
+        return AIMessageChunk(
+            content="",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": input_tokens,
+                "output_tokens": output_tokens,
+                "total_tokens": input_tokens + output_tokens,
+            },
+            response_metadata=(
+                {"model_name": "gpt-5.5", "model_provider": "openai"}
+                if names_model
+                else {"model_provider": "openai"}
+            ),
+        )
+
+    def test_same_message_id_counts_once_per_attempt(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        first = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+        retry = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=2
+        )
+
+        assert first is not None
+        assert retry is not None
+        assert stats.request_count == 2
+        assert stats.input_tokens == 2_000
+        assert stats.output_tokens == 200
+        assert stats.per_model["openai", "gpt-5.5"].request_count == 2
+
+    def test_chunks_and_corrections_merge_within_one_attempt(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats, self._chunk(1_000, 60), recorded_requests=ledger, attempt_scope=1
+        )
+        record_message_usage(
+            stats, self._chunk(-200, 40), recorded_requests=ledger, attempt_scope=1
+        )
+
+        assert stats.request_count == 1
+        assert stats.input_tokens == 800
+        assert stats.output_tokens == 100
+
+    def test_model_correction_hits_the_attempt_it_belongs_to(self) -> None:
+        """A late model-naming chunk must re-file its own attempt's request."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 100, names_model=False),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+            attempt_scope=1,
+        )
+        # A second attempt of the same message ID completes without naming a
+        # model; the first attempt's late correction must not touch it.
+        record_message_usage(
+            stats,
+            AIMessage(
+                content="done",
+                id="run-1",
+                usage_metadata={
+                    "input_tokens": 2_000,
+                    "output_tokens": 50,
+                    "total_tokens": 2_050,
+                },
+            ),
+            recorded_requests=ledger,
+            attempt_scope=2,
+        )
+        correction = record_message_usage(
+            stats,
+            self._chunk(0, 0, names_model=True),
+            fallback_model="configured-model",
+            fallback_provider="openai",
+            recorded_requests=ledger,
+            attempt_scope=1,
+        )
+
+        assert correction is not None
+        assert stats.request_count == 2
+        entry = stats.per_model["openai", "gpt-5.5"]
+        assert entry.request_count == 1
+        assert entry.input_tokens == 1_000
+        assert entry.output_tokens == 100
+        assert stats.input_tokens == 3_000
+        assert stats.output_tokens == 150
+        assert stats.per_kind["assistant"].request_count == 2
+
+    def test_none_scope_preserves_legacy_dedupe(self) -> None:
+        """Without a scope, a completed-message replay still counts once."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        message = AIMessage(
+            content="done",
+            id="run-1",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+        )
+
+        first = record_message_usage(stats, message, recorded_requests=ledger)
+        replay = record_message_usage(stats, message, recorded_requests=ledger)
+
+        assert first is not None
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_none_scope_and_scoped_attempt_are_distinct_requests(self) -> None:
+        """Unscoped legacy recording must not collide with scoped attempts."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        legacy = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger
+        )
+        scoped = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+
+        assert legacy is not None
+        assert scoped is not None
+        assert stats.request_count == 2
+
+    def test_scoped_request_is_not_recounted_on_a_hitl_resume_replay(self) -> None:
+        """A turn that crosses a HITL pause must not count its spend twice.
+
+        The record pass keys by `(attempt_scope, message_id)`, but the attempt
+        scope closes when the attempt completes -- and `model_attempt(complete)`
+        always fires before the tool node interrupts. So the resume pass replays
+        with no scope open and keys by the bare message id. Closing the ledger at
+        the round boundary has to bridge the two shapes, or every turn containing
+        one tool approval reports double the tokens and cost.
+        """
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        scope = ((), "call-1", 0)
+
+        recorded = record_message_usage(
+            stats,
+            self._chunk(1_000, 100),
+            recorded_requests=ledger,
+            attempt_scope=scope,
+        )
+        assert recorded is not None
+        assert stats.request_count == 1
+
+        # End of the stream round: the tool node interrupts for approval.
+        finalize_recorded_requests(ledger)
+
+        # Resume pass. The scope is long closed, so this replays unscoped.
+        replay = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.input_tokens == 1_000
+        assert stats.output_tokens == 100
+
+    def test_resume_replay_credits_the_attempt_that_succeeded(self) -> None:
+        """After a retry, the projected row carries the surviving attempt."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats,
+            self._chunk(1_000, 100),
+            recorded_requests=ledger,
+            attempt_scope=((), "call-1", 0),
+        )
+        record_message_usage(
+            stats,
+            self._chunk(2_000, 200),
+            recorded_requests=ledger,
+            attempt_scope=((), "call-1", 1),
+        )
+        # Both attempts are real spend and both counted.
+        assert stats.request_count == 2
+
+        finalize_recorded_requests(ledger)
+        replay = record_message_usage(
+            stats, self._chunk(2_000, 200), recorded_requests=ledger
+        )
+
+        assert replay is None
+        assert stats.request_count == 2
+        # The bare-id projection took the last attempt written, which is the one
+        # that actually succeeded.
+        assert ledger["run-1"].input_tokens == 2_000
+
+    def test_model_usage_event_dedupes_per_attempt_scope(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        event = {
+            "type": "model_usage",
+            "version": 1,
+            "request_id": "child-1",
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            "model_name": "gpt-5.5",
+            "provider": "openai",
+            "thread_id": "thread-1",
+            "scope": "tools:task",
+        }
+
+        first = record_model_usage_event(
+            stats,
+            event,
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+            attempt_scope="attempt-a",
+        )
+        retry = record_model_usage_event(
+            stats,
+            event,
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+            attempt_scope="attempt-b",
+        )
+        replay = record_model_usage_event(
+            stats,
+            event,
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+            attempt_scope="attempt-a",
+        )
+
+        assert first is not None
+        assert retry is not None
+        assert replay is None
+        assert stats.request_count == 2
+        assert stats.per_kind["subagent"].request_count == 2
+
+    def test_finalize_closes_scoped_entries(self) -> None:
+        """The round boundary applies to scoped keys exactly as to bare ones."""
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+        finalize_recorded_requests(ledger)
+        replay = record_message_usage(
+            stats, self._chunk(1_000, 100), recorded_requests=ledger, attempt_scope=1
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+
+
+class TestRecordModelUsageEvent:
+    """Nested usage custom events share ordinary message accounting."""
+
+    @staticmethod
+    def _event() -> dict[str, object]:
+        return {
+            "type": "model_usage",
+            "version": 1,
+            "request_id": "child-1",
+            "usage_metadata": {
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+                "input_token_details": {"cache_read": 800},
+            },
+            "model_name": "gpt-5.5",
+            "provider": "openai",
+            "thread_id": "thread-1",
+            "scope": "tools:task",
+        }
+
+    def test_records_subagent_usage_once(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+
+        first = record_model_usage_event(
+            stats,
+            self._event(),
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+        )
+        replay = record_model_usage_event(
+            stats,
+            self._event(),
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+        )
+
+        assert first is not None
+        assert replay is None
+        assert stats.request_count == 1
+        assert stats.per_kind["subagent"].request_count == 1
+        assert stats.cache_read_tokens == 800
+        assert ("openai", "gpt-5.5") in stats.per_model
+
+    def test_deduplicates_with_ordinary_message(self) -> None:
+        stats = SessionStats()
+        ledger: dict[UsageLedgerKey, RecordedRequest] = {}
+        message = AIMessage(
+            content="done",
+            id="child-1",
+            usage_metadata={
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "total_tokens": 1_100,
+            },
+            response_metadata={
+                "model_name": "gpt-5.5",
+                "model_provider": "openai",
+            },
+        )
+
+        record_message_usage(stats, message, kind="subagent", recorded_requests=ledger)
+        replay = record_model_usage_event(
+            stats,
+            self._event(),
+            active_thread_id="thread-1",
+            recorded_requests=ledger,
+        )
+
+        assert replay is None
+        assert stats.request_count == 1
+
+    @pytest.mark.parametrize(
+        "update",
+        [
+            {"version": True},
+            {"version": MODEL_USAGE_EVENT_VERSION + 1},
+            {"request_id": ""},
+            {"usage_metadata": "tokens"},
+            {"scope": ""},
+        ],
+    )
+    def test_rejects_malformed_event(self, update: dict[str, object]) -> None:
+        event = self._event() | update
+        stats = SessionStats()
+
+        assert (
+            record_model_usage_event(
+                stats,
+                event,
+                active_thread_id="thread-1",
+                recorded_requests={},
+            )
+            is None
+        )
+        assert stats.request_count == 0
+
+    def test_rejects_another_thread(self) -> None:
+        stats = SessionStats()
+
+        assert (
+            record_model_usage_event(
+                stats,
+                self._event(),
+                active_thread_id="other-thread",
+                recorded_requests={},
+            )
+            is None
+        )
         assert stats.request_count == 0
 
 
@@ -932,3 +1374,241 @@ class TestPrintUsageTable:
         print_usage_table(stats, wall_time=0.01, console=console)
         output = buf.getvalue()
         assert output.strip() == ""
+
+
+class TestUsageTableEnabled:
+    """Test the gate that decides whether the usage table renders."""
+
+    def test_enabled_by_default(self) -> None:
+        """With no configuration in play the table renders."""
+        assert usage_table_enabled() is True
+
+    def test_resolution_failure_keeps_the_table(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A raising resolver logs and returns `True` instead of propagating.
+
+        Both callers run at teardown: in the TUI an escaping exception is caught
+        by the handler that rewrites a clean exit into `1` plus a traceback, and
+        in the headless run it would skip the `AGENT_COMPLETED` notification and
+        the `session.end` hooks. Failing open on a cosmetic table is the cheap
+        outcome; failing shut on session teardown is not.
+        """
+
+        def _boom(
+            _key: str,
+            *,
+            fallback: bool,  # noqa: ARG001
+            on_rejected: object = None,  # noqa: ARG001
+        ) -> bool:
+            msg = "managed policy refresh exploded"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_bool_display_preference", _boom
+        )
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code._session_stats"):
+            assert usage_table_enabled() is True
+
+        assert "show_usage_stats" in caplog.text
+        # `exc_info=True`, so the cause is diagnosable rather than swallowed.
+        assert "managed policy refresh exploded" in caplog.text
+
+    def test_blocking_error_is_not_swallowed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`BlockingError` propagates instead of failing open.
+
+        The fail-open exists for config hiccups. Blocking I/O on the event loop
+        is a regression in the caller — this runs directly inside the async
+        headless teardown — and swallowing it would hide the violation *and*
+        silently ignore the user's opt-out. Matched by class name because
+        `blockbuster` is not a runtime dependency here, so the test defines its
+        own class rather than importing one.
+        """
+
+        class BlockingError(Exception):
+            """Stands in for `blockbuster.BlockingError`."""
+
+        def _blocked(
+            _key: str,
+            *,
+            fallback: bool,  # noqa: ARG001
+            on_rejected: object = None,  # noqa: ARG001
+        ) -> bool:
+            msg = "blocking call to io.TextIOWrapper.read"
+            raise BlockingError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_bool_display_preference", _blocked
+        )
+
+        with pytest.raises(BlockingError):
+            usage_table_enabled()
+
+    def test_import_error_is_not_reported_as_a_config_failure(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A broken `config_manifest` import propagates, not fails open.
+
+        The deferred import sits outside the `try` on purpose: an `ImportError`
+        means the package is broken, not that the option could not be read, and
+        reporting it as the latter would send a debugger to the wrong place.
+
+        A `None` entry in `sys.modules` is the documented way to make an import
+        of an otherwise-importable module fail.
+        """
+        import sys
+
+        monkeypatch.setitem(sys.modules, "deepagents_code.config_manifest", None)
+
+        with pytest.raises(ImportError):
+            usage_table_enabled()
+
+    def test_rejected_value_warns_on_stderr(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A misparsed value reaches the user, not just the log buffer.
+
+        `show_usage_stats = "false"` is the expected typo — there is no
+        `dcode config set`, so the only way to set this is hand-edited TOML.
+        Falling through to `True` produces exactly the table the user meant to
+        hide, and the resolver's own warning has no reader outside the TUI
+        Debug Console. This is the one bool display option where that silence
+        is the whole bug, so it is the one that prints.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[ui]\nshow_usage_stats = "false"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        # Process-wide dedupe, so a leaked entry from another test would make
+        # this pass for the wrong reason.
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is True
+
+        captured = capsys.readouterr()
+        assert "show_usage_stats" in captured.err
+        # The warning is the entire point; it must not go to stdout, which a
+        # headless caller may be piping as the agent's answer.
+        assert captured.out == ""
+
+    def test_rejected_value_warns_once_per_process(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Repeated resolution does not repeat an identical warning.
+
+        Teardown resolves once per session today, but `dcode config` walks the
+        whole manifest, and a line repeated verbatim reads as two separate
+        problems. Dedupe is per reason, so two genuinely different rejections
+        still both print.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[ui]\nshow_usage_stats = 0\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is True
+        assert usage_table_enabled() is True
+
+        assert capsys.readouterr().err.count("Warning: ") == 1
+
+    def test_shadowed_rejection_prints_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A rejection at a tier that lost stays silent.
+
+        With `DEEPAGENTS_CODE_SHOW_USAGE_STATS=0` winning over a user config
+        holding the quoted `"false"` typo, the table is off and a warning
+        announcing it would contradict what the user sees. The rejection is
+        still logged through `_emit_ranked_diagnostics`; it just does not
+        reach stderr.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[ui]\nshow_usage_stats = "false"\n', encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "0")
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is False
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_valid_value_prints_nothing(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A value that parses stays silent on both streams.
+
+        Guards the obvious regression in the other direction: a warning that
+        fires for every well-formed config would be worse than no warning.
+        """
+        import deepagents_code._session_stats as session_stats
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[ui]\nshow_usage_stats = false\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setattr(session_stats, "_warned_usage_stats_rejections", set())
+
+        assert usage_table_enabled() is False
+
+        captured = capsys.readouterr()
+        assert captured.err == ""
+        assert captured.out == ""
+
+    def test_env_var_overrides_the_config_file(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The env var outranks `config.toml`, per the resolver's tiers.
+
+        This is the option's reason for declaring an env var at all: the
+        headless run is where suppression matters, and a CI runner has env vars
+        rather than a `~/.deepagents/config.toml`.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[ui]\nshow_usage_stats = true\n", encoding="utf-8")
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_CONFIG_PATH", config_path
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "0")
+
+        assert usage_table_enabled() is False
+
+    def test_empty_env_var_disables_the_table(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty env var reads as off, matching the other default-on toggles.
+
+        `empty_env_is_false` is what makes a bare `DEEPAGENTS_CODE_SHOW_USAGE_STATS=`
+        in a CI env file mean "off" rather than falling through to the default.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_USAGE_STATS", "")
+
+        assert usage_table_enabled() is False

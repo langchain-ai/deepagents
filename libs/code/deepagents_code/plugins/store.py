@@ -7,11 +7,12 @@ import logging
 import os
 import shutil
 import tempfile
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from hashlib import sha256
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Never
 
+from deepagents_code._constants import DEFAULT_PLUGIN_DIRNAME
 from deepagents_code.plugins.models import (
     InstalledPluginEntry,
     MarketplaceRecord,
@@ -20,7 +21,7 @@ from deepagents_code.plugins.models import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterator
 
 logger = logging.getLogger(__name__)
 _STORAGE_VERSION = 1
@@ -31,13 +32,6 @@ _CACHE_DIGEST_LENGTH = 32
 SUPPORTED_MARKETPLACE_SOURCE_TYPES: frozenset[MarketplaceSourceType] = frozenset(
     {"directory", "file", "github", "git", "url"}
 )
-
-DEFAULT_PLUGIN_DIRNAME = "plugins"
-"""Default directory name for plugin storage under `~/.deepagents/`.
-
-Not an agent profile. The `/agent` picker reserves this name in addition to
-requiring an `AGENTS.md` marker, so it is never listed as a selectable agent.
-"""
 
 
 class PluginStateError(OSError):
@@ -53,6 +47,28 @@ def plugin_storage_root() -> Path:
     if raw:
         return Path(raw).expanduser()
     return DEFAULT_CONFIG_DIR / DEFAULT_PLUGIN_DIRNAME
+
+
+@contextmanager
+def plugin_mutation_lock(*, timeout: float = -1) -> Iterator[None]:
+    """Serialize plugin mutations across threads and dcode processes.
+
+    The lock is reentrant within one thread so compound operations such as
+    marketplace removal can call the normal uninstall path while holding it.
+
+    Args:
+        timeout: Seconds to wait for another mutation, or `-1` indefinitely.
+
+    Yields:
+        Control while plugin state and managed caches may be mutated.
+    """
+    from filelock import FileLock
+
+    root = plugin_storage_root()
+    root.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(root / ".mutation.lock"), is_singleton=True)
+    with lock.acquire(timeout=timeout):
+        yield
 
 
 def plugin_data_dir(plugin_id: str) -> Path:
@@ -479,8 +495,7 @@ def cache_and_register_plugin(
         plugin_id: Plugin id in `{name}@{marketplace}` form.
         source_dir: Source plugin root to copy from.
         version: Version declared by the plugin manifest, if any.
-        validate: Optional validation to run against the temporary copy before
-            replacing an existing cache.
+        validate: Optional validation to run before registering the cache.
 
     Returns:
         Absolute path to the cached plugin root.
@@ -498,6 +513,8 @@ def cache_and_register_plugin(
     if cache_path.exists() and version is not None:
         try:
             if any(cache_path.iterdir()):
+                if validate is not None:
+                    validate(cache_path)
                 add_installed_plugin(
                     plugin_id,
                     install_path=str(cache_path),

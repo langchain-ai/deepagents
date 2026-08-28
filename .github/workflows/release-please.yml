@@ -124,7 +124,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release-commit: ${{ steps.check-releases.outputs.release-commit }}
-      cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
@@ -188,14 +187,6 @@ jobs:
           # none can fail loudly instead of producing a green no-op run (see the
           # check after the last package below).
           ANY_PACKAGE=false
-
-          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
-            echo "cli-release=true" >> "$GITHUB_OUTPUT"
-            ANY_PACKAGE=true
-            echo "CLI release detected: $COMMIT_MSG"
-          else
-            echo "cli-release=false" >> "$GITHUB_OUTPUT"
-          fi
 
           if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
             echo "sdk-release=true" >> "$GITHUB_OUTPUT"
@@ -615,7 +606,7 @@ jobs:
           MAX_WAIT=2700 # 45 min
           MAX_QUERY_FAILS=5
           WAITED=0
-          echo "::notice::Publish in flight; waiting up to $((MAX_WAIT / 60))m for it to finish before running release-please: $PENDING"
+          echo "::notice title=Release publish in progress::Waiting up to $((MAX_WAIT / 60)) minutes for the current publish to finish before updating release PRs. Pending publish: $PENDING"
 
           while [ -n "$PENDING" ] && [ "$WAITED" -lt "$MAX_WAIT" ]; do
             if [ "$QUERY_FAILS" -ge "$MAX_QUERY_FAILS" ]; then
@@ -646,7 +637,7 @@ jobs:
           # next push rather than failing — a hung publish is outside this run's
           # control and the operator must clear it manually.
           echo "skip=true" >> "$GITHUB_OUTPUT"
-          echo "::warning::release-please deferred after waiting ${WAITED}s: publish still in flight (or release state unverifiable): $PENDING"
+          echo "::warning title=Release publish still in progress::Waited $((WAITED / 60)) minutes, but the publish is still running or its status could not be verified. Release PR updates are deferred until the next push. Pending publish: $PENDING"
           {
             echo "## release-please deferred"
             echo ""
@@ -783,8 +774,18 @@ jobs:
         with:
           ref: ${{ matrix.pr.headBranchName }}
 
+      # Use the composite action rather than calling setup-uv directly: it is
+      # the single place the uv `version:` pin lives, and `bump_uv_pin.yml`
+      # only rewrites that file. A direct setup-uv call here would pass no
+      # `version:` and silently resolve latest uv on every release run, racing
+      # the `releases.astral.sh` mirror on fresh releases.
       - name: Setup uv
-        uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
+        uses: "./.github/actions/uv_setup"
+        with:
+          python-version: "3.14"
+          # Only `uv lock` runs below, which leaves the cache dir empty and
+          # makes setup-uv's post-job save throw. See `check_lockfiles.yml`.
+          enable-cache: "false"
 
       - name: Update lockfiles
         id: update-lockfiles
@@ -976,7 +977,6 @@ jobs:
   trigger-releases:
     needs: detect-release-commit
     if: |
-      needs.detect-release-commit.outputs.cli-release == 'true' ||
       needs.detect-release-commit.outputs.sdk-release == 'true' ||
       needs.detect-release-commit.outputs.acp-release == 'true' ||
       needs.detect-release-commit.outputs.code-release == 'true' ||
@@ -996,9 +996,9 @@ jobs:
       VERSION: ${{ needs.detect-release-commit.outputs.release-version }}
       RELEASE_SHA: ${{ github.sha }}
       SDK_PIN_BYPASS_LABEL: "release: skip sdk pin check"
+      RIPGREP_BYPASS_LABEL: "bypass-ripgrep-check"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
-      CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
@@ -1102,14 +1102,18 @@ jobs:
             RELEASE_PR_NUMBER="$pr_number"
           }
 
-          # Fail-closed: a non-zero return means "do NOT skip the SDK pin check".
+          # Fail-closed: a non-zero return means "do NOT skip the caller's check".
           # Every error path (PR unresolved, label-read API failure) returns
           # non-zero, so a transient API blip can never flip the dangerous bypass
           # on — it only ever turns on for a positively-matched label.
+          #
+          # `$2` names the check that stays enforced. The helper serves more than
+          # one bypass label now, so a hardcoded subject would point an operator
+          # debugging a ripgrep-label failure at the SDK pin check instead.
           release_pr_has_label() {
-            local label="$1" labels="" rc=0
+            local label="$1" subject="$2" labels="" rc=0
             if ! resolve_release_pr_number; then
-              echo "::warning::Could not resolve release PR for $RELEASE_SHA; SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' not read)."
+              echo "::warning::Could not resolve release PR for $RELEASE_SHA; $subject will be ENFORCED (bypass label '$label' not read)."
               return 1
             fi
             # Capture the label read separately so an API failure is distinguishable
@@ -1118,7 +1122,7 @@ jobs:
             labels=$(gh api "/repos/${GITHUB_REPOSITORY}/issues/${RELEASE_PR_NUMBER}/labels" \
               --jq '.[].name' 2>/dev/null) || rc=$?
             if [ "$rc" -ne 0 ]; then
-              echo "::warning::Could not read labels for PR #$RELEASE_PR_NUMBER (gh api exit $rc); SDK pin check will be ENFORCED for deepagents-code (bypass label '$label' treated as absent)."
+              echo "::warning::Could not read labels for PR #$RELEASE_PR_NUMBER (gh api exit $rc); $subject will be ENFORCED (bypass label '$label' treated as absent)."
               return 1
             fi
             printf '%s\n' "$labels" | grep -Fxq "$label"
@@ -1131,6 +1135,13 @@ jobs:
             [ "$1" = "deepagents-code" ] && [ "$AUTO_SKIP_SDK_PIN_CHECK" = "true" ]
           }
 
+          # The ripgrep bypass applies to every package's publish run — each one
+          # runs the same strict `Install ripgrep` step in release.yml, so unlike
+          # `skip_applies_to` this takes no package argument.
+          ripgrep_skip_applies() {
+            [ "$AUTO_SKIP_RIPGREP_CHECK" = "true" ]
+          }
+
           dispatch() {
             local package="$1"
             local cmd=(
@@ -1141,12 +1152,16 @@ jobs:
               -f version="$VERSION"
               -f release-sha="$RELEASE_SHA"
             )
+            local notes=""
             if skip_applies_to "$package"; then
               cmd+=(-f dangerous-skip-sdk-pin-check=true)
-              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA, dangerous-skip-sdk-pin-check=true)"
-            else
-              echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA)"
+              notes="dangerous-skip-sdk-pin-check=true"
             fi
+            if ripgrep_skip_applies; then
+              cmd+=(-f dangerous-skip-ripgrep-check=true)
+              notes="${notes:+$notes, }dangerous-skip-ripgrep-check=true"
+            fi
+            echo "Dispatching release for $package (version=$VERSION, sha=$RELEASE_SHA${notes:+, $notes})"
             # `--repo` is required: this job has no `actions/checkout` step, so
             # `gh` cannot discover the target repo from a local `.git/` and
             # would otherwise fail with `fatal: not a git repository`.
@@ -1230,7 +1245,6 @@ jobs:
 
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
           # surfaces a warning if the value is something other than "true"/"false".
-          CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
@@ -1242,9 +1256,17 @@ jobs:
           QUICKJS_RELEASE="${QUICKJS_RELEASE:-false}"; assert_bool QUICKJS_RELEASE "$QUICKJS_RELEASE"
 
           AUTO_SKIP_SDK_PIN_CHECK=false
-          if [ "$CODE_RELEASE" = "true" ] && release_pr_has_label "$SDK_PIN_BYPASS_LABEL"; then
+          if [ "$CODE_RELEASE" = "true" ] && release_pr_has_label "$SDK_PIN_BYPASS_LABEL" "the SDK pin check for deepagents-code"; then
             AUTO_SKIP_SDK_PIN_CHECK=true
             echo "Release PR has '$SDK_PIN_BYPASS_LABEL'; dispatching deepagents-code with dangerous-skip-sdk-pin-check=true."
+          fi
+
+          # Not package-gated like the SDK-pin check: every package's publish run
+          # shares the same strict ripgrep install, so the label softens them all.
+          AUTO_SKIP_RIPGREP_CHECK=false
+          if release_pr_has_label "$RIPGREP_BYPASS_LABEL" "the strict ripgrep install"; then
+            AUTO_SKIP_RIPGREP_CHECK=true
+            echo "Release PR has '$RIPGREP_BYPASS_LABEL'; dispatching with dangerous-skip-ripgrep-check=true."
           fi
 
           # Banner: log + step summary. The step summary renders at the top of the
@@ -1275,7 +1297,6 @@ jobs:
           # a graceful miss (still best-effort — no job failure).
           DISPATCH_STARTED=$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)
 
-          if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi
@@ -1306,6 +1327,9 @@ jobs:
                 if skip_applies_to "$p"; then
                   suffix=" _(SDK pin check skipped from release PR label)_"
                 fi
+                if ripgrep_skip_applies; then
+                  suffix="$suffix _(ripgrep check skipped from release PR label)_"
+                fi
                 url="${RUN_URLS[$p]:-}"
                 if [ -n "$url" ]; then
                   echo "- [\`$p\` @ \`$VERSION\`]($url)$suffix"
@@ -1325,11 +1349,14 @@ jobs:
               echo ""
               echo '```'
               for p in "${FAILED[@]}"; do
+                rec="gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
                 if skip_applies_to "$p"; then
-                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA -f dangerous-skip-sdk-pin-check=true"
-                else
-                  echo "gh workflow run release.yml -f package=$p -f version=$VERSION -f release-sha=$RELEASE_SHA"
+                  rec="$rec -f dangerous-skip-sdk-pin-check=true"
                 fi
+                if ripgrep_skip_applies; then
+                  rec="$rec -f dangerous-skip-ripgrep-check=true"
+                fi
+                echo "$rec"
               done
               echo '```'
             fi

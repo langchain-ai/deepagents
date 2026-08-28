@@ -34,14 +34,18 @@
 #   This script installs deepagents-code as a uv tool. To remove it:
 #     uv tool uninstall deepagents-code
 #   That removes the dcode/deepagents-code binary and its isolated venv.
-#   User config and data live separately in ~/.deepagents (config.toml,
-#   hooks.json, a global .env, and a .state/ dir holding sessions and saved
-#   credentials) and are NOT removed by the uninstall above. To also wipe them:
-#     rm -rf ~/.deepagents
+#   User config and data live in the effective DEEPAGENTS_HOME (default:
+#   ~/.deepagents) and are NOT removed by the uninstall above. Before
+#   uninstalling, run `dcode doctor` and record its exact "Data directory".
+#   To erase the profile too, remove only that confirmed dedicated directory;
+#   never recursively remove `/`, your home, a checkout, or an unresolved env
+#   expression. Managed support binaries live in the tool environment and are
+#   removed with it.
 #   Optionally clear uv's shared tool cache (~/.cache/uv on Linux,
 #   ~/Library/Caches/uv on macOS) — only if no other uv tools rely on it.
 #
 # Environment variables:
+#   DEEPAGENTS_HOME — user config and data directory (default: ~/.deepagents)
 #   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
 #     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
 #     authoritative list):
@@ -66,7 +70,7 @@
 #   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
 #   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
 #     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-#     into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+#     inside the dcode tool environment via `dcode tools install`; "system"
 #     keeps the interactive package-manager install (brew/apt/cargo/...),
 #     which only counts as success when the resulting `rg` meets the minimum
 #     supported version. Set DEEPAGENTS_CODE_OFFLINE=1 to skip the managed
@@ -121,6 +125,7 @@ Target:
   VERSION           Install an exact version, e.g. 0.1.0rc1
 
 Environment variables:
+  DEEPAGENTS_HOME — user config and data directory (default: ~/.deepagents)
   DEEPAGENTS_CODE_EXTRAS — comma-separated pip extras, e.g. "ollama",
     "ollama,groq", or "daytona". Valid extras (see pyproject.toml for the
     authoritative list):
@@ -143,7 +148,7 @@ Environment variables:
   DEEPAGENTS_CODE_SKIP_OPTIONAL — set to 1 to skip optional tool checks
   DEEPAGENTS_CODE_RIPGREP_INSTALLER — how to provision ripgrep:
     "managed" (default) eagerly installs the pinned, SHA-256-verified binary
-    into ~/.deepagents/bin (no sudo) via `dcode tools install`; "system"
+    inside the dcode tool environment via `dcode tools install`; "system"
     keeps the interactive package-manager install (brew/apt/cargo/...). Set
     DEEPAGENTS_CODE_OFFLINE=1 to skip the managed download entirely.
   DEEPAGENTS_CODE_SKIP_XCODE_CHECK — set to 1 to bypass the macOS Xcode
@@ -284,6 +289,23 @@ log_signal_failure_hint() {
 # Exit / interrupt traps — ensures the user always sees an actionable message
 # on failure and temp files are cleaned up on Ctrl-C / SIGTERM.
 # ---------------------------------------------------------------------------
+# A live run publishes an empty log over the previous one before uv starts, so
+# an abort between those two points destroys yesterday's diagnostics. The
+# post-install check says so on the normal path; the handlers below cover
+# Ctrl-C and any `set -e` abort, which never reach it. The flag keeps the two
+# sites from both speaking on a run that reaches the post-install check and
+# then exits non-zero.
+LIVE_LOG_REPLACED_NOTICE_DONE=false
+warn_live_log_replaced() {
+  [ "${LIVE_LOG_REPLACED_NOTICE_DONE:-false}" = false ] || return 0
+  [ "${UV_LIVE_LOG:-false}" = true ] || return 0
+  [ -n "${INSTALL_LOG:-}" ] || return 0
+  [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ] || return 0
+  [ ! -s "$INSTALL_LOG" ] || return 0
+  LIVE_LOG_REPLACED_NOTICE_DONE=true
+  log_warn "${INSTALL_LOG_DISPLAY} is empty — any previous install log was replaced."
+}
+
 cleanup_on_signal() {
   local exit_code=$?
   cleanup_temp_files
@@ -295,6 +317,7 @@ cleanup_on_signal() {
     restore_terminal_after_signal "$exit_code"
     echo "" >&2
     log_signal_failure_hint "$exit_code"
+    warn_live_log_replaced
     log_error "Installation failed (exit code ${exit_code}). See errors above."
     log_error "For help, visit: https://docs.langchain.com/deepagents-code"
   fi
@@ -318,6 +341,7 @@ cleanup_on_interrupt() {
   fi
   echo "" >&2
   log_warn "Installation interrupted."
+  warn_live_log_replaced
   cleanup_temp_files
   cleanup_temp_dirs
   if declare -F release_install_lock >/dev/null 2>&1; then
@@ -423,12 +447,149 @@ if [ "$OS" = "macos" ] && { [ -z "${HOME:-}" ] || [ "$(id -u)" -eq 0 ]; }; then
   export HOME
 fi
 
+paths_are_same_file() {
+  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
+}
+
+path_has_unsearchable_ancestor() {
+  local current="$1"
+  while [ "$current" != "/" ] && [ "$current" != "//" ]; do
+    case "$current" in
+      //*)
+        current="${current%/*}"
+        [ "$current" != "/" ] || current="//"
+        ;;
+      *)
+        current="${current%/*}"
+        [ -n "$current" ] || current="/"
+        ;;
+    esac
+    if [ -d "$current" ] && [ ! -x "$current" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Normalize a POSIX absolute path lexically without requiring it to exist.
+# This mirrors `_paths._normalize_absolute` (i.e. `os.path.normpath`): repeated
+# separators and `.` / `..` components are collapsed, but no symlink or
+# filesystem lookup is performed. A leading exactly-double slash is preserved,
+# because POSIX leaves `//` implementation-defined and `os.path.normpath` keeps
+# it — collapsing it here would make the installer and every later launch
+# disagree about which directory one DEEPAGENTS_HOME value names.
+# `tests/unit_tests/test_install_script.py` asserts parity against the Python
+# implementation directly, so both sides stay in step.
+normalize_absolute_path() {
+  local rest="$1"
+  local normalized="/"
+  local root="/"
+  local part
+  case "$rest" in
+    //[!/]*|//) normalized="//"; root="//"; rest="${rest#//}" ;;
+    /*) rest="${rest#/}" ;;
+    *) return 1 ;;
+  esac
+  while [ -n "$rest" ]; do
+    part="${rest%%/*}"
+    if [ "$rest" = "$part" ]; then
+      rest=""
+    else
+      rest="${rest#*/}"
+    fi
+    case "$part" in
+      ""|.) ;;
+      ..)
+        if [ "$normalized" != "$root" ]; then
+          normalized="${normalized%/*}"
+          # Stripping the last component of a one-deep path leaves "" (root
+          # "/") or "/" (root "//"); both mean "back at the root".
+          case "$normalized" in
+            ""|/) normalized="$root" ;;
+          esac
+        fi
+        ;;
+      *)
+        case "$normalized" in
+          /|//) normalized="${normalized}${part}" ;;
+          *) normalized="${normalized}/${part}" ;;
+        esac
+        ;;
+    esac
+  done
+  printf '%s' "$normalized"
+}
+
+normalize_deepagents_home() {
+  local raw="${DEEPAGENTS_HOME:-}"
+  local candidate normalized_home
+  case "$raw" in
+    "") candidate="${HOME}/.deepagents" ;;
+    \~/*) candidate="${HOME}/${raw#\~/}" ;;
+    \~*)
+      log_error "Invalid DEEPAGENTS_HOME: use an absolute path or a path beginning with '~/' ('~user' forms are not allowed)."
+      exit 1
+      ;;
+    /*) candidate="$raw" ;;
+    *)
+      log_error "Invalid DEEPAGENTS_HOME '${raw}': use an absolute path or a path beginning with '~/'."
+      exit 1
+      ;;
+  esac
+  if ! DEEPAGENTS_HOME="$(normalize_absolute_path "$candidate")"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the resolved path must be absolute."
+    exit 1
+  fi
+  # Same degenerate-root rejections as `_paths._reject_degenerate_root`, so the
+  # installer fails here rather than provisioning a profile the app refuses to
+  # launch from.
+  if paths_are_same_file "$DEEPAGENTS_HOME" "/"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the filesystem root cannot be a profile. Use a dedicated directory."
+    exit 1
+  fi
+  # Fail rather than compare against an unnormalized value. The app treats a
+  # non-absolute home as fatal (`_paths._resolve_launch_home`), so falling back
+  # to the raw string here would make this rejection unreliable in exactly the
+  # environment where the two layers must agree.
+  if ! normalized_home="$(normalize_absolute_path "$HOME")"; then
+    log_error "Cannot resolve the home directory '${HOME}': \$HOME must be an absolute path."
+    exit 1
+  fi
+  if paths_are_same_file "$DEEPAGENTS_HOME" "$normalized_home"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': the home directory itself cannot be a profile, because its '.env' would be loaded as trusted configuration. Use a subdirectory such as '~/.deepagents'."
+    exit 1
+  fi
+  if [ -L "$DEEPAGENTS_HOME" ] && [ ! -e "$DEEPAGENTS_HOME" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': is a symlink whose target is missing or cannot be resolved."
+    exit 1
+  fi
+  if [ -e "$DEEPAGENTS_HOME" ] && [ ! -d "$DEEPAGENTS_HOME" ]; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but is not a directory."
+    exit 1
+  fi
+  if [ -d "$DEEPAGENTS_HOME" ] && { [ ! -r "$DEEPAGENTS_HOME" ] || [ ! -x "$DEEPAGENTS_HOME" ]; }; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': exists but cannot be read or searched. Check the permissions on it and on its parent directories."
+    exit 1
+  fi
+  if [ ! -e "$DEEPAGENTS_HOME" ] && path_has_unsearchable_ancestor "$DEEPAGENTS_HOME"; then
+    log_error "Invalid DEEPAGENTS_HOME '${raw}': cannot be inspected because a parent directory cannot be searched. Check the permissions on its parent directories."
+    exit 1
+  fi
+  export DEEPAGENTS_HOME
+  if [ -n "$raw" ]; then
+    log_info "Using DEEPAGENTS_HOME: ${DEEPAGENTS_HOME}"
+  fi
+}
+
+normalize_deepagents_home
+UV_TOOL_DIR_ENV="${UV_TOOL_DIR:-}"
+
 # ---------------------------------------------------------------------------
 # Ownership fix for root installs
 # ---------------------------------------------------------------------------
 # When running as root, files created under $HOME will be owned by root.
 # Resolve the target user so we can fix ownership after install steps.
-# When not root, fix_owner is a no-op.
+# When not root, the exact-path ownership helper is a no-op.
 if [ "$(id -u)" -eq 0 ]; then
   if [ "$OS" = "macos" ]; then
     # Reuse CONSOLE_USER from above; fall back to basename of the
@@ -441,15 +602,10 @@ if [ "$(id -u)" -eq 0 ]; then
 
   if [ -z "$TARGET_USER" ] || [ "$TARGET_USER" = "root" ]; then
     log_warn "Could not determine non-root target user. Files under ${HOME} may remain owned by root."
-    log_warn "  After install, run: sudo chown -R YOUR_USERNAME ~/.local"
-    fix_owner() { :; }
+    log_warn "  Re-run as the target user, or repair only the exact installed paths reported above."
     fix_file_owner() { :; }
+    fix_tree_owner() { :; }
   else
-    fix_owner() {
-      if ! chown -R "$TARGET_USER" "$@" 2>&1; then
-        log_warn "Could not fix ownership of $* for user ${TARGET_USER}."
-      fi
-    }
     fix_file_owner() {
       local path
       for path in "$@"; do
@@ -458,10 +614,29 @@ if [ "$(id -u)" -eq 0 ]; then
         fi
       done
     }
+    # Repair a directory tree this installer created. Chowning only the
+    # directory inode leaves everything inside it root-owned, which succeeds
+    # silently and then breaks the target user's next `uv tool upgrade` from a
+    # completely unrelated code path. Callers must gate this on
+    # `path_is_under_home`, and on a `*_PREEXISTED` flag unless the tree is one
+    # the installer owns outright (its own uv tool environment), so it only
+    # ever walks a tree this installer is responsible for under the target
+    # user's home. `-xdev` keeps it off other filesystems, and `-h` never
+    # follows a symlink out of the tree.
+    fix_tree_owner() {
+      local path
+      for path in "$@"; do
+        [ -d "$path" ] || continue
+        if ! find "$path" -xdev -exec chown -h "$TARGET_USER" {} + 2>&1; then
+          log_warn "Could not fix ownership of the tree at $path for user ${TARGET_USER}."
+          log_warn "  Run: sudo chown -R ${TARGET_USER} $path"
+        fi
+      done
+    }
   fi
 else
-  fix_owner() { :; }
   fix_file_owner() { :; }
+  fix_tree_owner() { :; }
 fi
 
 # ---------------------------------------------------------------------------
@@ -577,6 +752,49 @@ prepare_install_log_dir() {
   printf '%s\n' "$dir"
 }
 
+# Render a path for pasting into a shell, quoting only when it needs it. The
+# overwhelmingly common path is a plain `~/.cache/deepagents-code/install.log`,
+# and rendering it bare keeps it identical to the "Full log:" pointer printed
+# later in the same run — two spellings of one path read as two different
+# files. A path carrying spaces or shell metacharacters (most plausibly a
+# relocated XDG_CACHE_HOME) still gets single-quoted so the pasted command
+# survives word splitting. Callers strip a leading `~/` first and re-attach it
+# outside the quotes: a quoted tilde does not expand.
+tail_hint_quote() {
+  local escaped
+  case "$1" in
+    *[!A-Za-z0-9._/@%+:,=-]*)
+      # A failed/missing `sed` yields an empty substitution, which would render
+      # as `tail -f ''` — a pasteable command that silently watches nothing.
+      # Fall back to the bare path: word-splitting is a lesser wrong than
+      # handing the user a command for the wrong file.
+      escaped=$(printf '%s' "$1" | sed "s/'/'\\\\''/g") || escaped=""
+      if [ -z "$escaped" ]; then
+        printf '%s' "$1"
+      else
+        printf "'%s'" "$escaped"
+      fi
+      ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# Print the live-follow command for the install log when this run streams uv's
+# output to it (UV_LIVE_LOG). Root runs have no live file to follow, so for
+# them the post-install "Full log:" pointer is the only reference to the log;
+# log-disabled runs get neither. A live *update* prints both — a live fresh
+# install prints only the pointer, per the PRE_VERSION guard below.
+log_update_tail_hint() {
+  [ "${UV_LIVE_LOG:-false}" = true ] && [ -n "${INSTALL_LOG_DISPLAY:-}" ] || return 0
+  # Only an update has an "update log" to follow; a fresh install has no prior
+  # version and would be told to watch something it is not doing.
+  [ -n "${PRE_VERSION:-}" ] || return 0
+  case "$INSTALL_LOG_DISPLAY" in
+    \~/*) log_info "  Update log: tail -f ~/$(tail_hint_quote "${INSTALL_LOG_DISPLAY#\~/}")" ;;
+    *) log_info "  Update log: tail -f $(tail_hint_quote "$INSTALL_LOG_DISPLAY")" ;;
+  esac
+}
+
 fix_install_log_owner() {
   [ -n "${INSTALL_LOG:-}" ] || return 0
   [ "$(id -u)" -eq 0 ] || return 0
@@ -601,6 +819,26 @@ fix_install_log_owner() {
 }
 
 copy_install_log() {
+  # A live run already wrote INSTALL_LOG in place; there is nothing to stage.
+  # It still has to answer the caller's question — "is the path I am about to
+  # advertise still the file uv wrote?" — because the caller uses this return
+  # code to decide whether to print the pointer at all. Returning a bare 0
+  # would assert a file it never looked at. The fd pinned the inode uv wrote
+  # to, so only the *name* is at risk: a process able to write the cache dir
+  # can replace install.log after uv exits, and the pointer would then send the
+  # user to a file of someone else's choosing. The check rejects a symlink or a
+  # vanished path; it cannot detect replacement by a regular file, since the
+  # pinning fd is closed by now and nothing compares inode identity.
+  #
+  # Report a failure here as 2, not 1. In the staged path 1 means "the
+  # destination looked hostile before anything was written" — nothing was lost,
+  # so the caller stays quiet. Here it means uv's full stderr *was* written to
+  # that path and has since vanished, which is real loss and worth saying.
+  if [ "${UV_LIVE_LOG:-false}" = true ]; then
+    [ -n "${INSTALL_LOG:-}" ] || return 1
+    [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ] || return 2
+    return 0
+  fi
   [ -n "${INSTALL_LOG:-}" ] || return 1
   [ -n "${install_log_dir:-}" ] || return 1
   [ -d "$install_log_dir" ] && [ ! -L "$install_log_dir" ] || return 1
@@ -703,10 +941,14 @@ copy_install_log() {
     # staged copy back out of it: `mv` has already put uv's full stderr inside
     # a directory this run did not create, and leaving it there is the same
     # disclosure the failure paths above clean up.
+    #
+    # 2, not 1: unlike the rejections above, `mv` has already replaced the
+    # previous run's log. The user lost a log and gained nothing, so the caller
+    # should say so rather than treat it as a quiet rejected path.
     [ -f "$INSTALL_LOG" ] && [ ! -L "$INSTALL_LOG" ] || {
       [ ! -d "$INSTALL_LOG" ] || rm -f "${INSTALL_LOG}/install.log" 2>/dev/null || true
       rmdir "$stage_dir" 2>/dev/null || true
-      return 1
+      return 2
     }
   fi
   rmdir "$stage_dir" 2>/dev/null || true
@@ -872,16 +1114,82 @@ release_install_lock_reclaim_guard() {
   INSTALL_LOCK_RECLAIM_TOKEN=""
 }
 
+# Compute the same installation root Python derives from `sys.prefix` (see
+# `_paths._installation_paths`), which is where the install lock lives.
+#
+# `uv tool dir` is authoritative; the remaining branches are guesses. A guess
+# that misses — uv configured through `uv.toml`, a non-default `--tool-dir`, or
+# uv not yet on PATH at the first lock acquisition — yields a *different* lock
+# root, so concurrent `curl | bash` runs would not serialize.
+#
+# Prints "<root><TAB><guessed>". The flag is returned rather than assigned to a
+# global because the only caller substitutes this function, and a subshell
+# assignment would be discarded — leaving the warning permanently unreachable.
+resolve_installation_root() {
+  local tool_dir=""
+  local guessed=false
+  if [ -n "${UV_BIN:-}" ]; then
+    tool_dir="$("$UV_BIN" tool dir 2>/dev/null || true)"
+  fi
+  if [ -z "$tool_dir" ] && [ -n "${UV_TOOL_DIR_ENV:-}" ]; then
+    tool_dir="$UV_TOOL_DIR_ENV"
+    guessed=true
+  fi
+  if [ -z "$tool_dir" ]; then
+    tool_dir="${XDG_DATA_HOME:-${HOME}/.local/share}/uv/tools"
+    guessed=true
+  fi
+  case "$tool_dir" in
+    /*) ;;
+    *) tool_dir="$(pwd -P)/${tool_dir}" ;;
+  esac
+  printf '%s\t%s' "$(normalize_absolute_path "${tool_dir}/deepagents-code")" "$guessed"
+}
+
 # Serialize concurrent installs (racing `curl | bash` runs corrupting a shared
 # uv tool dir). Use an atomic mkdir lock dir with a PID + timestamp so a crashed
 # holder's lock can be aged out (see install_lock_is_stale). Avoid shell
-# redirection to a lock file here: when the installer runs as root and HOME is
-# user-writable, opening ~/.deepagents/install.lock would follow a symlink before
-# any post-open validation can run.
+# redirection to a lock file here. The lock is derived from the uv tool
+# environment, not `DEEPAGENTS_HOME`, so profiles sharing an installation also
+# share serialization.
 acquire_install_lock() {
-  local lock_root="$HOME/.deepagents"
-  mkdir -p "$lock_root"
-  fix_owner "$lock_root"
+  local installation_root
+  local installation_parent
+  local installation_name
+  local lock_root
+  local resolution
+  local guessed
+  # Keep this a command substitution: `set -e` must still abort if resolution
+  # fails. A stub that prints only the root yields no tab, which reads as
+  # "not guessed" below.
+  resolution="$(resolve_installation_root)"
+  installation_root="${resolution%%$'\t'*}"
+  guessed="${resolution#*$'\t'}"
+  [ "$guessed" != "$resolution" ] || guessed=false
+  installation_parent="${installation_root%/*}"
+  installation_name="${installation_root##*/}"
+  lock_root="${installation_parent}/.${installation_name}.deepagents-code-locks"
+  if [ -L "$lock_root" ]; then
+    log_error "Installer lock root is a symlink: $lock_root"
+    log_error "Remove it or choose a different uv tool directory, then retry."
+    exit 1
+  fi
+  if [ "${guessed:-false}" = true ]; then
+    log_warn "Could not ask uv for its tool directory; guessing the installer lock root."
+    log_warn "  Concurrent installs may not serialize. Lock root: ${lock_root}"
+  fi
+  if [ ! -d "$lock_root" ]; then
+    if ! mkdir -p "$lock_root"; then
+      log_error "Could not create the installer lock directory: ${lock_root}"
+      log_error "  This serializes concurrent installs; it is not related to DEEPAGENTS_HOME."
+      exit 1
+    fi
+    # `uv tool dir` can point outside $HOME (a system-wide tool dir), and this
+    # hands the inode to a non-root user.
+    if path_is_under_home "$lock_root"; then
+      fix_file_owner "$lock_root"
+    fi
+  fi
 
   INSTALL_LOCK_DIR="$lock_root/install.lock.d"
   INSTALL_LOCK_RECLAIM_DIR="$lock_root/install.lock.reclaim.d"
@@ -891,6 +1199,15 @@ acquire_install_lock() {
 
     if mkdir "$INSTALL_LOCK_DIR" 2>/dev/null; then
       break
+    fi
+
+    # A failed mkdir only means "another installer owns the lock" when the
+    # lock directory actually exists. If the root is unwritable (common with a
+    # system-wide, root-owned uv tool directory), waiting cannot make progress.
+    if [ ! -d "$INSTALL_LOCK_DIR" ]; then
+      log_error "Cannot create installer lock at $INSTALL_LOCK_DIR."
+      log_error "Check that the uv tool directory is writable, then retry."
+      exit 1
     fi
 
     if install_lock_is_stale; then
@@ -940,7 +1257,8 @@ acquire_install_lock() {
   fi
   printf '%s\n' "$$" >"$INSTALL_LOCK_DIR/pid"
   date +%s >"$INSTALL_LOCK_DIR/started_at" 2>/dev/null || true
-  fix_owner "$INSTALL_LOCK_DIR"
+  fix_file_owner "$INSTALL_LOCK_DIR" "$INSTALL_LOCK_DIR/token" \
+    "$INSTALL_LOCK_DIR/pid" "$INSTALL_LOCK_DIR/started_at"
   INSTALL_LOCK_KIND="mkdir"
 }
 
@@ -992,8 +1310,8 @@ case "$ASSUME_YES" in
   *)          ASSUME_YES="0" ;;
 esac
 # How ripgrep gets provisioned: "managed" (default) eagerly fetches the
-# pinned, SHA-256-verified binary into ~/.deepagents/bin via `dcode tools
-# install`; "system" keeps the interactive package-manager path below. Any
+# pinned, SHA-256-verified binary inside the dcode tool environment via
+# `dcode tools install`; "system" keeps the interactive package-manager path below. Any
 # value other than "system" normalizes to "managed".
 #
 # Lowercase and strip whitespace first so this matches the `.strip().lower()`
@@ -1415,11 +1733,52 @@ resolve_uv_bin() {
   return 1
 }
 
+uv_cache_candidates() {
+  # Single source of truth for uv's cache locations. Both the snapshot helper
+  # and the inline snapshot below read this list. A location added to one but
+  # not the other would silently leave a root-owned cache behind.
+  printf '%s\n' \
+    "${XDG_CACHE_HOME:-${HOME}/.cache}/uv" \
+    "${HOME}/Library/Caches/uv" \
+    "${XDG_DATA_HOME:-${HOME}/.local/share}/uv"
+}
+
+snapshot_missing_uv_cache_paths() {
+  local uv_cache_dir
+  UV_CACHE_CANDIDATES=""
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    if [ ! -e "$uv_cache_dir" ]; then
+      UV_CACHE_CANDIDATES="${UV_CACHE_CANDIDATES}${uv_cache_dir}"$'\n'
+    fi
+  done < <(uv_cache_candidates)
+}
+
+repair_created_uv_cache_paths() {
+  local uv_cache_dir
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    # Validate after installation, when the formerly missing path can be
+    # resolved without weakening path_is_under_home's symlink-safe contract.
+    if path_is_under_home "$uv_cache_dir"; then
+      fix_tree_owner "$uv_cache_dir"
+    fi
+  done <<EOF
+${UV_CACHE_CANDIDATES}
+EOF
+}
+
 if ! resolve_uv_bin; then
   if [ -n "${UV_BIN:-}" ]; then
     log_error "UV_BIN is set but does not point to an executable uv: ${UV_BIN}"
     exit 1
   fi
+  # Note which uv-owned caches this run is about to create, so a root install
+  # can hand them back afterwards. Without this the target user's later
+  # non-root `uv` invocations fail on a root-owned cache, far from here. Take
+  # this snapshot before acquiring the install lock: its default path lives
+  # below uv's data directory and can create that tree itself.
+  snapshot_missing_uv_cache_paths
   acquire_install_lock
   UV_BIN_DIR_PREEXISTED=false
   if [ -d "${HOME}/.local/bin" ]; then
@@ -1431,6 +1790,7 @@ if ! resolve_uv_bin; then
     fix_file_owner "${HOME}/.local/bin"
   fi
   fix_file_owner "${HOME}/.local/bin/uv" "${HOME}/.local/bin/uvx" "${HOME}/.local/bin/env"
+  repair_created_uv_cache_paths
   if ! resolve_uv_bin; then
     log_error "uv not found after installation. Restart your shell or add ~/.local/bin to PATH."
     exit 1
@@ -1531,6 +1891,26 @@ UV_TOOL_DIR=""
 if UV_TOOL_DIR_RAW=$("$UV_BIN" tool dir 2>/dev/null); then
   UV_TOOL_DIR="$UV_TOOL_DIR_RAW"
 fi
+MANAGED_BIN_DIR="${UV_TOOL_DIR:+${UV_TOOL_DIR}/deepagents-code/share/deepagents-code/bin}"
+# `dcode tools install` falls back to "${DEEPAGENTS_HOME}/bin" when
+# MANAGED_BIN_DIR is unwritable. Neither is snapshotted: see
+# fix_managed_bin_owner for why the repair must not be gated on pre-existence.
+
+# `uv tool install` writes into uv's caches too, so a root run leaves them
+# root-owned and the target user's next non-root `uv` fails on a stale cache,
+# far from here. Snapshot which caches exist now: ones this run creates can be
+# handed back wholesale, while a pre-existing user cache is only reported —
+# walking a tree the installer did not create is what fix_tree_owner forbids.
+UV_TOOL_CACHE_NEW=""
+UV_TOOL_CACHE_PREEXISTING=""
+while IFS= read -r uv_cache_dir; do
+  [ -n "$uv_cache_dir" ] || continue
+  if [ -e "$uv_cache_dir" ]; then
+    UV_TOOL_CACHE_PREEXISTING="${UV_TOOL_CACHE_PREEXISTING}${uv_cache_dir}"$'\n'
+  else
+    UV_TOOL_CACHE_NEW="${UV_TOOL_CACHE_NEW}${uv_cache_dir}"$'\n'
+  fi
+done < <(uv_cache_candidates)
 if [ -n "$UV_TOOL_DIR" ] && [ -d "${UV_TOOL_DIR}/deepagents-code" ]; then
   shopt -s nullglob
   for du in "${UV_TOOL_DIR}"/deepagents-code/lib/python*/site-packages/deepagents_code-*.dist-info/direct_url.json; do
@@ -1673,6 +2053,9 @@ if [ -z "$EXTRAS" ] && [ "$IS_EDITABLE" = false ]; then
   fi
 fi
 
+uv_rc=0
+UV_REPORTED_PACKAGE_CHANGES=false
+
 if [ "$IS_EDITABLE" = true ]; then
   pre_label="${PRE_VERSION:-(version unknown)}"
   if [ -n "$EDITABLE_SRC" ]; then
@@ -1695,6 +2078,12 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
   # skip a real upgrade. A shell installer can't import `packaging` to compare
   # semantically the way `update_check.py` does.
   log_info "dcode ${PRE_VERSION} found — checking for updates..."
+  # Set on the branches that deliberately move to the PyPI latest the script
+  # just fetched and confirmed differs from the installed version. That is the
+  # one path where the run can honestly call the version move an "upgrade" in
+  # the footer — every other version move (custom index resolving older, a
+  # pinned downgrade) stays neutral. See the footer far below.
+  UPGRADE_INTENDED=false
   LATEST_VERSION=$(fetch_latest_version)
   if [ -z "$LATEST_VERSION" ]; then
     log_warn "Could not determine the latest version from PyPI — continuing with an upgrade attempt."
@@ -1703,6 +2092,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
       log_info "deepagents-code is already up to date — rebuilding with requested options."
     else
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} with requested options..."
+      UPGRADE_INTENDED=true
     fi
   elif [ "$LATEST_VERSION" = "$PRE_VERSION" ] && [ "$PRE_INSTALL_ON_PATH" = true ]; then
     log_success "Already up to date!"
@@ -1715,11 +2105,13 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
     log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+    UPGRADE_INTENDED=true
   elif can_prompt; then
     log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}"
     log_info "  What's new: ${RELEASE_TAG_URL_BASE}${LATEST_VERSION}"
     if prompt_yn "Install update?"; then
       log_info "Updating deepagents-code ${PRE_VERSION} → ${LATEST_VERSION}..."
+      UPGRADE_INTENDED=true
     else
       update_prompt_rc=$?
       if [ "$update_prompt_rc" -eq 2 ]; then
@@ -1727,6 +2119,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
         # detach before `prompt_yn` can read from it. As with no TTY at all,
         # nobody declined the update, so warn and complete the install.
         log_warn "Could not ask — continuing with the update."
+        UPGRADE_INTENDED=true
       else
         log_info "Keeping deepagents-code ${PRE_VERSION}. Re-run this installer anytime to update."
         exit 0
@@ -1738,6 +2131,7 @@ elif [ -n "$PRE_VERSION" ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" 
     # complete the upgrade rather than silently no-op. Callers that want a fixed
     # version pin DEEPAGENTS_CODE_VERSION, which skips this path entirely.
     log_info "Update available: deepagents-code ${PRE_VERSION} → ${LATEST_VERSION} — updating (no TTY to prompt)."
+    UPGRADE_INTENDED=true
   fi
 elif [ -n "$PRE_VERSION" ]; then
   log_info "dcode ${PRE_VERSION} found — checking for updates..."
@@ -1745,33 +2139,6 @@ else
   log_info "Installing ${PACKAGE}..."
 fi
 
-# Capture uv stderr so we can:
-#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
-#      plain English. uv emits that line when it rebuilds the tool venv
-#      instead of upgrading in place (e.g., Python interpreter mismatch, or
-#      editable↔regular install swap).
-#   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
-#      download/build progress, and the trailing "Installed N executables:" line
-#      — we already show a concise install/update summary.
-#   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
-#      "pkg  X → Y" table under a single header.
-#   4. Detect whether uv actually moved any packages (those same
-#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
-#      bumps dependencies must report differently from a true no-op, so a
-#      later grep over this raw tempfile sets UV_REPORTED_PACKAGE_CHANGES.
-#   5. Persist the raw output to a log file (see INSTALL_LOG below) so a
-#      same-version dependency bump — or a failed install — can point the
-#      user at the full details after the terminal scrolls away.
-# Using a tempfile (vs. process substitution) ensures we see uv's full exit
-# status, don't race the warning past later log lines, and can re-scan the
-# raw output for (4) after the awk pass above has already reformatted it.
-uv_stderr=$(mktemp 2>/dev/null) || {
-  log_error "mktemp is required to create a secure temp file."
-  exit 1
-}
-register_temp "$uv_stderr"
-uv_rc=0
-UV_REPORTED_PACKAGE_CHANGES=false
 # Mirror uv's raw output to a persistent log under the XDG cache dir. A
 # same-version dependency bump prints only a one-line summary and a failed
 # install scrolls past, so the log preserves the full diff/errors for later.
@@ -1785,6 +2152,12 @@ UV_REPORTED_PACKAGE_CHANGES=false
 # tilde-collapsed form shown to the user. Both stay empty when the dir can't
 # be created, which every consumer treats as "feature disabled" so messages
 # degrade cleanly.
+#
+# This sits *below* the update-check block on purpose. prepare_install_log_dir
+# is not a path computation — it creates the cache root (0700) and the package
+# subdirectory. Running it earlier made a plain "Already up to date!" re-run,
+# or a declined update, create directories on a machine the run otherwise left
+# completely untouched.
 INSTALL_LOG=""
 INSTALL_LOG_DISPLAY=""
 cache_root="${XDG_CACHE_HOME:-}"
@@ -1802,8 +2175,121 @@ if [ -n "$cache_root" ]; then
         "$HOME"/*) INSTALL_LOG_DISPLAY="~${INSTALL_LOG#"$HOME"}" ;;
       esac
     fi
+  else
+    # Several distinct rejections collapse into "no log this run": an
+    # unwritable or symlinked cache root, a non-directory in the way, a root
+    # run whose directory is not under $HOME. Name the path once — otherwise
+    # the only signal is the *absence* of the `Update log:`/`Full log:` lines,
+    # which is indistinguishable from a run that had nothing to report.
+    log_warn "Could not prepare ${cache_root}/deepagents-code — continuing without an install log."
   fi
 fi
+
+# Decide where uv's stderr streams *during* the install. In the live path uv
+# writes straight to INSTALL_LOG so `tail -f` shows output as it happens (the
+# built-in updater does the same); copy_install_log then sees the log already
+# in place and skips the staged publish. Root always takes the mktemp +
+# stage-publish path: copy_install_log never resolves a user-writable parent
+# as root, and streaming straight to INSTALL_LOG would follow a planted
+# symlink there. An unprivileged run that cannot open its log falls back to
+# the staged path too, so "unprivileged" and "live" are not synonyms.
+UV_LIVE_LOG=false
+# File descriptor that carries the live install log when UV_LIVE_LOG is on.
+# Picked as the highest POSIX-guaranteed descriptor so it clears the script's
+# own: 0-2 plus fd 3, which prompt_yn uses for /dev/tty.
+UV_LIVE_LOG_FD=9
+setup_live_install_log() {
+  [ "$(id -u)" -ne 0 ] && [ -n "$INSTALL_LOG" ] || return 0
+  if [ -L "$INSTALL_LOG" ]; then
+    # A planted symlink turns the install log off for this run entirely — not
+    # just the live tail. Both variables are blanked, so no consumer offers a
+    # pointer and nothing falls back to the staged publish. It is never
+    # deleted or followed.
+    #
+    # Unlike a transient hostile race, a symlink sitting here is durable state
+    # — most plausibly the user's own (`ln -s /dev/null` to mute logging, or a
+    # link onto a roomier disk). They are the only one who can undo it, so say
+    # so rather than leaving the feature silently off on every future run too.
+    log_warn "${INSTALL_LOG_DISPLAY} is a symlink — not writing an install log this run."
+    log_warn "  Remove it to re-enable install logging."
+    INSTALL_LOG=""
+    INSTALL_LOG_DISPLAY=""
+    return 0
+  fi
+  # Create this run's log beside the target and rename it into place, rather
+  # than removing the previous log and creating in its stead. Under that older
+  # shape a failed create — ENOSPC, EDQUOT, a read-only remount, a sandbox
+  # denial, an exhausted fd table — left the user with yesterday's
+  # diagnostics deleted and nothing written in their place. Here the previous
+  # log survives until this run holds a writable file, and the rename over it
+  # is atomic.
+  local pending="${INSTALL_LOG}.new"
+  local umask_save
+  # Clear a leftover from a crashed run. `rm -f` unlinks a symlink rather than
+  # writing through it, so a planted one is removed, not followed.
+  rm -f "$pending" 2>/dev/null || true
+  # umask 077: `exec >` honours the ambient umask, so without this the log
+  # lands 0644 where the non-root staged fallback produced 0600 (`cp` from a
+  # 0600 mktemp file, preserved by `mv`). uv's stderr can carry credentialed
+  # index URLs, and the 0700 parent is not a reliable backstop —
+  # prepare_install_log_dir accepts a pre-existing directory at any mode.
+  umask_save=$(umask)
+  umask 077
+  # Noclobber so the create cannot overwrite or follow anything raced into the
+  # pending path. Retaining the result as an open fd pins the inode: a
+  # path-based `2>"$INSTALL_LOG"` would re-resolve the name when uv launches,
+  # letting a process that can write the cache dir swap in a symlink after the
+  # check. `uv_stderr` keeps the real path so the post-install readers
+  # (awk/cat/grep) operate on a file; the fd is only uv's write target.
+  set -o noclobber
+  if ! eval "exec $UV_LIVE_LOG_FD>\"\$pending\"" 2>/dev/null; then
+    set +o noclobber
+    umask "$umask_save"
+    # Not fatal — the staged mktemp path below still runs, and the previous
+    # log is still intact. But this is an ordinary operational failure the
+    # user may be able to act on, and it used to be swallowed entirely.
+    log_warn "Could not open a log file in ${install_log_dir} — continuing without live logging."
+    return 0
+  fi
+  set +o noclobber
+  umask "$umask_save"
+  # rename(2) replaces a symlink at the destination rather than writing
+  # through it; `-d` rejects the one case `mv` would read as "move into"
+  # instead of "replace".
+  if [ -d "$INSTALL_LOG" ] || ! mv -f "$pending" "$INSTALL_LOG" 2>/dev/null; then
+    eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null || true
+    rm -f "$pending" 2>/dev/null || true
+    log_warn "Could not publish ${INSTALL_LOG_DISPLAY} — continuing without live logging."
+    return 0
+  fi
+  uv_stderr="$INSTALL_LOG"
+  UV_LIVE_LOG=true
+}
+
+# Capture uv stderr so we can:
+#   1. Rewrite the cryptic "Ignoring existing environment ..." warning into
+#      plain English. uv emits that line when it rebuilds the tool venv
+#      instead of upgrading in place (e.g., Python interpreter mismatch, or
+#      editable↔regular install swap).
+#   2. Drop uv's per-step timing lines ("Resolved N packages in...", etc.)
+#      download/build progress, and the trailing "Installed N executables:" line
+#      — we already show a concise install/update summary.
+#   3. Reformat the `- pkg==X` / `+ pkg==Y` diff into an aligned
+#      "pkg  X → Y" table under a single header.
+#   4. Detect whether uv actually moved any packages (those same
+#      `- pkg==X` / `+ pkg==Y` lines). A same-version reinstall that still
+#      bumps dependencies must report differently from a true no-op, so a
+#      later grep over this raw capture file sets UV_REPORTED_PACKAGE_CHANGES.
+#   5. Persist the raw output to a log file (see the INSTALL_LOG block above)
+#      so a same-version dependency bump — or a failed install — can point the
+#      user at the full details after the terminal scrolls away.
+# Capturing to a file (vs. process substitution) ensures we see uv's full exit
+# status, don't race the warning past later log lines, and can re-scan the
+# raw output for (4) after the awk pass above has already reformatted it. That
+# file is the mktemp scratch file in the staged path and INSTALL_LOG itself in
+# the live path. Both are plain files when created; the live path is a
+# user-visible location this run has just advertised, so the readers below
+# check it is still readable rather than assuming it.
 # Warn (and offer to back out) before *this* block would take the lock: it only
 # prints a warning and asks a question - the receipt itself was read far above,
 # also outside the lock - so holding the install lock across an unbounded human
@@ -1861,17 +2347,57 @@ elif [ -n "$INSTALLED_EXTRAS" ]; then
     fi
   fi
 fi
+# Take the install lock before replacing the prior diagnostic log, so a no-op,
+# a declined update, or a failed lock acquisition can never erase it.
+# setup_live_install_log only renames over the old log once it holds a
+# writable file, so a failed create leaves the previous run's log in place.
 if [ -z "$INSTALL_LOCK_KIND" ]; then
   acquire_install_lock
 fi
-if [[ -z "$VERSION" ]]; then
+setup_live_install_log
+if [ "$UV_LIVE_LOG" = false ]; then
+  uv_stderr=$(mktemp 2>/dev/null) || {
+    log_error "mktemp is required to create a secure temp file."
+    exit 1
+  }
+  register_temp "$uv_stderr"
+else
+  log_update_tail_hint
+fi
+# In live-log mode uv's stderr goes to the descriptor opened by
+# setup_live_install_log, not to a re-opened pathname; see the rationale there.
+if [ "$UV_LIVE_LOG" = true ]; then
+  if [[ -z "$VERSION" ]]; then
+    "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
+      --prerelease "$PRERELEASE" "$PACKAGE" 2>&$UV_LIVE_LOG_FD || uv_rc=$?
+  else
+    "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" \
+      2>&$UV_LIVE_LOG_FD || uv_rc=$?
+  fi
+  # Close the write end now that uv has exited. Everything downstream — the
+  # awk/cat/grep passes, `dcode -v`, the ripgrep install — would otherwise
+  # inherit a writable handle on the log for the rest of the run. Matches the
+  # convention prompt_yn already follows for its own descriptor. Say so if the
+  # close fails: that inherited handle is exactly what this line exists to
+  # prevent, and silently not preventing it is worse than a noisy run.
+  if ! eval "exec $UV_LIVE_LOG_FD>&-" 2>/dev/null; then
+    log_warn "Could not close the install-log descriptor — later steps may inherit it."
+  fi
+elif [[ -z "$VERSION" ]]; then
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" \
     --prerelease "$PRERELEASE" "$PACKAGE" 2>"$uv_stderr" || uv_rc=$?
 else
   "$UV_BIN" tool install -U --python "$PYTHON_VERSION" "$PACKAGE" \
     2>"$uv_stderr" || uv_rc=$?
 fi
-if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
+# In the live path `uv_stderr` is the cache log this run just told the user to
+# `tail -f`, so it can disappear under a cache cleaner or a tidy-up between
+# uv exiting and these readers. Under `set -e` an unguarded `awk`/`cat` on a
+# missing file would abort the whole install and report it as an install
+# failure, which is both wrong and unexplained.
+if [ ! -r "$uv_stderr" ]; then
+  log_warn "The captured uv output at ${INSTALL_LOG_DISPLAY:-$uv_stderr} is no longer readable."
+elif [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
   awk '
     /^Ignoring existing environment/ {
       print "⚠ Existing environment uses a different Python — rebuilding from scratch (this is normal)."
@@ -1946,7 +2472,7 @@ if [ "$VERBOSE" != "1" ] && command -v awk >/dev/null 2>&1; then
 else
   cat "$uv_stderr" >&2
 fi
-if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr"; then
+if grep -Eq '^[[:space:]]+[-+][[:space:]]+[^=]+==' "$uv_stderr" 2>/dev/null; then
   UV_REPORTED_PACKAGE_CHANGES=true
 fi
 if [ -n "$INSTALL_LOG" ]; then
@@ -1967,13 +2493,26 @@ if [ -n "$INSTALL_LOG" ]; then
     INSTALL_LOG_DISPLAY=""
   fi
 fi
-rm -f "$uv_stderr"
+# Live-log runs left uv's output in INSTALL_LOG, which must survive.
+[ "$UV_LIVE_LOG" = true ] || rm -f "$uv_stderr"
+# A live run replaced the previous log before uv started, so an empty one here
+# means yesterday's diagnostics are gone and nothing replaced them. uv exited
+# without writing to stderr — a clean no-op reinstall, or a run cut short
+# before its first byte. Both `Full log:` pointers are gated on `-s`, so
+# without this the loss is completely silent. (The staged path can also publish
+# an empty log over a good one; it simply has no equivalent warning, since
+# nothing there distinguishes "uv said nothing" from "uv was never run".)
+if [ "$UV_LIVE_LOG" = true ] && [ -n "$INSTALL_LOG" ] && [ ! -s "$INSTALL_LOG" ]; then
+  log_warn "uv wrote no output — ${INSTALL_LOG_DISPLAY} is empty (any previous log was replaced)."
+  LIVE_LOG_REPLACED_NOTICE_DONE=true
+fi
 if [ "$uv_rc" -ne 0 ]; then
   restore_terminal_after_signal "$uv_rc"
   log_signal_failure_hint "$uv_rc"
   log_error "Failed to install ${PACKAGE}. See errors above."
-  # The log captured uv's full stderr (copied just above, before this exit), so
-  # point the user at it — non-verbose mode trims uv's lines from the terminal
+  # The log holds uv's full stderr — written directly in the live path, copied
+  # just above in the staged one — so point the user at it: non-verbose mode
+  # trims uv's lines from the terminal
   # and piped `curl | bash` runs lose scrollback. Require a non-empty file for
   # the same reason the success path does: uv killed by a signal before writing
   # anything leaves a zero-byte log, and sending a user whose install just
@@ -1990,15 +2529,31 @@ if path_is_under_home "$TOOL_BIN_DIR"; then
   fi
   fix_file_owner "${TOOL_BIN_DIR}/dcode" "${TOOL_BIN_DIR}/deepagents-code"
 fi
+# Repair on every root run, not only a first install. `uv tool install` has
+# just written into this tree as root, so gating on "did this run create
+# it?" would leave the common `sudo` upgrade path root-owned — exactly
+# the breakage fix_tree_owner exists to prevent. The tree is dcode's own tool
+# environment, so the installer owns it whether or not this run created it.
 if [ -n "$UV_TOOL_DIR" ] && path_is_under_home "${UV_TOOL_DIR}/deepagents-code"; then
-  fix_owner "${UV_TOOL_DIR}/deepagents-code"
-elif [ -d "${HOME}/.local/share/uv" ]; then
-  fix_owner "${HOME}/.local/share/uv"
+  fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"
 fi
-if [ "$OS" = "macos" ] && [ -d "${HOME}/Library/Caches/uv" ]; then
-  fix_owner "${HOME}/Library/Caches/uv"
-elif [ -d "${HOME}/.cache/uv" ]; then
-  fix_owner "${HOME}/.cache/uv"
+while IFS= read -r uv_cache_dir; do
+  [ -n "$uv_cache_dir" ] || continue
+  if path_is_under_home "$uv_cache_dir"; then
+    fix_tree_owner "$uv_cache_dir"
+  fi
+done <<EOF
+${UV_TOOL_CACHE_NEW}
+EOF
+if [ "$(id -u)" -eq 0 ]; then
+  while IFS= read -r uv_cache_dir; do
+    [ -n "$uv_cache_dir" ] || continue
+    [ -d "$uv_cache_dir" ] || continue
+    log_warn "Installed as root using the pre-existing uv cache at ${uv_cache_dir}."
+    log_warn "  Some entries are now root-owned. Run: sudo chown -R ${TARGET_USER} ${uv_cache_dir}"
+  done <<EOF
+${UV_TOOL_CACHE_PREEXISTING}
+EOF
 fi
 # Restore ownership for the log path without recursively chowning a cache path
 # that could have been swapped after creation.
@@ -2038,10 +2593,6 @@ dir_in_original_path() {
     *":$check_dir:"*) return 0 ;;
     *) return 1 ;;
   esac
-}
-
-paths_are_same_file() {
-  [ "$1" = "$2" ] || [ "$1" -ef "$2" ]
 }
 
 # Try to symlink the dcode binary into a directory already in PATH. Tries
@@ -2909,7 +3460,8 @@ elif [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
     # because a grep matched `- pkg==` / `+ pkg==` lines in the captured
     # stderr), but publication can still have failed - copy_install_log clears
     # INSTALL_LOG on failure - and then there is no log to point at from either
-    # site. Repeating it here would only print the same path on two lines.
+    # site. Leaving the pointer to that one site also keeps this line short;
+    # a live run already showed the path once in the `Update log:` hint.
     log_success "deepagents-code ${NEW_VERSION} was already up to date; dependencies were updated."
   else
     log_success "deepagents-code ${NEW_VERSION} already up to date."
@@ -2966,17 +3518,27 @@ if [ "$VERIFY_OK" = true ] && [ "$DCODE_ON_PATH" = false ] && [ -n "$DCODE_BIN" 
   ensure_path_setup "$DCODE_NAME" "$DCODE_BIN" || path_setup_rc=$?
   if [ "$path_setup_rc" -ne 0 ] && [ "$path_setup_rc" -ne 3 ] && \
     [ "$path_setup_rc" -ne 4 ]; then
-    # rc=1: ensure_path_setup printed a specific warning; add the fallback.
+    # rc=1: ensure_path_setup already printed a specific warning; keep the
+    #   fallback in warning styling since profile setup genuinely failed.
     # rc=2: startup files were written, or no change was needed — either way
-    #   the *running* shell still lacks ~/.local/bin on PATH, so emit the
-    #   reload/source hint.
+    #   the *running* shell still lacks ~/.local/bin on PATH. Render the hint
+    #   as a friendly next step (new terminals already work), not a warning.
     # rc=0/3/4 are silent here: PATH is already fixed, MDM owns it, or the user
     #   declined and was already given the one line that would help.
-    log_warn "  Restart your shell, or run:"
-    if [ -f "${HOME}/.local/bin/env" ]; then
-      log_warn "  source ~/.local/bin/env"
+    if [ "$path_setup_rc" -eq 2 ]; then
+      log_info "To use ${DCODE_NAME} in this shell, run:"
+      if [ -f "${HOME}/.local/bin/env" ]; then
+        printf "  ${CYAN}>${NC} source ~/.local/bin/env\n"
+      else
+        printf "  ${CYAN}>${NC} export PATH=\"\$HOME/.local/bin:\$PATH\"\n"
+      fi
     else
-      log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+      log_warn "  Restart your shell, or run:"
+      if [ -f "${HOME}/.local/bin/env" ]; then
+        log_warn "  source ~/.local/bin/env"
+      else
+        log_warn "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+      fi
     fi
   fi
 fi
@@ -2990,11 +3552,16 @@ fi
 # "successfully" and then behave differently at runtime.
 MIN_RIPGREP_VERSION="12.0.0"
 
-# version_at_least HAVE WANT — dotted numeric compare (12.0.0 >= 11.0.0). The
-# installer runs before Python exists, so this stays in pure shell.
+# version_at_least HAVE WANT — dotted numeric compare (12.0.0 >= 11.0.0) over
+# the first three components only. The installer runs before Python exists, so
+# this stays in pure shell. It is not a PEP 440 comparator: either side
+# carrying a non-numeric component (a prerelease suffix, an empty string) is
+# rejected outright rather than compared, so callers holding package versions
+# get `false` instead of a bogus ordering.
 version_at_least() {
   local have="$1" want="$2" IFS_save="$IFS"
   case "$have" in ''|*[!0-9.]*) return 1 ;; esac
+  case "$want" in ''|*[!0-9.]*) return 1 ;; esac
   IFS=.
   # shellcheck disable=SC2086  # word-splitting on '.' is the point
   set -- $have
@@ -3117,7 +3684,7 @@ install_ripgrep_via_cargo() {
   if command -v cargo >/dev/null 2>&1; then
     log_info "Installing ripgrep via cargo (no sudo needed)..."
     if cargo install ripgrep; then
-      fix_owner "${HOME}/.cargo"
+      fix_file_owner "${HOME}/.cargo/bin/rg"
       installed_rg_is_acceptable && return 0
       log_warn "cargo install succeeded but rg not found in PATH or too old."
     fi
@@ -3138,11 +3705,33 @@ ripgrep_managed_failed() {
   ripgrep_manual_hint
 }
 
+# Hand back whichever managed bin directory `dcode tools install` just wrote
+# to. It prefers the installation-scoped MANAGED_BIN_DIR and falls back to the
+# profile-scoped one when that is unwritable, so a root install must repair
+# both or the fallback stays root-owned inside the user's home. Each is gated
+# on `path_is_under_home` as fix_tree_owner requires: MANAGED_BIN_DIR derives
+# from `uv tool dir`, which the user can point outside $HOME.
+#
+# Repair on every root run, not only a first install — the same reason
+# `fix_tree_owner "${UV_TOOL_DIR}/deepagents-code"` is ungated. `dcode tools
+# install` has just written into these trees as root, and on an upgrade they
+# already exist, so a `*_PREEXISTED` gate would skip the common `sudo` path and
+# leave the freshly written `rg` root-owned. Both hold only the managed binary
+# the installer put there, so they are trees this installer owns outright.
+fix_managed_bin_owner() {
+  if [ -n "$MANAGED_BIN_DIR" ] && path_is_under_home "$MANAGED_BIN_DIR"; then
+    fix_tree_owner "$MANAGED_BIN_DIR"
+  fi
+  if [ -n "${DEEPAGENTS_HOME:-}" ] && path_is_under_home "${DEEPAGENTS_HOME}/bin"; then
+    fix_tree_owner "${DEEPAGENTS_HOME}/bin"
+  fi
+}
+
 if [ "$SKIP_OPTIONAL" != "1" ]; then
   if [ "$RIPGREP_INSTALLER" = "managed" ] && [ "$VERIFY_OK" = true ] && [ -n "$DCODE_BIN" ]; then
     # Eager, non-prompting managed install through the freshly installed binary
     # — the same pinned, SHA-256-verified path dcode uses on first run
-    # (downloads into ~/.deepagents/bin, no sudo). Doing it here removes the
+    # (downloads inside the dcode tool environment). Doing it here removes the
     # first-run download latency. The binary reuses a system `rg` already on
     # PATH and honors DEEPAGENTS_CODE_OFFLINE and
     # DEEPAGENTS_CODE_RIPGREP_INSTALLER=system. Routine output stays behind
@@ -3151,7 +3740,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       echo ""
       log_info "Setting up ripgrep..."
       if "$DCODE_BIN" tools install; then
-        fix_owner "${HOME}/.deepagents/bin"
+        fix_managed_bin_owner
       else
         ripgrep_managed_failed
       fi
@@ -3161,7 +3750,7 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
       if ripgrep_setup_out=$(mktemp 2>/dev/null); then
         register_temp "$ripgrep_setup_out"
         if "$DCODE_BIN" tools install >"$ripgrep_setup_out" 2>&1; then
-          fix_owner "${HOME}/.deepagents/bin"
+          fix_managed_bin_owner
         else
           echo ""
           cat "$ripgrep_setup_out" >&2 2>/dev/null || true
@@ -3212,19 +3801,29 @@ if [ "$SKIP_OPTIONAL" != "1" ]; then
 fi
 
 # ---------------------------------------------------------------------------
-# Done — footer wording depends on what changed. All three named branches also
+# Done — footer wording depends on what changed. All named branches also
 # require a non-editable install (an editable one always falls through to the
 # catch-all, even when its reinstall moved dependencies):
 #   - same app version + dependency changes → "Dependencies updated."
 #   - already up to date                    → "Already installed."
-#   - unpinned, default-prerelease run that moved version → "Version changed."
+#   - deliberate move to the PyPI latest    → "Upgraded."
+#   - any other unpinned version move       → "Version changed."
 #   - everything else                       → "Setup complete."
 #
 # The last branch is a catch-all, not an enumerated set. It covers a fresh
-# install and an editable→PyPI swap. The version-move branch stays neutral
-# because uv honors custom indexes and configuration whose newest available
-# package can be older than the installed version. Two other known downgrade
-# paths remain in the catch-all branch:
+# install and an editable→PyPI swap. The version-move branches split on
+# UPGRADE_INTENDED (set in the update-check branch above): the script can only
+# claim "Upgraded." when it deliberately moved to the PyPI latest it had just
+# fetched, confirmed differed from the installed version, and landed on a
+# version that is not numerically older. version_at_least is `>=` over three
+# dotted integer components, so it rules out a downgrade rather than proving a
+# strict increase — two textually different versions that tie over those three
+# components (0.2 → 0.2.0) also reach this branch. A non-numeric version on
+# either side fails the check outright and falls through to the neutral
+# branch. Any other move stays neutral because uv honors custom
+# indexes and configuration whose newest available package can be older than
+# the installed version. Two other known downgrade paths remain in the
+# catch-all branch:
 #   - a *pinned* version (VERSION set): `bash -s -- 0.1.0` over an installed
 #     0.2.0 is a downgrade.
 #   - an explicit DEEPAGENTS_CODE_PRERELEASE (PRERELEASE_REQUESTED set): with
@@ -3240,6 +3839,11 @@ if [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] 
 elif [ "$IS_EDITABLE" = false ] && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] \
   && [ "$PRE_VERSION" = "$NEW_VERSION" ]; then
   footer_msg="Already installed."
+elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
+  && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ] \
+  && [ "${UPGRADE_INTENDED:-false}" = true ] && [ -n "${LATEST_VERSION:-}" ] \
+  && [ "$NEW_VERSION" = "$LATEST_VERSION" ] && version_at_least "$NEW_VERSION" "$PRE_VERSION"; then
+  footer_msg="Upgraded."
 elif [ "$IS_EDITABLE" = false ] && [ -z "$VERSION" ] && [ -z "$PRERELEASE_REQUESTED" ] \
   && [ -n "$PRE_VERSION" ] && [ -n "$NEW_VERSION" ] && [ "$PRE_VERSION" != "$NEW_VERSION" ]; then
   footer_msg="Version changed."

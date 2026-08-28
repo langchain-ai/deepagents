@@ -10,7 +10,7 @@ Examples:
  init_skill.py custom-skill --path /custom/location
 
 For deepagents CLI:
- init_skill.py my-skill --path ~/.deepagents/agent/skills
+ init_skill.py my-skill --path "${DEEPAGENTS_HOME:-$HOME/.deepagents}/agent/skills"
 """
 
 import sys
@@ -333,7 +333,8 @@ def main():
         print(" init_skill.py my-api-helper --path skills/private")
         print(" init_skill.py custom-skill --path /custom/location")
         print("\nFor deepagents CLI:")
-        print(" init_skill.py my-skill --path ~/.deepagents/agent/skills")
+        skills_dir = "${DEEPAGENTS_HOME:-$HOME/.deepagents}/agent/skills"
+        print(f' init_skill.py my-skill --path "{skills_dir}"')
         sys.exit(1)
 
     skill_name = sys.argv[1]

@@ -1,14 +1,22 @@
 """Tests for CLI argument parsing."""
 
+import argparse
 import io
 import re
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from rich.console import Console
 
-from deepagents_code.main import parse_args
+from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._paths import PATHS
+from deepagents_code.main import (
+    _recent_agent_is_valid,
+    _resolve_agent_arg,
+    parse_args,
+)
 from deepagents_code.ui import show_help, show_threads_list_help
 
 
@@ -94,6 +102,28 @@ class TestInitialSkillArg:
             args = parse_args()
         assert args.initial_skill == "code-review"
         assert args.initial_prompt == "review this patch"
+
+
+class TestSummarizationModelArg:
+    def test_flag_sets_model_independently(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--model",
+                "anthropic:claude-sonnet-4-5",
+                "--summarization-model",
+                "openai:gpt-5.4-mini",
+            ],
+        ):
+            args = parse_args()
+        assert args.model == "anthropic:claude-sonnet-4-5"
+        assert args.summarization_model == "openai:gpt-5.4-mini"
+
+    def test_flag_defaults_to_none(self) -> None:
+        with patch.object(sys, "argv", ["deepagents"]):
+            assert parse_args().summarization_model is None
 
 
 class TestMaxRetriesArg:
@@ -539,6 +569,32 @@ class TestConfigCommandDispatch:
 class TestMcpCommandDispatch:
     """Tests for `cli_main()` dispatch of `dcode mcp` subcommands."""
 
+    def test_bare_mcp_login_lists_servers(self) -> None:
+        """`dcode mcp login` dispatches to login discovery."""
+        from deepagents_code.main import cli_main
+
+        with (
+            patch.object(sys, "argv", ["deepagents", "mcp", "login"]),
+            patch("deepagents_code.main.check_cli_dependencies"),
+            patch("deepagents_code.main.apply_stdin_pipe"),
+            patch(
+                "deepagents_code.client.commands.mcp.run_mcp_login_list",
+                new=AsyncMock(return_value=0),
+            ) as mock_list,
+            patch(
+                "deepagents_code.client.commands.mcp.run_mcp_login",
+                new=AsyncMock(return_value=0),
+            ) as mock_login,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            cli_main()
+
+        assert exc_info.value.code == 0
+        mock_list.assert_awaited_once_with(config_path=None)
+        # `assert_not_called`, not `assert_not_awaited`: building both
+        # coroutines and awaiting one would still pass the latter.
+        mock_login.assert_not_called()
+
     def test_mcp_login_uses_top_level_mcp_config_as_fallback(self) -> None:
         """`dcode --mcp-config PATH mcp login NAME` propagates PATH to login."""
         from deepagents_code.main import cli_main
@@ -607,23 +663,24 @@ class TestMcpCommandDispatch:
             config_path="/subcommand/config.json",
         )
 
-    def test_mcp_config_subcommand_prints_discovery_paths(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
+    def test_mcp_config_subcommand_prints_discovery_paths(self) -> None:
         """`dcode mcp config` prints each discovery path."""
         from deepagents_code.main import cli_main
 
+        output = io.StringIO()
+        test_console = Console(file=output, highlight=False, width=500)
         with (
             patch.object(sys, "argv", ["deepagents", "mcp", "config"]),
             patch("deepagents_code.main.check_cli_dependencies"),
             patch("deepagents_code.main.apply_stdin_pipe"),
+            patch("deepagents_code.ui.console", test_console),
             pytest.raises(SystemExit) as exc_info,
         ):
             cli_main()
 
         assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "~/.deepagents/.mcp.json" in out
+        out = output.getvalue()
+        assert PATHS.display(PATHS.profile.mcp_config_file) in out
         assert "<project-root>/.deepagents/.mcp.json" in out
         assert "<project-root>/.mcp.json" in out
 
@@ -713,15 +770,24 @@ class TestMcpCommandDispatch:
         """
         import pathlib
 
+        from deepagents_code._paths import _capture_paths
         from deepagents_code.client.commands.mcp import run_mcp_config
+        from deepagents_code.ui import console
 
         fake_home = pathlib.Path(str(tmp_path)) / "home"
+        configured = pathlib.Path(str(tmp_path)) / "custom-home"
         fake_project = pathlib.Path(str(tmp_path)) / "project"
-        (fake_home / ".deepagents").mkdir(parents=True)
-        (fake_home / ".deepagents" / ".mcp.json").write_text("{}")
+        configured.mkdir(parents=True)
+        (configured / ".mcp.json").write_text("{}")
         fake_project.mkdir()
+        (fake_project / ".mcp.json").mkdir()
 
-        monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
+        monkeypatch.setattr(
+            "deepagents_code._paths.PATHS",
+            _capture_paths(str(configured), launch_home=fake_home),
+        )
+        monkeypatch.setenv("DEEPAGENTS_HOME", str(configured))
+        monkeypatch.setattr(console, "width", 240)
         monkeypatch.chdir(fake_project)
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root",
@@ -732,9 +798,7 @@ class TestMcpCommandDispatch:
 
         assert exit_code == 0
         out = capsys.readouterr().out
-        user_line = next(
-            line for line in out.splitlines() if "~/.deepagents/.mcp.json" in line
-        )
+        assert str(configured) in out
         project_root_line = next(
             line
             for line in out.splitlines()
@@ -746,7 +810,8 @@ class TestMcpCommandDispatch:
             for line in out.splitlines()
             if "<project-root>/.deepagents/.mcp.json" in line
         )
-        assert "found" in user_line
+        assert "found" in out.split(str(configured), maxsplit=1)[0].splitlines()[-1]
+        # A malformed directory at a config path is ignored by runtime discovery.
         assert "missing" in project_root_line
         assert "missing" in project_subdir_line
 
@@ -919,3 +984,61 @@ class TestJsonArg:
         assert args.command == "skills"
         assert args.skills_command == "list"
         assert args.output_format == "json"
+
+
+class TestReservedAgentArg:
+    """`-a plugins` must fail at the CLI, not inside agent construction.
+
+    `agent.create_cli_agent` calls `settings.ensure_agent_dir(assistant_id)`
+    with no handler, so a reserved name surfaced to the user as an unhandled
+    `ValueError` from server startup.
+    """
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_reserved_name_exits_with_a_message(
+        self, name: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        args = argparse.Namespace(agent=name, resume_thread=None)
+
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_agent_arg(args)
+
+        assert exc_info.value.code == 2
+        output = capsys.readouterr().out
+        assert name in output
+        assert "reserved" in output
+
+    def test_ordinary_name_passes_through(self) -> None:
+        args = argparse.Namespace(agent="coder", resume_thread=None)
+
+        assert _resolve_agent_arg(args) == "coder"
+
+
+class TestStaleStoredAgent:
+    """A stored `[agents].recent` must never break every launch.
+
+    `bin/` and `plugins/` are real directories under the profile root, so the
+    `is_dir()` staleness check accepted them and the launch then failed in
+    `get_agent_dir`.
+    """
+
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_a_reserved_stored_name_is_not_valid(self, name: str) -> None:
+        assert _recent_agent_is_valid(name) is False
+
+    def test_a_reserved_stored_name_falls_back_to_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        """End to end through the resolver, with the directory actually present."""
+        (tmp_path / "plugins").mkdir()
+        args = argparse.Namespace(agent=None, resume_thread=None)
+
+        with (
+            patch("deepagents_code.main.get_deepagents_home", return_value=tmp_path),
+            patch("deepagents_code.model_config.load_default_agent", return_value=None),
+            patch(
+                "deepagents_code.model_config.load_recent_agent",
+                return_value="plugins",
+            ),
+        ):
+            assert _resolve_agent_arg(args) == DEFAULT_AGENT_NAME

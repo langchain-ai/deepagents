@@ -9,7 +9,7 @@ import tomllib
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import ANY, AsyncMock, Mock, patch
 
 import pytest
 
@@ -65,6 +65,20 @@ def _block_sdk_pypi_fetch(tmp_path: Path) -> Iterator[None]:
             return_value=None,
         ),
     ):
+        yield
+
+
+@pytest.fixture(autouse=True)
+def _isolate_update_log_dir(tmp_path: Path) -> Iterator[None]:
+    """Keep `/update` tests out of the developer's real update-log directory.
+
+    `UPDATE_LOG_DIR` is a module-level constant baked from `default_cache_dir()`
+    at import, so no environment variable redirects it. Any test that reaches
+    `create_update_log_path` therefore runs `cleanup_update_logs` against the
+    real cache dir, pruning a user's genuine logs past `UPDATE_LOG_MAX_FILES`.
+    Tests that assert on a specific path override this with their own patch.
+    """
+    with patch("deepagents_code.update_check.UPDATE_LOG_DIR", tmp_path / "update_logs"):
         yield
 
 
@@ -490,6 +504,162 @@ def test_build_version_text_omits_core_deps_when_not_editable() -> None:
     assert "Core dependencies:" not in text
 
 
+def test_build_version_text_reports_cached_update() -> None:
+    """`--version` warns when the local cache knows about a newer release."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="uv tool install -U deepagents-code",
+        ),
+    ):
+        text = build_version_text()
+
+    assert (
+        "Update available: v99.99.99. Run: uv tool install -U deepagents-code" in text
+    )
+
+
+def test_build_version_text_omits_cached_update_for_editable_install() -> None:
+    """`--version` never recommends package updates for editable checkouts."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch("deepagents_code.update_check.get_cached_update_available") as get_cached,
+    ):
+        text = build_version_text()
+
+    assert "Update available" not in text
+    get_cached.assert_not_called()
+
+
+def test_build_version_text_uses_prerelease_aware_upgrade_command() -> None:
+    """Cached prerequisite pins produce an installable upgrade command."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="prerelease command",
+        ) as upgrade_command,
+    ):
+        text = build_version_text()
+
+    assert "Update available: v99.99.99. Run: prerelease command" in text
+    upgrade_command.assert_called_once_with(
+        include_prereleases=True,
+        version="99.99.99",
+    )
+
+
+def test_build_version_text_omits_command_without_cached_prerequisite_status() -> None:
+    """Unknown prerequisite status warns without suggesting a broken command."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.config._is_editable_install",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            return_value=(True, "99.99.99"),
+        ),
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.cached_release_requires_prereleases",
+            return_value=None,
+        ),
+        patch("deepagents_code.update_check.upgrade_command") as upgrade_command,
+    ):
+        text = build_version_text()
+
+    assert "Update available: v99.99.99." in text
+    assert "Run:" not in text
+    upgrade_command.assert_not_called()
+
+
+def test_build_version_text_honors_disabled_update_checks() -> None:
+    """`--version` does not inspect or report updates after an opt-out."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=False,
+        ),
+        patch("deepagents_code.update_check.get_cached_update_available") as get_cached,
+    ):
+        text = build_version_text()
+
+    assert "Update available" not in text
+    get_cached.assert_not_called()
+
+
+def test_build_version_text_ignores_cached_update_failure() -> None:
+    """A cache read failure never breaks `--version` output."""
+    from deepagents_code.main import build_version_text
+
+    with (
+        patch(
+            "deepagents_code.update_check.is_update_check_enabled",
+            return_value=True,
+        ),
+        patch(
+            "deepagents_code.update_check.get_cached_update_available",
+            side_effect=OSError,
+        ),
+    ):
+        text = build_version_text()
+
+    assert f"deepagents-code {__version__}" in text
+    assert "Update available" not in text
+
+
 def _editable_exact_pin_version_report(cli_metadata: str = "0.1.40") -> VersionReport:
     """Build a report with editable installs, CLI drift, and a newer SDK pin."""
     from packaging.requirements import Requirement
@@ -677,9 +847,10 @@ async def test_update_slash_command_pypi_unreachable_short_circuits() -> None:
 
 
 async def test_update_slash_command_omitted_prerelease_preserves_channel() -> None:
-    """`/update` lets update helpers infer the channel from the installed version."""
+    """`/update` infers the channel from the installed version and bumps the splash."""
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
 
     app = DeepAgentsApp()
     async with app.run_test() as pilot:
@@ -696,22 +867,130 @@ async def test_update_slash_command_omitted_prerelease_preserves_channel() -> No
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
             await pilot.pause()
+            # Captured inside `run_test`: the app is torn down on exit, so the
+            # banner is unreachable by the time the assertions below run.
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
 
         is_update_mock.assert_called_once_with(
             bypass_cache=True,
             include_prereleases=None,
         )
         perform_upgrade_mock.assert_awaited_once_with(
+            log_path=ANY,
             include_prereleases=None,
             target_version="99.0.0",
         )
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0" in str(app_msgs[-1]._content)
+        assert "v99.0.0" in splash
+        assert f"v{__version__}" not in splash
+
+
+async def test_update_slash_command_links_log_instead_of_listing_dependencies() -> None:
+    """A normal app upgrade keeps dependency churn in its exact update log."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+
+    log_path = Path("/tmp/dcode update.log")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=log_path,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(
+                    True,
+                    (
+                        " - deepagents-code==1.0.0\n"
+                        " + deepagents-code==99.0.0\n"
+                        " - anthropic==0.120.2\n"
+                        " + anthropic==0.122.0\n"
+                    ),
+                    "99.0.0",
+                ),
+            ) as perform_upgrade_mock,
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path=log_path,
+            include_prereleases=None,
+            target_version="99.0.0",
+        )
+        content = "\n".join(
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        )
+        assert "Update log: tail -f '/tmp/dcode update.log'" in content
+        # Pin the success branch. The negative assertions below are only
+        # meaningful if the flow actually reached the branch that used to print
+        # the dependency summary — a swallowed exception (e.g. a `perform_upgrade`
+        # arity change) would otherwise make them pass vacuously. `ErrorMessage`
+        # is not an `AppMessage` subclass, so `content` cannot see failures.
+        assert "Updated to v99.0.0" in content
+        assert not app.query(ErrorMessage)
+        assert "Dependencies updated:" not in content
+        assert "anthropic" not in content
+
+
+async def test_update_slash_command_uses_powershell_to_follow_logs() -> None:
+    """Windows updates show a PowerShell-compatible log-follow command."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    log_path = Path(r"C:\Users\dcode update.log")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=log_path,
+            ),
+            patch("deepagents_code.update_check.sys.platform", "win32"),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "", "99.0.0"),
+            ),
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        content = "\n".join(
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        )
+        assert (
+            "Update log: Get-Content -Wait -LiteralPath 'C:\\Users\\dcode update.log'"
+        ) in content
 
 
 async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() -> None:
@@ -741,13 +1020,14 @@ async def test_update_slash_command_stable_prerelease_deps_keep_intent_none() ->
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update")
             await pilot.pause()
 
     perform_upgrade_mock.assert_awaited_once_with(
+        log_path=ANY,
         include_prereleases=None,
         target_version="99.0.0",
     )
@@ -780,7 +1060,7 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0rc1"),
             ) as perform_upgrade_mock,
         ):
             await app._handle_command("/update --prerelease")
@@ -791,6 +1071,7 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
             include_prereleases=True,
         )
         perform_upgrade_mock.assert_awaited_once_with(
+            log_path=ANY,
             include_prereleases=True,
             target_version="99.0.0rc1",
         )
@@ -798,6 +1079,49 @@ async def test_update_slash_command_prerelease_updates_channel() -> None:
         assert str(user_msgs[-1]._content) == "/update --prerelease"
         app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
         assert "Updated to v99.0.0rc1" in str(app_msgs[-1]._content)
+
+
+async def test_update_slash_command_reports_success_without_a_banner() -> None:
+    """A missing splash banner cannot turn a successful `/update` into a failure.
+
+    `_perform_app_upgrade` runs inside the caller's broad
+    `except Exception -> _mount_update_failure`, so an unguarded banner lookup
+    would report a completed upgrade as "Update failed" and name an internal
+    CSS selector at the user. The repaint is cosmetic; the success line is not.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        await app.query_one("#welcome-banner", WelcomeBanner).remove()
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "99.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "", "99.0.0"),
+            ),
+        ):
+            await app._handle_command("/update")
+            await pilot.pause()
+
+        plain_msgs = [
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        ]
+        assert any("Updated to v99.0.0" in m for m in plain_msgs)
+        error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
+        assert not any("Update failed" in m for m in error_msgs)
 
 
 async def test_update_slash_command_replaces_success_with_shadow_warning() -> None:
@@ -810,10 +1134,12 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
     `ErrorMessage` with the warning and skip the success `AppMessage`
     entirely; a regression that flipped the `if/else` (or kept the
     success line unconditionally) would ship a reassuring success line
-    over a broken upgrade.
+    over a broken upgrade. The splash version carries the same guarantee
+    for the same reason, and is asserted here too.
     """
     from deepagents_code.app import DeepAgentsApp
     from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+    from deepagents_code.tui.widgets.welcome import WelcomeBanner
     from deepagents_code.update_check import ShadowedDcode
 
     shadow = ShadowedDcode(
@@ -835,7 +1161,7 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(True, ""),
+                return_value=(True, "", "99.0.0"),
             ),
             # Override the module-level autouse `None` patch with the
             # positive case. Innermost patch wins.
@@ -846,6 +1172,9 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
         ):
             await app._handle_command("/update")
             await pilot.pause()
+            splash = (
+                app.query_one("#welcome-banner", WelcomeBanner)._build_banner().plain
+            )
 
         plain_msgs = [
             str(m._content) for m in app.query(AppMessage) if not m._is_markdown
@@ -854,6 +1183,12 @@ async def test_update_slash_command_replaces_success_with_shadow_warning() -> No
         # would not actually use the new version. A regression that kept the
         # success line would show both messages, contradicting itself.
         assert not any("Updated to v99.0.0" in m for m in plain_msgs)
+        # Same reasoning for the splash: bumping the banner here would promise
+        # an upgrade that a relaunch will not actually deliver. This is the
+        # only guard on `_update_splash_version` staying inside the
+        # `shadow is None` branch, so do not drop it as redundant.
+        assert f"v{__version__}" in splash
+        assert "v99.0.0" not in splash
         # The warning is mounted as an `ErrorMessage` (red), not a generic
         # `AppMessage`, so it visually stands apart from neutral status text.
         error_msgs = [str(m._content) for m in app.query(ErrorMessage)]
@@ -1022,6 +1357,7 @@ async def test_update_deps_routes_outdated_dcode_through_regular_update(
                 return_value=(
                     True,
                     " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                    "1.1.0",
                 ),
             ),
         ):
@@ -1075,6 +1411,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
                 return_value=(
                     True,
                     " - deepagents-code==1.0.0\n + deepagents-code==1.1.0\n",
+                    "1.1.0",
                 ),
             ) as perform_upgrade_mock,
         ):
@@ -1085,6 +1422,7 @@ async def test_update_deps_skips_refresh_prompt_when_refresh_unsupported(
         confirm_mock.assert_not_awaited()
         refresh_mock.assert_not_awaited()
         perform_upgrade_mock.assert_awaited_once_with(
+            log_path=ANY,
             include_prereleases=None,
             target_version="1.1.0",
         )
@@ -1776,7 +2114,7 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
             patch(
                 "deepagents_code.update_check.perform_upgrade",
                 new_callable=AsyncMock,
-                return_value=(False, "resolver: conflict"),
+                return_value=(False, "resolver: conflict", None),
             ),
             patch(
                 "deepagents_code.update_check.upgrade_command",
@@ -1798,6 +2136,177 @@ async def test_perform_app_upgrade_failure_surfaces_manual_command() -> None:
         assert "Auto-update failed" in content
         assert "resolver: conflict" in content
         assert "uv tool install -U 'deepagents-code==1.1.0'" in content
+
+
+async def test_perform_app_upgrade_failure_repeats_log_path() -> None:
+    """A failed upgrade names its log again, not just in the pre-install hint.
+
+    The failure detail is truncated to 200 characters, so the log is the only
+    complete record — and the hint mounted before the install has scrolled away
+    behind the installer's streamed output by the time the failure lands.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+
+    log_path = Path("/tmp/dcode failed-update.log")
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=log_path,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(False, "resolver: conflict", None),
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool install -U 'deepagents-code==1.1.0'",
+            ),
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version="1.1.0",
+            )
+            await pilot.pause()
+
+        failures = [
+            str(m._content)
+            for m in app.query(AppMessage)
+            if not m._is_markdown and "Auto-update failed" in str(m._content)
+        ]
+        assert failures
+        assert f"Log: {log_path}" in failures[0]
+
+
+async def test_perform_app_upgrade_omits_log_hint_when_log_uncreatable() -> None:
+    """An uncreatable log is silently skipped, never advertised as a dead path.
+
+    `create_update_log_file` returns `None` when the cache dir cannot be
+    written. Pointing the user at `tail -f <path>` for a file that will never
+    exist is worse than saying nothing, and the upgrade itself must still run.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage, ErrorMessage
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.create_update_log_file",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+                return_value=(True, "", "1.1.0"),
+            ) as perform_upgrade_mock,
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version="1.1.0",
+            )
+            await pilot.pause()
+
+        perform_upgrade_mock.assert_awaited_once_with(
+            log_path=None,
+            include_prereleases=None,
+            target_version="1.1.0",
+        )
+        content = "\n".join(
+            str(m._content) for m in app.query(AppMessage) if not m._is_markdown
+        )
+        assert "Update log:" not in content
+        assert "Updated to v1.1.0" in content
+        assert not app.query(ErrorMessage)
+
+
+async def test_perform_app_upgrade_defers_to_another_session() -> None:
+    """`/update` must not install while an install is already running.
+
+    `_environment_mutation_lock` only serializes this process, so the update
+    lock is what stops two terminals from racing one tool environment. Held
+    in-process here for determinism, which exercises the caller's response to
+    a refusal; `TestUpdateInstallLock` covers the cross-process guarantee.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.tui.widgets.messages import AppMessage
+    from deepagents_code.update_check import update_install_lock
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with (
+            patch(
+                "deepagents_code.update_check.perform_upgrade",
+                new_callable=AsyncMock,
+            ) as upgrade_mock,
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version=None,
+            )
+            await pilot.pause()
+
+        upgrade_mock.assert_not_awaited()
+        app_msgs = [m for m in app.query(AppMessage) if not m._is_markdown]
+        assert "An update is already being installed" in str(app_msgs[-1]._content)
+
+
+async def test_perform_app_upgrade_holds_the_lock_during_install() -> None:
+    """`/update` must run the install inside the lock, not after a check.
+
+    Shrinking the `with` to cover only the boolean check would leave the
+    install unguarded while the deferral test above still passed. The lock is
+    not reentrant, so re-entering from inside `perform_upgrade` proves it is
+    held for the real work.
+    """
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.update_check import update_install_lock
+
+    held_during_install: list[bool] = []
+
+    async def _record_lock_state(  # noqa: RUF029
+        **_kwargs: object,
+    ) -> tuple[bool, str, str | None]:
+        with update_install_lock() as holding:
+            held_during_install.append(holding)
+        return True, "", "1.1.0"
+
+    app = DeepAgentsApp()
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        with patch(
+            "deepagents_code.update_check.perform_upgrade",
+            new=_record_lock_state,
+        ):
+            await app._perform_app_upgrade(
+                current="1.0.0",
+                latest="1.1.0",
+                include_prereleases=None,
+                upgrade_include_prereleases=None,
+                pin_upgrade_version=None,
+            )
+            await pilot.pause()
+
+    assert held_during_install == [False], (
+        "the install ran without holding the update lock"
+    )
 
 
 async def test_perform_app_upgrade_skips_install_in_debug_mode(
@@ -1912,36 +2421,6 @@ def test_help_mentions_version_flag() -> None:
     # Help output should mention --version and SDK
     assert "--version" in result.stdout
     assert "SDK" in result.stdout
-
-
-def test_cli_help_flag() -> None:
-    """Verify that `--help` flag shows help and exits with code 0."""
-    result = subprocess.run(
-        [sys.executable, "-m", "deepagents_code.main", "--help"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # --help should exit with 0
-    assert result.returncode == 0
-    # Help output should mention key options
-    assert "--version" in result.stdout
-    assert "--agent" in result.stdout
-
-
-def test_cli_help_flag_short() -> None:
-    """Verify that `-h` flag shows help and exits with code 0."""
-    result = subprocess.run(
-        [sys.executable, "-m", "deepagents_code.main", "-h"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # -h should exit with 0
-    assert result.returncode == 0
-    # Help output should mention key options
-    assert "--version" in result.stdout
-    assert "--agent" in result.stdout
 
 
 def test_help_excludes_interactive_features() -> None:

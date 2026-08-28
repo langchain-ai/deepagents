@@ -1,18 +1,23 @@
 """Lightweight session statistics, token formatting, and usage-table rendering.
 
-Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter, and
-`print_usage_table` (which imports `rich.table` lazily). The module is
-intentionally kept free of heavy top-level dependencies (no pydantic, no
-config, no widget imports) so that `app.py` can import `SessionStats` and
-`format_token_count` at module level without pulling in the full
-`textual_adapter` dependency tree.
+Holds `SessionStats`/`ModelStats`, the `format_token_count` formatter,
+`print_usage_table` (which imports `rich.table` lazily), and
+`usage_table_enabled`, which decides whether that table is rendered at all.
+The module is intentionally kept free of heavy top-level dependencies (no
+pydantic, no config, no widget imports) so that `app.py` can import
+`SessionStats` and `format_token_count` at module level without pulling in the
+full `textual_adapter` dependency tree — hence the deferred `config_manifest`
+import inside `usage_table_enabled` rather than at the top.
 """
 
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+import math
+import sys
+from collections.abc import Hashable, Mapping
 from dataclasses import dataclass, field, replace
+from decimal import ROUND_CEILING, Decimal
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from deepagents_code.formatting import format_duration
@@ -22,16 +27,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-SpinnerStatus = (
-    Literal[
-        "Thinking",
-        "Offloading",
-        "Loading thread",
-        "Drafting acceptance criteria",
-    ]
-    | None
-)
-"""Valid spinner display states, or `None` to hide."""
+_warned_usage_stats_rejections: set[str] = set()
+"""Rejection reasons already reported by `_warn_rejected_usage_stats_value`."""
+
+SpinnerStatus = str | None
+"""Spinner display text, or `None` to hide.
+
+Deliberately unconstrained rather than the closed `Literal` set it replaced:
+retry status text is generated per attempt by `model_retry.format_retry_status`.
+Narrowing this back to a `Literal` union would break the retry spinner.
+"""
 
 UsageKind = Literal["assistant", "subagent", "offload", "auto"]
 """Billing/display class for a model request."""
@@ -145,6 +150,23 @@ class RecordedUsage:
     """Running token total for the request after applying this message."""
 
 
+UsageLedgerKey = str | tuple[Hashable, str]
+"""Key of the recorded-request ledger: a message ID, optionally scoped.
+
+A bare message-ID string keys requests recorded without an attempt scope
+(the legacy behavior). When a caller passes `attempt_scope` to
+`record_message_usage`/`record_model_usage_event`, the key is
+`(attempt_scope, message_id)` instead, so a retry that reuses the provider's
+message ID is a separate request while chunks of one attempt still merge.
+Callers that retain this ledger across retries should use this widened key type.
+
+The two shapes coexist in one ledger, so de-duplication cannot rely on the
+key alone: an attempt scope lives for one model call, while a HITL resume pass
+replays messages with no scope open. `finalize_recorded_requests` closes that
+gap by projecting every scoped key down to its bare message ID at each round
+boundary -- see its docstring.
+"""
+
 ModelStatsKey = tuple[str, str]
 """Per-model dict key: the `(provider, model_name)` pair.
 
@@ -172,6 +194,12 @@ class SessionStats:
 
     output_tokens: int = 0
     """Cumulative output tokens across all LLM requests."""
+
+    cache_read_tokens: int = 0
+    """Cumulative prompt tokens served from provider caches."""
+
+    cache_write_tokens: int = 0
+    """Cumulative prompt tokens written to provider caches."""
 
     total_cost_usd: float = 0.0
     """Cumulative estimated USD cost across priceable LLM requests."""
@@ -202,6 +230,8 @@ class SessionStats:
         *,
         cost_usd: float | None = None,
         kind: UsageKind = "assistant",
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
     ) -> None:
         """Accumulate usage for one completed LLM request.
 
@@ -223,10 +253,14 @@ class SessionStats:
 
                 Missing estimates leave monetary totals unchanged.
             kind: Request class used for `/cost` type breakdowns.
+            cache_read_tokens: Input tokens served from provider caches.
+            cache_write_tokens: Input tokens written to provider caches.
         """
         self.request_count += 1
         self.input_tokens += input_toks
         self.output_tokens += output_toks
+        self.cache_read_tokens += cache_read_tokens
+        self.cache_write_tokens += cache_write_tokens
         if cost_usd is not None:
             self.total_cost_usd += cost_usd
             self.priced_request_count += 1
@@ -276,6 +310,8 @@ class SessionStats:
         self.request_count -= 1
         self.input_tokens -= input_toks
         self.output_tokens -= output_toks
+        self.cache_read_tokens -= recorded.cache_read_tokens
+        self.cache_write_tokens -= recorded.cache_write_tokens
         if cost_usd is not None:
             self.total_cost_usd -= cost_usd
             self.priced_request_count -= 1
@@ -318,6 +354,8 @@ class SessionStats:
         self.request_count += other.request_count
         self.input_tokens += other.input_tokens
         self.output_tokens += other.output_tokens
+        self.cache_read_tokens += other.cache_read_tokens
+        self.cache_write_tokens += other.cache_write_tokens
         self.total_cost_usd += other.total_cost_usd
         self.priced_request_count += other.priced_request_count
         self.wall_time_seconds += other.wall_time_seconds
@@ -364,6 +402,12 @@ class RecordedRequest:
     output_tokens: int
     """Running output tokens recorded so far for the request."""
 
+    cache_read_tokens: int
+    """Running cache-read tokens recorded so far for the request."""
+
+    cache_write_tokens: int
+    """Running cache-write tokens recorded so far for the request."""
+
     cost_usd: float | None
     """Estimate for the whole request so far, or `None` when unpriceable."""
 
@@ -385,7 +429,7 @@ class RecordedRequest:
 
 
 def finalize_recorded_requests(
-    recorded_requests: dict[str, RecordedRequest],
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
 ) -> None:
     """Close every request in a ledger that outlives its stream round.
 
@@ -396,12 +440,24 @@ def finalize_recorded_requests(
     Closing the ledger at each round boundary makes the replay indistinguishable
     from the stray-chunk case `record_message_usage` already rejects.
 
+    Attempt-scoped keys need one extra step. A scope identifies one model
+    attempt and is closed when that attempt ends, so the replay on the next
+    resume pass arrives with no scope and keys by the bare message ID -- which
+    would miss the `(attempt_scope, message_id)` entry entirely and count the
+    whole request a second time. Project each scoped entry down to its bare
+    message ID as well, so the replay finds a finalized row whichever shape it
+    keys by. Later attempts overwrite earlier ones, leaving the values from the
+    attempt that actually succeeded; the projected row exists only to reject
+    replays, so its counts are never added to `stats` again.
+
     Args:
         recorded_requests: Ledger to close. Mutated in place.
     """
-    for request_id, recorded in recorded_requests.items():
-        if not recorded.finalized:
-            recorded_requests[request_id] = replace(recorded, finalized=True)
+    for request_id, recorded in list(recorded_requests.items()):
+        closed = recorded if recorded.finalized else replace(recorded, finalized=True)
+        recorded_requests[request_id] = closed
+        if isinstance(request_id, tuple):
+            recorded_requests[request_id[1]] = closed
 
 
 def _names_a_model(message: object) -> bool:
@@ -604,8 +660,8 @@ def _move_request_to_named_model(
     message: object,
     previous: RecordedRequest,
     *,
-    recorded_requests: dict[str, RecordedRequest],
-    request_id: str,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest],
+    request_id: UsageLedgerKey,
     fallback_model: str,
     fallback_provider: str,
     request_metadata: Mapping[str, Any] | None,
@@ -654,6 +710,8 @@ def _move_request_to_named_model(
         provider,
         cost_usd=cost_usd,
         kind=previous.kind,
+        cache_read_tokens=previous.cache_read_tokens,
+        cache_write_tokens=previous.cache_write_tokens,
     )
     recorded_requests[request_id] = RecordedRequest(
         model_name=model_name,
@@ -661,6 +719,8 @@ def _move_request_to_named_model(
         kind=previous.kind,
         input_tokens=previous.input_tokens,
         output_tokens=previous.output_tokens,
+        cache_read_tokens=previous.cache_read_tokens,
+        cache_write_tokens=previous.cache_write_tokens,
         cost_usd=cost_usd,
         usage_metadata=previous.usage_metadata,
         finalized=previous.finalized,
@@ -681,7 +741,8 @@ def record_message_usage(
     fallback_provider: str = "",
     request_metadata: Mapping[str, Any] | None = None,
     kind: UsageKind = "assistant",
-    recorded_requests: dict[str, RecordedRequest] | None = None,
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest] | None = None,
+    attempt_scope: Hashable | None = None,
 ) -> RecordedUsage | None:
     """Record usage attached to one streamed model message.
 
@@ -716,7 +777,13 @@ def record_message_usage(
             this specific request, when available.
         kind: Request class used by the type breakdown.
         recorded_requests: Ledger of requests this stream consumer has already
-            recorded, keyed by message ID. Mutated in place.
+            recorded, keyed by message ID -- or by `(attempt_scope, message_id)`
+            when `attempt_scope` is set. Mutated in place.
+        attempt_scope: Identity of the attempt that produced this message, or
+            `None` for legacy unscoped recording. Retries of one logical request
+            can reuse the provider's message ID; scoping keeps each attempt's
+            usage separate, while chunks and corrections of one attempt (same
+            scope, same ID) still merge into a single request.
 
     Returns:
         The tokens and cost *this message* contributed, or `None` when it has no
@@ -736,7 +803,11 @@ def record_message_usage(
     if recorded_requests is None:
         recorded_requests = {}
     message_id = getattr(message, "id", None)
-    request_id = message_id if isinstance(message_id, str) and message_id else None
+    request_id: UsageLedgerKey | None = (
+        message_id if isinstance(message_id, str) and message_id else None
+    )
+    if request_id is not None and attempt_scope is not None:
+        request_id = (attempt_scope, request_id)
     is_chunk = isinstance(message, AIMessageChunk)
     if request_id is not None and request_id in recorded_requests and not is_chunk:
         # A completed message repeats the whole request. Whether the request was
@@ -758,13 +829,13 @@ def record_message_usage(
         # Google's model-naming chunk can carry a zero-token delta, so a
         # request whose earlier chunks fell back to the configured model
         # would otherwise be stranded on the wrong per-model row.
-        if previous is not None and _names_a_model(message):
+        if previous is not None and request_id is not None and _names_a_model(message):
             reprice_delta = _move_request_to_named_model(
                 stats,
                 message,
                 previous,
                 recorded_requests=recorded_requests,
-                request_id=str(request_id),
+                request_id=request_id,
                 fallback_model=fallback_model,
                 fallback_provider=fallback_provider,
                 request_metadata=request_metadata,
@@ -782,7 +853,7 @@ def record_message_usage(
                 )
         return None
 
-    from deepagents_code.cost_tracking import estimate_cost
+    from deepagents_code.cost_tracking import cache_token_counts, estimate_cost
 
     model_name, provider = _resolve_usage_model(
         message,
@@ -816,6 +887,8 @@ def record_message_usage(
     # when the fallback is unpriceable, leave a priceable request showing no
     # cost at all.
     cost_usd = estimate_cost(accumulated_usage, model_name, provider)
+    cache_reads, cache_writes = cache_token_counts(accumulated_usage)
+    cache_write_tokens = sum(cache_writes)
 
     stats.record_request(
         model_name,
@@ -824,6 +897,8 @@ def record_message_usage(
         provider,
         cost_usd=cost_usd,
         kind=kind,
+        cache_read_tokens=cache_reads,
+        cache_write_tokens=cache_write_tokens,
     )
     if request_id is not None:
         recorded_requests[request_id] = RecordedRequest(
@@ -832,6 +907,8 @@ def record_message_usage(
             kind=kind,
             input_tokens=input_count,
             output_tokens=output_count,
+            cache_read_tokens=cache_reads,
+            cache_write_tokens=cache_write_tokens,
             cost_usd=cost_usd,
             usage_metadata=accumulated_usage,
             finalized=not is_chunk,
@@ -848,6 +925,110 @@ def record_message_usage(
             previous_model_name=previous.model_name if previous else model_name,
         ),
         request_tokens=input_count + output_count,
+    )
+
+
+def is_model_usage_event(data: object) -> bool:
+    """Report whether a custom-stream payload is a nested model-usage event.
+
+    Lets a client consume its own event whatever `record_model_usage_event` made
+    of it. A duplicate of a request the message stream already recorded is still
+    this client's event, not a payload for the unrelated handlers downstream.
+
+    Args:
+        data: A `custom` stream payload.
+
+    Returns:
+        `True` when the payload claims to be a nested model-usage event.
+    """
+    from deepagents_code.cost_tracking import MODEL_USAGE_EVENT_TYPE
+
+    return isinstance(data, Mapping) and data.get("type") == MODEL_USAGE_EVENT_TYPE
+
+
+def record_model_usage_event(
+    stats: SessionStats,
+    data: object,
+    *,
+    active_thread_id: str = "",
+    fallback_model: str = "",
+    fallback_provider: str = "",
+    recorded_requests: dict[UsageLedgerKey, RecordedRequest] | None = None,
+    attempt_scope: Hashable | None = None,
+) -> RecordedUsage | None:
+    """Record a validated provisional usage event from a nested model call.
+
+    Returns:
+        The recorded usage delta, or `None` when the event is invalid or duplicate.
+    """
+    from deepagents_code.cost_tracking import (
+        MODEL_USAGE_EVENT_TYPE,
+        MODEL_USAGE_EVENT_VERSION,
+    )
+
+    if not isinstance(data, Mapping) or data.get("type") != MODEL_USAGE_EVENT_TYPE:
+        return None
+    version = data.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != MODEL_USAGE_EVENT_VERSION
+    ):
+        # A newer graph process can stream a shape this client cannot read. The
+        # spend is still charged and streamed as the thread total, so only the
+        # provisional display is lost -- but silence would make that look like
+        # the graph never emitted anything.
+        logger.debug(
+            "Ignoring a nested usage event of version %r; this client reads %d.",
+            version,
+            MODEL_USAGE_EVENT_VERSION,
+        )
+        return None
+    request_id = data.get("request_id")
+    thread_id = data.get("thread_id")
+    scope = data.get("scope")
+    usage = data.get("usage_metadata")
+    model_name, provider = data.get("model_name"), data.get("provider")
+    if (
+        not isinstance(request_id, str)
+        or not request_id
+        or not isinstance(thread_id, str)
+        or not thread_id
+        or not isinstance(scope, str)
+        or not scope
+        or not isinstance(usage, Mapping)
+        or not usage
+        or not isinstance(model_name, str)
+        or not isinstance(provider, str)
+    ):
+        logger.debug("Ignoring a malformed nested usage event")
+        return None
+    if active_thread_id and thread_id != active_thread_id:
+        # Ordinary: a stream for a thread the user has since switched away from.
+        return None
+    try:
+        from langchain_core.messages import AIMessage
+
+        message = AIMessage(
+            content="",
+            id=request_id,
+            usage_metadata=cast("Any", dict(usage)),
+            response_metadata={
+                "model_name": model_name,
+                "model_provider": provider,
+            },
+        )
+    except (TypeError, ValueError):
+        logger.debug("Rejected malformed nested model usage", exc_info=True)
+        return None
+    return record_message_usage(
+        stats,
+        message,
+        fallback_model=fallback_model,
+        fallback_provider=fallback_provider,
+        kind="subagent",
+        recorded_requests=recorded_requests,
+        attempt_scope=attempt_scope,
     )
 
 
@@ -883,6 +1064,49 @@ def format_cost(cost_usd: float) -> str:
     return f"${cost_usd:.2f}"
 
 
+def format_cost_estimate(cost_usd: float) -> str:
+    """Format a speculative USD cost as a rounded, approximate upper bound.
+
+    Used where the figure is a worst-case estimate rather than recorded spend
+    (e.g. the cold-cache warning modal, whose cache may be partially warm):
+    rounds so the display does not imply false precision, and prefixes with `~`
+    to signal "approximately". Do not use for recorded session spend --
+    `format_cost` renders actuals exactly.
+
+    Rounding is upward to two significant figures at or above a dime so it can
+    safely appear in an upper-bound estimate. Between one cent and a dime the
+    figure keeps cent-level precision instead (`0.062` renders `~$0.07`); a
+    second digit there would be sub-cent noise.
+
+    Args:
+        cost_usd: Estimated cost in US dollars.
+
+    Returns:
+        A string such as `'~$0.62'` or `'~$12'`; non-positive values use
+        `'$0.00'` and positive sub-cent values use `'<$0.01'`, matching
+        `format_cost` edge conventions.
+    """
+    if cost_usd <= 0:
+        return "$0.00"
+    if cost_usd < 0.01:  # noqa: PLR2004  # Display floor for sub-cent estimates.
+        return "<$0.01"
+    if cost_usd < 0.1:  # noqa: PLR2004  # Keep cent-level precision under a dime.
+        rounded = Decimal(str(cost_usd)).quantize(
+            Decimal("0.01"), rounding=ROUND_CEILING
+        )
+        return f"~${rounded:.2f}"
+    # Quantize through `Decimal(str(...))` so floating-point representation
+    # cannot cause the upper-bound display to round down. `ROUND_CEILING` is
+    # appropriate here because all values that reach this branch are positive.
+    # `normalize().adjusted()` re-derives the magnitude from the rounded
+    # value so a decade carry (9.99 -> 10) renders as `$10`, not `$10.0`.
+    exponent = math.floor(math.log10(cost_usd))
+    quantum = Decimal(1).scaleb(exponent - 1)
+    rounded = Decimal(str(cost_usd)).quantize(quantum, rounding=ROUND_CEILING)
+    decimals = max(1 - rounded.normalize().adjusted(), 0)
+    return f"~${rounded:.{decimals}f}"
+
+
 def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:
     """Format a cost cell, distinguishing unpriced requests from zero cost.
 
@@ -890,6 +1114,84 @@ def _recorded_cost(cost_usd: float, priced_request_count: int) -> str:
         Formatted cost, or an em dash when no request was priceable.
     """
     return format_cost(cost_usd) if priced_request_count else "—"
+
+
+def _warn_rejected_usage_stats_value(reason: str) -> None:
+    """Report a rejected `show_usage_stats` value on stderr.
+
+    Every other rejection in this codebase is logged and left there, which is
+    right for an option that falls through to a cosmetic default. This one can
+    fall through to *showing the table* — the single outcome the user was
+    trying to prevent — and the log has no reader outside the TUI Debug
+    Console, so a quoted `"false"` or a bare `no` would otherwise look exactly
+    like never having set the option. `dcode config set` does not exist, so
+    hand-edited TOML is the only input path and typos are the expected case.
+
+    Both call sites are at teardown, where stderr is a plain stream rather than
+    a live interface, so this cannot land on top of the TUI.
+
+    The line states only the rejection, not the outcome: the resolver reports
+    rejections at or above the winning tier, so when a stronger source cleanly
+    disables the table the outcome half would contradict what the user sees.
+
+    Deduped per reason rather than per process: resolving once per session is
+    the norm, but `dcode config` walks the whole manifest, and a line repeated
+    verbatim reads as two separate problems. Two *different* reasons — managed
+    config and the user file both rejected — really are two problems and both
+    print.
+
+    Args:
+        reason: Rejection text from the resolver.
+    """
+    if reason in _warned_usage_stats_rejections:
+        return
+    _warned_usage_stats_rejections.add(reason)
+    print(f"Warning: {reason}", file=sys.stderr)  # noqa: T201
+    logger.warning("%s", reason)
+
+
+def usage_table_enabled() -> bool:
+    """Return whether the session usage table should be rendered.
+
+    Controlled by `[ui].show_usage_stats` or `DEEPAGENTS_CODE_SHOW_USAGE_STATS`.
+    Both the TUI teardown and the headless run call this rather than resolving
+    the option themselves, so the key and its fallback pair are written once
+    and the two surfaces cannot disagree about the default.
+
+    Fails open: both callers are at teardown, where an exception would cost far
+    more than the table is worth, so a broad catch is warranted for a leaf,
+    cosmetic decision with a safe default — provided it is logged rather than
+    swallowed. The call sites document what an escape would actually break.
+
+    `BlockingError` is excluded from that fail-open, matching
+    `configurable_model._resolve_openai_prompt_cache_key_enabled`: it signals
+    blocking I/O on the event loop, which is a real regression rather than a
+    config hiccup, and this is called directly from the async headless
+    teardown. It is matched by class name because `blockbuster` is not a
+    runtime dependency of this package.
+
+    The `config_manifest` import is deliberately outside the `try`, so an
+    `ImportError` propagates instead of being reported as a config failure.
+
+    Returns:
+        Whether to render the table.
+    """
+    from deepagents_code.config_manifest import load_bool_display_preference
+
+    try:
+        return load_bool_display_preference(
+            "display.show_usage_stats",
+            fallback=True,
+            on_rejected=_warn_rejected_usage_stats_value,
+        )
+    except Exception as exc:
+        if any(cls.__name__ == "BlockingError" for cls in type(exc).__mro__):
+            raise
+        logger.warning(
+            "Could not resolve display.show_usage_stats; showing the table",
+            exc_info=True,
+        )
+        return True
 
 
 def print_usage_table(

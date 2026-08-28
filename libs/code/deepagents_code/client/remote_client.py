@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+
+    from deepagents_code.offload_middleware import OffloadResult
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +27,124 @@ finish its in-flight tool call.
 Concurrent cancels keep aggregate wall time bounded by this value regardless of
 how many runs are active.
 """
+
+_OFFLOAD_CANCEL_WAIT_SECONDS = 10.0
+"""Bound the Esc path while the server confirms offload termination."""
+
+_OFFLOAD_MAX_RESUME_ROUNDS = 32
+"""Bound hook transport rounds for a single server operation.
+
+Counts *hook fulfillments*, not POSTs: the loop runs one extra iteration so the
+round that follows the last fulfillment can observe completion. Exceeding this
+many distinct invocations means either genuinely many hooks or an unstable
+invocation-id derivation server-side.
+"""
+
+_OFFLOAD_RESULT_INT_FIELDS = (
+    "messages_offloaded",
+    "messages_kept",
+    "tokens_before",
+    "tokens_after",
+)
+
+
+async def _join_task_deferring_cancellation[T](task: asyncio.Task[T]) -> None:
+    """Join a task despite repeated cancellation of the waiting caller."""
+    while not task.done():
+        try:
+            await asyncio.wait((task,))
+        except asyncio.CancelledError:
+            continue
+
+
+async def _cancel_server_offload(
+    graph: Any,  # noqa: ANN401  # untyped RemoteGraph client
+    thread_id: str,
+    operation_id: str,
+) -> str:
+    """Request cancellation and wait for the server's terminal acknowledgement.
+
+    Returns:
+        Server terminal status (`cancelled` or `finished`).
+
+    Raises:
+        RuntimeError: If the server returns an invalid acknowledgement.
+    """
+    response = await asyncio.wait_for(
+        graph.client.http.post(
+            f"/dcode/threads/{thread_id}/offload/{operation_id}/cancel",
+            json={},
+        ),
+        timeout=_OFFLOAD_CANCEL_WAIT_SECONDS,
+    )
+    status = response.get("status") if isinstance(response, dict) else None
+    if status not in {"cancelled", "finished"}:
+        msg = "Offload server returned an invalid cancellation acknowledgement."
+        raise RuntimeError(msg)
+    return status
+
+
+async def _await_offload_step[T](
+    awaitable: Awaitable[T],
+    *,
+    graph: Any,  # noqa: ANN401  # untyped RemoteGraph client
+    thread_id: str,
+    operation_id: str,
+) -> T:
+    """Await one offload step and confirm server termination if cancelled.
+
+    Returns:
+        The awaited step's result.
+
+    Raises:
+        asyncio.CancelledError: After the server confirms the operation ended.
+    """
+    try:
+        return await awaitable
+    except asyncio.CancelledError:
+        cancellation = asyncio.create_task(
+            _cancel_server_offload(graph, thread_id, operation_id)
+        )
+        await _join_task_deferring_cancellation(cancellation)
+        cancellation.result()
+        raise
+
+
+def _validated_offload_result(result: object) -> OffloadResult:
+    """Check a server offload result before any caller indexes it.
+
+    The renderer subscripts these fields by key and unguarded. Validating here
+    means a protocol skew fails with a message naming the problem, instead of a
+    `KeyError` reported as a generic reporting failure for an offload the server
+    already committed.
+
+    Args:
+        result: The `result` object from a `complete` operation response.
+
+    Returns:
+        The same mapping, once its required fields are known to be present.
+
+    Raises:
+        RuntimeError: If a required field is missing or has the wrong type.
+    """
+    if not isinstance(result, dict):
+        msg = "Offload server completed without a typed result."
+        raise RuntimeError(msg)  # noqa: TRY004  # protocol fault, not a type misuse
+    status = result.get("status")
+    if not isinstance(status, str) or not status:
+        msg = "Offload result has no status."
+        raise RuntimeError(msg)
+    # Statistics are only meaningful (and only read) for a committed compaction.
+    if status == "compacted":
+        for field in _OFFLOAD_RESULT_INT_FIELDS:
+            value = result.get(field)
+            if not isinstance(value, int) or isinstance(value, bool):
+                msg = (
+                    f"Offload result field {field!r} must be an integer, got "
+                    f"{type(value).__name__}."
+                )
+                raise RuntimeError(msg)  # noqa: TRY004  # protocol fault
+    return cast("OffloadResult", result)
 
 
 def _require_thread_id(config: Mapping[str, Any] | None) -> str:
@@ -44,6 +164,78 @@ def _require_thread_id(config: Mapping[str, Any] | None) -> str:
         msg = "thread_id is required in config.configurable"
         raise ValueError(msg)
     return thread_id
+
+
+def state_has_pending_work(state: object) -> bool:
+    """Return whether a checkpoint snapshot still holds unfinished graph work.
+
+    Single definition of "pending" shared by the app-side detector and the
+    post-recovery verification, so the two cannot drift apart.
+
+    Args:
+        state: A `StateSnapshot`-shaped object, or `None`.
+
+    Returns:
+        Whether the snapshot has a queued node, task, or interrupt.
+    """
+    if state is None:
+        return False
+    return bool(
+        getattr(state, "next", None)
+        or getattr(state, "tasks", None)
+        or getattr(state, "interrupts", None)
+    )
+
+
+def _cancelled_tool_messages(values: object) -> list[Any]:
+    """Build terminal results for tool calls left unanswered by a lost run.
+
+    Only the trailing turn is considered. The queued `tools` step is triggered
+    by the final `AIMessage`, and a provider requires every `tool_result` to
+    sit immediately after the `tool_use` it answers. Earlier unanswered calls
+    are left alone on purpose: interrupt recovery writes a partial `AIMessage`
+    with its in-flight `tool_calls` and then closes the turn with a following
+    message (`_build_interrupted_ai_message` in the TUI adapter), so those
+    calls stay dangling by design. Answering them here would append their
+    results at the tail, far from their `tool_use`, and the next model call --
+    the compaction summarizer that runs right after recovery -- would be
+    rejected.
+
+    Blocking and CPU-bound over the checkpoint history; async callers must
+    offload it with `asyncio.to_thread`.
+
+    Returns:
+        Error results for the trailing turn's unanswered tool calls.
+    """
+    if not isinstance(values, dict):
+        return []
+    from langchain_core.messages import AIMessage, ToolMessage, convert_to_messages
+
+    raw_messages = values.get("messages")
+    if not isinstance(raw_messages, list):
+        return []
+    messages = convert_to_messages(cast("list[Any]", raw_messages))
+    # Walk back over the results the lost run did manage to write, then stop at
+    # the message that owns them. Anything but an `AIMessage` there means the
+    # turn was already closed out and nothing is dangling.
+    answered: set[str] = set()
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            answered.add(message.tool_call_id)
+            continue
+        if not isinstance(message, AIMessage):
+            return []
+        return [
+            ToolMessage(
+                content="Tool call cancelled because the previous session ended.",
+                name=call["name"],
+                tool_call_id=call["id"],
+                status="error",
+            )
+            for call in message.tool_calls
+            if call["id"] not in answered
+        ]
+    return []
 
 
 def agent_error_type(exc: BaseException) -> str:
@@ -73,7 +265,7 @@ def agent_error_type(exc: BaseException) -> str:
 
 
 def format_agent_exception(exc: BaseException) -> str:
-    """Render an exception from `RemoteAgent.astream` for the UI.
+    """Render an exception from any `RemoteAgent` call for the UI.
 
     The LangGraph server serializes non-allowlisted exceptions as
     `{"error": <ExceptionType>, "message": <text or "An internal error occurred">}`
@@ -82,7 +274,8 @@ def format_agent_exception(exc: BaseException) -> str:
     Python dict repr in the UI.
 
     Args:
-        exc: The exception caught from the agent stream.
+        exc: The exception caught from an agent call -- the SSE stream, or an
+            HTTP operation such as the offload route.
 
     Returns:
         `"<ErrorType>: <message>"` for `RemoteException` dict payloads,
@@ -153,6 +346,129 @@ class RemoteAgent:
                 headers=self._headers,
             )
         return self._graph
+
+    async def aoffload(
+        self,
+        *,
+        config: Mapping[str, Any],
+        context: Mapping[str, Any],
+        fulfill_hook: Callable[[object], Awaitable[dict[str, object]]],
+    ) -> OffloadResult:
+        """Request server-owned offload and fulfill its hook callbacks.
+
+        Args:
+            config: Runnable config identifying the thread.
+            context: Runtime model and Hooks v2 context.
+            fulfill_hook: Client hook executor for server requests.
+
+        Returns:
+            Typed offload result from the server operation.
+
+        Raises:
+            TypeError: If the server response is not a JSON object.
+            RuntimeError: If the server does not provide the offload route,
+                returns an invalid protocol response, or exceeds the hook round
+                limit.
+            APIStatusError: From the server operation. A 409 (conflict) or 422
+                (malformed request) means no state was committed; a 500 raised
+                as indeterminate means a commit may have landed and carries
+                user-actionable text the caller must surface rather than
+                swallow.
+        """  # noqa: DOC502 -- APIStatusError is raised by the SDK transport
+        from uuid import uuid4
+
+        from langgraph_sdk.errors import NotFoundError
+
+        from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+
+        thread_id = _require_thread_id(config)
+        # The operation reads and writes thread state over HTTP, so the thread's
+        # live row must exist first. Checkpoint persistence and registration are
+        # separate on the dev server (see `aensure_thread`), so a resumed thread
+        # -- or one whose server restarted mid-session -- has state on disk and
+        # no row, and every request below would 404.
+        await self.aensure_thread({"configurable": {"thread_id": thread_id}})
+        operation_id = str(uuid4())
+        hook_responses: dict[str, object] = {}
+        graph = self._get_graph()
+        for round_index in range(_OFFLOAD_MAX_RESUME_ROUNDS + 1):
+            try:
+                response = await _await_offload_step(
+                    graph.client.http.post(
+                        f"/dcode/threads/{thread_id}/offload",
+                        json={
+                            "operation_id": operation_id,
+                            "context": dict(context),
+                            "hook_responses": hook_responses,
+                        },
+                    ),
+                    graph=graph,
+                    thread_id=thread_id,
+                    operation_id=operation_id,
+                )
+            except NotFoundError as exc:
+                # The route itself is missing. An unregistered thread cannot
+                # reach here as a 404: the server catches that and answers 409
+                # with its own message. A custom `graph_ref` server, or one
+                # older than this operation, never registers the dcode HTTP app,
+                # and the SDK's bare "404 Not Found" names neither the cause nor
+                # a fix.
+                msg = (
+                    "This server does not provide dcode's /offload operation. "
+                    "Use the built-in dcode server, or upgrade the server to a "
+                    "version that registers it."
+                )
+                raise RuntimeError(msg) from exc
+            if not isinstance(response, dict):
+                msg = "Offload server returned a non-object response."
+                raise TypeError(msg)
+            status = response.get("status")
+            if status == "complete":
+                return _validated_offload_result(response.get("result"))
+            request = response.get("request")
+            if status != "interrupt" or not is_hook_interrupt_payload(request):
+                msg = "Offload server returned an invalid operation response."
+                raise RuntimeError(msg)
+            invocation = request.get("request")
+            invocation_id = (
+                invocation.get("invocation_id")
+                if isinstance(invocation, dict)
+                else None
+            )
+            if not isinstance(invocation_id, str) or not invocation_id:
+                msg = "Offload hook request has no invocation id."
+                raise RuntimeError(msg)
+            logger.debug(
+                "Offload round %d fulfilling hook invocation %s",
+                round_index,
+                invocation_id,
+            )
+            if round_index == _OFFLOAD_MAX_RESUME_ROUNDS:
+                # The extra iteration exists to POST the last fulfillment and
+                # read the result, not to answer one more hook. Without this the
+                # loop fulfills 33 hooks and then reports "after 32 rounds".
+                break
+            hook_responses[invocation_id] = await _await_offload_step(
+                fulfill_hook(request),
+                graph=graph,
+                thread_id=thread_id,
+                operation_id=operation_id,
+            )
+        # The server only re-requests an invocation id it has not been given, so
+        # exhaustion means this many *distinct* ids. That is either genuinely
+        # many hooks or an unstable invocation-id derivation server-side; log the
+        # ids so the two are distinguishable, and do not assert a cause in the
+        # user-facing message.
+        logger.warning(
+            "Offload exceeded %d hook rounds; fulfilled invocation ids: %s",
+            _OFFLOAD_MAX_RESUME_ROUNDS,
+            sorted(hook_responses),
+        )
+        msg = (
+            f"Offload did not complete after {_OFFLOAD_MAX_RESUME_ROUNDS} hook "
+            "rounds. Check the server log for the hook invocations it requested."
+        )
+        raise RuntimeError(msg)
 
     async def astream(
         self,
@@ -329,7 +645,7 @@ class RemoteAgent:
     async def aupdate_state(
         self,
         config: Mapping[str, Any],
-        values: dict[str, Any],
+        values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
     ) -> None:
@@ -389,6 +705,41 @@ class RemoteAgent:
                 exc_info=True,
             )
             raise
+
+    async def aabandon_pending_work(self, config: Mapping[str, Any]) -> None:
+        """Cancel active runs and discard checkpointed work without replaying it.
+
+        The state writes go through `aupdate_state` so they inherit its HTTP
+        409 recovery: this method runs on exactly the threads whose run was
+        cancelled out from under the client, which is when 409s occur.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            RuntimeError: If pending work remains after the state update.
+        """
+        thread_id = _require_thread_id(config)
+        prepared = _prepare_config(config)
+        await _cancel_active_runs(self._get_graph(), thread_id)
+        state = await self.aget_state(prepared)
+        cancelled = await asyncio.to_thread(
+            _cancelled_tool_messages, getattr(state, "values", None)
+        )
+        if cancelled:
+            # `create_agent` names the tool step "tools", but only adds the node
+            # when the agent has tools. A toolless graph therefore rejects this
+            # update with `InvalidUpdateError` -- and could not have produced a
+            # dangling tool call in the first place, so the branch is dead
+            # there. The caller reports the failure rather than compacting.
+            await self.aupdate_state(prepared, {"messages": cancelled}, as_node="tools")
+        await self.aupdate_state(prepared, None, as_node="__end__")
+        if state_has_pending_work(await self.aget_state(prepared)):
+            msg = (
+                f"Pending graph work remained on thread {thread_id} after "
+                "clearing checkpoint state"
+            )
+            raise RuntimeError(msg)
 
     async def aput_store_item(
         self,
@@ -725,6 +1076,12 @@ def _convert_human_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
 def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """Convert a server tool message dict to a `ToolMessage`.
 
+    `additional_kwargs` is forwarded. The TUI reads markers from it, such as
+    `AUTO_DENIED_METADATA_KEY` on a synthetic auto-mode denial. The TUI always
+    runs against a server, so a marker dropped here never reaches the client.
+    Guarded by `isinstance`: the server payload is JSON, and a non-dict value
+    would fail `ToolMessage` validation and discard the whole message.
+
     Args:
         data: Raw message dict from the server.
 
@@ -733,6 +1090,7 @@ def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
     """
     from langchain_core.messages import ToolMessage
 
+    additional_kwargs = data.get("additional_kwargs")
     try:
         return ToolMessage(
             content=data.get("content", ""),
@@ -740,6 +1098,9 @@ def _convert_tool_message(data: dict[str, Any]) -> Any:  # noqa: ANN401
             name=data.get("name", ""),
             id=data.get("id"),
             status=data.get("status", "success"),
+            additional_kwargs=(
+                additional_kwargs if isinstance(additional_kwargs, dict) else {}
+            ),
         )
     except (TypeError, ValueError, KeyError):
         logger.warning(

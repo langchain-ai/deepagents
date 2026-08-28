@@ -71,12 +71,6 @@ def _snapshot() -> list[SnapshotField]:
     ]
 
 
-def test_snapshot_field_tuple_contract_includes_interaction_metadata() -> None:
-    field = SnapshotField("Thread", "thread-abc", copyable=True, thread_id="thread-abc")
-
-    assert tuple(field) == ("Thread", "thread-abc", True, "thread-abc")
-
-
 class TestDebugConsoleScreen:
     async def test_renders_snapshot_fields(self) -> None:
         app = _Harness()
@@ -90,6 +84,58 @@ class TestDebugConsoleScreen:
             assert "9.9.9" in text
             assert "openai:gpt-test" in text
             assert "/tmp/[brackets]/work" in text
+
+    async def test_wrapped_snapshot_values_align_to_value_column(self) -> None:
+        fields = [
+            SnapshotField(
+                "MCP servers",
+                "notion (ok), slack (ok), langsmith (ok), onepassword (ok)",
+            ),
+            SnapshotField(
+                "Debug log",
+                "/tmp/deepagents_debug/a/very/long/path/to/the/log/file.log",
+            ),
+        ]
+        app = _Harness()
+        async with app.run_test(size=(50, 40)) as pilot:
+            screen = DebugConsoleScreen(fields)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            view = screen.query_one(".debug-console-snapshot", Static)
+            lines = _widget_text(view).splitlines()
+
+        indent = max(len(field.label) for field in fields) + 2
+        mcp_row = next(
+            index for index, line in enumerate(lines) if "MCP servers" in line
+        )
+        log_row = next(index for index, line in enumerate(lines) if "Debug log" in line)
+        assert log_row > mcp_row + 1
+        assert len(lines) > log_row + 1
+        for line in (*lines[mcp_row + 1 : log_row], *lines[log_row + 1 :]):
+            assert line[:indent] == " " * indent
+            assert line[indent:].strip()
+
+    async def test_cramped_value_column_wraps_snapshot_rows_flat(self) -> None:
+        fields = [SnapshotField("Approval mode", "auto-edit")]
+        app = _Harness()
+        async with app.run_test(size=(30, 40)) as pilot:
+            screen = DebugConsoleScreen(fields)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            view = screen.query_one(".debug-console-snapshot", Static)
+            lines = _widget_text(view).splitlines()
+            content_width = view.content_size.width
+
+        indent = len("Approval mode") + 2
+        # The label fits, but the remaining seven cells are too narrow for a
+        # useful hanging value column and would make the snapshot very tall.
+        assert content_width - indent == 7
+        assert len(lines) > 1
+        for line in lines:
+            assert line[:indent] != " " * indent
+        assert any("auto" in line for line in lines[1:])
 
     def test_footer_omits_click_to_copy_hint(self) -> None:
         footer = str(DebugConsoleScreen._render_help())
@@ -1665,10 +1711,8 @@ class TestDebugConsoleToggle:
 
         Guards the enabled path the reverse-focus fix depends on: on the main
         screen `check_action` must leave `toggle_auto_approve` enabled (return
-        `True`) so shift+tab and ctrl+t still toggle auto-approve; the
+        `True`) so Shift+Tab still toggles auto-approve; the
         `test_shift_tab_reverses_focus_*` test only exercises the disabled path.
-        Branching on the action name (not the key) means the same gate covers
-        the `ctrl+t` binding, which also maps to `toggle_auto_approve`.
         """
         app = DeepAgentsApp(agent=MagicMock(), thread_id="thread-123")
         async with app.run_test() as pilot:
@@ -1846,10 +1890,13 @@ class TestDebugConsoleToggle:
             assert thread_field.copyable is False
             assert thread_field.thread_id is None
 
-    async def test_build_snapshot_counts_thread_messages(self) -> None:
+    async def test_build_snapshot_counts_thread_messages_and_turns(self) -> None:
         app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
         async with app.run_test():
-            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+            assert (
+                _snapshot_dict(app._build_debug_snapshot())["Messages"]
+                == "0 messages (0 rendered), 0 turns"
+            )
 
             for index in range(3):
                 app._message_store.append(
@@ -1857,7 +1904,48 @@ class TestDebugConsoleToggle:
                 )
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert snapshot["Messages"] == "3 (3 rendered)"
+            assert snapshot["Messages"] == "3 messages (3 rendered), 3 turns"
+
+    async def test_build_snapshot_turns_include_skills_but_not_agent_rows(self) -> None:
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            messages = [
+                MessageData(type=MessageType.USER, content="user"),
+                MessageData(type=MessageType.SKILL, content="skill", skill_name="test"),
+                MessageData(type=MessageType.ASSISTANT, content="assistant"),
+                MessageData(type=MessageType.TOOL, content="tool", tool_name="test"),
+                MessageData(type=MessageType.APP, content="app"),
+            ]
+            for message in messages:
+                app._message_store.append(message)
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "5 messages (5 rendered), 2 turns"
+
+    async def test_build_snapshot_renders_singular_labels(self) -> None:
+        """A lone user row renders both nouns singular."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            app._message_store.append(
+                MessageData(type=MessageType.USER, content="hello")
+            )
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "1 message (1 rendered), 1 turn"
+
+    async def test_build_snapshot_pluralizes_each_noun_independently(self) -> None:
+        """Plural messages with a single turn keep `turns` tied to the turn count."""
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            for message in (
+                MessageData(type=MessageType.USER, content="user"),
+                MessageData(type=MessageType.ASSISTANT, content="assistant"),
+                MessageData(type=MessageType.TOOL, content="tool", tool_name="t"),
+            ):
+                app._message_store.append(message)
+
+            snapshot = _snapshot_dict(app._build_debug_snapshot())
+            assert snapshot["Messages"] == "3 messages (3 rendered), 1 turn"
 
     async def test_build_snapshot_message_count_reports_rendered_window(self) -> None:
         """A virtualized thread reports its full count, not the mounted window."""
@@ -1872,8 +1960,12 @@ class TestDebugConsoleToggle:
             )
 
             snapshot = _snapshot_dict(app._build_debug_snapshot())
-            assert (
-                snapshot["Messages"] == f"{total} ({MessageStore.WINDOW_SIZE} rendered)"
+            rendered = min(
+                MessageStore.INITIAL_WINDOW_SIZE,
+                MessageStore.WINDOW_SIZE,
+            )
+            assert snapshot["Messages"] == (
+                f"{total} messages ({rendered} rendered), {total} turns"
             )
 
     async def test_build_snapshot_message_count_resets_with_transcript(self) -> None:
@@ -1883,11 +1975,17 @@ class TestDebugConsoleToggle:
             app._message_store.append(
                 MessageData(type=MessageType.USER, content="hello")
             )
-            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] != "0"
+            assert (
+                _snapshot_dict(app._build_debug_snapshot())["Messages"]
+                != "0 messages (0 rendered), 0 turns"
+            )
 
             await app._clear_messages()
 
-            assert _snapshot_dict(app._build_debug_snapshot())["Messages"] == "0"
+            assert (
+                _snapshot_dict(app._build_debug_snapshot())["Messages"]
+                == "0 messages (0 rendered), 0 turns"
+            )
 
     async def test_open_debug_console_wires_live_snapshot_provider(self) -> None:
         """The host refreshes message count while the console stays open."""
@@ -1908,7 +2006,8 @@ class TestDebugConsoleToggle:
             screen._poll_snapshot()
             await pilot.pause()
             before_value = _snapshot_dict(screen._snapshot)["Messages"]
-            before_total = app._message_store.total_count
+            # Pins the precondition the literal expectation below depends on.
+            assert app._message_store.total_count == 1
 
             app._message_store.append(
                 MessageData(type=MessageType.USER, content="live-snapshot-marker")
@@ -1916,8 +2015,11 @@ class TestDebugConsoleToggle:
             screen._poll_snapshot()
             await pilot.pause()
 
-            after_total = before_total + 1
-            expected = f"{after_total} ({app._message_store.visible_count} rendered)"
+            # Spelled out rather than recomputed with the production ternaries:
+            # a mirrored formula agrees with itself even when it is wrong. The
+            # appended row is the only user turn among two messages, so this also
+            # pins the mixed-plurality case ("messages" alongside "turn").
+            expected = "2 messages (2 rendered), 1 turn"
             after_value = _snapshot_dict(screen._snapshot)["Messages"]
             assert after_value != before_value
             assert after_value == expected
@@ -1931,6 +2033,72 @@ class TestDebugConsoleToggle:
             assert fields["Version"].value
             assert fields["CWD"].copyable is True
             assert fields["CWD"].value
+
+    async def test_build_snapshot_editable_install_path_is_copyable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_get_editable_install_path",
+            lambda: "~/oss/deepagents/libs/code",
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Install path"
+            )
+            assert field.value == "~/oss/deepagents/libs/code"
+            assert field.copyable is True
+
+    async def test_build_snapshot_omits_non_editable_install_path(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_get_editable_install_path", lambda: None)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            fields = {field.label: field for field in app._build_debug_snapshot()}
+            assert "Install path" not in fields
+
+    async def test_build_snapshot_debug_log_path_is_copyable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code._debug as debug_mod
+
+        monkeypatch.setattr(
+            debug_mod, "installed_debug_log_path", lambda: "/tmp/custom-debug.log"
+        )
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Debug log"
+            )
+            assert field.value == "/tmp/custom-debug.log"
+            assert field.copyable is True
+
+    async def test_build_snapshot_in_memory_log_is_not_copyable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import deepagents_code._debug as debug_mod
+
+        monkeypatch.setattr(debug_mod, "installed_debug_log_path", lambda: None)
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        async with app.run_test():
+            field = next(
+                field
+                for field in app._build_debug_snapshot()
+                if field.label == "Debug log"
+            )
+            assert field.value == "in-memory only"
+            assert field.copyable is False
 
     async def test_build_snapshot_model_field_is_copyable_when_configured(
         self, monkeypatch: pytest.MonkeyPatch

@@ -1,5 +1,7 @@
 """Tests for ModelSelectorScreen."""
 
+import asyncio
+import tomllib
 from collections.abc import Callable, Iterator, Mapping
 from pathlib import Path
 from typing import Any, ClassVar
@@ -9,9 +11,12 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
+from textual.geometry import Offset
 from textual.screen import ModalScreen
 from textual.widgets import Input, Static
 
+from deepagents_code import clipboard as clipboard_module
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
     ModelProfileEntry,
@@ -19,7 +24,10 @@ from deepagents_code.model_config import (
     ProviderAuthState,
     ProviderAuthStatus,
 )
-from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+from deepagents_code.tui.widgets.model_selector import (
+    MAIN_MODEL_DEFAULT_SCOPE,
+    ModelSelectorScreen,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -75,6 +83,7 @@ def _model_selector_for_filtering() -> ModelSelectorScreen:
     screen = ModelSelectorScreen(
         current_model="claude-sonnet-4-5",
         current_provider="anthropic",
+        default_scope=MAIN_MODEL_DEFAULT_SCOPE,
     )
     screen._recommended_only = False
     screen._unfiltered_models = list(_FILTER_TEST_MODELS)
@@ -113,6 +122,7 @@ class ModelSelectorTestApp(App):
         screen = ModelSelectorScreen(
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._recommended_only = False
         self.push_screen(screen, handle_result)
@@ -123,6 +133,7 @@ class ModelSelectorTestApp(App):
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
             result_callback=self.callback_results.append,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._recommended_only = False
         self.push_screen(screen)
@@ -165,6 +176,7 @@ class AppWithEscapeBinding(App):
         screen = ModelSelectorScreen(
             current_model="claude-sonnet-4-5",
             current_provider="anthropic",
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         self.push_screen(screen, handle_result)
 
@@ -241,6 +253,60 @@ class TestModelSelectorEscapeKey:
 class TestModelSelectorChrome:
     """Tests for model selector title and description chrome."""
 
+    async def test_current_model_title_copies_spec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clicking the current model in the title copies its canonical spec."""
+        copied: list[str] = []
+
+        def fake_copy(
+            _app: App[None],
+            text: str,
+            *,
+            failure_noun: str,
+            success_message: str | None = None,
+        ) -> bool:
+            copied.append(text)
+            assert failure_noun == "selection"
+            assert success_message == "Model copied"
+            _app.notify(success_message)
+            return True
+
+        monkeypatch.setattr(clipboard_module, "copy_text_with_feedback", fake_copy)
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                current_model="claude-sonnet-4-5",
+                current_provider="anthropic",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+            await pilot.pause()
+            title = screen.query_one("#model-selector-title", Static)
+            x = title.content_region.x - title.region.x
+            model_offset = None
+            plain_offset = None
+            for segment in title.render_line(0):
+                if segment.text.startswith("Select Model"):
+                    plain_offset = Offset(x, 0)
+                if segment.style and segment.style.meta.get("copy_text"):
+                    model_offset = Offset(x, 0)
+                    break
+                x += segment.cell_length
+            assert model_offset is not None
+            assert plain_offset is not None
+
+            await pilot.hover(title, offset=model_offset)
+            assert title.styles.pointer == "pointer"
+            await pilot.hover(title, offset=plain_offset)
+            assert title.styles.pointer == "default"
+            await pilot.click(title, offset=model_offset)
+            await pilot.pause()
+
+            assert copied == ["anthropic:claude-sonnet-4-5"]
+            assert list(app._notifications)[-1].message == "Model copied"
+
     async def test_optional_title_and_description_render(self) -> None:
         """A custom title and description should render above the filter."""
         app = ModelSelectorTestApp()
@@ -248,6 +314,7 @@ class TestModelSelectorChrome:
             screen = ModelSelectorScreen(
                 title="Choose a Recommended Model",
                 description="Curated models backed by evals.",
+                default_scope=MAIN_MODEL_DEFAULT_SCOPE,
             )
             app.push_screen(screen)
             await pilot.pause()
@@ -262,21 +329,32 @@ class TestModelSelectorChrome:
         """Onboarding model selection keeps Escape bound but hides its hint."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
             help_text = screen.query_one(".model-selector-help", Static)
 
+            # Deliberately not the shared `modal_navigation_hint` copy: Tab
+            # autocompletes here, so advertising "Tab/Shift+Tab navigate"
+            # would misdescribe it. Shift+Tab still works via
+            # `_SupportsReverseNav`; it is simply unadvertised.
+            assert "navigate" in str(help_text.content)
+            assert "Tab/Shift+Tab navigate" not in str(help_text.content)
             assert "Tab autocomplete" in str(help_text.content)
             assert "Esc skip setup" not in str(help_text.content)
+            assert "Esc close" not in str(help_text.content)
             assert "Esc cancel" not in str(help_text.content)
 
     async def test_curated_selector_help_hides_default_hint(self) -> None:
         """Onboarding model selection should not advertise default changes."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -290,7 +368,9 @@ class TestModelSelectorChrome:
         """Model selection should size like the integration summary."""
         app = ModelSelectorTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            screen = ModelSelectorScreen(curated=curated)
+            screen = ModelSelectorScreen(
+                curated=curated, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
             await pilot.pause()
@@ -307,11 +387,11 @@ class TestModelSelectorChrome:
         assert max_height.cells is not None
         assert max_height.cells <= 16
 
-    async def test_standard_selector_help_hides_cancel_hint(self) -> None:
-        """The regular /model selector should not leave a trailing separator."""
+    async def test_standard_selector_help_shows_close_hint(self) -> None:
+        """The regular `/model` selector should advertise Escape dismissal."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -321,7 +401,7 @@ class TestModelSelectorChrome:
             # Standard mode still advertises the default-setting shortcut that
             # curated/onboarding mode hides.
             assert "Ctrl+S set default" in str(help_text.content)
-            assert "Esc cancel" not in str(help_text.content)
+            assert "Esc close" in str(help_text.content)
 
     async def test_standard_selector_help_wraps_to_two_rows(self) -> None:
         """The standard footer is wider than the modal, so it must wrap.
@@ -331,7 +411,7 @@ class TestModelSelectorChrome:
         """
         app = ModelSelectorTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -353,7 +433,9 @@ class TestModelSelectorChrome:
         """
         app = ModelSelectorTestApp()
         async with app.run_test(size=(80, 24)) as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -373,6 +455,7 @@ class TestRecommendedToggle:
         screen = ModelSelectorScreen(
             recommended_models=recommendations,
             include_recent_models=False,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._recent_specs = ["openai:gpt-5.5"]
         models = [
@@ -390,7 +473,7 @@ class TestRecommendedToggle:
         """Opening `/model` should land on the curated recommended subset."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -400,7 +483,7 @@ class TestRecommendedToggle:
 
     def test_search_uses_full_list_from_recommended_view(self) -> None:
         """Typing a filter should search beyond the recommended subset."""
-        screen = ModelSelectorScreen()
+        screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
         screen._unfiltered_models = [
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-4o", "openai"),
@@ -417,7 +500,7 @@ class TestRecommendedToggle:
 
     def test_recent_codex_keeps_recommended_provider_order(self) -> None:
         """A recent Codex model should stay between OpenAI and OpenRouter."""
-        screen = ModelSelectorScreen()
+        screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
         screen._recent_specs = ["openai_codex:gpt-5.6-luna"]
         all_models = [
             ("anthropic:claude-sonnet-5", "anthropic"),
@@ -436,7 +519,7 @@ class TestRecommendedToggle:
         """Typing a filter should avoid stale recommended-only copy."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -454,7 +537,7 @@ class TestRecommendedToggle:
         """Ctrl+R from the default recommended view should expand to all."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -470,7 +553,7 @@ class TestRecommendedToggle:
         """Pressing Ctrl+R twice should return to the recommended subset."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -488,7 +571,7 @@ class TestRecommendedToggle:
         """Info line should advertise the inverse state after toggling."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -504,7 +587,9 @@ class TestRecommendedToggle:
         """Curated/onboarding mode should ignore Ctrl+R."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -520,7 +605,7 @@ class TestRecommendedToggle:
         """Standard `/model` help footer should mention Ctrl+R."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -531,12 +616,730 @@ class TestRecommendedToggle:
         """Onboarding's curated help footer should not mention Ctrl+R."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
             help_text = screen.query_one(".model-selector-help", Static)
             assert "Ctrl+R" not in str(help_text.content)
+
+
+class TestDefaultModelScope:
+    """Tests for which stored preference Ctrl+S writes.
+
+    The selector is shared by `/model` and the `/auto model` classifier picker,
+    so a scope mix-up would let the classifier picker retarget the model the
+    agent itself runs on.
+    """
+
+    @staticmethod
+    def _stub_catalog(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Reduce the catalog to a single deterministic row."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"anthropic": ["claude-sonnet-5"]},
+        )
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+
+    async def test_ctrl_s_writes_default_for_main_scope(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`/model`'s Ctrl+S still stores `[models].default`."""
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+S set default" in str(help_widget.content)
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default set to anthropic:claude-sonnet-5" in str(
+                help_widget.content
+            )
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["models"]["default"] == "anthropic:claude-sonnet-5"
+        assert "auto_classifier" not in data["models"]
+
+    async def test_ctrl_s_writes_auto_classifier_for_classifier_scope(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The `/auto model` picker stores `[models].auto_classifier`."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+S set classifier default" in str(help_widget.content)
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model set to anthropic:claude-sonnet-5" in str(
+                help_widget.content
+            )
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert data["models"]["auto_classifier"] == "anthropic:claude-sonnet-5"
+        assert "default" not in data["models"]
+
+    async def test_second_ctrl_s_clears_classifier_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Pressing Ctrl+S on the stored classifier removes it."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model cleared" in str(help_widget.content)
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
+
+    async def test_classifier_scope_marks_stored_model_as_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The `(default)` marker reflects the stored classifier, not `default`."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            "[models]\n"
+            'default = "openai:gpt-5.6-luna"\n'
+            'auto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+            assert "(default)" in str(screen._option_widgets[0].content)
+
+    async def test_no_scope_disables_ctrl_s_and_omits_hint(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A scopeless picker must not persist the *agent's* model.
+
+        The grader pickers (`/goal model`, `/rubric model`) have no config key
+        of their own; inheriting the default scope would make Ctrl+S there
+        rewrite `[models].default`.
+        """
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=None)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            assert "Ctrl+S" not in str(help_widget.content)
+            # Ctrl+R/Ctrl+N still advertised — only the Ctrl+S hint drops out.
+            assert "Ctrl+R recommended" in str(help_widget.content)
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert screen._default_spec is None
+
+        assert not config_path.exists()
+
+    async def test_no_scope_omits_marker_for_the_agents_stored_default(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A scopeless picker must not mark the *agent's* stored default.
+
+        Sibling coverage writes no config, so `_default_spec is None` holds
+        there no matter what the scope branch reads. Storing `[models].default`
+        for the row on screen makes the assertion discriminating: a picker whose
+        Ctrl+S is deliberately inert would otherwise render `(default)` beside a
+        preference it cannot touch.
+        """
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\ndefault = "anthropic:claude-sonnet-5"\n', encoding="utf-8"
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=None)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._default_spec is None
+            assert "(default)" not in str(screen._option_widgets[0].content)
+
+    async def test_stored_spec_is_stripped_so_it_can_be_toggled_off(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Whitespace around a hand-edited spec must not orphan the value.
+
+        The launch resolvers strip, so an unstripped read here would match no
+        row: no `(default)` marker, and Ctrl+S would take the *save* branch
+        instead of clearing — leaving no in-app way to remove the stored spec.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nauto_classifier = "  anthropic:claude-sonnet-5  "\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+            assert "(default)" in str(screen._option_widgets[0].content)
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model cleared" in str(help_widget.content)
+
+        with config_path.open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
+
+    async def test_blank_stored_spec_reads_as_nothing_stored(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A blank stored value degrades to "nothing stored", as at launch."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\nauto_classifier = "   "\n', encoding="utf-8"
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            assert screen._default_spec is None
+
+    async def test_clear_failure_shows_persistent_error(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failed clear reports the noun and does not erase itself."""
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.AUTO_CLASSIFIER_DEFAULT_SCOPE._replace(
+                    clear=lambda: False
+                )
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Failed to clear default classifier model" in str(
+                help_widget.content
+            )
+            assert screen._help_error_shown is True
+            # The stored spec is untouched, so the row keeps its marker.
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+
+    async def test_write_failure_raises_a_toast_naming_the_remedy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The toast is the load-bearing half of the failure UX.
+
+        The footer notice is one short line; the toast carries the remedy and
+        stays up for 10s. Nothing else asserts it fires, so a refactor could
+        drop it and leave only the footer with no test noticing.
+
+        It must not claim a single cause: the writers return `False` for an
+        unwritable file, unparseable TOML, and a `[models]` section of the wrong
+        shape alike, so "check permissions" alone sends users to inspect
+        permissions that are already correct.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.AUTO_CLASSIFIER_DEFAULT_SCOPE._replace(
+                    save=lambda _spec: False
+                )
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            notified: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                screen,
+                "notify",
+                lambda msg, **kw: notified.append((msg, kw.get("severity"))),
+            )
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+        assert notified
+        message, severity = notified[0]
+        assert severity == "error"
+        assert PATHS.display(PATHS.profile.config_file) in message
+        assert "unwritable" in message
+        assert "malformed" in message
+
+    async def test_success_warns_when_an_env_var_overrides_the_stored_key(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stored classifier the environment outranks changes nothing at launch.
+
+        `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` beats `[models].auto_classifier`,
+        so without this warning the success message and the `(default)` marker
+        both imply the keypress changed which model reviews actions.
+        """
+        from deepagents_code import _env_vars
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "openai:gpt-5.6-luna")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            notified: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                screen,
+                "notify",
+                lambda msg, **kw: notified.append((msg, kw.get("severity"))),
+            )
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            # The write still happened; only the claim about effect is qualified.
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+
+        assert notified
+        message, severity = notified[0]
+        assert severity == "warning"
+        assert "Default classifier model saved" in message
+        assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+        assert "is currently set; if it remains set" in message
+        assert "next launch" in message
+
+    async def test_success_warns_when_env_override_is_blank(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An exported-but-empty override also outranks the stored key.
+
+        The resolver rejects a blank `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL`
+        and falls back to the main model, so the stored classifier still will
+        not run — the warning must fire on presence, not on a non-empty value.
+        """
+        from deepagents_code import _env_vars
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        monkeypatch.setenv(_env_vars.AUTO_CLASSIFIER_MODEL, "")
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            notified: list[tuple[str, object]] = []
+            monkeypatch.setattr(
+                screen,
+                "notify",
+                lambda msg, **kw: notified.append((msg, kw.get("severity"))),
+            )
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert screen._default_spec == "anthropic:claude-sonnet-5"
+
+        assert notified
+        message, severity = notified[0]
+        assert severity == "warning"
+        assert "Default classifier model saved" in message
+        assert _env_vars.AUTO_CLASSIFIER_MODEL in message
+        assert "is currently set; if it remains set" in message
+        assert "next launch" in message
+
+    async def test_main_scope_success_raises_no_override_warning(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`[models].default` has no env var, so `/model` stays quiet."""
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            notified: list[str] = []
+            monkeypatch.setattr(screen, "notify", lambda msg, **_: notified.append(msg))
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+        assert notified == []
+
+    async def test_ctrl_s_refuses_install_required_row(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A spec whose provider is missing can never build, so don't store it."""
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        config_path = tmp_path / "config.toml"
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "not installed" in str(help_widget.content)
+            assert screen._default_spec is None
+
+        assert not config_path.exists()
+
+    async def test_install_refusal_remedy_uses_recovery_command(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The install-required toast names an environment-correct command.
+
+        Plain `pip install ...` would target the caller's current Python
+        environment; for `uv tool` installs (the supported path) that leaves
+        the provider unavailable to `dcode`. The remedy must flow through
+        `safe_install_extra_recovery_command` like `/install` failures do.
+        """
+        from deepagents_code.tui.widgets import model_selector
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            lambda _extra: "uv tool install deepagents-code --with langchain-anthropic",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            notified: list[str] = []
+            monkeypatch.setattr(screen, "notify", lambda msg, **_: notified.append(msg))
+
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+        assert notified
+        assert (
+            "uv tool install deepagents-code --with langchain-anthropic"
+            in (notified[0])
+        )
+        assert "pip install" not in notified[0]
+
+    async def test_ctrl_s_clears_stored_model_with_missing_provider(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Ctrl+S clears a stored spec even when its provider was uninstalled.
+
+        The install-required refusal exists so a spec that can never build is
+        not *stored*; applying it to an already-stored row would block the
+        only in-app path for removing the now-unusable persisted value.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+        (tmp_path / "config.toml").write_text(
+            '[models]\nauto_classifier = "anthropic:claude-sonnet-5"\n',
+            encoding="utf-8",
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Default classifier model cleared" in str(help_widget.content)
+            assert screen._default_spec is None
+
+        with (tmp_path / "config.toml").open("rb") as handle:
+            data = tomllib.load(handle)
+        assert "auto_classifier" not in data["models"]
+
+    async def test_failure_cancels_pending_success_restore_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Ctrl+S failure must not be erased by a prior success's timer.
+
+        Successful saves schedule a 3-second footer restore; a failed save
+        schedules nothing. If the failure lands before the prior timer fires,
+        the orphaned timer would wipe the persistent error notice unless
+        `_fail` cancels it.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+            timer = screen._help_restore_timer
+            assert timer is not None
+
+            # The row just saved is now the stored spec, so the next Ctrl+S
+            # takes the clear branch. Swap in a failing clear before the
+            # success timer fires.
+            screen._default_scope = model_selector.MAIN_MODEL_DEFAULT_SCOPE._replace(
+                clear=lambda: False
+            )
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "Failed to clear default" in str(help_widget.content)
+            assert screen._help_restore_timer is None
+            # `Timer.stop()` cancels the underlying task, so the orphaned
+            # timer can never fire and erase the error notice.
+            assert timer._task is None
+
+    async def test_success_restarts_pending_restore_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A second successful Ctrl+S must not orphan the first timer.
+
+        Two quick successful toggles schedule two restores; overwriting the
+        handle without stopping the first leaves it active but untracked. Its
+        callback would clear the handle while the second timer is pending, so
+        a later `_fail` could not cancel the real timer — and that timer would
+        erase the persistent error notice. The first timer must be stopped
+        before the second is scheduled.
+        """
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+            first_timer = screen._help_restore_timer
+            assert first_timer is not None
+
+            # The row just saved is now the stored spec, so the next Ctrl+S
+            # takes the clear branch — a second success.
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default cleared" in str(help_widget.content)
+
+            second_timer = screen._help_restore_timer
+            assert second_timer is not None
+            assert second_timer is not first_timer
+            # `Timer.stop()` cancels the underlying task, so the superseded
+            # timer can never fire and clobber the newer handle or message.
+            assert first_timer._task is None
+
+    async def test_names_toggle_does_not_orphan_the_success_restore_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Ctrl+N between a success and a failure must not orphan the timer.
+
+        `_restore_help_text` drops the timer handle without stopping it, which is
+        correct when the timer is its own caller. `action_toggle_names` calls it
+        synchronously, so without an explicit stop the still-live timer becomes
+        untracked, `_fail` has nothing to cancel, and the orphan fires ~3s later
+        and erases the failure notice — the exact wipe the handle exists to
+        prevent, reached through a different door.
+        """
+        from deepagents_code.tui.widgets import model_selector
+
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+            screen._default_spec = None
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Default set to" in str(help_widget.content)
+            success_timer = screen._help_restore_timer
+            assert success_timer is not None
+
+            # Ctrl+N clobbers the success message and restores the hint. The
+            # timer it superseded must be stopped, not merely forgotten.
+            await pilot.press("ctrl+n")
+            await pilot.pause()
+            assert screen._help_restore_timer is None
+            assert success_timer._task is None
+
+            screen._default_scope = model_selector.MAIN_MODEL_DEFAULT_SCOPE._replace(
+                clear=lambda: False
+            )
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+            assert "Failed to clear default" in str(help_widget.content)
+
+            # Give the orphaned timer's original deadline time to pass.
+            await asyncio.sleep(3.2)
+            await pilot.pause()
+
+            assert "Failed to clear default" in str(help_widget.content)
+            assert screen._help_error_shown is True
+
+    async def test_install_refusal_restores_the_footer_on_its_timer(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The install refusal is correctable, so it must not pin the footer.
+
+        A write failure persists because the user has to go fix a file. The
+        refusal is fixed by moving the cursor to an installed row, and its 10s
+        toast already carries the remedy — so pinning `_help_error_shown` for the
+        life of the modal would also stop Ctrl+N from ever refreshing the hint.
+        """
+        from deepagents_code.tui.widgets.model_selector import (
+            AUTO_CLASSIFIER_DEFAULT_SCOPE,
+        )
+
+        self._stub_catalog(monkeypatch)
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(default_scope=AUTO_CLASSIFIER_DEFAULT_SCOPE)
+            app.push_screen(screen)
+            await pilot.pause()
+
+            screen._install_extras = {"anthropic": "anthropic"}
+
+            help_widget = screen.query_one(".model-selector-help", Static)
+            await pilot.press("ctrl+s")
+            await pilot.pause()
+
+            assert "not installed" in str(help_widget.content)
+            assert screen._help_restore_timer is not None
+
+            await asyncio.sleep(3.2)
+            await pilot.pause()
+
+            assert "not installed" not in str(help_widget.content)
+            assert "Ctrl+S set classifier default" in str(help_widget.content)
+            assert screen._help_error_shown is False
 
 
 class TestNamesToggle:
@@ -557,7 +1360,7 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -588,7 +1391,7 @@ class TestNamesToggle:
         """Standard `/model` help footer should mention Ctrl+N."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -610,7 +1413,7 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -648,11 +1451,10 @@ class TestNamesToggle:
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
         monkeypatch.setattr(model_selector, "load_recent_models", list)
-        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: True)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
             screen._default_spec = None
@@ -682,11 +1484,16 @@ class TestNamesToggle:
             lambda: {"anthropic": ["claude-sonnet-5"]},
         )
         monkeypatch.setattr(model_selector, "load_recent_models", list)
-        monkeypatch.setattr(model_selector, "save_default_model", lambda _spec: False)
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            # Inject a failing writer through the screen's scope, since that is
+            # the only path `action_set_default` saves through.
+            screen = ModelSelectorScreen(
+                default_scope=model_selector.MAIN_MODEL_DEFAULT_SCOPE._replace(
+                    save=lambda _spec: False
+                )
+            )
             app.push_screen(screen)
             await pilot.pause()
             screen._default_spec = None
@@ -711,7 +1518,9 @@ class TestNamesToggle:
         """Onboarding's curated help footer should not mention Ctrl+N."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -733,7 +1542,9 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -768,7 +1579,7 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -807,7 +1618,7 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             screen._recommended_only = False
             app.push_screen(screen)
             await pilot.pause()
@@ -855,7 +1666,7 @@ class TestNamesToggle:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -892,7 +1703,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -913,7 +1724,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -938,7 +1749,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -946,7 +1757,7 @@ class TestRecentModelsSection:
                 str(h.content)
                 for h in screen.query(".model-provider-header").results(Static)
             ]
-            assert any("OpenAI Codex (ChatGPT login)" in h for h in headers)
+            assert any("OpenAI (Subscription login)" in h for h in headers)
             assert not any("openai_codex" in h for h in headers)
 
     async def test_recent_row_shows_name_and_provider_tag(
@@ -968,7 +1779,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1000,7 +1811,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1009,7 +1820,7 @@ class TestRecentModelsSection:
             text = str(recent.content)
             assert "(OpenAI Codex)" in text
             # The verbose auth label must not leak into the compact tag.
-            assert "ChatGPT login" not in text
+            assert "Subscription login" not in text
 
     async def test_recent_entries_appear_in_provider_section_too(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1025,7 +1836,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1054,7 +1865,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1086,7 +1897,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1119,7 +1930,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1156,7 +1967,9 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1182,7 +1995,7 @@ class TestRecentModelsSection:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1203,7 +2016,7 @@ class TestModelSelectorAvailabilityHint:
     async def test_hint_renders_in_non_curated_mode(self) -> None:
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1215,7 +2028,9 @@ class TestModelSelectorAvailabilityHint:
         """Onboarding's curated picker shares no copy with the standard selector."""
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen(curated=True)
+            screen = ModelSelectorScreen(
+                curated=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
             app.push_screen(screen)
             await pilot.pause()
 
@@ -1438,6 +2253,90 @@ class TestModelSelectorAuthRouting:
 class TestModelSelectorFiltering:
     """Tests for search filtering."""
 
+    async def test_empty_allowlist_explains_policy(self) -> None:
+        """An empty policy shows its cause instead of offering custom models."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            "[models]\nallowed = []\n",
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            # An empty filter must not be blamed on a typo, and the message
+            # names the policy rather than offering a custom spec.
+            assert "models.allowed permits no models" in content
+            assert "press Enter" not in content
+
+    async def test_nonspec_filter_is_not_blamed_on_policy(self) -> None:
+        """A typo in the filter box is not the administrator's fault.
+
+        `is_model_allowed` rejects any non-spec string, so testing the filter
+        text directly would attribute every mistyped filter -- and every empty
+        one -- to `models.allowed`.
+        """
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            await pilot.press("z", "z", "z", "q")
+            await pilot.pause()
+
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "models.allowed" not in content
+
+    async def test_blocked_spec_filter_names_the_policy_and_allowed_models(
+        self,
+    ) -> None:
+        """Typing a real but blocked spec does name the policy, and what is allowed."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["anthropic:claude-sonnet-5"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            app.show_selector()
+            await pilot.pause()
+
+            screen = app.screen
+            assert isinstance(screen, ModelSelectorScreen)
+            screen._filter_text = "openai:blocked"
+            screen._filtered_models = []
+            await screen._update_display()
+            await pilot.pause()
+
+            options = screen.query_one("#model-options", Container)
+            content = " ".join(str(widget.content) for widget in options.query(Static))
+            assert "not allowed by the configured models.allowed" in content
+            # Naming the permitted specs is the only way out when they are not
+            # discoverable, so the empty state must carry them.
+            assert "anthropic:claude-sonnet-5" in content
+
     async def test_typing_filters_models(self) -> None:
         """Typing in the filter input should filter models."""
         app = ModelSelectorTestApp()
@@ -1474,6 +2373,82 @@ class TestModelSelectorFiltering:
         screen.action_select()
 
         assert result == ("custom:my-model", "custom")
+
+    @pytest.mark.parametrize("custom_input", ["custom:blocked", "blocked"])
+    def test_disallowed_custom_model_spec_is_not_selected(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        custom_input: str,
+    ) -> None:
+        """Enter has no selection side effects for custom models denied by policy."""
+        from deepagents_code import model_config
+
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["custom:allowed"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        screen = _model_selector_for_filtering()
+
+        class FakeInput:
+            value = custom_input
+
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        select = MagicMock()
+        dismiss = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(screen, "_select_with_auth_check", select)
+        monkeypatch.setattr(screen, "_dismiss_with_result", dismiss)
+        monkeypatch.setattr(screen, "notify", notify)
+
+        screen.action_select()
+
+        select.assert_not_called()
+        dismiss.assert_not_called()
+        # Silently swallowing the keypress reads as a dead binding, so the
+        # refusal has to say why.
+        notify.assert_called_once()
+        assert "models.allowed" in notify.call_args.args[0]
+        assert notify.call_args.kwargs["severity"] == "error"
+
+    def test_allowed_bare_name_is_selectable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A supported bare name is not rejected for lacking a provider prefix.
+
+        With `allowed = ["openai:gpt-5.6-terra"]`, entering `gpt-5.6-terra` must
+        be accepted: `create_model` infers `openai`, builds the canonical spec,
+        and allows it. The preflight has to judge the same canonical form.
+        """
+        from deepagents_code import model_config
+
+        monkeypatch.setenv("OPENAI_API_KEY", "test-placeholder-not-a-real-key")
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[models]\nallowed = ["openai:gpt-5.6-terra"]\n',
+            encoding="utf-8",
+        )
+        model_config.clear_caches()
+
+        screen = _model_selector_for_filtering()
+
+        class FakeInput:
+            value = "gpt-5.6-terra"
+
+        screen._filtered_models = []
+        monkeypatch.setattr(screen, "query_one", lambda *_args, **_kwargs: FakeInput())
+        dismiss = MagicMock()
+        notify = MagicMock()
+        monkeypatch.setattr(screen, "_dismiss_with_result", dismiss)
+        monkeypatch.setattr(screen, "notify", notify)
+
+        screen.action_select()
+
+        # A bare name has no provider to pass along, so it takes the
+        # no-prefix branch and `create_model` infers the provider downstream.
+        dismiss.assert_called_once_with(("gpt-5.6-terra", ""))
+        notify.assert_not_called()
 
     def test_enter_selects_highlighted_model_not_filter_text(
         self, monkeypatch: pytest.MonkeyPatch
@@ -1725,10 +2700,10 @@ class TestModelSelectorFuzzyMatching:
     def test_fuzzy_matches_provider_friendly_label(self) -> None:
         """The provider display label — not just the key — is searchable.
 
-        Searches "chatgpt", which appears in neither the spec
+        Searches "subscription", which appears in neither the spec
         (`openai_codex:gpt-5.2`), the friendly model name ("GPT-5.2"), nor the
         provider key (`openai_codex`) — only in the resolved display label
-        "OpenAI Codex (ChatGPT login)". So a match proves the provider-label
+        "OpenAI (Subscription login)". So a match proves the provider-label
         branch of the haystack is doing the work; there is no other source for
         it. Guards against the label term being silently dropped.
         """
@@ -1742,12 +2717,12 @@ class TestModelSelectorFuzzyMatching:
             screen._filtered_models,
         ):
             models.append(codex)
-        screen._filter_text = "chatgpt"
+        screen._filter_text = "subscription"
         screen._update_filtered_list()
 
         specs = [spec for spec, _ in screen._filtered_models]
         assert specs == ["openai_codex:gpt-5.2"], (
-            f"'chatgpt' should match only via the provider label. Got: {specs}"
+            f"'subscription' should match only via the provider label. Got: {specs}"
         )
 
     async def test_tab_noop_when_no_matches(self) -> None:
@@ -1960,7 +2935,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -2012,7 +2987,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -2056,7 +3031,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -2103,7 +3078,7 @@ class TestAvailabilityOrdering:
 
         app = ModelSelectorTestApp()
         async with app.run_test() as pilot:
-            screen = ModelSelectorScreen()
+            screen = ModelSelectorScreen(default_scope=MAIN_MODEL_DEFAULT_SCOPE)
             app.push_screen(screen)
             await pilot.pause()
 
@@ -2187,7 +3162,7 @@ class TestCuratedModelSelection:
             ("anthropic:claude-sonnet-4-5", "anthropic"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2197,7 +3172,7 @@ class TestCuratedModelSelection:
             ("openai:gpt-5.6-luna", "openai"),
             ("openai:gpt-5.6-sol", "openai"),
             ("anthropic:claude-opus-5", "anthropic"),
-            ("google_genai:gemini-3.6-flash", "google_genai"),
+            ("google_genai:gemini-3.7-flash", "google_genai"),
             ("anthropic:claude-opus-4-8", "anthropic"),
         ]
 
@@ -2235,6 +3210,7 @@ class TestCuratedModelSelection:
             current_model="claude-opus-4-7",
             current_provider="anthropic",
             curated=True,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         screen._filtered_models = [
             ("openai:gpt-5.5", "openai"),
@@ -2369,8 +3345,8 @@ class TestFormatOptionLabel:
         # The dim branch takes precedence over the blocks_start warning color.
         assert DARK_COLORS.warning not in label.markup
 
-    def test_install_required_yields_to_selection_styling(self) -> None:
-        """A selected row skips the install-required dim (CSS owns the highlight)."""
+    def test_selected_row_carries_no_inline_color(self) -> None:
+        """A highlighted row leaves color to CSS so the accent stays readable."""
         from deepagents_code.theme import DARK_COLORS
 
         label = ModelSelectorScreen._format_option_label(
@@ -2383,9 +3359,14 @@ class TestFormatOptionLabel:
                 env_var="BASETEN_API_KEY",
             ),
             install_required=True,
+            status="deprecated",
         )
-        # Not dimmed when selected; the missing-creds warning color applies.
-        assert DARK_COLORS.warning in label.markup
+        # Neither the install-required dim nor a semantic hue may survive the
+        # ($primary bg, $background fg) flip that CSS applies to the row.
+        assert "dim" not in label.markup
+        assert DARK_COLORS.warning not in label.markup
+        assert DARK_COLORS.error not in label.markup
+        assert "(deprecated)" in label.plain
 
     def test_uses_display_name_when_provided(self) -> None:
         """Provider-grouped rows render the profile name, not the full spec."""
@@ -2661,7 +3642,6 @@ class TestGetModelDisplayName:
         ("spec", "name"),
         [
             ("fireworks:accounts/fireworks/models/kimi-k3", "Kimi K3"),
-            ("meta:muse-spark-1.1", "Muse Spark 1.1"),
             ("meta:muse-spark-1.2", "Muse Spark 1.2"),
             ("openai:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai:gpt-5.6-sol", "GPT-5.6 Sol"),
@@ -2669,6 +3649,7 @@ class TestGetModelDisplayName:
             ("openai_codex:gpt-5.6-luna", "GPT-5.6 Luna"),
             ("openai_codex:gpt-5.6-sol", "GPT-5.6 Sol"),
             ("openai_codex:gpt-5.6-terra", "GPT-5.6 Terra"),
+            ("openrouter:z-ai/glm-5.3", "GLM 5.3"),
             ("xai:grok-4.5", "Grok 4.5"),
         ],
     )
@@ -2967,8 +3948,11 @@ class TestModelSelectorInstallRouting:
             include_uninstalled: bool = True,
             include_recent: bool = True,
             recommended_models: Mapping[str, str] | None = None,
+            # Mirrors production: required and nullable, so the stub cannot
+            # outlive the contract it fakes.
+            default_scope: model_selector.DefaultModelScope | None,
         ) -> model_selector._ModelData:
-            del recommended_models
+            del recommended_models, default_scope
             captured["include_uninstalled"] = include_uninstalled
             captured["include_recent"] = include_recent
             return model_selector._ModelData(
@@ -2992,6 +3976,7 @@ class TestModelSelectorInstallRouting:
                     current_model="openai:gpt-5.5",
                     current_provider="openai",
                     curated=True,
+                    default_scope=MAIN_MODEL_DEFAULT_SCOPE,
                 )
             )
             await pilot.pause()
@@ -3019,7 +4004,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {spec for spec, _ in all_models}
@@ -3052,7 +4039,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = [model_spec for model_spec, _ in all_models]
@@ -3084,7 +4073,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {model_spec for model_spec, _ in all_models}
@@ -3114,7 +4105,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         assert spec in {model_spec for model_spec, _ in all_models}
@@ -3145,7 +4138,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = [model_spec for model_spec, _ in all_models]
@@ -3182,7 +4177,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {model_spec for model_spec, _ in all_models}
@@ -3200,7 +4197,9 @@ class TestModelSelectorInstallRouting:
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=False)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=False, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {spec for spec, _ in all_models}
@@ -3239,7 +4238,9 @@ enabled = false
         )
 
         all_models, _default, _profiles, _recent, install_extras = (
-            ModelSelectorScreen._load_model_data(None, include_uninstalled=True)
+            ModelSelectorScreen._load_model_data(
+                None, include_uninstalled=True, default_scope=MAIN_MODEL_DEFAULT_SCOPE
+            )
         )
 
         specs = {spec for spec, _ in all_models}
@@ -3258,6 +4259,7 @@ enabled = false
             current_provider="openai",
             curated=True,
             result_callback=results.append,
+            default_scope=MAIN_MODEL_DEFAULT_SCOPE,
         )
         dismiss = MagicMock()
         screen.dismiss = dismiss  # ty: ignore

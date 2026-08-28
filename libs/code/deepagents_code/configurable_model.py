@@ -11,6 +11,7 @@ import asyncio
 import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from deepagents._models import (  # noqa: PLC2701
@@ -22,10 +23,13 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langgraph.types import Command
 
 from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.cold_cache import cache_identity_params
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -53,6 +57,76 @@ class _ResolvedModelRequest:
 
     model_params_known: bool = False
     """Whether `model_params` is known and should be written to the checkpoint."""
+
+
+def _cache_endpoint_identity(
+    model_spec: str | None, model_params: Mapping[str, Any] | None = None
+) -> str:
+    """Resolve the endpoint identity used by a model request for checkpointing.
+
+    Performs blocking filesystem reads: `ModelConfig.load()` is process-cached,
+    but `get_base_url` falls through to the credential store for any provider
+    with no `config.toml` `base_url` and no base-URL env var *set* -- the
+    default for `anthropic` and `openai`, whose env vars are registered in
+    `PROVIDER_BASE_URL_ENV` but normally unset -- and that store re-reads its
+    file every call. Callers on the blockbuster-guarded server loop must
+    therefore invoke this via `asyncio.to_thread` (see
+    `ConfigurableModelMiddleware.awrap_model_call`).
+
+    A spec with no `provider:` prefix cannot name an endpoint, so it resolves to
+    the same identity as the provider default. That is preferable to returning
+    nothing: `_last_cache_endpoint` is written unconditionally alongside the
+    spec and timestamp it describes, and a skipped write would leave the
+    previous turn's endpoint paired with this turn's spec.
+
+    The provider is normalized exactly as the reader normalizes it
+    (`app._cold_cache_warning_for`). `get_kwargs`/`get_base_url` are
+    exact-key lookups, so a spec the user spelled `Anthropic:claude-opus-5`
+    would resolve `default` here while the reader resolved the real endpoint --
+    a disagreement that never self-heals, because both sides keep recomputing
+    their own answer, and every send would report `identity_changed`.
+
+    Never raises. Both call sites run *after* `handler()` has returned, so the
+    model call is already made and billed; letting a config-shaped surprise
+    (a non-string `base_url` from a `class_path` provider that ignores it, say)
+    propagate would discard a paid response over a diagnostic value. Failing to
+    the provider default is the same degradation an unreadable checkpointed
+    endpoint already gets.
+
+    Returns:
+        The normalized endpoint identity, or the provider-default identity when
+        it cannot be resolved.
+    """
+    from deepagents_code.cold_cache import endpoint_cache_identity
+
+    if not model_spec or ":" not in model_spec:
+        return endpoint_cache_identity(None)
+    from deepagents_code.model_config import ModelConfig
+
+    raw_provider, _, model_name = model_spec.partition(":")
+    provider = raw_provider.strip().lower()
+    try:
+        config = ModelConfig.load()
+        kwargs = config.get_effective_kwargs(
+            provider,
+            model_name=model_name,
+            overrides=model_params,
+        )
+        base_url = (
+            kwargs.get("base_url")
+            if isinstance(kwargs, dict)
+            else config.get_base_url(provider)
+        )
+    except Exception:
+        logger.warning(
+            "Could not resolve the cache endpoint for %r; recording the "
+            "provider default, so an endpoint change may go undetected for "
+            "this turn",
+            provider,
+            exc_info=True,
+        )
+        return endpoint_cache_identity(None)
+    return endpoint_cache_identity(base_url if isinstance(base_url, str) else None)
 
 
 def _get_ls_provider(model: object) -> str | None:
@@ -221,7 +295,7 @@ def _resolve_openai_prompt_cache_key_enabled() -> bool:
     Called once when `ConfigurableModelMiddleware` is constructed. The read is
     kept off the blockbuster-guarded server loop by the caller: on the server
     path `create_cli_agent` runs inside `asyncio.to_thread` (see
-    `server_graph._make_graph`), so the synchronous `config.toml` read happens
+    `server_graph._make_graphs`), so the synchronous `config.toml` read happens
     on a worker thread.
 
     On an unexpected failure this defaults to enabled: breaking agent
@@ -265,44 +339,21 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     if runtime is None:
         return None
 
-    ctx = runtime.context
-    if isinstance(ctx, CLIContextSchema):
-        return ctx
-    if isinstance(ctx, dict):
-        raw_key = ctx.get("approval_mode_key")
-        raw_thread_id = ctx.get("thread_id")
-        raw_classifier_model = ctx.get("classifier_model")
-        return CLIContextSchema(
-            model=ctx.get("model"),
-            model_params=ctx.get("model_params") or {},
-            profile_overrides=ctx.get("profile_overrides") or {},
-            model_context_limit=ctx.get("model_context_limit"),
-            classifier_model=(
-                raw_classifier_model if isinstance(raw_classifier_model, str) else None
-            ),
-            approval_mode=(
-                ctx.get("approval_mode")
-                if isinstance(ctx.get("approval_mode"), str)
-                else "manual"
-            ),
-            auto_approve=bool(ctx.get("auto_approve", False)),
-            approval_mode_key=raw_key if isinstance(raw_key, str) else None,
-            thread_id=raw_thread_id if isinstance(raw_thread_id, str) else None,
-        )
-    return None
+    return CLIContextSchema.from_payload(runtime.context)
 
 
 def _model_spec_from_model(model: BaseChatModel) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
-    provider = _get_ls_provider(model)
     model_name = get_model_identifier(model)
+    from deepagents_code.config import runtime_state
+
+    settings_provider = runtime_state.model_provider or ""
+    settings_model = runtime_state.model_name or ""
+    if settings_provider and settings_model and model_name == settings_model:
+        return f"{settings_provider}:{settings_model}"
+    provider = _get_ls_provider(model)
     if provider and model_name:
         return f"{provider}:{model_name}"
-
-    from deepagents_code.config import settings
-
-    settings_provider = settings.model_provider or ""
-    settings_model = settings.model_name or ""
     if settings_provider and settings_model:
         return f"{settings_provider}:{settings_model}"
     return None
@@ -413,9 +464,9 @@ def _build_overrides(
 
     # Patch the Model Identity section in the system prompt so the new model
     # sees its own name/provider/context-limit, not the original's.
-    # We read metadata from model_result (not the app's settings singleton)
-    # because the middleware runs in the server subprocess where settings
-    # are never updated by /model.
+    # Read metadata from `model_result`, not the process-wide runtime state:
+    # the middleware runs in the server subprocess, whose state is not updated
+    # by `/model`.
     if model_result is not None and request.system_prompt:
         from deepagents_code.agent import (
             MODEL_IDENTITY_RE,
@@ -444,8 +495,28 @@ def _build_overrides(
     return request.override(**overrides)
 
 
+def _model_creation_kwargs(
+    ctx: CLIContextSchema, cli_max_retries: int | None
+) -> dict[str, Any]:
+    """Build constructor kwargs needed for a runtime model switch.
+
+    Returns:
+        Keyword arguments for `create_model`.
+    """
+    kwargs: dict[str, Any] = {}
+    if cli_max_retries is not None:
+        kwargs["cli_max_retries"] = cli_max_retries
+    if ctx.profile_overrides:
+        kwargs["profile_overrides"] = ctx.profile_overrides
+    return kwargs
+
+
 def _apply_overrides(
-    request: ModelRequest, *, openai_prompt_cache_key: bool
+    request: ModelRequest,
+    *,
+    openai_prompt_cache_key: bool,
+    cli_max_retries: int | None,
+    strict_model_resolution: bool = False,
 ) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
@@ -459,10 +530,16 @@ def _apply_overrides(
         request: The incoming model request from the middleware chain.
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
+        cli_max_retries: Explicit CLI retry count retained across model switches.
+        strict_model_resolution: Whether model construction failures should propagate.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
+        ModelConfigError: If strict resolution is enabled and construction fails.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -472,26 +549,37 @@ def _apply_overrides(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx, cli_max_retries)
         try:
             model_result = create_model(model, **model_kwargs)
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
+            if strict_model_resolution:
+                raise
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
                 "continuing with current model",
                 model,
             )
+            # `model_params_known=False` deliberately: the override never
+            # reached `_build_overrides`, so which params are in effect is
+            # exactly what this path does not know. Writing the default `None`
+            # instead would clear the checkpoint's params while the app still
+            # holds its override, and the cold-cache identity check would then
+            # compare a populated map against `None` on every send -- a
+            # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
-                model_params_known=True,
+                model_params_known=False,
             )
 
     updated = _build_overrides(
@@ -507,7 +595,11 @@ def _apply_overrides(
 
 
 async def _apply_overrides_async(
-    request: ModelRequest, *, openai_prompt_cache_key: bool
+    request: ModelRequest,
+    *,
+    openai_prompt_cache_key: bool,
+    cli_max_retries: int | None,
+    strict_model_resolution: bool = False,
 ) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
 
@@ -515,10 +607,16 @@ async def _apply_overrides_async(
         request: The incoming model request from the middleware chain.
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
+        cli_max_retries: Explicit CLI retry count retained across model switches.
+        strict_model_resolution: Whether model construction failures should propagate.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
+        ModelConfigError: If strict resolution is enabled and construction fails.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -528,30 +626,41 @@ async def _apply_overrides_async(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx, cli_max_retries)
         try:
             model_result = await asyncio.to_thread(
                 create_model,
                 model,
                 **model_kwargs,
             )
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
+            if strict_model_resolution:
+                raise
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
                 "continuing with current model",
                 model,
             )
+            # `model_params_known=False` deliberately: the override never
+            # reached `_build_overrides`, so which params are in effect is
+            # exactly what this path does not know. Writing the default `None`
+            # instead would clear the checkpoint's params while the app still
+            # holds its override, and the cold-cache identity check would then
+            # compare a populated map against `None` on every send -- a
+            # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
                 _model_spec_from_model(request.model),
-                model_params_known=True,
+                model_params_known=False,
             )
 
     updated = _build_overrides(
@@ -566,19 +675,140 @@ async def _apply_overrides_async(
     )
 
 
-def _checkpoint_command(resolved: _ResolvedModelRequest) -> Command[Any] | None:
-    """Build the private resume-state update for a completed model call.
+def _utc_now_iso() -> str:
+    """Return the current UTC time in checkpoint-safe ISO format."""
+    return datetime.now(UTC).isoformat()
+
+
+def _effective_cache_params(
+    model_spec: str | None, runtime_overrides: Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """Resolve the cache-identity params a request actually runs with.
+
+    Mirrors the app-side comparison: the cold-cache check reads configured
+    provider/per-model `params` (via `ModelConfig.get_effective_kwargs`) plus
+    runtime overrides. If the checkpoint stores only the runtime overrides, a
+    user with a configured `prompt_cache_retention` and no session override
+    records `None` here while the reader sees `{"prompt_cache_retention": ...}`,
+    so the next turn compares unequal and reports a false `identity_changed`
+    every turn. Persisting the effective params makes both sides match.
+
+    The result is projected through `cache_identity_params` and recorded in the
+    dedicated `_last_cache_params` channel rather than `_model_params`: the
+    latter is read back on resume as per-session runtime overrides, so storing
+    the merged config there would pin every configured knob (temperature,
+    headers, ...) into old threads and silently override newer config.
+
+    Performs blocking config reads; async callers should offload.
+
+    Args:
+        model_spec: `provider:model` spec for the call.
+        runtime_overrides: Per-request params (the middleware's `model_params`).
 
     Returns:
-        Command with private checkpoint updates, or `None` when nothing is known.
+        Cache-identity projection of the effective kwargs (without `base_url`),
+        or `None` when no identity keys are present.
+    """
+    if not model_spec or ":" not in model_spec:
+        overrides = dict(runtime_overrides) if runtime_overrides else None
+        return cache_identity_params(overrides) or None
+    from deepagents_code.model_config import ModelConfig
+
+    _, _, model_name = model_spec.partition(":")
+    provider = model_spec.split(":", 1)[0].strip().lower()
+    try:
+        config = ModelConfig.load()
+        kwargs = config.get_effective_kwargs(
+            provider,
+            model_name=model_name,
+            overrides=runtime_overrides,
+        )
+    except Exception:
+        logger.warning(
+            "Could not resolve effective cache params for %r; recording only "
+            "runtime overrides, so a configured cache param may read as a "
+            "spurious identity change until the next turn",
+            model_spec,
+            exc_info=True,
+        )
+        overrides = dict(runtime_overrides) if runtime_overrides else None
+        return cache_identity_params(overrides) or None
+    if not isinstance(kwargs, dict):
+        overrides = dict(runtime_overrides) if runtime_overrides else None
+        return cache_identity_params(overrides) or None
+    # `base_url` is tracked separately as the endpoint identity; keeping it out
+    # of the params avoids a double-counted identity change.
+    result = cache_identity_params({k: v for k, v in kwargs.items() if k != "base_url"})
+    return result or None
+
+
+def _checkpoint_command(
+    resolved: _ResolvedModelRequest,
+    request_started_at: str,
+    cache_endpoint: str,
+    cache_params: dict[str, Any] | None = None,
+) -> Command[Any]:
+    """Build the private resume-state update for a completed model call.
+
+    Args:
+        resolved: The request as actually sent, after override resolution.
+        request_started_at: UTC ISO timestamp captured before the model call.
+            It only reaches a checkpoint because this runs after `handler()`
+            returned, which is what makes it a successful-call marker.
+        cache_endpoint: Endpoint identity for `resolved.model_spec`, from
+            `_cache_endpoint_identity`. Passed in rather than resolved here so
+            the async caller can keep its blocking config/credential reads off
+            the event loop.
+        cache_params: Cache-identity projection of the effective params for
+            this call, from `_effective_cache_params`. Passed in for the same
+            offloading reason as `cache_endpoint`. When `None` and
+            `resolved.model_params_known` is true, falls back to the identity
+            projection of the runtime overrides.
+
+    Returns:
+        Command carrying cache timing and effective model metadata.
     """
     update: dict[str, Any] = {}
+    # Use the resolved spec, not `_apply_overrides`'s `ctx.model`: when an
+    # override fails with `ModelConfigError`, `_apply_overrides` falls back to
+    # the original model while `ctx.model` still names the rejected override.
+    #
+    # The timestamp is written only alongside a known spec. The three are one
+    # fact -- when the cache was warmed, for which model, and against which
+    # endpoint -- and a timestamp without an identity would read back as a
+    # permanent "model changed", warning on every send with copy that names a
+    # change that never happened. For the same reason the endpoint is written
+    # unconditionally here: a skipped write would leave the *previous* turn's
+    # endpoint describing this turn's spec and timestamp.
     if resolved.model_spec:
+        update["_last_model_request_at"] = request_started_at
+        update["_last_cache_model_spec"] = resolved.model_spec
+        update["_last_cache_endpoint"] = cache_endpoint
         update["_model_spec"] = resolved.model_spec
+    else:
+        # The previous turn's timestamp stays in place, so the next cold-cache
+        # age is computed against an older request than the one just made.
+        logger.debug(
+            "Not recording prompt-cache state: no model spec could be derived from %s",
+            type(resolved.request.model).__name__,
+        )
     if resolved.model_params_known:
+        # `_model_params` stays the *runtime overrides only*: resume reads it
+        # back as per-session overrides for `_switch_model`, so storing the
+        # merged config there would pin provider defaults (temperature, max
+        # retries, headers, ...) into old threads and silently override newer
+        # config on resume.
         update["_model_params"] = resolved.model_params
-    if not update:
-        return None
+        # The cold-cache identity projection goes to its own channel. It must
+        # include configured provider params -- not just the session override
+        # above -- or the reader's effective-params comparison reports a false
+        # `identity_changed` on every turn for anyone with a configured cache
+        # knob.
+        update["_last_cache_params"] = (
+            cache_params
+            if cache_params is not None
+            else (cache_identity_params(resolved.model_params) or None)
+        )
     return Command(update=update)
 
 
@@ -599,11 +829,16 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     `AnthropicPromptCachingMiddleware`) runs.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     def __init__(
         self,
         *,
         persist_model_state: bool = True,
         openai_prompt_cache_key: bool | None = None,
+        cli_max_retries: int | None = None,
+        strict_model_resolution: bool = False,
     ) -> None:
         """Initialize the middleware.
 
@@ -622,8 +857,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 `_resolve_openai_prompt_cache_key_enabled` re-raises rather than
                 masks. Pass an explicit bool to bypass the config read (mainly
                 for tests).
+            cli_max_retries: Explicit `--max-retries` value to retain across
+                runtime model switches.
+            strict_model_resolution: Whether invalid runtime model overrides should
+                fail the call instead of falling back to the construction-time model.
         """
         self._persist_model_state = persist_model_state
+        self._cli_max_retries = cli_max_retries
+        self._strict_model_resolution = strict_model_resolution
         self._openai_prompt_cache_key = (
             _resolve_openai_prompt_cache_key_enabled()
             if openai_prompt_cache_key is None
@@ -642,12 +883,29 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(
-            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+            request,
+            openai_prompt_cache_key=self._openai_prompt_cache_key,
+            cli_max_retries=self._cli_max_retries,
+            strict_model_resolution=self._strict_model_resolution,
         )
+        request_started_at = _utc_now_iso()
         response = handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
-        if command is None:
+        if not self._persist_model_state:
             return response
+        cache_endpoint = (
+            _cache_endpoint_identity(resolved.model_spec, resolved.model_params)
+            if resolved.model_params is not None
+            else _cache_endpoint_identity(resolved.model_spec)
+        )
+        cache_params = _effective_cache_params(
+            resolved.model_spec, resolved.model_params
+        )
+        command = _checkpoint_command(
+            resolved,
+            request_started_at,
+            cache_endpoint,
+            cache_params,
+        )
         return ExtendedModelResponse(model_response=response, command=command)
 
     async def awrap_model_call(
@@ -662,10 +920,33 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(
-            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+            request,
+            openai_prompt_cache_key=self._openai_prompt_cache_key,
+            cli_max_retries=self._cli_max_retries,
+            strict_model_resolution=self._strict_model_resolution,
         )
+        request_started_at = _utc_now_iso()
         response = await handler(resolved.request)
-        command = _checkpoint_command(resolved) if self._persist_model_state else None
-        if command is None:
+        if not self._persist_model_state:
             return response
+        # Offloaded: `_cache_endpoint_identity` and `_effective_cache_params`
+        # read the config and credential store, which `blockbuster` rejects on
+        # the server event loop.
+        cache_endpoint = (
+            await asyncio.to_thread(
+                _cache_endpoint_identity,
+                resolved.model_spec,
+                resolved.model_params,
+            )
+            if resolved.model_params is not None
+            else await asyncio.to_thread(_cache_endpoint_identity, resolved.model_spec)
+        )
+        cache_params = await asyncio.to_thread(
+            _effective_cache_params,
+            resolved.model_spec,
+            resolved.model_params,
+        )
+        command = _checkpoint_command(
+            resolved, request_started_at, cache_endpoint, cache_params
+        )
         return ExtendedModelResponse(model_response=response, command=command)

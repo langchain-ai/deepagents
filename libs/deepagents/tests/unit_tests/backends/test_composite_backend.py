@@ -1335,6 +1335,56 @@ def test_composite_glob_leading_slash_pattern() -> None:
     assert "/memories/data.txt" not in result_paths
 
 
+def test_composite_root_glob_preserves_route_pattern_anchoring() -> None:
+    """A stripped route prefix must not turn its remainder into a basename glob."""
+    mem_store = InMemoryStore()
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    comp.write("/memories/top.py", "top")
+    comp.write("/memories/nested/file.py", "nested")
+
+    matches = comp.glob("/memories/*.py", path="/").matches
+
+    assert [match["path"] for match in matches] == ["/memories/top.py"]
+
+
+def test_composite_root_anchored_pattern_skips_routed_backends() -> None:
+    """`/*.py` means top-level only, and every routed match is deeper than that.
+
+    Routed results are prefixed with their route (`/memories/foo.py`), so
+    forwarding a root-anchored pattern to a route makes the composite return
+    depth-2 paths for a pattern the shared contract defines as top-level only.
+    """
+    mem_store = InMemoryStore()
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    comp.write("/top.py", "top")
+    comp.write("/memories/foo.py", "routed")
+
+    matches = comp.glob("/*.py", path="/").matches
+
+    assert [match["path"] for match in matches] == ["/top.py"]
+
+
+def test_composite_root_bare_pattern_still_reaches_routes() -> None:
+    """A bare pattern is basename-at-any-depth, so routes must still be searched."""
+    mem_store = InMemoryStore()
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    comp.write("/top.py", "top")
+    comp.write("/memories/foo.py", "routed")
+
+    matches = comp.glob("*.py", path="/").matches
+
+    assert {match["path"] for match in matches} == {"/top.py", "/memories/foo.py"}
+
+
 def test_composite_glob_nested_path_in_route() -> None:
     """Test glob with nested path within route."""
     mem_store = InMemoryStore()

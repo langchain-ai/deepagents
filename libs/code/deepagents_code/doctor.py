@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import platform
+import re
 import sys
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -351,20 +352,14 @@ def _sanitize_endpoint(endpoint: str) -> str:
     return f"{parsed.scheme}://{netloc}"
 
 
-_LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
-"""Host identifying LangSmith's managed (SaaS) tracing gateway.
-
-Traces sent to an endpoint whose host is `smith.langchain.com` (or a subdomain
-of it) route through the managed gateway; any other host is a self-hosted or
-dev/staging target. `app.py` keeps the same constant for its model-gateway
-key-mismatch check, but matches a raw-URL substring; this module matches the
-parsed hostname exactly or by subdomain suffix so lookalike hosts such as
-`smith.langchain.com.evil.example` are not treated as the gateway.
-"""
-
-
 def _endpoint_gateway_state(endpoint: str) -> str:
     """Classify a single tracing endpoint as gateway, non-gateway, or unknown.
+
+    Traces sent to the managed gateway host (or a subdomain of it) route
+    through LangSmith SaaS; any other host is a self-hosted or dev/staging
+    target. The exact/subdomain comparison, and the case and root-dot
+    normalization it needs, both live in
+    `model_config.is_langsmith_gateway_host`.
 
     Args:
         endpoint: A configured tracing endpoint URL.
@@ -375,15 +370,19 @@ def _endpoint_gateway_state(endpoint: str) -> str:
             and `"unknown"` when the endpoint cannot be parsed into a host — so
             a typo'd or malformed URL is never silently reported as `"no"`.
     """
+    from deepagents_code.model_config import is_langsmith_gateway_host
+
     try:
         host = urlsplit(endpoint.strip()).hostname or ""
     except ValueError:
         # urlsplit raises on bracket-malformed IPv6 (e.g. `http://[::1`); a
         # diagnostic must degrade to "unknown" rather than crash `dcode doctor`.
         return "unknown"
-    if not host:
+    # A host of only a root dot carries no name, so it stays `"unknown"` rather
+    # than being reported as a definite non-gateway.
+    if not host.removesuffix("."):
         return "unknown"
-    if host == _LANGSMITH_GATEWAY_HOST or host.endswith(f".{_LANGSMITH_GATEWAY_HOST}"):
+    if is_langsmith_gateway_host(host):
         return "yes"
     return "no"
 
@@ -510,24 +509,244 @@ def _path_status(label: str, path: object) -> DiagnosticItem:
     )
 
 
+def _writable_path_status(label: str, path: object) -> DiagnosticItem:
+    """Build a path item that also reports whether the directory is writable.
+
+    `classify_path` answers "is it there", which reports a present but
+    root-owned directory as healthy. That is the single condition the profile
+    fallbacks exist for, so the row that would send a user looking must not be
+    the one that says `exists`.
+
+    Uses `os.access` rather than `probe_writable`: a diagnostic must not create
+    directories as a side effect of reporting on them.
+
+    Args:
+        label: Human-readable name for the path.
+        path: Filesystem directory to probe.
+
+    Returns:
+        A diagnostic item describing the directory and its usability.
+    """
+    import os
+    from pathlib import Path
+
+    from deepagents_code._paths import PathState, classify_path
+
+    resolved = Path(str(path))
+    state = classify_path(resolved)
+    if state is not PathState.EXISTS:
+        return _path_status(label, path)
+    if os.access(resolved, os.W_OK | os.X_OK):
+        return DiagnosticItem(label, f"{resolved} (exists)", ok=True)
+    return DiagnosticItem(
+        label,
+        f"{resolved} (exists but is not writable - the profile fallback is used)",
+        ok=False,
+    )
+
+
+def _fallback_location_items() -> list[DiagnosticItem]:
+    """Build the managed-bin and update-lock rows, naming the location in use.
+
+    Returns:
+        Rows for both preferred locations, each profile fallback that exists,
+        and the managed binary actually on `PATH`.
+    """
+    from deepagents_code._paths import PathState, classify_path
+    from deepagents_code.managed_tools import (
+        BIN_DIR,
+        FALLBACK_BIN_DIR,
+        managed_rg_path,
+    )
+    from deepagents_code.update_check import FALLBACK_UPDATE_LOCK_FILE, UPDATE_LOCK_FILE
+
+    items = [
+        _writable_path_status("Managed binaries", BIN_DIR),
+        _writable_path_status("Update locks", UPDATE_LOCK_FILE.parent),
+    ]
+    # Surface a profile-scoped fallback only once it exists, i.e. once it is
+    # actually the location in use. The installation-scoped directories are
+    # created lazily, so their absence is not evidence of a permission problem.
+    for label, fallback in (
+        ("Managed binaries (profile)", FALLBACK_BIN_DIR),
+        ("Update locks (profile)", FALLBACK_UPDATE_LOCK_FILE.parent),
+    ):
+        if classify_path(fallback) is PathState.EXISTS:
+            items.append(_path_status(label, fallback))
+    # Two rows and no statement of which one wins is the gap this closes.
+    rg_path = managed_rg_path()
+    if classify_path(rg_path) is PathState.EXISTS:
+        items.append(DiagnosticItem(label="Managed ripgrep", value=str(rg_path)))
+    return items
+
+
+def _managed_config_diagnostic() -> DiagnosticItem:
+    """Report managed TOML location, parse health, and policy enforceability.
+
+    Returns:
+        Managed config diagnostic row.
+    """
+    try:
+        return _managed_config_row()
+    except Exception as exc:  # See below.
+        # A remote descriptor turns this row into a network fetch, so it has
+        # more ways to fail than any other row here -- and it is the row a
+        # user reaches for after exit 78 told them to investigate. An escape
+        # would take down every unrelated section with it. `doctor` already
+        # guards a corrupt update stamp the same way.
+        logger.debug("Managed config diagnostic failed", exc_info=True)
+        return DiagnosticItem(
+            "Managed config",
+            f"could not be checked ({type(exc).__name__})",
+            ok=False,
+        )
+
+
+def _managed_config_row() -> DiagnosticItem:
+    """Build the managed config row from one refreshed snapshot.
+
+    Any failure reading or resolving managed policy propagates to
+    `_managed_config_diagnostic`, which reports it as an unchecked row.
+
+    Returns:
+        Managed config diagnostic row.
+    """
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_refresh_failure,
+        managed_snapshot_health,
+    )
+    from deepagents_code.configuration.types import ProviderHealth
+
+    snapshot = get_managed_snapshot(refresh=True)
+    # A refresh caller receives the failure it asked to see, while the process
+    # keeps resolving from the last generation it could read. Both halves have
+    # to appear: the failure alone reads as "no policy is in force", which is
+    # the opposite of what fail-closed retention does.
+    retained = (
+        get_managed_snapshot().data
+        if not snapshot.status.usable and managed_refresh_failure() is not None
+        else None
+    )
+    status = snapshot.status
+    health = managed_snapshot_health(snapshot)
+    path = status.path or "(unknown)"
+    # Printing the URL relies on `remote_source` being set only from
+    # `_validate_remote_url`'s output, so it carries no credentials or query
+    # token. A rejected source leaves the field unset and renders as the path.
+    location = (
+        f"{path} -> {status.remote_source}"
+        if status.remote_source is not None
+        else str(path)
+    )
+    suffix = status.health.value.lower()
+    detail = f" - {status.detail}" if status.detail else ""
+    # Doctor exists to explain a failure, so it must carry the parse detail and
+    # say who can fix it. Without this a user who just saw exit 78 learns
+    # nothing new here.
+    if status.usable:
+        hint = ""
+    elif status.remote_source is not None:
+        if status.health is ProviderHealth.CORRUPT:
+            hint = "; ask your administrator to repair the published document"
+        else:
+            hint = (
+                "; ask your administrator to verify that the managed-config source "
+                "is reachable"
+            )
+    else:
+        hint = "; ask your administrator to repair or remove it"
+    # A file that parses is not necessarily enforceable, and both halves of
+    # exit 78 have to show up here: reporting only `usable` gives a green row
+    # to the `ManagedPolicyError` half. Status and violations are both derived
+    # from the single `snapshot` read above, so a refreshed status can never be
+    # paired with stale violations.
+    violations = health.violations
+    if violations:
+        detail += f" - rejects {', '.join(violations)}"
+        hint = "; ask your administrator to correct the value"
+    if health.rejections:
+        # Declared but ignored, which is not a launch failure and so not part of
+        # `ok`. It still has to appear somewhere: the only other announcement is
+        # a `logger.warning` that cannot reach stderr.
+        detail += f" - ignores {', '.join(health.rejections)}"
+    stale = ""
+    if retained:
+        # Naming the keys would duplicate `dcode config`; what an administrator
+        # needs here is that the session is not unprotected while the source is
+        # down.
+        stale = (
+            " - still enforcing the last generation that could be read, so this "
+            "session is not unmanaged"
+        )
+    return DiagnosticItem(
+        "Managed config",
+        f"{location} ({suffix}){detail}{stale}{hint}",
+        ok=health.ok,
+    )
+
+
+def _user_config_diagnostic() -> DiagnosticItem:
+    """Report user TOML location and parse health.
+
+    `_path_status` answers only "is there a file there", so a `config.toml`
+    that exists and does not parse produced a green `exists` row - in the one
+    command a user runs when their settings are not taking effect. Resolution
+    treats an unparseable file as declaring nothing, which is exactly the state
+    the row has to distinguish.
+
+    Returns:
+        User config diagnostic row.
+    """
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.types import ProviderHealth
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    status = TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load().status
+    suffix = {
+        ProviderHealth.OK: "exists",
+        ProviderHealth.MISSING: "not created",
+    }.get(status.health, status.health.value.lower())
+    detail = f" - {status.detail}" if status.detail else ""
+    hint = "" if status.usable else "; every option in it falls back to its default"
+    return DiagnosticItem(
+        "Config file",
+        f"{DEFAULT_CONFIG_PATH} ({suffix}){detail}{hint}",
+        ok=status.usable,
+    )
+
+
 def _collect_configuration() -> DiagnosticSection:
     """Collect on-disk configuration and data locations.
 
     Returns:
         The `Configuration` section.
     """
-    from deepagents_code.model_config import (
-        DEFAULT_CONFIG_DIR,
-        DEFAULT_CONFIG_PATH,
-    )
+    from deepagents_code._paths import PATHS
+    from deepagents_code.model_config import DEFAULT_CONFIG_DIR
 
-    return DiagnosticSection(
-        title="Configuration",
-        items=[
-            _path_status("Data directory", DEFAULT_CONFIG_DIR),
-            _path_status("Config file", DEFAULT_CONFIG_PATH),
-        ],
-    )
+    items = [
+        _path_status("Data directory", DEFAULT_CONFIG_DIR),
+        _managed_config_diagnostic(),
+        _user_config_diagnostic(),
+        *_fallback_location_items(),
+    ]
+    if PATHS.home_check_skipped:
+        items.append(
+            DiagnosticItem(
+                label="Profile safety check",
+                value=(
+                    "skipped - the home directory could not be resolved, so "
+                    "DEEPAGENTS_HOME was not checked against it. Set $HOME."
+                ),
+                ok=False,
+            )
+        )
+    if not PATHS.uses_default_profile:
+        items.append(
+            DiagnosticItem(label="Profile", value=f"{PATHS.profile.root} (configured)")
+        )
+    return DiagnosticSection(title="Configuration", items=items)
 
 
 def collect_sections() -> list[DiagnosticSection]:
@@ -556,6 +775,8 @@ def _tree_connectors() -> tuple[str, str]:
 def _render_text(sections: list[DiagnosticSection]) -> None:
     """Print the diagnostic sections as a styled tree to the console."""
     from rich.markup import escape
+    from rich.style import Style
+    from rich.text import Text
 
     from deepagents_code import theme
     from deepagents_code.config import console, get_glyphs
@@ -574,9 +795,16 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         for index, item in enumerate(section.items):
             connector = corner if index == len(section.items) - 1 else tee
             value_color = theme.MUTED if item.ok else "red"
+            url = (
+                f"https://github.com/langchain-ai/deepagents/commit/{item.value}"
+                if item.label == "Commit hash"
+                and re.fullmatch(r"[0-9a-fA-F]{7,40}", item.value)
+                else None
+            )
             console.print(
-                f"  {connector} {escape(item.label)}: "
-                f"[{value_color}]{escape(item.value)}[/{value_color}]",
+                f"  {connector} {escape(item.label)}: ",
+                Text(item.value, style=Style(color=value_color, link=url)),
+                sep="",
                 highlight=False,
             )
         console.print()

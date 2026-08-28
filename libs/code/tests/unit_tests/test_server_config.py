@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 import pytest
@@ -19,7 +20,6 @@ from deepagents_code._server_config import (
     _read_env_optional_bool,
     _read_env_str,
 )
-from deepagents_code.config import settings
 
 # ------------------------------------------------------------------
 # _read_env_bool
@@ -256,37 +256,44 @@ class TestServerConfigInterpreterDefault:
             interactive=True,
         )
 
-    def test_local_none_false_uses_settings_default(self) -> None:
-        with patch.object(settings, "enable_interpreter", False):
-            config = self._build(sandbox_type="none", enable_interpreter=None)
+    @staticmethod
+    def _write_default(tmp_path: Path, *, enabled: bool) -> None:
+        (tmp_path / "config.toml").write_text(
+            f"[interpreter]\nenable_interpreter = {str(enabled).lower()}\n",
+            encoding="utf-8",
+        )
+
+    def test_local_none_false_uses_resolver_default(self, tmp_path: Path) -> None:
+        self._write_default(tmp_path, enabled=False)
+        config = self._build(sandbox_type="none", enable_interpreter=None)
 
         assert config.enable_interpreter is False
 
-    def test_local_none_true_uses_settings_default(self) -> None:
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="none", enable_interpreter=None)
+    def test_local_none_true_uses_resolver_default(self, tmp_path: Path) -> None:
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="none", enable_interpreter=None)
 
         assert config.enable_interpreter is True
 
-    def test_local_explicit_false_is_preserved(self) -> None:
+    def test_local_explicit_false_is_preserved(self, tmp_path: Path) -> None:
         # An explicit `False` must win over a `True` config default rather than
         # falling through to the settings lookup.
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="none", enable_interpreter=False)
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="none", enable_interpreter=False)
 
         assert config.enable_interpreter is False
 
-    def test_empty_sandbox_is_treated_as_local(self) -> None:
+    def test_empty_sandbox_is_treated_as_local(self, tmp_path: Path) -> None:
         # An empty-string sandbox is falsy and must not be mistaken for a remote
         # backend, which would silently disable the interpreter.
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="", enable_interpreter=None)
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="", enable_interpreter=None)
 
         assert config.enable_interpreter is True
 
-    def test_remote_none_disables_interpreter(self) -> None:
-        with patch.object(settings, "enable_interpreter", True):
-            config = self._build(sandbox_type="daytona", enable_interpreter=None)
+    def test_remote_none_disables_interpreter(self, tmp_path: Path) -> None:
+        self._write_default(tmp_path, enabled=True)
+        config = self._build(sandbox_type="daytona", enable_interpreter=None)
 
         assert config.enable_interpreter is False
 
@@ -352,6 +359,18 @@ class TestInterpreterSuppressedBySandbox:
 
 
 class TestServerConfigEdgeCases:
+    def test_extension_paths_round_trip(self, tmp_path: Path) -> None:
+        """One-run extension paths survive the isolated server boundary."""
+        original = ServerConfig(extension_paths=(str(tmp_path / "extension.py"),))
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.extension_paths == original.extension_paths
+
     def test_trust_project_mcp_false_round_trips(self) -> None:
         """False must survive round-trip (not collapse to None)."""
         original = ServerConfig(trust_project_mcp=False)
@@ -520,6 +539,45 @@ class TestServerConfigEdgeCases:
             restored = ServerConfig.from_env()
 
         assert restored.recursion_limit == 3000
+
+    @pytest.mark.parametrize("budget", [0, 2])
+    def test_cli_max_retries_round_trips(self, budget: int) -> None:
+        """`--max-retries` survives the server env boundary.
+
+        This env var is the only channel carrying the flag into the server
+        subprocess, which is the default TUI path. A dropped key makes the flag
+        a silent no-op for most invocations. `0` is covered separately from a
+        raised budget because it is falsy: a `to_env` that tested truthiness
+        would disable the one value whose whole purpose is to disable retries.
+        """
+        original = ServerConfig(cli_max_retries=budget)
+        env_dict = original.to_env()
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.cli_max_retries == budget
+
+    def test_cli_max_retries_unset_stays_none(self) -> None:
+        """No flag must restore as `None`, not as a budget of zero."""
+        original = ServerConfig()
+        env_dict = original.to_env()
+        assert env_dict["MAX_RETRIES"] is None
+        with patch.dict(os.environ, {}, clear=True):
+            for suffix, value in env_dict.items():
+                if value is not None:
+                    os.environ[f"{SERVER_ENV_PREFIX}{suffix}"] = value
+            restored = ServerConfig.from_env()
+
+        assert restored.cli_max_retries is None
+
+    @pytest.mark.parametrize("invalid", [True, -1])
+    def test_cli_max_retries_rejects_impossible_budgets(self, invalid: object) -> None:
+        """`True` must not pass as a budget of one."""
+        with pytest.raises((TypeError, ValueError)):
+            ServerConfig(cli_max_retries=cast("int", invalid))
 
     def test_recursion_limit_unset_defaults_to_none(self) -> None:
         """No recursion-limit env var restores as `None` (resolve at build time)."""

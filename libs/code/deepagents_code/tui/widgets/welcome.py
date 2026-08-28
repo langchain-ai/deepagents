@@ -30,12 +30,12 @@ from deepagents_code._env_vars import (
 from deepagents_code._version import __version__
 from deepagents_code.config import (
     _assemble_langsmith_thread_url,
-    _get_editable_install_path,
     _is_editable_install,
     fetch_langsmith_project_url,
     get_glyphs,
     get_langsmith_project_name,
     get_langsmith_replica_project,
+    is_ascii_mode,
 )
 from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 from deepagents_code.tui.widgets._links import open_style_link
@@ -235,6 +235,7 @@ class WelcomeBanner(Static):
         self._show_cwd = is_env_truthy(SPLASH_SHOW_CWD)
         self._hide_cwd = is_env_truthy(HIDE_CWD)
         self._hide_version = is_env_truthy(HIDE_SPLASH_VERSION)
+        self._version = __version__
         # Avoid collision with Widget._thread_id (Textual internal int)
         self._cli_thread_id = thread_id
         self._mcp_tool_count = mcp_tool_count
@@ -263,12 +264,19 @@ class WelcomeBanner(Static):
     def on_mount(self) -> None:
         """Watch for theme changes and start the LangSmith project-URL fetch."""
         self.watch(self.app, "theme", self._on_theme_change, init=False)
+        self._update_border()
         if self._project_name:
             self.run_worker(self._fetch_and_update, exclusive=True)
 
     def _on_theme_change(self) -> None:
         """Re-render the banner when the app theme changes."""
+        self._update_border()
         self.update(self._build_banner())
+
+    def _update_border(self) -> None:
+        """Apply the current theme color to the ASCII border."""
+        if is_ascii_mode():
+            self.styles.border = ("ascii", theme.get_theme_colors(self).primary)
 
     async def _fetch_and_update(self) -> None:
         """Fetch the LangSmith URL in a thread and update the banner."""
@@ -354,6 +362,21 @@ class WelcomeBanner(Static):
         """
         self._cli_thread_id = thread_id
         if self._show_thread_id:
+            self.update(self._build_banner())
+
+    def update_version(self, version: str) -> None:
+        """Track a new version and re-render when it is displayed.
+
+        The banner then advertises a version installed on disk rather than the
+        one this process is running, until the user relaunches.
+
+        Args:
+            version: The newly installed `deepagents-code` version.
+        """
+        # Tracked even when hidden, so the value stays truthful if the row is
+        # ever re-enabled — matching the other `update_*` methods above.
+        self._version = version
+        if not self._hide_version:
             self.update(self._build_banner())
 
     def set_connected(
@@ -448,7 +471,7 @@ class WelcomeBanner(Static):
             ("dcode", "bold"),
         ]
         if not self._hide_version:
-            parts.append((f"  v{__version__}", "dim"))
+            parts.append((f"  v{self._version}", "dim"))
         if self._debug_enabled:
             parts.append(
                 (
@@ -592,12 +615,5 @@ class WelcomeBanner(Static):
         for line in warning_lines:
             parts.append("\n")
             parts.extend(line)
-
-        # Editable-install path for local development visibility.
-        if not self._hide_version and not self._hide_cwd:
-            editable_path = _get_editable_install_path()
-            if editable_path:
-                parts.append("\n")
-                parts.extend([("installed: ", "dim"), (editable_path, "dim")])
 
         return Content.assemble(*parts)

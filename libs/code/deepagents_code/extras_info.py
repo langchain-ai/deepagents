@@ -996,14 +996,6 @@ class ExtrasIntrospectionError(RuntimeError):
     """Raised when installed extras cannot be determined safely."""
 
 
-_COMPOSITE_EXTRAS: frozenset[str] = frozenset({"all-providers", "all-sandboxes"})
-"""Extras whose package set is already covered by other, more specific extras.
-
-Build backends flatten these meta-extras into their component packages
-rather than preserving the `deepagents-code[a,b,...]` self-reference, so
-name-based filtering is the only reliable way to drop them.
-"""
-
 MODEL_PROVIDER_EXTRAS: frozenset[str] = frozenset(
     {
         "anthropic",
@@ -1059,6 +1051,65 @@ model-provider-drift checks; new extras must be added to the corresponding
 category frozenset above.
 """
 
+COMPOSITE_EXTRA_MEMBERS: dict[str, frozenset[str]] = {
+    "all-providers": MODEL_PROVIDER_EXTRAS,
+    "all-sandboxes": SANDBOX_EXTRAS,
+}
+"""Composite meta-extras mapped to the extras they expand to.
+
+Mirrors the `all-providers` / `all-sandboxes` definitions in `pyproject.toml`.
+Both are documented `DEEPAGENTS_CODE_EXTRAS` values (`scripts/install.sh`), so a
+uv receipt selecting only a composite is a supported install shape. Removal
+operates on receipt-selected extras, so it cannot take a single provider out of
+a composite — callers use this mapping to say so instead of reporting the member
+as "not installed", which is the opposite of the truth.
+
+Drift-protected by `test_extras_info.TestCompositeExtraMembers`.
+"""
+
+_COMPOSITE_EXTRAS: frozenset[str] = frozenset(COMPOSITE_EXTRA_MEMBERS)
+"""Extras whose package set is already covered by other, more specific extras.
+
+Build backends flatten these meta-extras into their component packages
+rather than preserving the `deepagents-code[a,b,...]` self-reference, so
+name-based filtering is the only reliable way to drop them. Derived from
+`COMPOSITE_EXTRA_MEMBERS` so the two cannot name different composites.
+"""
+
+BASE_DEPENDENCY_EXTRAS: frozenset[str] = frozenset(
+    {
+        "anthropic",
+        "google-genai",
+        "openai",
+        "quickjs",
+    }
+)
+"""Extras whose every package is already a required base dependency.
+
+Selecting them changes nothing and deselecting them removes nothing, so removal
+refuses them rather than rebuilding the tool environment to no effect.
+
+Drift-protected by `test_extras_info.TestBaseDependencyExtras`, which recomputes
+the set from `[project.dependencies]` in `pyproject.toml`.
+"""
+
+
+def composite_extras_providing(extra: str) -> frozenset[str]:
+    """Return the composite extras that expand to `extra`.
+
+    Args:
+        extra: Canonicalized extra name to look up.
+
+    Returns:
+        Names of the composite extras containing `extra`; empty when no
+            composite provides it.
+    """
+    return frozenset(
+        composite
+        for composite, members in COMPOSITE_EXTRA_MEMBERS.items()
+        if extra in members
+    )
+
 
 def format_known_extras() -> str:
     """Render the installable extras grouped by category as plain text.
@@ -1085,11 +1136,7 @@ def format_known_extras() -> str:
 
 
 ExtrasStatus = dict[str, list[tuple[str, str]]]
-"""Mapping from extra name to `(package, installed_version)` tuples.
-
-Only packages that are actually installed are included. Extras whose
-declared packages are all missing are omitted entirely.
-"""
+"""Mapping from ready extra names to `(package, installed_version)` tuples."""
 
 
 @dataclass(frozen=True)
@@ -1128,13 +1175,13 @@ def _extract_extra_name(marker_str: str) -> str | None:
 def get_extras_status(
     distribution_name: str = "deepagents-code",
 ) -> ExtrasStatus:
-    """Return installed optional dependencies grouped by extra.
+    """Return ready optional dependencies grouped by extra.
 
     Reads `Requires-Dist` metadata from the named distribution, groups the
     entries gated by `extra == "..."` markers under their extra name, and
     resolves each package's installed version via `importlib.metadata`.
-    Packages that are not installed are omitted; extras whose entire
-    package list is absent are dropped.
+    Partially installed extras are omitted so shared transitive dependencies
+    do not make unavailable integrations appear installed.
 
     Composite meta-extras that only bundle other extras (see
     `_COMPOSITE_EXTRAS`) and self-references to the distribution itself
@@ -1144,13 +1191,12 @@ def get_extras_status(
         distribution_name: Name of the installed distribution to inspect.
 
     Returns:
-        Mapping from extra name to a sorted list of `(package, version)`
-            tuples for packages that are currently installed. An empty
-            mapping is returned when the distribution itself is not found.
+        Mapping from ready extra names to sorted `(package, version)` tuples. An
+            empty mapping is returned when the distribution itself is not found.
     """
     result: ExtrasStatus = {}
     for extra in get_optional_dependency_status(distribution_name):
-        if extra.installed:
+        if extra.ready:
             result[extra.name] = list(extra.installed)
     return result
 
@@ -1161,6 +1207,11 @@ def installed_extra_names(
     strict: bool = False,
 ) -> set[str]:
     """Return extras with at least one installed dependency.
+
+    Deliberately looser than `get_extras_status`, which requires every declared
+    package to be present. Callers here rebuild install commands, so a partially
+    installed extra must still be preserved across an upgrade; dropping it would
+    silently uninstall what the user asked for. Do not harmonize the two.
 
     Args:
         distribution_name: Name of the installed distribution to inspect.

@@ -41,7 +41,13 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
 )
 from langchain_quickjs._repl import _Registry
-from langchain_quickjs._snapshot import encode_snapshot, replay_snapshot_chain
+from langchain_quickjs._snapshot import (
+    encode_snapshot,
+    normalize_signing_key,
+    replay_snapshot_chain,
+    sign_snapshot,
+    verify_snapshot,
+)
 from langchain_quickjs._subagent import find_subagent_task_tool
 
 logger = logging.getLogger(__name__)
@@ -65,6 +71,7 @@ class REPLState(AgentState):
             PrivateStateAttr,
         ]
     ]
+    _quickjs_snapshot_hmac: NotRequired[Annotated[bytes, PrivateStateAttr]]
 
 
 class EvalSchema(BaseModel):
@@ -127,8 +134,17 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
-        timeout: Per-call wall-clock timeout in seconds. Applied to every
+        timeout: Per-call timeout in seconds. Applied to every
             `eval` on every context. Default 5.
+
+            !!! warning
+
+                This budget measures QuickJS VM execution time, not Python
+                wall-clock time. Time spent outside the VM (notably while
+                awaiting `tools.*` host calls which run as Python coroutines)
+                is not counted against it. A slow or blocking host call can
+                therefore stall an `eval` for longer than `timeout` seconds, so
+                do not rely on it to bound total wall-clock duration.
         max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
@@ -193,6 +209,20 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             in middleware state. If a snapshot exceeds this size, it is
             dropped (`_quickjs_snapshot_payload=None`). Defaults to
             `memory_limit`.
+        snapshot_signing_key: Secret key (`str` or `bytes`) used to
+            HMAC-sign persisted REPL snapshots. When set (and `mode="thread"`),
+            each materialized snapshot is signed before it is written to the
+            checkpointer and its signature is verified before restore. A
+            snapshot whose signature is missing or does not match is rejected
+            and discarded instead of executed.
+
+            !!! warning
+
+                When left unset, persisted snapshots are **not** integrity-checked.
+                Set `snapshot_signing_key` to a high-entropy secret in any deployment
+                where the checkpointer is not fully trusted. Use the same key across
+                all processes that share a thread, and rotate it by starting fresh
+                threads.
 
     Example:
         ```python
@@ -221,6 +251,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         ptc: PTCOption | None = None,
         mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
+        snapshot_signing_key: str | bytes | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -241,6 +272,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
+        )
+        self._snapshot_signing_key = (
+            normalize_signing_key(snapshot_signing_key)
+            if snapshot_signing_key is not None
+            else None
         )
         self._registry = _Registry(
             memory_limit=memory_limit,
@@ -340,6 +376,33 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             repl.install_tools(list(self._ptc_tools_by_thread.get(thread_id, ())))
         return repl
 
+    def _snapshot_authenticated(self, payload: bytes, state: REPLState) -> bool:
+        """Whether ``payload`` may be restored under the current signing policy.
+
+        With a signing key configured, the materialized ``payload`` must carry a
+        matching ``_quickjs_snapshot_hmac`` tag: a missing or
+        mismatched tag means the snapshot was not produced by us, or was tampered
+        with in the store, so it is rejected. With no key configured we cannot
+        verify anything and fall back to the (unauthenticated) legacy behavior.
+        """
+        if self._snapshot_signing_key is None:
+            return True
+        thread_id = _resolve_thread_id(self._fallback_thread_id)
+        # `_quickjs_snapshot_hmac` is `NotRequired`: an unsigned or legacy
+        # snapshot has no tag, and a store adversary can strip it. Default to
+        # `None` so a missing tag flows into `verify_snapshot` as a rejection
+        # rather than raising `KeyError`.
+        tag = state.get("_quickjs_snapshot_hmac", None)
+        if verify_snapshot(self._snapshot_signing_key, payload, thread_id, tag):
+            return True
+        logger.warning(
+            "Rejecting QuickJS snapshot for thread_id=%s: HMAC verification "
+            "failed (missing or tampered signature). Snapshot will not be "
+            "restored.",
+            thread_id,
+        )
+        return False
+
     def before_agent(
         self,
         state: REPLState,
@@ -351,6 +414,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         payload = state.get("_quickjs_snapshot_payload")
         if not payload:
             return None
+        if not self._snapshot_authenticated(payload, state):
+            return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
         try:
@@ -361,7 +426,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 thread_id,
                 exc_info=True,
             )
-            return {"_quickjs_snapshot_payload": None}
+            return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         return None
 
     async def abefore_agent(
@@ -375,6 +440,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         payload = state.get("_quickjs_snapshot_payload")
         if not payload:
             return None
+        if not self._snapshot_authenticated(payload, state):
+            return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         thread_id = _resolve_thread_id(self._fallback_thread_id)
         repl = self._registry.get(thread_id)
         try:
@@ -385,7 +452,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 thread_id,
                 exc_info=True,
             )
-            return {"_quickjs_snapshot_payload": None}
+            return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         return None
 
     def wrap_model_call(
@@ -495,8 +562,21 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 size,
                 self._max_snapshot_bytes,
             )
-            return {"_quickjs_snapshot_payload": None}
-        return {"_quickjs_snapshot_payload": encode_snapshot(payload, prior)}
+            # Clear the stale signature too, so a dropped snapshot cannot leave a
+            # tag that would later authenticate a mismatched payload.
+            return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
+        # Sign the full payload *before* `encode_snapshot` folds it into a
+        # `bsdiff` patch record. Restore recomputes the tag over the bytes the
+        # patch chain replays back to, so the signature authenticates the
+        # reconstructed snapshot rather than any single delta.
+        update: dict[str, Any] = {
+            "_quickjs_snapshot_payload": encode_snapshot(payload, prior)
+        }
+        if self._snapshot_signing_key is not None:
+            update["_quickjs_snapshot_hmac"] = sign_snapshot(
+                self._snapshot_signing_key, payload, thread_id
+            )
+        return update
 
     def after_agent(
         self,
@@ -527,7 +607,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 thread_id,
                 exc_info=True,
             )
-            update = {"_quickjs_snapshot_payload": None}
+            update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
             self._registry.evict(thread_id)
         return update
@@ -561,7 +641,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 thread_id,
                 exc_info=True,
             )
-            update = {"_quickjs_snapshot_payload": None}
+            update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
             await self._registry.aevict(thread_id)
         return update

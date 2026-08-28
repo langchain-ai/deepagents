@@ -425,6 +425,12 @@ class TestEndpointGatewayState:
 
         assert _endpoint_gateway_state("https://smith.langchain.com") == "yes"
 
+    def test_trailing_root_dot_is_gateway(self) -> None:
+        """The fully-qualified spelling classifies as `cold_cache` sees it."""
+        from deepagents_code.doctor import _endpoint_gateway_state
+
+        assert _endpoint_gateway_state("https://smith.langchain.com./") == "yes"
+
     def test_regional_subdomain_is_gateway(self) -> None:
         from deepagents_code.doctor import _endpoint_gateway_state
 
@@ -706,12 +712,60 @@ class TestCommitHash:
             assert _build_commit() is None
 
 
+class TestConfigurationSection:
+    """The Configuration section is the only report of which paths are live.
+
+    `managed_tools` and the update-lock warnings both tell the user to run
+    `dcode doctor` to find out which of two locations is in use, so a missing
+    row leaves that question unanswerable.
+    """
+
+    def _labels(self) -> list[str]:
+        from deepagents_code.doctor import _collect_configuration
+
+        return [item.label for item in _collect_configuration().items]
+
+    def test_reports_both_shared_locations(self) -> None:
+        """Managed binaries and the installation lock directory always show."""
+        labels = self._labels()
+
+        assert "Managed binaries" in labels
+        assert "Update locks" in labels
+
+    def test_profile_fallbacks_appear_only_once_they_exist(
+        self, tmp_path: Path
+    ) -> None:
+        """A fallback row is evidence the fallback is in use, so gate on it."""
+        fallback = tmp_path / "profile-bin"
+        with patch("deepagents_code.managed_tools.FALLBACK_BIN_DIR", fallback):
+            assert "Managed binaries (profile)" not in self._labels()
+            fallback.mkdir()
+            assert "Managed binaries (profile)" in self._labels()
+
+    def test_reports_a_skipped_home_check_as_a_problem(self) -> None:
+        """A security check that stopped running must not be silent."""
+        from dataclasses import replace
+
+        from deepagents_code._paths import PATHS
+        from deepagents_code.doctor import _collect_configuration
+
+        with patch(
+            "deepagents_code._paths.PATHS", replace(PATHS, home_check_skipped=True)
+        ):
+            items = {item.label: item for item in _collect_configuration().items}
+
+        assert "Profile safety check" in items
+        assert items["Profile safety check"].ok is False
+
+
 class TestRunDoctorCommand:
     """Tests for the text and JSON rendering paths."""
 
-    def _run_text(self) -> tuple[int, str]:
+    def _run_text(self, *, force_terminal: bool = False) -> tuple[int, str]:
         buf = io.StringIO()
-        test_console = Console(file=buf, highlight=False, width=200)
+        test_console = Console(
+            file=buf, force_terminal=force_terminal, highlight=False, width=200
+        )
         args = argparse.Namespace(output_format="text")
         with patch("deepagents_code.config.console", test_console):
             code = run_doctor_command(args)
@@ -738,6 +792,21 @@ class TestRunDoctorCommand:
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
+
+    def test_commit_hash_renders_as_link(self) -> None:
+        """Text output links the hash to GitHub."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="abc1234"):
+            _, output = self._run_text(force_terminal=True)
+
+        assert "https://github.com/langchain-ai/deepagents/commit/abc1234" in output
+
+    def test_invalid_commit_hash_renders_without_link(self) -> None:
+        """Text output leaves an invalid hash unlinked."""
+        with patch("deepagents_code.doctor._commit_hash", return_value="not-a-sha"):
+            _, output = self._run_text(force_terminal=True)
+
+        assert "not-a-sha" in output
+        assert "https://github.com/langchain-ai/deepagents/commit/" not in output
 
     def test_json_output_envelope(self, capsys) -> None:
         """JSON output is a stable envelope with section data."""
@@ -835,3 +904,65 @@ class TestDoctorHelp:
         assert "dcode config get <key>" in output
         assert "dcode --version" in output
         assert "dcode -v" in output
+
+
+class TestFallbackLocationReporting:
+    """`doctor` must not call an unusable primary location healthy.
+
+    `classify_path` answers "is it there". A present but root-owned managed-bin
+    directory is exactly the condition `FALLBACK_BIN_DIR` exists for, and
+    reporting it as `exists` sends the user looking somewhere else.
+    """
+
+    def test_an_unwritable_existing_directory_is_flagged(self, tmp_path: Path) -> None:
+        from deepagents_code.doctor import _writable_path_status
+
+        directory = tmp_path / "managed-bin"
+        directory.mkdir()
+
+        with patch("os.access", return_value=False):
+            item = _writable_path_status("Managed binaries", directory)
+
+        assert item.ok is False
+        assert "not writable" in item.value
+
+    def test_a_writable_existing_directory_is_healthy(self, tmp_path: Path) -> None:
+        from deepagents_code.doctor import _writable_path_status
+
+        directory = tmp_path / "managed-bin"
+        directory.mkdir()
+
+        item = _writable_path_status("Managed binaries", directory)
+
+        assert item.ok is True
+
+    def test_a_missing_directory_is_not_a_permission_problem(
+        self, tmp_path: Path
+    ) -> None:
+        """Lazily created directories must not be reported as unwritable."""
+        from deepagents_code.doctor import _writable_path_status
+
+        item = _writable_path_status("Managed binaries", tmp_path / "absent")
+
+        assert item.ok is True
+        assert "not created" in item.value
+
+    def test_the_active_ripgrep_location_is_named(self, tmp_path: Path) -> None:
+        """Two rows and no statement of which one wins is the reported gap."""
+        from deepagents_code import managed_tools
+        from deepagents_code.doctor import _fallback_location_items
+
+        profile_bin = tmp_path / "profile" / "bin"
+        profile_bin.mkdir(parents=True)
+        rg_name = managed_tools.managed_rg_filename()
+        (profile_bin / rg_name).write_text("")
+
+        with (
+            patch.object(managed_tools, "BIN_DIR", tmp_path / "shared"),
+            patch.object(managed_tools, "FALLBACK_BIN_DIR", profile_bin),
+        ):
+            items = _fallback_location_items()
+
+        active = [item for item in items if item.label == "Managed ripgrep"]
+        assert active, "doctor must name the binary actually in use"
+        assert str(profile_bin / rg_name) == active[0].value

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import builtins
+import gc
 import inspect
 import json
 import logging
@@ -46,12 +47,13 @@ from deepagents_code._fake_models import _ToolBindingFakeModel
 from deepagents_code.cost_tracking import (
     _CONFIGURED_PROVIDER_METADATA_KEY,
     _RECORDER_VAR,
+    MODEL_USAGE_EVENT_TYPE,
     SESSION_COST_EVENT_TYPE,
     CostState,
     CostTrackingMiddleware,
     _ModelCallRecord,
     _SessionCostRecorder,
-    _set_configured_provider_metadata,
+    _set_configured_model_metadata,
     estimate_cost,
     resolve_message_model,
 )
@@ -2259,6 +2261,89 @@ class TestPriceCatalogGuard:
 class TestCostTrackingMiddleware:
     """Tests for cumulative cost writes on the model checkpoint path."""
 
+    def test_prepared_operation_cost_can_commit_or_rollback(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """Operation pricing is additive and restores records after failure."""
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {
+                "messages": [],
+                "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}",
+            },
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        one_call = estimate_cost(_usage(), KNOWN_MODEL, KNOWN_PROVIDER)
+
+        assert one_call is not None
+        assert prepared.update == {"_session_cost_usd": pytest.approx(one_call)}
+        assert recorder.drain(THREAD_ID) == []
+
+        prepared.rollback()
+        retried = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        assert retried.update == {"_session_cost_usd": pytest.approx(one_call)}
+
+    def test_committed_prepare_does_not_restore_records(
+        self,
+        recorder: _SessionCostRecorder,
+    ) -> None:
+        """A committed prepare keeps its records drained.
+
+        Restoring them would let the next drain price the same spend a second
+        time, so `commit` must settle the instance without touching the
+        recorder.
+        """
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {"messages": [], "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"},
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        prepared.commit()
+        prepared.rollback()
+
+        assert cost_tracking.prepare_operation_cost(state, THREAD_ID).update == {}
+
+    def test_abandoned_prepare_warns_that_spend_was_lost(
+        self,
+        recorder: _SessionCostRecorder,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unsettled prepare must not disappear silently.
+
+        The drain is destructive, so a prepare that is neither committed nor
+        rolled back deletes its spend from the thread's lifetime total. That was
+        the one settlement outcome with no observable trace.
+        """
+        _collect(
+            recorder,
+            _record(message_id="offload-summary"),
+            checkpoint_ns="dcode_offload:operation-1",
+        )
+        state = cast(
+            "CostState",
+            {"messages": [], "_model_spec": f"{KNOWN_PROVIDER}:{KNOWN_MODEL}"},
+        )
+
+        prepared = cost_tracking.prepare_operation_cost(state, THREAD_ID)
+        with caplog.at_level(logging.WARNING):
+            del prepared
+            gc.collect()
+
+        assert "abandoned without commit or rollback" in caplog.text
+
     def test_cost_channel_is_private_and_additive(self) -> None:
         """The channel must compile to a summing reducer, not a `LastValue`.
 
@@ -2954,6 +3039,101 @@ class TestSessionCostRecorder:
         assert len(recorder.drain(THREAD_ID)) == 1
         assert recorder.drain(THREAD_ID) == []
 
+    def test_nested_request_emits_provisional_usage(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+
+        _collect(
+            recorder,
+            _record(message_id="child-1", usage=_usage(cache_read=200)),
+            checkpoint_ns="tools:task|model:call",
+        )
+
+        assert events == [
+            {
+                "type": MODEL_USAGE_EVENT_TYPE,
+                "version": 1,
+                "request_id": "child-1",
+                "usage_metadata": _usage(cache_read=200),
+                "model_name": KNOWN_MODEL,
+                "provider": KNOWN_PROVIDER,
+                "thread_id": THREAD_ID,
+                "scope": "tools:task",
+            }
+        ]
+        assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
+            "child-1"
+        ]
+
+    async def test_nested_event_uses_configured_model_when_response_omits_it(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+        configured_model = "explicit-nested-model"
+        model = _fake_model(
+            AIMessage(
+                content="response",
+                id="child-1",
+                usage_metadata=_usage(),  # ty: ignore[invalid-argument-type]
+            )
+        )
+        _set_configured_model_metadata(model, configured_model, KNOWN_PROVIDER)
+
+        await model.ainvoke(
+            "hello",
+            config={
+                "metadata": {
+                    "thread_id": THREAD_ID,
+                    "langgraph_checkpoint_ns": "tools:task|model:call",
+                }
+            },
+        )
+
+        assert events[0]["model_name"] == configured_model
+        assert events[0]["provider"] == KNOWN_PROVIDER
+        # The durable record carries the same identity, so the graph prices the
+        # request as the model that served it rather than falling back to the
+        # parent graph's checkpointed spec.
+        assert recorder.drain(THREAD_ID)[0].model_name == configured_model
+
+    def test_root_or_unidentified_request_does_not_emit(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        events: list[dict[str, Any]] = []
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: events.append)
+
+        _collect(recorder, _record(message_id="root"))
+        _collect(
+            recorder,
+            _record(message_id=None),
+            checkpoint_ns="tools:task|model:call",
+        )
+
+        assert events == []
+        assert len(recorder.drain(THREAD_ID)) == 2
+
+    def test_usage_writer_failure_keeps_the_durable_record(
+        self, recorder: _SessionCostRecorder, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def fail(_: object) -> None:
+            msg = "stream closed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr("langgraph.config.get_stream_writer", lambda: fail)
+
+        _collect(
+            recorder,
+            _record(message_id="child-1"),
+            checkpoint_ns="tools:task|model:call",
+        )
+
+        assert [record.message_id for record in recorder.drain(THREAD_ID)] == [
+            "child-1"
+        ]
+
     def test_thread_comes_from_the_ambient_config_when_metadata_omits_it(
         self, recorder: _SessionCostRecorder
     ) -> None:
@@ -2992,7 +3172,7 @@ class TestSessionCostRecorder:
                 message_id="summary-1",
             )
         )
-        _set_configured_provider_metadata(model, "openai_codex")
+        _set_configured_model_metadata(model, "gpt-5.4", "openai_codex")
 
         await model.ainvoke(
             "summarize",

@@ -23,6 +23,8 @@ from deepagents_code.tui.widgets.messages import (
     AssistantMessage,
     DiffMessage,
     ErrorMessage,
+    LazyToolGroupSummary,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
@@ -105,6 +107,33 @@ class TestMessageData:
         assert restored._content == "# Hello\n\nThis is **markdown**."
         assert restored.id == "test-asst-1"
 
+    def test_assistant_message_defaults_to_agent_output(self):
+        """A plain assistant message is agent output, not client output."""
+        data = MessageData.from_widget(AssistantMessage("hi", id="asst-plain"))
+
+        assert data.assistant_local_only is False
+
+    def test_local_only_assistant_message_roundtrip(self):
+        """`local_only` survives serialization and rehydration.
+
+        `!` shell output renders through `AssistantMessage`, and callers asking
+        whether the agent did anything in a thread rely on this flag. Losing it
+        on a virtualization round trip would make shell output read as a turn.
+        """
+        original = AssistantMessage(
+            "```text\nREADME.md\n```", id="asst-shell-1", local_only=True
+        )
+
+        data = MessageData.from_widget(original)
+        assert data.type == MessageType.ASSISTANT
+        assert data.assistant_local_only is True
+
+        restored = data.to_widget()
+        assert isinstance(restored, AssistantMessage)
+        assert restored._local_only is True
+        # A second round trip must not lose the flag either.
+        assert MessageData.from_widget(restored).assistant_local_only is True
+
     def test_tool_message_roundtrip(self):
         """Test ToolCallMessage serialization and deserialization."""
         original = ToolCallMessage(
@@ -135,6 +164,42 @@ class TestMessageData:
         assert restored._deferred_status == ToolStatus.SUCCESS
         assert restored._deferred_output == "File contents here"
         assert restored._deferred_expanded is True
+
+    async def test_lazy_tool_group_mounts_details_only_when_expanded(self) -> None:
+        """Collapsed restored groups keep their tool widget trees out of the DOM."""
+        data = MessageData(
+            type=MessageType.TOOL_GROUP,
+            content="",
+            tool_group_messages=[
+                MessageData(
+                    type=MessageType.TOOL,
+                    content="",
+                    tool_name="read_file",
+                    tool_status=ToolStatus.SUCCESS,
+                    tool_output="contents",
+                ),
+                MessageData(
+                    type=MessageType.TOOL,
+                    content="",
+                    tool_name="grep",
+                    tool_status=ToolStatus.SUCCESS,
+                    tool_output="match",
+                ),
+            ],
+        )
+        restored = data.to_widget()
+        assert isinstance(restored, LazyToolGroupSummary)
+
+        class _App(App[None]):
+            def compose(self) -> ComposeResult:
+                yield restored
+
+        async with _App().run_test():
+            assert not restored.query(ToolCallMessage)
+            await restored._set_expanded(True)
+            assert len(restored.query(ToolCallMessage)) == 2
+            await restored._set_expanded(False)
+            assert not restored.query(ToolCallMessage)
 
     def test_tool_diff_superseded_roundtrip(self) -> None:
         """Test that a diff-superseded tool stays hidden after virtualization."""
@@ -354,6 +419,7 @@ class TestMessageData:
             diff_content,
             file_path="src/file.py",
             tool_name="edit_file",
+            show_numbers=False,
             id="test-diff-1",
         )
 
@@ -363,6 +429,7 @@ class TestMessageData:
         assert data.content == diff_content
         assert data.diff_file_path == "src/file.py"
         assert data.diff_tool_name == "edit_file"
+        assert data.diff_show_numbers is False
         assert data.id == "test-diff-1"
 
         # Deserialize
@@ -371,6 +438,7 @@ class TestMessageData:
         assert restored._diff_content == diff_content
         assert restored._file_path == "src/file.py"
         assert restored._tool_name == "edit_file"
+        assert restored._show_numbers is False
         assert restored.id == "test-diff-1"
 
     def test_summarization_message_roundtrip(self):
@@ -587,15 +655,55 @@ class TestMessageStore:
         """Test appending messages and counting."""
         store = MessageStore()
         assert store.total_count == 0
+        assert store.turn_count == 0
         assert store.visible_count == 0
 
         store.append(MessageData(type=MessageType.USER, content="msg1"))
         assert store.total_count == 1
+        assert store.turn_count == 1
         assert store.visible_count == 1
 
         store.append(MessageData(type=MessageType.ASSISTANT, content="msg2"))
         assert store.total_count == 2
+        assert store.turn_count == 1
         assert store.visible_count == 2
+
+        store.append(
+            MessageData(type=MessageType.SKILL, content="msg3", skill_name="test")
+        )
+        assert store.total_count == 3
+        assert store.turn_count == 2
+        assert store.visible_count == 3
+
+    @pytest.mark.parametrize("message_type", list(MessageType))
+    def test_turn_count_counts_only_user_and_skill_rows(self, message_type):
+        """Exactly `USER` and `SKILL` count, across every `MessageType`.
+
+        Parametrized over the whole enum so a new member -- or a member quietly
+        added to the counted set -- fails here rather than silently shifting the
+        number the Debug Console reports.
+        """
+        store = MessageStore()
+        store.append(
+            MessageData(
+                type=message_type,
+                content="msg",
+                skill_name="test" if message_type is MessageType.SKILL else None,
+                tool_name="test" if message_type is MessageType.TOOL else None,
+                rubric_details=(
+                    "details" if message_type is MessageType.RUBRIC else None
+                ),
+                tool_group_messages=(
+                    [MessageData(type=MessageType.TOOL, content="t", tool_name="t")]
+                    if message_type is MessageType.TOOL_GROUP
+                    else []
+                ),
+            )
+        )
+
+        expected = 1 if message_type in {MessageType.USER, MessageType.SKILL} else 0
+        assert store.turn_count == expected
+        assert store.total_count == 1
 
     def test_append_preserves_hidden_tail(self):
         """Appending while scrolled up should keep newer messages hidden."""
@@ -794,25 +902,30 @@ class TestMessageStore:
         with pytest.raises(ValueError, match="Cannot update unknown or protected"):
             store.update_message("protected-1", nonexistent_field="value")
 
-    def test_should_hydrate_above(self):
-        """Test hydration trigger based on scroll position."""
+    def test_should_hydrate_above_uses_top_spacer_boundary(self):
+        """Hydration starts before the viewport reaches the mounted window."""
         store = MessageStore()
-
-        for i in range(10):
+        for i in range(30):
             store.append(MessageData(type=MessageType.USER, content=f"msg{i}"))
 
-        # No messages above - shouldn't hydrate
-        assert not store.should_hydrate_above(scroll_position=0, viewport_height=100)
+        assert not store.should_hydrate_above(
+            scroll_position=0,
+            viewport_height=10,
+            top_spacer_bottom=0,
+        )
 
-        # Simulate pruned messages
-        store._visible_start = 5
-        assert store.has_messages_above
-
-        # Near top - should hydrate
-        assert store.should_hydrate_above(scroll_position=50, viewport_height=100)
-
-        # Far from top - shouldn't hydrate
-        assert not store.should_hydrate_above(scroll_position=500, viewport_height=100)
+        store._visible_start = 20
+        top_spacer_bottom = store.range_height(0, store._visible_start)
+        assert store.should_hydrate_above(
+            scroll_position=top_spacer_bottom + 70,
+            viewport_height=10,
+            top_spacer_bottom=top_spacer_bottom,
+        )
+        assert not store.should_hydrate_above(
+            scroll_position=top_spacer_bottom + 90,
+            viewport_height=10,
+            top_spacer_bottom=top_spacer_bottom,
+        )
 
     def test_should_prune_below(self):
         """Test prune-below trigger based on scroll position and distance."""
@@ -844,12 +957,12 @@ class TestMessageStore:
     def test_should_hydrate_below_uses_bottom_spacer_top(self):
         """Hydration should start near mounted rows, not virtual transcript end."""
         store = MessageStore()
-        for i in range(100):
+        for i in range(400):
             store.append(
                 MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
             )
-        store._visible_start = 20
-        store._visible_end = 30
+        store._visible_start = 200
+        store._visible_end = 300
 
         bottom_spacer_top = store.range_height(0, store.get_visible_range()[1])
         assert store.should_hydrate_below(
@@ -858,7 +971,7 @@ class TestMessageStore:
             bottom_spacer_top=bottom_spacer_top,
         )
         assert not store.should_hydrate_below(
-            scroll_position=bottom_spacer_top - 400,
+            scroll_position=bottom_spacer_top - 1000,
             viewport_height=100,
             bottom_spacer_top=bottom_spacer_top,
         )
@@ -1269,6 +1382,67 @@ class TestVirtualizationFlow:
 class TestBulkLoad:
     """Tests for MessageStore.bulk_load."""
 
+    @staticmethod
+    def _rows(count: int) -> list[MessageData]:
+        """Build `count` distinctly-identified rows for bulk_load."""
+        return [
+            MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            for i in range(count)
+        ]
+
+    def test_bulk_load_uses_bounded_initial_tail(self):
+        """Resume mounts `INITIAL_WINDOW_SIZE` rows unless the window is smaller."""
+        initial = MessageStore.INITIAL_WINDOW_SIZE
+        data = self._rows(initial + 20)
+
+        store = MessageStore()
+        archived, visible = store.bulk_load(data)
+        assert len(visible) == initial
+        assert len(archived) == 20
+        assert visible[0].id == "id-20"
+
+        store = MessageStore()
+        store.WINDOW_SIZE = initial - 18
+        archived, visible = store.bulk_load(data)
+        assert len(visible) == store.WINDOW_SIZE
+        assert len(archived) == len(data) - store.WINDOW_SIZE
+        assert visible[0].id == f"id-{len(archived)}"
+
+    def test_bulk_load_at_initial_window_size(self):
+        """Exactly `INITIAL_WINDOW_SIZE` rows should all mount, none archived.
+
+        The boundary belongs to the `INITIAL_WINDOW_SIZE` arm of the `min()`,
+        which the other bulk_load tests never reach: they shrink `WINDOW_SIZE`
+        below it, so `WINDOW_SIZE` wins there.
+        """
+        store = MessageStore()
+        archived, visible = store.bulk_load(
+            self._rows(MessageStore.INITIAL_WINDOW_SIZE)
+        )
+        assert archived == []
+        assert len(visible) == MessageStore.INITIAL_WINDOW_SIZE
+        assert store._visible_start == 0
+
+    def test_bulk_load_just_under_initial_window_size(self):
+        """One row below the boundary stays fully mounted."""
+        store = MessageStore()
+        archived, visible = store.bulk_load(
+            self._rows(MessageStore.INITIAL_WINDOW_SIZE - 1)
+        )
+        assert archived == []
+        assert len(visible) == MessageStore.INITIAL_WINDOW_SIZE - 1
+        assert store._visible_start == 0
+
+    def test_bulk_load_just_over_initial_window_size(self):
+        """One row above the boundary archives exactly one row."""
+        store = MessageStore()
+        archived, visible = store.bulk_load(
+            self._rows(MessageStore.INITIAL_WINDOW_SIZE + 1)
+        )
+        assert len(archived) == 1
+        assert len(visible) == MessageStore.INITIAL_WINDOW_SIZE
+        assert visible[0].id == "id-1"
+
     def test_bulk_load_under_window_size(self):
         """All messages should be visible when count <= WINDOW_SIZE."""
         store = MessageStore()
@@ -1442,6 +1616,18 @@ class TestMessageStoreIndex:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_reasoning_roundtrip_preserves_content_and_expansion() -> None:
+    widget = ReasoningMessage("[bold]plain[/bold]")
+    widget._expanded = False
+
+    restored = MessageData.from_widget(widget).to_widget()
+
+    assert isinstance(restored, ReasoningMessage)
+    assert restored._content == "[bold]plain[/bold]"
+    assert restored._deferred_expanded is False
+    assert restored._streaming is False
 
 
 def test_display_caveat_survives_the_store_roundtrip() -> None:

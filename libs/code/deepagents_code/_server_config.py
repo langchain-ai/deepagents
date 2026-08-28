@@ -70,6 +70,16 @@ def _read_env_json(suffix: str) -> Any:  # noqa: ANN401
         raise ValueError(msg) from exc
 
 
+def _read_env_str_list(suffix: str) -> tuple[str, ...]:
+    raw = _read_env_json(suffix)
+    if raw is None:
+        return ()
+    if isinstance(raw, list) and all(isinstance(item, str) for item in raw):
+        return tuple(raw)
+    msg = f"Invalid {SERVER_ENV_PREFIX}{suffix}: expected a JSON string list"
+    raise ValueError(msg)
+
+
 def _read_env_allow_fs_tools() -> list[FsToolName] | None:
     """Read and shape-validate the `ALLOW_FS_TOOLS` filesystem allowlist.
 
@@ -190,16 +200,26 @@ def _resolve_enable_interpreter(
     Returns:
         The explicit `enable_interpreter` value when not `None`; `False` for
             remote-sandbox defaults; otherwise the configured local default
-            (`settings.enable_interpreter`).
+            from `interpreter.enable_interpreter`.
+
+    Raises:
+        RuntimeError: If the interpreter option is absent from the manifest.
     """
     if enable_interpreter is not None:
         return enable_interpreter
     if sandbox_type and sandbox_type != "none":
         return False
 
-    from deepagents_code.config import settings
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
 
-    return settings.enable_interpreter
+    option = get_option("interpreter.enable_interpreter")
+    if option is None:
+        msg = "interpreter.enable_interpreter is missing from the config manifest"
+        raise RuntimeError(msg)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return bool(resolved.value)
 
 
 def _interpreter_suppressed_by_sandbox(
@@ -223,7 +243,7 @@ def _interpreter_suppressed_by_sandbox(
             `True`, `--no-interpreter` → `False`, unset → `None`).
         sandbox_type: Sandbox backend identifier. Any falsy value (`None`, `""`)
             or `"none"` is treated as local execution.
-        local_default: The local-mode default (`settings.enable_interpreter`);
+        local_default: The resolver-backed local-mode default;
             gating on it keeps the advisory quiet for users who disabled the
             interpreter in config.
 
@@ -250,9 +270,18 @@ class ServerConfig:
     """Model spec string (e.g. `'anthropic:claude-opus-4-7'`); `None` lets the
     server pick its default."""
 
+    summarization_model: str | None = None
+    """Model spec used only for context-compaction summaries.
+
+    `None` reuses the main agent model.
+    """
+
     model_params: dict[str, Any] | None = None
     """Extra kwargs forwarded to the chat model constructor (temperature,
     max_tokens, etc.)."""
+
+    cli_max_retries: int | None = None
+    """Explicit `--max-retries` value, separate from provider model kwargs."""
 
     profile_overrides: dict[str, Any] | None = None
     """Model profile metadata overrides resolved by the client."""
@@ -298,17 +327,16 @@ class ServerConfig:
     caller option via `_resolve_enable_interpreter` before constructing the
     config, so the `bool | None` "defer to default" sentinel never reaches this
     field. The `False` default here is only the bare-constructor/`from_env`
-    fallback; the user-facing default (on in local mode) lives in
-    `settings.enable_interpreter`.
+    fallback; the user-facing default (on in local mode) is resolver-backed.
 
     Local-mode only; the server graph raises if a sandbox is configured and
     this flag is `True`.
     """
 
     interpreter_ptc: str | list[str] | None = None
-    """Override for `settings.interpreter_ptc`.
+    """Invocation-scoped override for `interpreter.ptc`.
 
-    `None` means "fall through to whatever `settings.interpreter_ptc` resolves
+    `None` means "fall through to whatever `interpreter.ptc` resolves
     to from `~/.deepagents/config.toml`". A string is one of `"safe"`/`"all"`;
     a list is an explicit allowlist of tool names that may also include the
     `"safe"` preset (expanded at agent-build time); `"all"` is rejected inside
@@ -316,7 +344,7 @@ class ServerConfig:
     """
 
     interpreter_ptc_acknowledge_unsafe: bool = False
-    """Mirror of `settings.interpreter_ptc_acknowledge_unsafe` — required when
+    """Override for `interpreter.ptc_acknowledge_unsafe` — required when
     `interpreter_ptc="all"` is paired with non-`auto_approve` mode.
     """
 
@@ -351,10 +379,9 @@ class ServerConfig:
     recursion_limit: int | None = None
     """Explicit main-agent LangGraph `recursion_limit` (graph step budget).
 
-    `None` means "resolve from `DEEPAGENTS_CODE_RECURSION_LIMIT` /
-    `[runtime].recursion_limit` / the default at agent-build time"
-    (`resolve_recursion_limit`). An explicit value from `--recursion-limit` wins
-    over those layers. Must be a positive integer when set.
+    `None` resolves from runtime configuration. An explicit value from
+    `--recursion-limit` wins over the env var and `config.toml`, but managed
+    config outranks the flag. Must be a positive integer when set.
     """
 
     sandbox_type: str | None = None
@@ -388,6 +415,12 @@ class ServerConfig:
     trust_project_mcp: bool | None = None
     """Tri-state trust flag for project-scoped MCP servers: `True`/`False`/`None`
     (prompt user)."""
+
+    trust_project_extensions: bool = False
+    """Whether the project's Python extensions may execute for this run."""
+
+    extension_paths: tuple[str, ...] = ()
+    """Absolute one-run extension files or directories from repeatable CLI flags."""
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
@@ -424,6 +457,12 @@ class ServerConfig:
         if self.rubric_max_iterations is not None and self.rubric_max_iterations <= 0:
             msg = "rubric_max_iterations must be None or a positive integer"
             raise ValueError(msg)
+        if isinstance(self.cli_max_retries, bool):
+            msg = "cli_max_retries must be None or a non-negative integer"
+            raise TypeError(msg)
+        if self.cli_max_retries is not None and self.cli_max_retries < 0:
+            msg = "cli_max_retries must be None or a non-negative integer"
+            raise ValueError(msg)
         if isinstance(self.recursion_limit, bool):
             msg = "recursion_limit must be None or a positive integer"
             raise TypeError(msg)
@@ -448,8 +487,12 @@ class ServerConfig:
         """
         return {
             "MODEL": self.model,
+            "SUMMARIZATION_MODEL": self.summarization_model,
             "MODEL_PARAMS": (
                 json.dumps(self.model_params) if self.model_params is not None else None
+            ),
+            "MAX_RETRIES": (
+                str(self.cli_max_retries) if self.cli_max_retries is not None else None
             ),
             "PROFILE_OVERRIDES": (
                 json.dumps(self.profile_overrides)
@@ -507,6 +550,10 @@ class ServerConfig:
                 if self.trust_project_mcp is not None
                 else None
             ),
+            "TRUST_PROJECT_EXTENSIONS": str(self.trust_project_extensions).lower(),
+            "EXTENSION_PATHS": (
+                json.dumps(self.extension_paths) if self.extension_paths else None
+            ),
         }
 
     @classmethod
@@ -521,7 +568,9 @@ class ServerConfig:
         """
         return cls(
             model=_read_env_str("MODEL"),
+            summarization_model=_read_env_str("SUMMARIZATION_MODEL") or None,
             model_params=_read_env_json("MODEL_PARAMS"),
+            cli_max_retries=_read_env_int("MAX_RETRIES", default=None),
             profile_overrides=_read_env_json("PROFILE_OVERRIDES"),
             assistant_id=_read_env_str("ASSISTANT_ID") or DEFAULT_ASSISTANT_ID,
             system_prompt=_read_env_str("SYSTEM_PROMPT"),
@@ -557,6 +606,8 @@ class ServerConfig:
             mcp_config_path=_read_env_str("MCP_CONFIG_PATH"),
             no_mcp=_read_env_bool("NO_MCP"),
             trust_project_mcp=_read_env_optional_bool("TRUST_PROJECT_MCP"),
+            trust_project_extensions=_read_env_bool("TRUST_PROJECT_EXTENSIONS"),
+            extension_paths=_read_env_str_list("EXTENSION_PATHS"),
         )
 
     # ------------------------------------------------------------------
@@ -569,7 +620,9 @@ class ServerConfig:
         *,
         project_context: ProjectContext | None,
         model_name: str | None,
+        summarization_model: str | None = None,
         model_params: dict[str, Any] | None,
+        cli_max_retries: int | None = None,
         profile_overrides: dict[str, Any] | None = None,
         assistant_id: str,
         auto_approve: bool,
@@ -593,6 +646,8 @@ class ServerConfig:
         no_mcp: bool,
         trust_project_mcp: bool | None,
         interactive: bool,
+        trust_project_extensions: bool = False,
+        extension_paths: tuple[str, ...] = (),
     ) -> ServerConfig:
         """Build a `ServerConfig` from parsed CLI arguments.
 
@@ -603,7 +658,10 @@ class ServerConfig:
         Args:
             project_context: Explicit user/project path context.
             model_name: Model spec string.
+            summarization_model: Model spec used only for context-compaction
+                summaries; `None` reuses the main model.
             model_params: Extra model kwargs.
+            cli_max_retries: Explicit `--max-retries` value.
             profile_overrides: Model profile metadata overrides.
             assistant_id: Agent identifier.
             auto_approve: Auto-approve all tools.
@@ -620,9 +678,9 @@ class ServerConfig:
             enable_ask_user: Enable ask_user tool.
             enable_interpreter: Enable `CodeInterpreterMiddleware` on the main
                 agent. `None` uses the sandbox-aware default.
-            interpreter_ptc: Override for `settings.interpreter_ptc`.
-            interpreter_ptc_acknowledge_unsafe: Mirror of
-                `settings.interpreter_ptc_acknowledge_unsafe`.
+            interpreter_ptc: Invocation-scoped PTC allowlist override.
+            interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+                an invocation-scoped `interpreter_ptc="all"`.
             allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools`
                 param to forward to the server subprocess. `None` leaves the
                 SDK default (all tools).
@@ -632,11 +690,13 @@ class ServerConfig:
             auto_classifier_model: Auto classifier model spec; `None` resolves from
                 env / `config.toml` and then reuses the main model.
             recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-                from env / `config.toml` / default at agent-build time.
+                from runtime configuration at agent-build time.
             mcp_config_path: Path to MCP config.
             no_mcp: Disable MCP.
             trust_project_mcp: Trust project MCP servers.
             interactive: Whether the agent is interactive.
+            trust_project_extensions: Allow project extension execution.
+            extension_paths: Explicit one-run extension files or directories.
 
         Returns:
             A fully resolved `ServerConfig`.
@@ -649,7 +709,9 @@ class ServerConfig:
 
         return cls(
             model=model_name,
+            summarization_model=summarization_model,
             model_params=model_params,
+            cli_max_retries=cli_max_retries,
             profile_overrides=profile_overrides,
             assistant_id=assistant_id,
             auto_approve=auto_approve,
@@ -684,6 +746,12 @@ class ServerConfig:
             mcp_config_path=normalized_mcp,
             no_mcp=no_mcp,
             trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=tuple(
+                path
+                for raw in extension_paths
+                if (path := _normalize_path(raw, project_context, "extension"))
+            ),
         )
 
 

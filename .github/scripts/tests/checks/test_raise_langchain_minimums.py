@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,14 +15,17 @@ from packaging.version import Version
 from raise_langchain_minimums import (
     ManifestScope,
     _apply_replacements,
+    _branch_name,
     _compatible_release_version,
     _in_scope,
     _latest_compatible_version,
     _load_scope,
+    _parse_dependency_csv,
     _plan_manifest,
     _project_requirement_strings,
     _raise_lower_bound,
     _raiseable_specifier,
+    _run,
     _select_manifests,
     edits_markdown,
     stale_lock_dirs,
@@ -342,9 +347,34 @@ class TestInScope:
 
         assert not _in_scope(requirement, "langchain", frozenset(), None)
 
+    def test_narrow_to_replaces_prefix_matching(self) -> None:
+        narrow_to = frozenset({"langsmith"})
+
+        assert _in_scope(
+            Requirement("langsmith>=0.1"), "langsmith", frozenset(), None, narrow_to
+        )
+        # An in-prefix name not on the list is out of scope when narrowed.
+        assert not _in_scope(
+            Requirement("langchain>=1.0"), "langchain", frozenset(), None, narrow_to
+        )
+
+    def test_narrow_to_matches_exactly_not_by_prefix(self) -> None:
+        narrow_to = frozenset({"langchain"})
+
+        assert _in_scope(
+            Requirement("langchain>=1.0"), "langchain", frozenset(), None, narrow_to
+        )
+        assert not _in_scope(
+            Requirement("langchain-openai>=1.0"),
+            "langchain-openai",
+            frozenset(),
+            None,
+            narrow_to,
+        )
+
 
 class TestEditsMarkdown:
-    def test_renders_one_bullet_per_edit(self) -> None:
+    def test_renders_one_table_row_per_edit(self) -> None:
         edit = raise_langchain_minimums.RequirementEdit(
             manifest_path="libs/code/pyproject.toml",
             dependency_name="langsmith",
@@ -355,9 +385,216 @@ class TestEditsMarkdown:
         assert edits_markdown([edit], heading="Raised 1 minimum(s):") == (
             "Raised 1 minimum(s):\n"
             "\n"
-            "- `libs/code/pyproject.toml`: `langsmith` "
-            "`langsmith>=0.1.0` → `langsmith>=0.4.0`"
+            "| Manifest | Dependency | Change |\n"
+            "|---|---|---|\n"
+            "| `libs/code/pyproject.toml` | `langsmith` | "
+            "`langsmith>=0.1.0` → `langsmith>=0.4.0` |"
         )
+
+
+class TestParseDependencyCsv:
+    def test_empty_means_no_narrowing(self) -> None:
+        assert _parse_dependency_csv("") is None
+        assert _parse_dependency_csv(" , ") is None
+
+    def test_canonicalizes_and_deduplicates(self) -> None:
+        assert _parse_dependency_csv("LangChain-Core, langsmith ,langchain_core") == (
+            frozenset({"langchain-core", "langsmith"})
+        )
+
+
+def test_branch_name_uses_canonical_dependency_set() -> None:
+    dependencies = _parse_dependency_csv(
+        "langsmith, LangChain-Core,langchain__core,langsmith"
+    )
+
+    assert _branch_name("deepagents-code", dependencies) == (
+        "chore/raise-dependency-minimums-deepagents-code-langchain-core-langsmith"
+    )
+
+
+class TestRunNarrowing:
+    """`_run`'s narrowing paths, which decide green-vs-red for a whole run."""
+
+    def _package(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+    ) -> None:
+        """Stand up a one-manifest release package rooted at `tmp_path`."""
+        (tmp_path / "libs" / "x").mkdir(parents=True)
+        (tmp_path / "libs" / "x" / "pyproject.toml").write_text(body, encoding="utf-8")
+        monkeypatch.setattr(raise_langchain_minimums, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(
+            raise_langchain_minimums, "load_release_packages", lambda: {"libs/x": "pkg"}
+        )
+
+    def test_unknown_requested_name_fails_closed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A typo must not exit 0: that renders "never looked" as "up to date"."""
+        self._package(
+            tmp_path,
+            monkeypatch,
+            '[project]\nname = "pkg"\ndependencies = ["langchain-core>=1.0"]\n',
+        )
+
+        assert _run("pkg", frozenset({"langsmiht"})) == 1
+
+    def test_partial_miss_fails_even_though_another_name_matched(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The likelier typo shape: one good name masking one bad one."""
+        self._package(
+            tmp_path,
+            monkeypatch,
+            '[project]\nname = "pkg"\ndependencies = ["langchain-core>=1.0"]\n',
+        )
+
+        assert _run("pkg", frozenset({"langchain-core", "langsmiht"})) == 1
+
+    def test_workspace_resolved_name_is_reported_as_such(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Reporting these as "not declared" sends the operator grepping in vain."""
+        self._package(
+            tmp_path,
+            monkeypatch,
+            '[project]\nname = "pkg"\ndependencies = ["deepagents>=0.7"]\n'
+            '[tool.uv.sources]\ndeepagents = { path = "../deepagents" }\n',
+        )
+
+        assert _run("pkg", frozenset({"deepagents"})) == 1
+        assert "resolved from the workspace" in capsys.readouterr().out
+
+    def test_broad_run_still_fails_on_an_empty_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pins the polarity of the guard the narrowing branch sits next to."""
+        self._package(
+            tmp_path,
+            monkeypatch,
+            '[project]\nname = "pkg"\ndependencies = ["httpx>=0.27"]\n',
+        )
+
+        assert _run("pkg", None) == 1
+
+    @pytest.mark.parametrize(
+        "requirement",
+        [
+            # Exact pin: no floor to raise, ever.
+            "deepagents==0.7.0",
+            # Upper bound only: likewise no floor.
+            "deepagents<2.0",
+        ],
+    )
+    def test_requested_name_without_a_raiseable_floor_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, requirement: str
+    ) -> None:
+        """An unraiseable request is not "up to date": it could never be bumped."""
+        self._package(
+            tmp_path,
+            monkeypatch,
+            f'[project]\nname = "pkg"\ndependencies = ["{requirement}"]\n',
+        )
+
+        assert _run("pkg", frozenset({"deepagents"})) == 1
+
+    def test_requested_name_with_current_floor_is_a_no_op_success(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A raiseable floor already at the latest release is genuinely current.
+
+        The floor is ahead of anything PyPI could offer, so no version satisfies
+        "later than the floor but within the range" and no edit is produced —
+        but the run did answer the question it was asked, so it stays green.
+        """
+        self._package(
+            tmp_path,
+            monkeypatch,
+            '[project]\nname = "pkg"\ndependencies = ["deepagents>=999.0"]\n',
+        )
+
+        assert _run("pkg", frozenset({"deepagents"})) == 0
+        assert "already at the latest" in capsys.readouterr().out
+
+
+def test_load_scope_applies_the_narrowing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guards the `narrow_to` argument at the one call site that applies it.
+
+    Dropping it there makes `--dependencies` a silent no-op: a "raise just
+    langsmith" dispatch raises the whole ecosystem and still claims it was
+    narrowed. Both parameters default to `None`, so nothing else catches it.
+    """
+    monkeypatch.setattr(raise_langchain_minimums, "REPO_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "x"\n'
+        'dependencies = ["langsmith>=0.1", "langchain-core>=1.0"]\n',
+        encoding="utf-8",
+    )
+
+    scope = _load_scope("pyproject.toml", frozenset({"langsmith"}))
+
+    assert [requirement.name for _, requirement in scope.requirements] == ["langsmith"]
+
+
+def test_main_passes_the_parsed_dependencies_to_run(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Guards the CLI plumbing: dropping the flag here is otherwise invisible."""
+    captured: dict[str, object] = {}
+
+    def _fake_run(package: str, narrow_to: frozenset[str] | None = None) -> int:
+        captured["package"] = package
+        captured["narrow_to"] = narrow_to
+        return 0
+
+    monkeypatch.setattr(raise_langchain_minimums, "_run", _fake_run)
+    monkeypatch.setattr(raise_langchain_minimums, "_write_output", lambda *_: None)
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "--package", "pkg", "--dependencies", "LangChain-Core"]
+    )
+
+    assert raise_langchain_minimums.main() == 0
+    assert captured == {"package": "pkg", "narrow_to": frozenset({"langchain-core"})}
+
+
+def test_workflow_expressions_use_only_real_functions() -> None:
+    """Every `${{ }}` call must name a function GitHub Actions actually has.
+
+    An unknown name (`toLower`, `replace`, `split`, `sort` — all real in other
+    CI dialects) is rejected at workflow load, so the file never runs at all:
+    no job, no `if: failure()`, no tracking issue. YAML-parsing the file cannot
+    catch it, because an invalid expression is still valid YAML.
+    """
+    known = {
+        "contains",
+        "startswith",
+        "endswith",
+        "format",
+        "join",
+        "tojson",
+        "fromjson",
+        "hashfiles",
+        "success",
+        "always",
+        "cancelled",
+        "failure",
+    }
+    for workflow in sorted((REPO_ROOT / ".github" / "workflows").glob("*.yml")):
+        text = workflow.read_text(encoding="utf-8")
+        for expression in re.findall(r"\$\{\{(.*?)\}\}", text, re.DOTALL):
+            called = set(re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*\(", expression))
+            unknown = {name for name in called if name.lower() not in known}
+            assert not unknown, (
+                f"{workflow.name}: unknown expression function(s) {unknown}"
+            )
 
 
 def test_workflow_options_match_release_labels() -> None:

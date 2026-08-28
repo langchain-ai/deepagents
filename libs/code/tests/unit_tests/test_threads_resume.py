@@ -396,7 +396,13 @@ class TestCrossAgentResume:
         app._offer_thread_cwd_switch = AsyncMock(return_value="continue")  # ty: ignore
         app._restart_server_for_agent_swap = AsyncMock(return_value=True)  # ty: ignore
 
-        with patch("deepagents_code.config.settings") as settings:
+        with (
+            patch("deepagents_code.config.credentials") as settings,
+            patch(
+                "deepagents_code.app.user_deepagents_dir",
+                return_value=tmp_path,
+            ),
+        ):
             settings.user_deepagents_dir = tmp_path
             await app._confirm_then_resume_cross_agent_thread(
                 _ThreadsResumeTarget("research-thread", "researcher")
@@ -425,7 +431,13 @@ class TestCrossAgentResume:
         fetch = AsyncMock()
         app._fetch_thread_history_data = fetch  # ty: ignore
 
-        with patch("deepagents_code.config.settings") as settings:
+        with (
+            patch("deepagents_code.config.credentials") as settings,
+            patch(
+                "deepagents_code.app.user_deepagents_dir",
+                return_value=tmp_path,
+            ),
+        ):
             settings.user_deepagents_dir = tmp_path
             await app._confirm_then_resume_cross_agent_thread(
                 _ThreadsResumeTarget("research-thread", "researcher")
@@ -454,6 +466,31 @@ class TestCrossAgentResume:
 class TestPreviousThreadHintOwnership:
     """The advertised resume action must be executable in this session."""
 
+    async def test_hint_suppressed_without_agent_output(self) -> None:
+        """A thread the user did no work in is not worth pointing back at.
+
+        The resumability check is deliberately not reached: a brand-new thread
+        can acquire a checkpoint row from server-mode registration alone, so
+        `thread_exists` would wave this through.
+        """
+        app = _make_app()
+        app._assistant_id = "coder"
+        app._server_kwargs = {"assistant_id": "coder"}
+        thread_exists = AsyncMock(return_value=True)
+
+        with (
+            patch("deepagents_code.sessions.thread_exists", thread_exists),
+            patch.object(app, "_schedule_thread_message_link") as schedule,
+        ):
+            hinted = await app._mount_previous_thread_hint(
+                "research-thread", had_agent_output=False
+            )
+
+        assert hinted is False
+        app._mount_message.assert_not_awaited()  # ty: ignore
+        schedule.assert_not_called()
+        thread_exists.assert_not_awaited()
+
     async def test_local_cross_agent_hint_is_shown(self) -> None:
         """Owned local servers can honor the hint through confirmation."""
         app = _make_app()
@@ -469,9 +506,12 @@ class TestPreviousThreadHintOwnership:
                 "deepagents_code.sessions.get_thread_agent",
                 AsyncMock(return_value="researcher"),
             ),
+            patch.object(app, "_thread_links_configured", return_value=True),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
-            hinted = await app._mount_previous_thread_hint("research-thread")
+            hinted = await app._mount_previous_thread_hint(
+                "research-thread", had_agent_output=True
+            )
 
         app._mount_message.assert_awaited_once()  # ty: ignore
         schedule.assert_called_once()
@@ -496,7 +536,9 @@ class TestPreviousThreadHintOwnership:
             ),
             patch.object(app, "_schedule_thread_message_link") as schedule,
         ):
-            hinted = await app._mount_previous_thread_hint("research-thread")
+            hinted = await app._mount_previous_thread_hint(
+                "research-thread", had_agent_output=True
+            )
 
         app._mount_message.assert_not_awaited()  # ty: ignore
         schedule.assert_not_called()
@@ -528,6 +570,8 @@ class TestPreviousThreadHintOwnership:
             ),
             patch.object(app, "_schedule_thread_message_link"),
         ):
-            hinted = await app._mount_previous_thread_hint("research-thread")
+            hinted = await app._mount_previous_thread_hint(
+                "research-thread", had_agent_output=True
+            )
 
         assert hinted is False

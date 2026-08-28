@@ -63,6 +63,9 @@ class PluginManifest:
         inline_mcp: Inline MCP servers declared in the manifest.
         inline_hooks: Inline hook configuration declared in the manifest, in
             `hooks.json` document form.
+        python_extensions: Python extension entry files declared in dcode's
+            namespaced manifest settings.
+        auto_update: Whether this plugin permits automatic updates.
     """
 
     name: str | None
@@ -70,7 +73,9 @@ class PluginManifest:
     component_paths: dict[str, tuple[Path, ...]]
     inline_mcp: JsonObject
     inline_hooks: JsonObject = field(default_factory=dict)
+    python_extensions: tuple[Path, ...] = ()
     display_name: str | None = None
+    auto_update: bool = False
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

@@ -1,10 +1,17 @@
 """Tests for charset mode configuration and glyph selection."""
 
+from __future__ import annotations
+
 import os
 import sys
+from dataclasses import fields
+from typing import TYPE_CHECKING
 from unittest.mock import Mock, patch
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from deepagents_code._env_vars import HIDE_SPLASH_VERSION
 from deepagents_code.config import (
@@ -21,6 +28,20 @@ from deepagents_code.config import (
     is_ascii_mode,
     reset_glyphs_cache,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_glyphs_cache() -> Iterator[None]:
+    """Keep the process-global glyph cache from leaking across tests.
+
+    Several tests force the charset to ASCII or Unicode and leave the detected
+    mode in `config`'s module-level caches; xdist scheduling then decides which
+    unrelated test inherits that state. Reset before *and* after each test so
+    the ambient mode is always recomputed from the environment.
+    """
+    reset_glyphs_cache()
+    yield
+    reset_glyphs_cache()
 
 
 class TestCharsetMode:
@@ -50,6 +71,9 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.error) > 127
         assert ord(UNICODE_GLYPHS.circle_empty) > 127
         assert ord(UNICODE_GLYPHS.circle_filled) > 127
+        assert UNICODE_GLYPHS.square_filled == "■"
+        assert ord(UNICODE_GLYPHS.checkbox_empty) > 127
+        assert ord(UNICODE_GLYPHS.checkbox_checked) > 127
         assert ord(UNICODE_GLYPHS.output_prefix) > 127
         assert ord(UNICODE_GLYPHS.pause) > 127
         assert ord(UNICODE_GLYPHS.newline) > 127
@@ -78,6 +102,12 @@ class TestGlyphs:
         for char in ASCII_GLYPHS.circle_empty:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.circle_filled:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.square_filled:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkbox_empty:
+            assert ord(char) < 128
+        for char in ASCII_GLYPHS.checkbox_checked:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.output_prefix:
             assert ord(char) < 128
@@ -109,40 +139,19 @@ class TestGlyphs:
             UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
 
     def test_glyphs_all_fields_present(self) -> None:
-        """Test that both glyph sets have all required fields."""
-        required_fields = [
-            "tool_prefix",
-            "ellipsis",
-            "checkmark",
-            "error",
-            "circle_empty",
-            "circle_filled",
-            "output_prefix",
-            "spinner_frames",
-            "pause",
-            "newline",
-            "warning",
-            "arrow_up",
-            "arrow_down",
-            "bullet",
-            "cursor",
-            # Box-drawing characters
-            "box_horizontal",
-            "hunk_break",
-        ]
-        for field in required_fields:
-            assert hasattr(UNICODE_GLYPHS, field)
-            assert hasattr(ASCII_GLYPHS, field)
-            assert getattr(UNICODE_GLYPHS, field) is not None
-            assert getattr(ASCII_GLYPHS, field) is not None
+        """Test that both glyph sets populate every declared field.
+
+        Enumerated from `dataclasses.fields` rather than a hand-written list: a
+        restated list silently stops covering new fields, and this one had
+        already drifted behind six of them.
+        """
+        for field in fields(Glyphs):
+            assert getattr(UNICODE_GLYPHS, field.name) is not None
+            assert getattr(ASCII_GLYPHS, field.name) is not None
 
 
 class TestDetectCharsetMode:
     """Tests for _detect_charset_mode function."""
-
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
 
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_explicit_unicode_mode(self) -> None:
@@ -216,10 +225,6 @@ class TestDetectCharsetMode:
 class TestGetGlyphs:
     """Tests for get_glyphs function."""
 
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
-
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_get_glyphs_returns_unicode_for_unicode_mode(self) -> None:
         """Test get_glyphs returns UNICODE_GLYPHS for unicode mode."""
@@ -275,20 +280,20 @@ class TestGlyphUsability:
     def test_unicode_box_drawing_characters(self) -> None:
         """Test Unicode box-drawing characters are the expected characters."""
         assert UNICODE_GLYPHS.box_horizontal == "─"
+        assert UNICODE_GLYPHS.box_horizontal_heavy == "━"
         assert UNICODE_GLYPHS.hunk_break == "⋮"
+        assert UNICODE_GLYPHS.line_continuation == "…"
 
     def test_ascii_box_drawing_characters(self) -> None:
         """Test ASCII box-drawing alternatives are simple ASCII."""
         assert ASCII_GLYPHS.box_horizontal == "-"
+        assert ASCII_GLYPHS.box_horizontal_heavy == "="
         assert ASCII_GLYPHS.hunk_break == ":"
+        assert ASCII_GLYPHS.line_continuation == "."
 
 
 class TestGetBanner:
     """Tests for get_banner function."""
-
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
 
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_get_banner_returns_unicode_for_unicode_mode(self) -> None:
@@ -347,10 +352,6 @@ class TestGetBanner:
 
 class TestIsAsciiMode:
     """Tests for is_ascii_mode helper."""
-
-    def setup_method(self) -> None:
-        """Reset glyphs cache before each test."""
-        reset_glyphs_cache()
 
     @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
     def test_false_in_unicode_mode(self) -> None:

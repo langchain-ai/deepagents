@@ -27,6 +27,15 @@ This gives `FilesystemBackend` enough headroom to finish the worst-case sync
 path: ripgrep timeout, then Python fallback timeout.
 """
 
+ASYNC_GLOB_TIMEOUT: Final = 30
+"""Timeout in seconds for a sandbox glob round-trip.
+
+The remote script bounds its own walk (`TIME_BUDGET` in `sandbox.py`), but that
+covers neither interpreter startup, the sandbox round-trip, nor transferring up
+to `MAX_MATCHES` records. Without an outer bound a wedged sandbox hangs the
+caller indefinitely.
+"""
+
 FileOperationError = Literal[
     "file_not_found",
     "permission_denied",
@@ -356,6 +365,19 @@ def _apply_grep_max_count(result: GrepResult, max_count: int | None) -> GrepResu
     return GrepResult(error=result.error, matches=result.matches[:max_count], truncated=True)
 
 
+GlobTruncationReason = Literal["budget", "unreadable", "transport"]
+"""Why a `GlobResult` is incomplete.
+
+The distinction decides what advice is useful to the caller:
+
+- `budget`: the walk hit its time limit or match cap. Narrowing the pattern or
+  the path surfaces the rest.
+- `unreadable`: a subtree could not be read (e.g. permissions). Narrowing will
+  *never* surface those files, so advising it sends the caller in a loop.
+- `transport`: the sandbox transport clipped the output.
+"""
+
+
 @dataclass
 class GlobResult:
     """Result from backend `glob` operations.
@@ -367,11 +389,15 @@ class GlobResult:
             stopping. `None` only on a hard failure.
         truncated: True when the walk stopped early (e.g. hit its time limit)
             and `matches` is therefore incomplete but still valid.
+        truncation_reason: Why `matches` is incomplete. Set whenever the
+            producing backend can distinguish the cause; `None` when
+            `truncated` is False or the cause is unknown.
     """
 
     error: str | None = None
     matches: list["FileInfo"] | None = None
     truncated: bool = False
+    truncation_reason: GlobTruncationReason | None = None
 
 
 # @abstractmethod to avoid breaking subclasses that only implement a subset
@@ -581,15 +607,39 @@ class BackendProtocol(abc.ABC):  # noqa: B024
     def glob(self, pattern: str, path: str | None = None) -> "GlobResult":
         """Find files matching a glob pattern.
 
+        Pattern matching follows the shared backend contract (aligned with
+        grep include-glob, not classic non-recursive shell globbing):
+
+        - Patterns without `/` match the basename at any depth under `path`.
+
+            Example: `*.py` matches `src/app/main.py`.
+        - Patterns containing `/` match paths relative to the search root, with
+          `**` support.
+
+            Example: `src/**/*.py` matches `src/app/main.py`.
+        - A leading `/` anchors the pattern to the search root; it narrows the
+          match rather than widening it.
+
+            Example: `/*.py` matches `top.py` but not `src/app/main.py`.
+        - Leading-dot names match only when the pattern segment itself starts
+          with `.`. Since `**` will not descend into dot-directories, a bare
+          pattern is *broader* than its `**/` form.
+
+            Example: `*.yml` matches `.github/workflows/ci.yml`; `**/*.yml`
+            does not. `.env` matches `.env`; `*` does not.
+
+        Only regular files are returned; directories are never matched.
+
         Args:
             pattern: Glob pattern with wildcards to match file paths.
 
-                Supports standard glob syntax:
+                Supports:
 
-                - `*` matches any characters within a filename/directory
+                - `*` matches any characters within a path segment
                 - `**` matches any directories recursively
                 - `?` matches a single character
-                - `[abc]` matches one character from set
+                - `[abc]` matches one character from a set, `[!abc]` negates
+                - `{a,b}` brace expansion, including nested groups
 
             path: Optional base directory to search from.
 
@@ -598,7 +648,13 @@ class BackendProtocol(abc.ABC):  # noqa: B024
                 The pattern is applied relative to this path.
 
         Returns:
-            `GlobResult` with matching files or error.
+            `GlobResult` with matching files or error. Patterns the matcher
+            refuses -- brace expansion past its limit, or a `..` segment -- are
+            reported as `error` with `matches=None`, not raised.
+
+            `FileInfo.path` is always absolute. `_check_fs_permission` matches
+            `deny` rules against absolute patterns only, so a backend returning
+            a relative path silently bypasses every deny rule.
 
         Raises:
             NotImplementedError: If the backend does not implement `glob`.

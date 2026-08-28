@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,6 +22,7 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
@@ -30,6 +31,8 @@ from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_FAILED_SUMMARY,
     AskUserRowSummary,
+    Question,
+    render_ask_user_transcript_for_display,
 )
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -75,7 +78,7 @@ from deepagents_code.tui.widgets.diff import (
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Callable, Iterable, Mapping, Sequence
 
     from rich.console import (
         Console as RichConsole,
@@ -83,14 +86,28 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.content import _FormattedLine
+    from textual.css.styles import RulesMap
+    from textual.css.types import PointerShape
     from textual.events import MouseMove
     from textual.timer import Timer
+    from textual.visual import RenderOptions
     from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
 
     from deepagents_code.input import MediaTracker
     from deepagents_code.theme import ThemeColors
+    from deepagents_code.tui.widgets.message_store import MessageData
+
+    type _SummaryCall = tuple[str, Mapping[str, Any]]
+    """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
+
+    type _SummaryCacheKey = tuple[tuple[str, str | None], ...]
+    """Opaque identity of a summary line's inputs — compare only for equality."""
+
+    type _LiveSummaryKey = tuple[_SummaryCacheKey, _SummaryCacheKey]
+    """The `(completed, pending)` key pair behind a cached live summary line."""
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +133,58 @@ def _mode_color(mode: str | None, widget_or_app: object | None = None) -> str:
         return colors.mode_command
     logger.warning("Missing color for mode '%s'; falling back to primary.", mode)
     return colors.primary
+
+
+def _event_targets_rendered_text(event: MouseMove) -> bool:
+    """Return whether the hovered cell was rendered from widget content.
+
+    Textual tags every content segment's style with a selection `offset`
+    (`Content.to_strip` via `Style.rich_style_with_offset`) and reads the same
+    key back in `Compositor.get_widget_and_offset_at` to map a screen cell to a
+    text position. Alignment padding and cells past the end of a line carry no
+    such meta, so the key doubles as a rendered-text hit test that agrees
+    exactly with what Textual can resolve to an offset.
+
+    `offset` and both of its producers are private Textual API. Re-verify these
+    names on every Textual bump: if the key moves, every cell reads as blank
+    and the text pointer silently stops appearing.
+
+    This tracks *rendered* text, not *selectable* text — the meta is attached
+    unconditionally, so a widget with `ALLOW_SELECT = False` still reports
+    `True` here.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `True` when the hovered cell holds content-rendered text.
+    """
+    return "offset" in event.style.meta
+
+
+def _pointer_shape_for(event: MouseMove) -> PointerShape:
+    """Return the pointer shape to show for the cell under the mouse.
+
+    Textual applies a widget's pointer across its whole rectangle, so a message
+    declaring `pointer: text` in CSS shows an I-beam over the blank space beside
+    its short lines. Resolving the shape per cell instead keeps the I-beam on
+    text the reader can actually select.
+
+    The result is only accurate as of the last mouse movement: content that
+    grows or scrolls under a stationary pointer leaves the previous shape in
+    place until the mouse moves again.
+
+    Args:
+        event: The Textual mouse-move event to inspect.
+
+    Returns:
+        `'pointer'` over links, `'text'` over rendered text, else `'default'`.
+    """
+    if event_targets_link(event):
+        return "pointer"
+    if _event_targets_rendered_text(event):
+        return "text"
+    return "default"
 
 
 @dataclass(frozen=True, slots=True)
@@ -227,6 +296,15 @@ _TIMED_SUCCESS_TOOLS: set[str] = {
 _STATUS_CLASSES: frozenset[str] = frozenset(
     {"-status-success", "-status-error", "-status-rejected", "-status-skipped"}
 )
+
+_TOOL_ROW_ACTION_CLASS: str = "-row-actionable"
+"""Marks a `ToolCallMessage` whose row click toggles something.
+
+Gates the hover border in `ToolCallMessage.DEFAULT_CSS` and the ASCII
+variant in `app.tcss`; both selectors name the literal, so a rename here
+must reach them too (`test_hover_rule_targets_the_row_action_class` covers
+the former).
+"""
 
 
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
@@ -417,6 +495,132 @@ def _truncate_for_display(text: str) -> str:
     return _collapse_user_message(text).text
 
 
+class _UserMessageContent(Content):
+    """Content visual that wraps prompt bodies beside a fixed two-cell gutter."""
+
+    _PREFIX_WIDTH = 2
+
+    @classmethod
+    def from_content(cls, content: Content) -> _UserMessageContent:
+        """Promote styled content without changing its text or spans.
+
+        Returns:
+            Hanging-indent content with the same text and spans.
+        """
+        return cls(
+            content.plain,
+            list(content.spans),
+            strip_control_codes=False,
+        )
+
+    @classmethod
+    def _body_selection(cls, selection: Selection | None) -> Selection | None:
+        """Translate selection offsets after removing the first-line prefix.
+
+        Returns:
+            Selection expressed in body-relative coordinates.
+        """
+        if selection is None:
+            return None
+
+        def translate(offset: Offset | None) -> Offset | None:
+            if offset is None or offset.y != 0:
+                return offset
+            return Offset(max(0, offset.x - cls._PREFIX_WIDTH), 0)
+
+        return Selection(translate(selection.start), translate(selection.end))
+
+    def _render_lines(
+        self,
+        width: int,
+        options: RenderOptions,
+        selection: Selection | None,
+    ) -> list[_FormattedLine]:
+        """Wrap this content with the active widget rendering options.
+
+        Returns:
+            Formatted physical lines ready for strip rendering.
+        """
+        get_rule = options.rules.get
+        return super()._wrap_and_format(
+            width,
+            align=get_rule("text_align", "left"),
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+            tab_size=8,
+            selection=selection,
+            selection_style=options.selection_style,
+            post_style=options.post_style,
+            get_style=options.get_style,
+        )
+
+    def _measure_lines(self, width: int, rules: RulesMap) -> list[_FormattedLine]:
+        """Wrap unstyled content for auto-height measurement.
+
+        Returns:
+            Formatted lines used to derive the widget height.
+        """
+        get_rule = rules.get
+        return super()._wrap_and_format(
+            width,
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+        )
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        """Measure body wrapping at the width left beside the prompt gutter.
+
+        Returns:
+            Number of rendered lines required at `width`.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().get_height(rules, width)
+        body = type(self)(self.plain[self._PREFIX_WIDTH :])
+        return len(body._measure_lines(width - self._PREFIX_WIDTH, rules))
+
+    def render_strips(
+        self,
+        width: int,
+        height: int | None,
+        style: TStyle,
+        options: RenderOptions,
+    ) -> list[Strip]:
+        """Render the prefix once and reserve its gutter on subsequent lines.
+
+        Returns:
+            Rendered strips with a fixed prompt gutter.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().render_strips(width, height, style, options)
+
+        prefix = type(self).from_content(self[: self._PREFIX_WIDTH])
+        body = type(self).from_content(self[self._PREFIX_WIDTH :])
+        prefix_lines = prefix._render_lines(
+            self._PREFIX_WIDTH,
+            options,
+            options.selection,
+        )
+        body_lines = body._render_lines(
+            width - self._PREFIX_WIDTH,
+            options,
+            self._body_selection(options.selection),
+        )
+        for line in body_lines:
+            if line.y == 0:
+                line.x += self._PREFIX_WIDTH
+
+        prefix_strip = Strip(*prefix_lines[0].to_strip(style))
+        body_strips = [Strip(*line.to_strip(style)) for line in body_lines]
+        indent = Strip.blank(self._PREFIX_WIDTH, style.background_style.rich_style)
+        strips = [
+            Strip.join((prefix_strip, body_strips[0])),
+            *(Strip.join((indent, line)) for line in body_strips[1:]),
+        ]
+        return strips if height is None else strips[:height]
+
+
 class UserMessage(Static):
     """Widget displaying a user message.
 
@@ -443,11 +647,10 @@ class UserMessage(Static):
     DEFAULT_CSS = """
     UserMessage {
         height: auto;
-        padding: 0 1;
+        padding: 1 1 1 0;
         margin: 0 0 1 0;
-        background: transparent;
+        background: $primary 15%;
         border-left: wide $primary;
-        pointer: text;
         /* The expand affordance carries `@click` meta, which Textual styles as
            a link (underline, and bold on an accent block when hovered).
            Neutralize both so the hint renders as plain inherited-colour dim
@@ -763,12 +966,12 @@ class UserMessage(Static):
 
         if isinstance(collapse, _UserMessageFull):
             self._append_highlighted_body(parts, body, colors=colors)
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         if self._expanded:
             self._append_highlighted_body(parts, body, colors=colors)
             parts.extend(("\n", self._expand_hint_content()))
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         # Collapsed: head + clickable elision line + tail. The middle marker is
         # the affordance (not a second trailing line) so the collapse stays
@@ -778,7 +981,15 @@ class UserMessage(Static):
         self._append_highlighted_body(parts, collapse.head, colors=colors)
         parts.extend(("\n", self._collapse_hint_content(collapse), "\n"))
         self._append_highlighted_body(parts, collapse.tail, colors=colors)
-        return Content.assemble(*parts)
+        return _UserMessageContent.from_content(Content.assemble(*parts))
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class QueuedUserMessage(Static):
@@ -795,7 +1006,6 @@ class QueuedUserMessage(Static):
         background: transparent;
         border-left: wide $panel;
         opacity: 0.6;
-        pointer: text;
     }
     """
     """Dimmed border + reduced opacity to distinguish queued messages from sent ones."""
@@ -880,6 +1090,14 @@ class QueuedUserMessage(Static):
         content = _truncate_for_display(content)
         return Content.assemble(prefix, (content, colors.muted))
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 def _strip_frontmatter(text: str) -> str:
     """Remove YAML frontmatter delimited by `---` markers.
@@ -927,7 +1145,7 @@ class SkillMessage(Vertical):
     DEFAULT_CSS = """
     SkillMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $skill;
@@ -1156,60 +1374,27 @@ class SkillMessage(Vertical):
             self.toggle_body()
 
 
-class AssistantMessage(Vertical):
-    """Widget displaying an assistant message with markdown support.
+class _StreamedTextParts:
+    """Chunk buffering shared by the streamed-text message widgets.
 
-    Uses MarkdownStream for smoother streaming instead of re-rendering
-    the full content on each update. Once a stream finishes, the message
-    is re-rendered from the complete source via `Markdown.update()` to
-    work around Textualize/textual#6518: `MarkdownFence._update_from_block`
-    refreshes the visible `Label` but leaves `_highlighted_code` pinned to
-    the first chunk, so any later recompose (click, focus change, theme
-    update) re-yields the stale value and wrapped fenced-code bodies vanish.
-    A full re-parse rebuilds every fence with correct internal state.
-
-    Streamed tokens are coalesced in `_pending_append` and flushed to the
-    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
-    every token immediately forced a markdown re-parse per chunk on the UI
-    event loop, which starved keyboard input while the model streamed.
-    Batching the writes keeps the event loop free so typing stays responsive.
+    `AssistantMessage` and `ReasoningMessage` both accumulate streamed
+    fragments in a rope that is joined only on access, and both coalesce their
+    renders on a single throttled timer. Holding that contract in one place
+    keeps the two from drifting.
     """
 
     _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
-    """Seconds between coalesced flushes of streamed text to the markdown widget."""
-
-    DEFAULT_CSS = """
-    AssistantMessage {
-        height: auto;
-        padding: 0 1;
-        margin: 0 0 1 0;
-    }
-
-    AssistantMessage Markdown {
-        padding: 0;
-        margin: 0;
-        pointer: text;
-    }
-
-    /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
-       on the final block so the message has no trailing blank row. */
-    AssistantMessage Markdown > *:last-child {
-        margin-bottom: 0;
-    }
-    """
+    """Seconds between coalesced flushes of streamed text to the widget."""
 
     def __init__(self, content: str = "", **kwargs: Any) -> None:
-        """Initialize an assistant message.
+        """Initialize the streamed-text buffer.
 
         Args:
-            content: Initial markdown content
-            **kwargs: Additional arguments passed to parent
+            content: Initial content, if the text is already complete.
+            **kwargs: Additional arguments passed to the widget base.
         """
         super().__init__(**kwargs)
         self._content_parts: list[str] = [content] if content else []
-        self._markdown: Markdown | None = None
-        self._stream: MarkdownStream | None = None
-        self._pending_append = ""
         self._flush_timer: Timer | None = None
 
     @property
@@ -1222,6 +1407,72 @@ class AssistantMessage(Vertical):
     @_content.setter
     def _content(self, value: str) -> None:
         self._content_parts = [value] if value else []
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+
+
+class AssistantMessage(_StreamedTextParts, Vertical):
+    """Widget displaying an assistant message with markdown support.
+
+    Uses MarkdownStream for smoother streaming instead of re-rendering
+    the full content on each update. Once a stream finishes, the message
+    is re-rendered from the complete source via `Markdown.update()` to
+    work around Textualize/textual#6518: `MarkdownFence._update_from_block`
+    refreshes the visible `Label` but leaves `_highlighted_code` pinned to
+    the first chunk, so any later recompose (click, focus change, theme
+    update) re-yields the stale value and wrapped fenced-code bodies vanish.
+    A full re-parse rebuilds every fence with correct internal state.
+
+    The first streamed fragment is written immediately so the response appears
+    without waiting for `_STREAM_FLUSH_INTERVAL`. Later tokens are coalesced in
+    `_pending_append` and flushed to the `MarkdownStream` on a throttled timer.
+    Writing every token immediately forced a markdown re-parse per chunk on the
+    UI event loop, which starved keyboard input while the model streamed;
+    batching subsequent writes keeps typing responsive.
+    """
+
+    DEFAULT_CSS = """
+    AssistantMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+    }
+
+    AssistantMessage Markdown {
+        padding: 0;
+        margin: 0;
+    }
+
+    /* Markdown blocks carry a bottom margin for inter-block spacing; drop it
+       on the final block so the message has no trailing blank row. */
+    AssistantMessage Markdown > *:last-child {
+        margin-bottom: 0;
+    }
+    """
+
+    def __init__(
+        self, content: str = "", *, local_only: bool = False, **kwargs: Any
+    ) -> None:
+        """Initialize an assistant message.
+
+        Args:
+            content: Initial markdown content
+            local_only: `True` when the content came from the client rather
+                than the agent — currently `!` and `!!` shell output, both of
+                which borrow this widget for its markdown rendering and
+                streaming. Callers that ask "did the agent do anything in
+                this thread" must not count such a message.
+            **kwargs: Additional arguments passed to parent
+        """
+        super().__init__(content, **kwargs)
+        self._local_only = local_only
+        self._markdown: Markdown | None = None
+        self._stream: MarkdownStream | None = None
+        self._pending_append = ""
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -1240,21 +1491,12 @@ class AssistantMessage(Vertical):
         self._markdown = self.query_one("#assistant-content", Markdown)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over markdown links, text cursor elsewhere.
-
-        The pointer is set on the inner `Markdown` widget because it carries a
-        non-default (`text`) pointer in CSS, so the screen resolves its shape
-        before reaching this container.
-        """
-        if self._markdown is not None:
-            self._markdown.styles.pointer = (
-                "pointer" if event_targets_link(event) else "text"
-            )
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Reset the markdown pointer shape when the mouse leaves the message."""
-        if self._markdown is not None:
-            self._markdown.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
     async def on_markdown_link_clicked(self, event: Markdown.LinkClicked) -> None:
         """Open Markdown links with the same toast feedback as style links."""
@@ -1286,11 +1528,11 @@ class AssistantMessage(Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append streamed content, coalescing writes onto a throttled timer.
+        """Append streamed content, then coalesce later writes on a timer.
 
-        Tokens are buffered in `_pending_append` and written to the
-        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
-        event loop stays free to process keypresses while the model streams.
+        The first fragment is written immediately. Later fragments are buffered
+        and written at most once per `_STREAM_FLUSH_INTERVAL` so the UI event
+        loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -1300,6 +1542,7 @@ class AssistantMessage(Vertical):
         self._content_parts.append(text)
         self._pending_append += text
         if self._flush_timer is None:
+            await self._flush_pending_append()
             self._flush_timer = self.set_interval(
                 self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
             )
@@ -1323,12 +1566,6 @@ class AssistantMessage(Vertical):
         except Exception:  # a render hiccup must not crash the app
             self._pending_append = pending + self._pending_append
             logger.exception("Failed to flush streamed markdown fragment")
-
-    def _stop_flush_timer(self) -> None:
-        """Cancel the coalescing flush timer if it is running."""
-        if self._flush_timer is not None:
-            self._flush_timer.stop()
-            self._flush_timer = None
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
@@ -1362,6 +1599,175 @@ class AssistantMessage(Vertical):
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
+
+
+class _ReasoningToggle(Static):
+    """Clickable header for a reasoning message."""
+
+
+class ReasoningMessage(_StreamedTextParts, Vertical):
+    """Collapsible plain-text provider-visible reasoning."""
+
+    DEFAULT_CSS = """
+    ReasoningMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    ReasoningMessage #reasoning-body { display: none; padding: 0 1; }
+    ReasoningMessage.-expanded #reasoning-body { display: block; }
+    ReasoningMessage #reasoning-hint { color: $text-muted; text-style: italic; }
+    """
+
+    _expanded: var[bool] = var(True, toggle_class="-expanded")
+
+    class ExpansionChanged(Message):
+        """Report a reasoning expansion-state change."""
+
+        def __init__(self, widget: ReasoningMessage, expanded: bool) -> None:
+            """Initialize an expansion-state event."""
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    def __init__(self, content: str = "", **kwargs: Any) -> None:
+        """Initialize a reasoning message."""
+        super().__init__(content, **kwargs)
+        self._render_pending = False
+        self._streaming = not content
+        self._body: Static | None = None
+        self._hint: Static | None = None
+        # Last (has_content, expanded) pair written to the hint, so a 10 Hz
+        # streaming flush does not rebuild an unchanged line every tick.
+        self._hint_state: tuple[bool, bool] | None = None
+        self._deferred_expanded = True
+        # Last expansion value published to the message store. Deduping against
+        # it keeps the reactive's initialization watcher and the deferred restore
+        # from re-emitting a value the store already holds. Seeded to the
+        # `_expanded` default so a fresh mount publishes nothing.
+        self._published_expanded = True
+
+    def compose(self) -> ComposeResult:
+        """Compose the reasoning message.
+
+        Yields:
+            Header, plain-text body, and toggle hint widgets.
+        """
+        yield _ReasoningToggle(Content.styled("Reasoning", "bold"))
+        yield Static(Content(self._content), id="reasoning-body")
+        # A toggle, not a plain Static: the hint says "click", so clicking the
+        # hint itself has to work as well as clicking the header.
+        yield _ReasoningToggle(id="reasoning-hint")
+
+    @property
+    def has_content(self) -> bool:
+        """Whether there is reasoning text worth revealing."""
+        content = self._content
+        return bool(content) and not content.isspace()
+
+    def on_mount(self) -> None:
+        """Restore deferred expansion state and render content."""
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        self._expanded = self._deferred_expanded
+        self._render_reasoning()
+
+    def _render_reasoning(self) -> None:
+        """Repaint the body and hint.
+
+        No-ops while detached, where the composed content is already correct and
+        `on_mount` renders again. A failed query past that point is a real bug,
+        so it raises into `_flush_pending_render` and the hydration handlers
+        rather than being suppressed here.
+        """
+        if not self.is_attached:
+            return
+        if self._body is None or self._hint is None:
+            # Cached rather than re-queried: this runs on every streaming tick.
+            self._body = self.query_one("#reasoning-body", Static)
+            self._hint = self.query_one("#reasoning-hint", Static)
+        content = self._content
+        has_content = bool(content) and not content.isspace()
+        self._body.update(Content(content))
+        hint_state = (has_content, self._expanded)
+        if hint_state == self._hint_state:
+            return
+        self._hint_state = hint_state
+        self._hint.display = has_content
+        if not has_content:
+            return
+        action = "hide" if self._expanded else "show"
+        self._hint.update(
+            Content.styled(f"click or Ctrl+O to {action} reasoning", "dim italic")
+        )
+
+    async def append_content(self, text: str) -> None:
+        """Append reasoning text and coalesce later renders on a timer."""
+        if not text:
+            return
+        self._content_parts.append(text)
+        self._render_pending = True
+        if self._flush_timer is None:
+            self._flush_pending_render()
+            self._flush_timer = self.set_interval(
+                self._STREAM_FLUSH_INTERVAL, self._flush_pending_render
+            )
+
+    def _flush_pending_render(self) -> None:
+        """Render buffered reasoning fragments in one complete update."""
+        if not self._render_pending:
+            return
+        self._render_pending = False
+        try:
+            self._render_reasoning()
+        except Exception:  # a render hiccup must not crash the app
+            self._render_pending = True
+            logger.exception("Failed to flush streamed reasoning fragments")
+
+    async def stop_stream(self) -> None:
+        """Finalize and collapse the active reasoning phase."""
+        self._stop_flush_timer()
+        self._streaming = False
+        self._expanded = False
+        self._render_pending = True
+        self._flush_pending_render()
+
+    async def set_content(self, content: str) -> None:
+        """Replace the complete plain-text reasoning content."""
+        self._stop_flush_timer()
+        self._render_pending = False
+        self._streaming = False
+        self._content = content
+        self._render_reasoning()
+
+    def toggle_expanded(self) -> None:
+        """Toggle the reasoning body visibility."""
+        if not self.has_content:
+            return
+        self._expanded = not self._expanded
+        self._render_reasoning()
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Publish user-driven expansion changes for transcript persistence.
+
+        Gated on `is_mounted`, which stays `False` until after `on_mount`
+        returns. That drops both writes the store already knows about -- the
+        reactive's initialization watcher and the deferred restore -- without
+        depending on which of the two Textual runs first, and it keeps
+        `_expanded` set in pre-mount test setup from posting on a detached
+        widget (`NoActiveAppError`). `_published_expanded` then dedupes a
+        re-publish of a value already sent.
+        """
+        if self.is_mounted and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
+
+    @on(Click, "_ReasoningToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        event.stop()
+        self.toggle_expanded()
 
 
 _ToolStatus = Literal["pending", "running", "success", "error", "rejected", "skipped"]
@@ -1409,7 +1815,7 @@ class ToolCallMessage(Vertical):
     DEFAULT_CSS = """
     ToolCallMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $tool;
@@ -1463,6 +1869,7 @@ class ToolCallMessage(Vertical):
         layout: horizontal;
         height: auto;
         width: 1fr;
+        margin-left: 2;
     }
 
     /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
@@ -1511,11 +1918,11 @@ class ToolCallMessage(Vertical):
         background: $warning 8%;
     }
 
-    ToolCallMessage:hover {
+    ToolCallMessage.-row-actionable:hover {
         border-left: wide $tool-hover;
     }
     """
-    """Left border tracks tool lifecycle; hover brightens for interactivity."""
+    """Left border tracks tool lifecycle; actionable rows brighten on hover."""
 
     _PREVIEW_LINES = 6
     """Maximum number of lines to show in preview mode."""
@@ -1594,6 +2001,9 @@ class ToolCallMessage(Vertical):
         # One-shot guard so `_format_ask_user_output` reports unusable `questions`
         # args once per widget rather than on every re-render.
         self._ask_user_args_warned: bool = False
+        # One-shot guard so `_format_ask_user_output` reports a transcript it
+        # could not unpack once per widget rather than on every re-render.
+        self._ask_user_display_warned: bool = False
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -1702,6 +2112,7 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
+        self._sync_row_actionability()
         # `to_widget` sets `_diff_superseded` before mount, but not every
         # `_restore_deferred_state` branch applies visibility. Applied here so
         # hiding does not depend on which branch a tool takes.
@@ -2005,6 +2416,8 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(f"Took {format_duration(duration)}", "dim")
         )
+        if self._hint_widget is not None:
+            self.move_child(self._status_widget, after=self._hint_widget)
         self._status_widget.display = True
 
     def _show_success_status(self) -> None:
@@ -2268,6 +2681,44 @@ class ToolCallMessage(Vertical):
                 _TOOL_SUPERSEDED_ACCESSORY_CLASS,
             )
 
+    @property
+    def has_row_action(self) -> bool:
+        """Whether clicking this row can reveal or hide additional detail.
+
+        Kept in exact lockstep with `on_click`'s routing: every term here must
+        reach a toggle there, or the row brightens on hover over a click that
+        does nothing — the bug this predicate exists to prevent. The reverse
+        also holds, so `on_click` can return early on a False.
+
+        `on_click` guards its output branch with an extra `self._output` check,
+        but that cannot strand a True: `_has_expandable_output` strips `_output`
+        first and returns False when it is empty, so `has_expandable_output`
+        already implies a truthy `_output`.
+        """
+        return (
+            self.has_expandable_output
+            or self.has_expandable_args
+            or self.has_expandable_task_desc
+        )
+
+    def _sync_row_actionability(self) -> None:
+        """Keep the hover affordance aligned with the row's click behavior.
+
+        Called from `on_mount` and from every exit of `_update_output_display`.
+        That set is sufficient rather than arbitrary: `_args` is assigned once
+        in `__init__` and never mutated, so `has_expandable_args` and
+        `has_expandable_task_desc` are fixed after construction, and every write
+        to `_output`/`_status` that can move `has_expandable_output` routes
+        through `_update_output_display`. `set_rejected`/`set_skipped` are the
+        exception and need no sync, because a row reaching them carries no
+        output for the status flip to reinterpret.
+
+        Anything that starts mutating `_args`, or that sets output outside
+        `_update_output_display`, must call this too or the row keeps a hover
+        border over a dead click.
+        """
+        self.set_class(self.has_row_action, _TOOL_ROW_ACTION_CLASS)
+
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
@@ -2307,8 +2758,23 @@ class ToolCallMessage(Vertical):
         unexpandable result sitting below a multi-line, collapsible code block,
         and the old "output wins whenever it exists" rule left that code block
         stuck.
+
+        A row with nothing to toggle handles nothing and lets the click bubble
+        (see `has_row_action`); the routing below applies only to actionable
+        rows.
         """
-        event.stop()  # Prevent click from bubbling up and scrolling
+        if not self.has_row_action:
+            # Deliberate: an inert row should behave like transcript
+            # background, so the click reaches `DeepAgentsApp.on_click` and
+            # refocuses the chat input — matching `AssistantMessage`, which has
+            # no handler at all. `_ChatScroll` sets `FOCUS_ON_CLICK = False`,
+            # so bubbling cannot scroll the transcript, and tool group members
+            # are DOM siblings rather than children, so it cannot reach
+            # `ToolGroupSummary.on_click` and collapse the group either.
+            return
+        # Actionable rows own their click: stopping it keeps the transcript from
+        # scrolling and the chat input from stealing focus mid-toggle.
+        event.stop()
         if self.has_expandable_task_desc and self._click_targets_task_desc_region(
             event.widget
         ):
@@ -3350,7 +3816,7 @@ class ToolCallMessage(Vertical):
         Returns:
             The question count, or zero unless `questions` is a non-empty list of
                 dicts each carrying non-blank `question` text. Deliberately looser
-                than `ask_user._validate_questions` — it accepts payloads that
+                than the `ask_user` tool schema — it accepts payloads the schema
                 rejects, such as an unknown `type` or a `choices`/`type` mismatch —
                 because it only needs to guard the fields the count reads. Of the
                 three paths that populate `_args`, only the `ask_user` interrupt
@@ -3379,7 +3845,9 @@ class ToolCallMessage(Vertical):
         The inline question widget is unmounted once answered, so this row is the
         only place the answers stay visible in the live session — the thread's
         own `ToolMessage` is what a reload re-renders from. Collapsed, the row
-        keeps a one-line summary; expanded, it shows what was sent back.
+        keeps a one-line summary; expanded, it shows what was sent back, except
+        that `multi_select` answers are unpacked from their JSON encoding for
+        legibility.
 
         The summary is derived from the recorded status, never from the answer
         text (the question count only labels the expand affordance). The
@@ -3391,9 +3859,12 @@ class ToolCallMessage(Vertical):
 
         Returns:
             FormattedOutput with the status-derived summary when `is_preview`, or
-                the output rendered literally when expanded. A row holding only a
-                fallback summary advertises no expansion. Falls back to generic
-                formatting when the structured question args are unavailable.
+                the output when expanded — rendered literally unless
+                `render_ask_user_transcript_for_display` can unpack a
+                `multi_select` answer, which rewrites nothing else. A row holding
+                only a fallback summary advertises no expansion. Falls back to
+                generic formatting when the structured question args are
+                unavailable.
         """
         question_count = self._ask_user_question_count()
         if question_count == 0:
@@ -3420,6 +3891,37 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=Content.styled(output, "dim"))
 
         if not is_preview:
+            # Unpack `multi_select` JSON arrays for the reader. Anything that
+            # does not parse as exactly these questions falls back to the
+            # authoritative text, so the row is never worse than literal.
+            #
+            # Gating on an actual `multi_select` is what makes the log below
+            # worth emitting: without it every text-only transcript would report
+            # a `None` that means nothing. It still covers two cases — a
+            # transcript that did not parse, and one that parsed but held no
+            # decodable array (a cancelled prompt puts placeholders in every
+            # slot) — so this is debug, not a warning.
+            # `_ask_user_question_count` already proved `questions` is a list of
+            # dicts.
+            questions = self._args.get("questions")
+            if isinstance(questions, list) and any(
+                isinstance(question, dict) and question.get("type") == "multi_select"
+                for question in questions
+            ):
+                display = render_ask_user_transcript_for_display(
+                    cast("list[Question]", questions), output
+                )
+                if display is not None:
+                    return FormattedOutput(content=Content(display))
+                if not self._ask_user_display_warned:
+                    # Once per widget: this runs on every re-render, and the
+                    # condition cannot change without a new `_args` or output.
+                    self._ask_user_display_warned = True
+                    logger.debug(
+                        "ask_user transcript over %d question(s) had no "
+                        "multi_select answer to unpack; rendering it literally",
+                        len(questions),
+                    )
             return FormattedOutput(content=Content(output))
 
         if self._status == "error":
@@ -3446,6 +3948,11 @@ class ToolCallMessage(Vertical):
             or not self._full_row
             or not self._hint_widget
         ):
+            # Syncs like every other exit: emptying `_output` drops the row's
+            # output action, and without this the row keeps a hover border over
+            # a click that no longer does anything. Reached pre-mount too, where
+            # `on_mount` syncs again afterwards, so the duplicate is harmless.
+            self._sync_row_actionability()
             return
 
         output_stripped = self._output.strip()
@@ -3478,6 +3985,7 @@ class ToolCallMessage(Vertical):
             self._preview_row.display = False
             self._full_row.display = False
             self._hint_widget.display = False
+            self._sync_row_actionability()
             return
 
         if self._expanded:
@@ -3521,6 +4029,7 @@ class ToolCallMessage(Vertical):
                     )
                 )
                 self._hint_widget.display = True
+                self._sync_row_actionability()
                 return
             # Truncate the preview only when the output is large enough to
             # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
@@ -3550,6 +4059,8 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
             else:
                 self._hint_widget.display = False
+
+        self._sync_row_actionability()
 
     def _output_hint_keys(self) -> str:
         """Affordances to advertise in the output expand/collapse hint.
@@ -3595,6 +4106,19 @@ class ToolCallMessage(Vertical):
         return dict(self._args)
 
     @property
+    def summary_call(self) -> _SummaryCall:
+        """This row as `(tool name, args)` for the group summary line.
+
+        Unlike `args` this does not copy: the group rebuilds its cache key from
+        every member on each spinner tick, so a copy per member per tick buys
+        nothing the caller uses. Safe because the `Mapping` return type is
+        read-only and this widget never mutates `_args` after construction — the
+        dict is the caller's, though, so do not widen this to a caller that
+        mutates.
+        """
+        return (self._tool_name, self._args)
+
+    @property
     def is_success(self) -> bool:
         """Whether the tool completed successfully."""
         return self._status == "success"
@@ -3617,9 +4141,10 @@ class ToolCallMessage(Vertical):
         A caveat is the user's only account of a change the transcript cannot
         render, and it is carried inside this row's output. A groupable tool
         (`write_file`, `delete`) is folded at mount, and the collapsed summary
-        line is built from tool names alone — so without this the caveat is
-        folded away and destroying a 5,000-line file whose contents could not be
-        read renders as `▸ Deleted 1 file`, exactly like destroying an empty one.
+        line is built from tool names and arguments, never from tool output — so
+        without this the caveat is folded away and destroying a 5,000-line file
+        whose contents could not be read renders as `▸ Deleted 1 file`, exactly
+        like destroying an empty one.
 
         Read by the group code alongside `is_failed`: a caveated row is not a
         failure, but it has the same claim on staying on screen.
@@ -3915,6 +4440,173 @@ _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
     "task": ("Running", "Ran", "agent", "agents"),
 }
 
+# category -> tool-arg names naming the thing the call acts on, in fallback
+# order. Only categories whose summary noun is a durable object belong here:
+# their counts claim "N distinct things", so repeat calls on one target must
+# collapse (see `_tally_categories`).
+#
+# Every other category is absent on purpose. "shell", "js", "task", and "search"
+# count attempts, not objects — running one command or grepping one pattern twice
+# is genuinely two pieces of work. "web_search" phrases its own repeats
+# ("Searched the web 2 times") and "todos" carries no count at all. "ls" is
+# excluded because a listing is a snapshot, not a durable object: a group spans a
+# whole step, so an intervening write can make the second listing of one
+# directory show different contents.
+_TOOL_SUMMARY_TARGET_ARGS: dict[str, tuple[str, ...]] = {
+    "read": ("file_path", "path"),
+    "write": ("file_path", "path"),
+    "edit": ("file_path", "path"),
+    "delete": ("file_path", "path"),
+    "fetch": ("url",),
+}
+
+_PATH_TARGET_CATEGORIES = frozenset({"read", "write", "edit", "delete"})
+"""Categories from `_TOOL_SUMMARY_TARGET_ARGS` whose target is a filesystem path.
+
+Only these are normalized before comparison. Path rules are wrong for a URL:
+`http://x/a//b`, `http://x/a/` and `http://x/a` would each be judged the same
+target as a URL the server can answer differently. That undercounts, which this
+code must never do. Any category added here needs a genuine path, and any other
+target is compared exactly.
+"""
+
+
+def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
+    """Identify the object a call acts on, for repeat-call collapsing.
+
+    Args:
+        tool_name: Raw tool name for the call.
+        args: The call's parsed arguments.
+
+    Returns:
+        An identity for the target, or None when the category counts attempts
+        rather than objects, or the naming argument is missing or not a non-empty
+        string. None means "cannot be judged a repeat", so the call is always
+        counted — an argument list this code cannot read undercounts nothing.
+    """
+    category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
+    arg_names = _TOOL_SUMMARY_TARGET_ARGS.get(category)
+    if arg_names is None:
+        return None
+    for arg_name in arg_names:
+        value = args.get(arg_name)
+        if isinstance(value, str) and value:
+            if category not in _PATH_TARGET_CATEGORIES:
+                # Not a path, so compare it exactly — see
+                # `_PATH_TARGET_CATEGORIES` for why path rules undercount a URL.
+                return f"{category}:{value}"
+            # The category prefix is load-bearing: `_tally_categories` shares one
+            # `seen` set across categories, so identities must be namespaced or
+            # reading and then editing one file would read as a repeat.
+            return f"{category}:{_normalize_path_target(value)}"
+    return None
+
+
+def _normalize_path_target(value: str) -> str:
+    r"""Normalize a path using the filesystem middleware's canonical form.
+
+    Defers to `validate_path` rather than reimplementing it, so the identity is
+    exactly the string the file tools act on and cannot drift from it. Every
+    path the middleware rejects — `..` traversal, a leading `~`, a drive prefix
+    like `C:/` — is returned verbatim: a call that could not have run has no
+    canonical form, and canonicalizing one would fold it into a valid target's
+    tally. `~` and `/~` are different reads and must count as two.
+
+    Args:
+        value: The raw path string as the tool was called with it.
+
+    Returns:
+        The normalized virtual path, or `value` when the middleware rejects it.
+    """
+    from deepagents.backends.utils import validate_path
+
+    try:
+        return validate_path(value)
+    except ValueError:
+        return value
+
+
+# category -> plural noun for the operation, used to report repeat work on one
+# target alongside the target count, e.g. "Edited 1 file (3 edits)".
+#
+# Every mutating category qualifies: each call is an event that changed the tree
+# and owns a diff, so collapsing three edits of one file to a bare "Edited 1
+# file" hides work the reader wants. A group spans a whole step, so one path can
+# genuinely be mutated twice — `delete a.py`, `write_file a.py`, `delete a.py`
+# is two real deletions. "fetch" qualifies too: a repeated fetch of one URL is a
+# deliberate re-request, not pagination, and "Fetched 1 URL" for two requests
+# reads like the second one vanished. Of the categories that name a target, only
+# "read" is absent — a repeat read is usually pagination, where the count is
+# noise, so reads collapse silently.
+#
+# A category here has no effect unless it is also in `_TOOL_SUMMARY_TARGET_ARGS`:
+# without a target, `calls` can never exceed `targets`.
+_REPEAT_COUNT_NOUNS: dict[str, str] = {
+    "edit": "edits",
+    "write": "writes",
+    "delete": "deletions",
+    "fetch": "calls",
+}
+
+
+class _CategoryTally(NamedTuple):
+    """One category's contribution to a summary line."""
+
+    category: str
+    """The summary category being counted."""
+
+    rep_name: str
+    """First raw tool name seen for the category, for fallback phrasing."""
+
+    targets: int
+    """Distinct targets touched. Calls with no identifiable target each count
+    for themselves, so this never drops below the honest minimum."""
+
+    calls: int
+    """Total calls, including repeats on one target. Equals `targets` unless
+    something was touched more than once."""
+
+
+def _tally_categories(
+    calls: Sequence[_SummaryCall],
+) -> list[_CategoryTally]:
+    """Aggregate calls by category, counting distinct targets and total calls.
+
+    Both numbers are needed because the phrasing claims nouns ("Read 2 files")
+    while the work is calls: a file read twice is one file, and an edit made
+    twice is one file but two edits.
+
+    Args:
+        calls: `(raw tool name, parsed args)` for each call, in call order.
+
+    Returns:
+        One tally per category, in first-appearance order.
+    """
+    tallies: dict[str, _CategoryTally] = {}
+    # One set across all categories is safe because `_summary_target` namespaces
+    # every identity by category. That is also why the first-call branch below
+    # may ignore `repeat`: a repeat implies an earlier call in the same category,
+    # which must already have created that category's tally.
+    seen: set[str] = set()
+    for tool_name, args in calls:
+        category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
+        target = _summary_target(tool_name, args)
+        repeat = target is not None and target in seen
+        if target is not None:
+            seen.add(target)
+        current = tallies.get(category)
+        if current is None:
+            tallies[category] = _CategoryTally(
+                category=category, rep_name=tool_name, targets=1, calls=1
+            )
+            continue
+        tallies[category] = current._replace(
+            targets=current.targets + (0 if repeat else 1),
+            calls=current.calls + 1,
+        )
+    return list(tallies.values())
+
+
 _DIFF_HEADER_CATEGORIES = frozenset({"write", "edit", "delete"})
 """Summary categories whose past verb heads a `DiffMessage`.
 
@@ -3951,19 +4643,21 @@ def _diff_header_verb(tool_name: str | None) -> str:
 _Tense = Literal["present", "past"]
 
 
-def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
-    """Phrase a single count segment, e.g. "Read 2 files" / "Reading 2 files".
+def _summary_segment(tally: _CategoryTally, tense: _Tense) -> str:
+    """Phrase one category's segment, e.g. "Read 2 files" / "Reading 2 files".
+
+    The lead noun counts distinct targets. When a category in
+    `_REPEAT_COUNT_NOUNS` repeated work on one of them, the operation count
+    trails in parentheses ("Edited 1 file (3 edits)") so neither number is lost.
 
     Args:
-        category: The summary category the tools were bucketed into.
-        count: How many tools fell into this category.
-        tool_name: A representative raw tool name, used to phrase categories
-            that have no dedicated entry in `_TOOL_SUMMARY_PHRASES`.
+        tally: The category's distinct-target and total-call counts.
         tense: Whether to phrase the segment in the present or past tense.
 
     Returns:
-        The phrased segment for this category, count, and tense.
+        The phrased segment for this category and tense.
     """
+    category, tool_name, count = tally.category, tally.rep_name, tally.targets
     if category == "web_search":
         base = "Searching the web" if tense == "present" else "Searched the web"
         return base if count == 1 else f"{base} {count} times"
@@ -3977,40 +4671,39 @@ def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -
         present, past, singular, plural = phrase
     verb = present if tense == "present" else past
     noun = singular if count == 1 else plural
-    return f"{verb} {count} {noun}"
+    segment = f"{verb} {count} {noun}"
+    repeat_noun = _REPEAT_COUNT_NOUNS.get(category)
+    if repeat_noun is not None and tally.calls > count:
+        # `calls > count` implies at least two calls, so the noun is always
+        # plural.
+        segment += f" ({tally.calls} {repeat_noun})"
+    return segment
 
 
-def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> str:
+def summarize_tool_group(
+    calls: Sequence[_SummaryCall], *, tense: _Tense = "past"
+) -> str:
     """Build a one-line summary of a run of tool calls.
 
     Aggregates by category in first-appearance order and lowercases the lead
-    word of every segment after the first, e.g.
-    `["read_file", "read_file", "execute"]` -> "Read 2 files, ran 1 shell command".
+    word of every segment after the first, e.g. two `read_file` calls on
+    different paths plus an `execute` -> "Read 2 files, ran 1 shell command".
+
+    Takes args, not just names, because the counts claim distinct nouns: without
+    the argument naming each call's target, one file read twice is
+    indistinguishable from two files read once.
 
     Args:
-        tool_names: Raw tool names for the run, in call order.
+        calls: `(raw tool name, parsed args)` for each call, in call order.
         tense: Whether to phrase the summary in the present or past tense.
 
     Returns:
         The aggregated one-line summary string in the requested tense.
     """
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    rep_name: dict[str, str] = {}
-    for name in tool_names:
-        category = _TOOL_SUMMARY_CATEGORY.get(name, name)
-        if category not in counts:
-            counts[category] = 0
-            order.append(category)
-            rep_name[category] = name
-        counts[category] += 1
-
-    segments = [
-        _summary_segment(cat, counts[cat], rep_name[cat], tense) for cat in order
-    ]
-    if not segments:
+    tallies = _tally_categories(calls)
+    if not tallies:
         return "Running tools" if tense == "present" else "Ran tools"
-    return _join_segments(segments)
+    return _join_segments([_summary_segment(tally, tense) for tally in tallies])
 
 
 def _join_segments(segments: list[str]) -> str:
@@ -4020,8 +4713,8 @@ def _join_segments(segments: list[str]) -> str:
         segments: Pre-phrased segments in display order.
 
     Returns:
-        The segments joined with ", ", e.g. `["Ran 2 files", "Running 1 agent"]`
-        -> "Ran 2 files, running 1 agent".
+        The segments joined with ", ", e.g. `["Read 2 files", "Running 1 agent"]`
+        -> "Read 2 files, running 1 agent".
     """
     first, *rest = segments
     lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]
@@ -4029,31 +4722,61 @@ def _join_segments(segments: list[str]) -> str:
 
 
 def summarize_live_tool_group(
-    completed_names: list[str], pending_names: list[str]
+    completed_calls: Sequence[_SummaryCall],
+    pending_calls: Sequence[_SummaryCall],
 ) -> str:
     """Summarize an in-flight run, mixing past and present tense.
 
     Completed calls are phrased in the past tense so the work already done in
     the step stays visible, and the still-running calls are phrased in the
-    present tense, e.g. `["execute", "execute"]` completed plus `["task"]`
-    pending -> "Ran 2 shell commands, running 1 agent".
+    present tense, e.g. two completed `execute` calls plus a pending `task` ->
+    "Ran 2 shell commands, running 1 agent".
+
+    Each half is tallied independently, so a file whose second read is still
+    running is counted in both — collapsing across the split would drop it from
+    the present-tense half and the line would stop reporting the step as
+    reading.
 
     Args:
-        completed_names: Raw tool names that have finished successfully, in
-            call order. Failed/rejected calls are evicted before this runs.
-        pending_names: Raw tool names still pending or running, in call order.
+        completed_calls: `(raw tool name, parsed args)` for calls that finished
+            successfully, in call order. Failed/rejected calls are evicted
+            before this runs.
+        pending_calls: `(raw tool name, parsed args)` for calls still pending or
+            running, in call order.
 
     Returns:
-        The combined one-line summary. Empty when neither list has members.
+        The combined one-line summary. Empty when neither half has members.
     """
     segments: list[str] = []
-    if completed_names:
-        segments.append(summarize_tool_group(completed_names, tense="past"))
-    if pending_names:
-        segments.append(summarize_tool_group(pending_names, tense="present"))
+    if completed_calls:
+        segments.append(summarize_tool_group(completed_calls, tense="past"))
+    if pending_calls:
+        segments.append(summarize_tool_group(pending_calls, tense="present"))
     if not segments:
         return ""
     return _join_segments(segments)
+
+
+def _summary_cache_key(
+    calls: Sequence[_SummaryCall],
+) -> _SummaryCacheKey:
+    """Build a cache key capturing everything a summary line depends on.
+
+    The line is a function of each call's `(name, target)`, so the key is too.
+    A names-only key would in fact be sufficient today — every membership
+    mutation, append and eviction alike, clears the cache outright, so two
+    cached states cannot share a name list while differing in targets. Deriving
+    the key from the summarizer's real inputs instead of relying on that
+    argument keeps it correct if grouping ever changes. Over-invalidation is the
+    only cost: reordering calls within a category rebuilds identical text.
+
+    Args:
+        calls: `(raw tool name, parsed args)` for each call, in call order.
+
+    Returns:
+        A hashable key, order-sensitive to match segment ordering.
+    """
+    return tuple((name, _summary_target(name, args)) for name, args in calls)
 
 
 _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
@@ -4159,11 +4882,11 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
-        # The (completed, pending) tool-name tuples the cached live line was
-        # built from. The line mixes finished (past tense) and running (present
-        # tense) members, so it must be rebuilt whenever a member finishes, not
-        # just when membership grows.
-        self._present_key: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        # The (completed, pending) `_summary_cache_key` pair the cached live line
+        # was built from. The line mixes finished (past tense) and running
+        # (present tense) members, so it must be rebuilt whenever a member
+        # finishes, not just when membership grows.
+        self._present_key: _LiveSummaryKey | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -4346,8 +5069,9 @@ class ToolGroupSummary(Static):
         Two reasons qualify. A non-success (errored, rejected, skipped) must stay
         visible so a failure is not summarized away. So must a success whose
         output opens with a display caveat: the summary is built from tool names
-        alone, so folding one hides the only statement that the change could not
-        be shown — see `ToolCallMessage.has_display_caveat`.
+        and arguments, never from tool output, so folding one hides the only
+        statement that the change could not be shown — see
+        `ToolCallMessage.has_display_caveat`.
         """
         failed = [t for t in self._tools if t.is_failed or t.has_display_caveat]
         if not failed:
@@ -4456,9 +5180,11 @@ class ToolGroupSummary(Static):
         if in_progress is None:
             in_progress = self._in_progress()
         if not self._finalized and in_progress:
-            pending = [tool.tool_name for tool in self._tools if tool.is_pending]
-            completed = [tool.tool_name for tool in self._tools if not tool.is_pending]
-            key = (tuple(completed), tuple(pending))
+            # Tallied per bucket, not across both: a file whose second read is
+            # still in flight must stay visible as being read.
+            pending = [t.summary_call for t in self._tools if t.is_pending]
+            completed = [t.summary_call for t in self._tools if not t.is_pending]
+            key = (_summary_cache_key(completed), _summary_cache_key(pending))
             summary_changed = self._present_text is None or key != self._present_key
             if summary_changed:
                 self._present_text = summarize_live_tool_group(completed, pending)
@@ -4477,9 +5203,198 @@ class ToolGroupSummary(Static):
             )
             if self._past_text is None:
                 self._past_text = summarize_tool_group(
-                    [tool.tool_name for tool in self._tools], tense="past"
+                    [tool.summary_call for tool in self._tools], tense="past"
                 )
             self.update(Content(f"{mark} {self._past_text}"), layout=layout)
+
+
+class LazyToolGroupSummary(Vertical):
+    """Data-backed tool summary that creates detail widgets only when expanded."""
+
+    class ExpansionChanged(Message):
+        """Posted after lazy tool details mount or unmount."""
+
+        def __init__(self, widget: LazyToolGroupSummary, expanded: bool) -> None:
+            """Initialize an expansion notification.
+
+            Args:
+                widget: Lazy group whose detail state changed.
+                expanded: Whether its detail widgets are now mounted.
+            """
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    DEFAULT_CSS = """
+    LazyToolGroupSummary {
+        height: auto;
+        margin: 0 0 1 0;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-header {
+        height: auto;
+        padding: 0 1;
+        color: $text-muted;
+        pointer: pointer;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-header:hover {
+        color: $text;
+    }
+
+    LazyToolGroupSummary .lazy-tool-group-details {
+        height: auto;
+    }
+    """
+
+    def __init__(
+        self,
+        messages: list[MessageData],
+        *,
+        detail_builder: Callable[[MessageData], tuple[Widget, Widget | None]]
+        | None = None,
+        **kwargs: Any,
+    ) -> None:
+        """Initialize a collapsed summary from retained message data.
+
+        Args:
+            messages: Completed tool and associated diff rows in display order.
+            detail_builder: Optional factory for a detail widget and its timestamp.
+            **kwargs: Additional arguments passed to `Vertical`.
+        """
+        super().__init__(**kwargs)
+        self._message_data = list(messages)
+        self._detail_builder = detail_builder
+        self._detail_widgets: list[tuple[MessageData, Widget]] = []
+        self._expanded = False
+        self._deferred_expanded = False
+        self._transitioning = False
+        self._details: Vertical | None = None
+
+    def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
+        """Compose the persistent header and initially empty detail container.
+
+        Yields:
+            Header and detail container widgets.
+        """
+        yield Static("", classes="lazy-tool-group-header")
+        yield Vertical(classes="lazy-tool-group-details")
+
+    def on_mount(self) -> None:
+        """Render the summary and restore deferred expansion when requested."""
+        self._details = self.query_one(".lazy-tool-group-details", Vertical)
+        self._details.display = False
+        self._update_header()
+        if self._deferred_expanded:
+            self._deferred_expanded = False
+            self.toggle()
+
+    def _update_header(self) -> None:
+        """Refresh disclosure state without constructing any detail widget."""
+        if not self.is_attached:
+            return
+        glyphs = get_glyphs()
+        mark = (
+            glyphs.disclosure_expanded
+            if self._expanded
+            else glyphs.disclosure_collapsed
+        )
+        calls = [
+            (data.tool_name, data.tool_args or {})
+            for data in self._message_data
+            if data.tool_name is not None
+        ]
+        self.query_one(".lazy-tool-group-header", Static).update(
+            Content(f"{mark} {summarize_tool_group(calls)}")
+        )
+
+    def toggle(self) -> None:
+        """Schedule expansion or collapse without blocking the input handler."""
+        if not self._transitioning:
+            self.run_worker(self._set_expanded(not self._expanded))
+
+    def _snapshot_detail_state(self) -> None:
+        """Persist mutable child state before detail widgets leave the DOM."""
+        for data, widget in self._detail_widgets:
+            if isinstance(widget, ToolCallMessage):
+                data.tool_expanded = widget._expanded
+
+    async def _set_expanded(self, expanded: bool) -> None:
+        """Create or discard detail widgets for one explicit toggle."""
+        if expanded == self._expanded or self._transitioning:
+            return
+        details = self._details
+        if details is None or not details.is_attached:
+            return
+
+        self._transitioning = True
+        try:
+            if expanded:
+                try:
+                    entries = []
+                    for data in self._message_data:
+                        widget, footer = (
+                            self._detail_builder(data)
+                            if self._detail_builder is not None
+                            else (data.to_widget(), None)
+                        )
+                        entries.append((data, widget, footer))
+                    nodes = [
+                        node
+                        for _data, widget, footer in entries
+                        for node in (
+                            (widget, footer) if footer is not None else (widget,)
+                        )
+                    ]
+                    await details.mount(*nodes)
+                except Exception:
+                    logger.warning("Failed to expand lazy tool group", exc_info=True)
+                    try:
+                        await details.remove_children()
+                    except Exception:
+                        logger.warning(
+                            "Failed to clean up lazy tool group expansion",
+                            exc_info=True,
+                        )
+                    self.app.notify(
+                        "Tool details could not be expanded. See the debug log.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
+                    return
+                self._detail_widgets = [
+                    (data, widget) for data, widget, _footer in entries
+                ]
+                details.display = True
+            else:
+                self._snapshot_detail_state()
+                details.display = False
+                try:
+                    await details.remove_children()
+                except Exception:
+                    logger.warning("Failed to collapse lazy tool group", exc_info=True)
+                    details.display = True
+                    self.app.notify(
+                        "Tool details could not be collapsed. See the debug log.",
+                        severity="warning",
+                        timeout=6,
+                        markup=False,
+                    )
+                    return
+                self._detail_widgets = []
+
+            self._expanded = expanded
+            self._update_header()
+            self.post_message(self.ExpansionChanged(self, expanded))
+        finally:
+            self._transitioning = False
+
+    @on(Click, ".lazy-tool-group-header")
+    def _on_header_click(self, event: Click) -> None:
+        """Toggle details when the summary row is clicked."""
+        event.stop()
+        self.toggle()
 
 
 class DiffMessage(Static):
@@ -4509,7 +5424,6 @@ class DiffMessage(Static):
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $panel;
-        pointer: text;
     }
 
     DiffMessage .diff-header {
@@ -4530,6 +5444,7 @@ class DiffMessage(Static):
         stats: DiffStats | None = None,
         outcome: DiffOutcome = "shown",
         show_caveat: bool = True,
+        show_numbers: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4559,6 +5474,13 @@ class DiffMessage(Static):
                 guaranteed: it can never be folded into a group, so both would
                 render adjacent. The caller owns that judgement because this
                 widget cannot see what else is mounted.
+            show_numbers: Whether file-relative line numbers may be rendered.
+                Diffs whose numbers are not file-relative remain unnumbered.
+                The caller owns this judgement: a live `edit_file` diff is
+                computed from the full before/after file contents and has
+                file-relative numbers, while a resumed-thread `edit_file`
+                diff is rebuilt from `old_string`/`new_string` fragments and
+                does not.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
@@ -4576,6 +5498,7 @@ class DiffMessage(Static):
         self._stats = stats
         self._outcome = outcome
         self._show_caveat = show_caveat
+        self._show_numbers = show_numbers
 
     @property
     def renders_caveat(self) -> bool:
@@ -4661,6 +5584,7 @@ class DiffMessage(Static):
                     path=self._file_path,
                     before=self._before,
                     after=self._after,
+                    show_numbers=self._show_numbers,
                 )
 
     def _recount(self) -> DiffStats | None:
@@ -4687,6 +5611,14 @@ class DiffMessage(Static):
             colors = theme.get_theme_colors(self)
             self.styles.border_left = ("ascii", colors.panel)
 
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
+
 
 class ErrorMessage(Static):
     """Widget displaying an error message."""
@@ -4699,7 +5631,6 @@ class ErrorMessage(Static):
         background: $error-muted;
         color: white;
         border-left: wide $error;
-        pointer: text;
     }
     """
     """Tinted background + left border to visually separate errors from output."""
@@ -4737,6 +5668,14 @@ class ErrorMessage(Static):
         """Open clicked URLs."""
         if event.style.link:
             open_style_link(event)
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
+
+    def on_leave(self) -> None:
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class _RubricResultToggle(Static):
@@ -5067,7 +6006,6 @@ class AppMessage(Static):
         margin: 0 0 1 0;
         color: $text-muted;
         text-style: italic;
-        pointer: text;
     }
     """
 
@@ -5160,17 +6098,12 @@ class AppMessage(Static):
         open_style_link(event)
 
     def on_mouse_move(self, event: MouseMove) -> None:
-        """Show a pointer cursor over embedded links, text cursor elsewhere."""
-        self.styles.pointer = "pointer" if event_targets_link(event) else "text"
+        """Match the pointer shape to the cell under the mouse."""
+        self.styles.pointer = _pointer_shape_for(event)
 
     def on_leave(self) -> None:
-        """Restore the pointer shape when the mouse leaves the message.
-
-        `"text"` restates this widget's CSS default rather than clearing the
-        inline style, so a subclass declaring a different `pointer` would be
-        forced back to `text` on leave.
-        """
-        self.styles.pointer = "text"
+        """Reset the pointer shape when the mouse leaves the message."""
+        self.styles.pointer = "default"
 
 
 class SummarizationMessage(AppMessage):
@@ -5185,7 +6118,6 @@ class SummarizationMessage(AppMessage):
         background: $surface;
         border-left: wide $primary;
         text-style: bold;
-        pointer: text;
     }
     """
 

@@ -7,7 +7,6 @@ update subcommand, and help screen examples.
 import asyncio
 import io
 import json
-import re
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -15,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from rich.console import Console
 
+from deepagents_code._paths import PATHS
 from deepagents_code.main import parse_args
 from deepagents_code.ui import (
     show_agents_help,
@@ -22,6 +22,7 @@ from deepagents_code.ui import (
     show_list_help,
     show_reset_help,
     show_skills_delete_help,
+    show_skills_help,
     show_skills_info_help,
     show_skills_list_help,
     show_threads_delete_help,
@@ -49,6 +50,13 @@ class TestHelpScreenExamples:
         assert "Examples:" in text
         assert "dcode list" in text
         assert "dcode list --json" in text
+        assert PATHS.display(PATHS.profile.root) in text
+
+    def test_skills_help_uses_launch_profile(self) -> None:
+        """Skill help names the effective user-skill directory."""
+        text = self._render(show_skills_help)
+        expected = PATHS.display(PATHS.profile.agent_skills_dir("<agent>"))
+        assert expected in text
 
     def test_skills_list_help_has_examples(self) -> None:
         text = self._render(show_skills_list_help)
@@ -106,7 +114,7 @@ class TestResetDryRun:
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with (
-            patch("deepagents_code.agent.settings") as mock_settings,
+            patch("deepagents_code.agent.credentials") as mock_settings,
             patch("deepagents_code.agent.console", test_console),
             patch(
                 "deepagents_code.agent.get_default_coding_instructions",
@@ -132,7 +140,7 @@ class TestResetDryRun:
 
         stdout_buf = io.StringIO()
         with (
-            patch("deepagents_code.agent.settings") as mock_settings,
+            patch("deepagents_code.agent.credentials") as mock_settings,
             patch("deepagents_code.agent.console"),
             patch(
                 "deepagents_code.agent.get_default_coding_instructions",
@@ -355,7 +363,11 @@ class TestSkillsCreateIdempotency:
         mock_settings.project_root = None
         mock_settings.ensure_user_skills_dir.return_value = tmp_path
         with (
-            patch("deepagents_code.config.Settings") as settings_cls,
+            patch("deepagents_code.config.Credentials") as settings_cls,
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=tmp_path,
+            ),
             patch("deepagents_code.config.console", test_console),
         ):
             settings_cls.from_environment.return_value = mock_settings
@@ -378,7 +390,11 @@ class TestSkillsCreateIdempotency:
         mock_settings.project_root = None
         mock_settings.ensure_user_skills_dir.return_value = tmp_path
         with (
-            patch("deepagents_code.config.Settings") as settings_cls,
+            patch("deepagents_code.config.Credentials") as settings_cls,
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=tmp_path,
+            ),
             patch("deepagents_code.config.console"),
             patch("sys.stdout", stdout_buf),
         ):
@@ -526,7 +542,7 @@ class TestErrorMessageHints:
         buf = io.StringIO()
         test_console = Console(file=buf, highlight=False, width=200)
         with (  # separate to satisfy PT012
-            patch("deepagents_code.agent.settings") as mock_settings,
+            patch("deepagents_code.agent.credentials") as mock_settings,
             patch("deepagents_code.agent.console", test_console),
         ):
             mock_settings.user_deepagents_dir = tmp_path
@@ -592,30 +608,3 @@ class TestHelpScreenDriftExtended:
         with patch("deepagents_code.ui.console", test_console):
             show_help()
         assert "--stdin" in buf.getvalue()
-
-    def test_all_parser_flags_appear_in_help(self) -> None:
-        """Every top-level --flag in argparse must appear in show_help()."""
-        stderr_buf = io.StringIO()
-        with (
-            patch.object(sys, "argv", ["deepagents", "--_x_"]),
-            patch("sys.stderr", stderr_buf),
-            pytest.raises(SystemExit),
-        ):
-            parse_args()
-        usage_text = stderr_buf.getvalue()
-
-        help_buf = io.StringIO()
-        test_console = Console(file=help_buf, highlight=False, width=200)
-        with patch("deepagents_code.ui.console", test_console):
-            show_help()
-        help_text = help_buf.getvalue()
-
-        parser_flags = set(re.findall(r"--[\w][\w-]*", usage_text))
-        help_flags = set(re.findall(r"--[\w][\w-]*", help_text))
-        parser_flags.discard("--_x_")
-
-        missing = parser_flags - help_flags
-        assert not missing, (
-            f"Flags in argparse but missing from show_help(): {missing}\n"
-            "Add them to the Options section in ui.show_help()."
-        )

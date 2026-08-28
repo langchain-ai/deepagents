@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast, override
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -16,12 +16,15 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    ToolCallRequest,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import InjectedToolCallId, ToolRuntime
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.types import Command, interrupt
-from pydantic import Field
+from pydantic import AfterValidator, Field, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
@@ -30,6 +33,8 @@ from deepagents_code._ask_user_types import (
     AskUserAuthorizationReceipt,
     AskUserRequest,
     Question,
+    ValidatedQuestion,
+    _validate_questions,
     format_ask_user_error_answer,
     format_ask_user_transcript,
 )
@@ -39,11 +44,14 @@ logger = logging.getLogger(__name__)
 
 ASK_USER_TOOL_DESCRIPTION = """Ask the user one or more questions when you need clarification or input before proceeding.
 
-Each question can be either:
+Each question can be one of:
 - "text": Free-form text response from the user
-- "multiple_choice": User selects from predefined options (an "Other" option is always available)
+- "multiple_choice": User selects exactly one of the predefined options (an "Other" option is always available)
+- "multi_select": User selects one or more of the predefined options (an "Other" free-form option is always available; filling one reveals an "Add another" slot for more custom values)
 
-For multiple choice questions, provide a list of choices. The user can pick one or type a custom answer via the "Other" option.
+For "multiple_choice" and "multi_select" questions, provide a list of choices, each with a non-empty "value". For "multiple_choice" the user picks one option or types a custom answer via the "Other" option; for "multi_select" the user toggles one or more of the provided options and may also add one or more custom free-form Other values among the selected values.
+
+A "multi_select" answer is returned as a JSON array of the selected values, e.g. ["a", "b"] (an optional question the user leaves untouched returns []). "multi_select" choice values and custom Other text may themselves contain commas, quotes, and newlines. A "multiple_choice" value is returned on its own with no escaping, so keep that one to a single line.
 
 By default all questions are required. Set "required" to false for optional questions that the user can skip. Do not include "(required)", "(optional)", "- optional", or similar annotations in the question text — the UI renders that separately based on the "required" field.
 
@@ -65,47 +73,11 @@ Use this tool sparingly - only when you genuinely need information from the user
 
 When using `ask_user`:
 - Be concise and specific with your questions
-- Use multiple choice when there are clear options to choose from
+- Use multiple choice when there are clear options and exactly one applies
+- Use multi-select when the user may legitimately pick several of the options
 - Use text input when you need free-form responses
 - Group related questions into a single ask_user call rather than making multiple calls
 - Never ask questions you can answer yourself from the available context"""  # noqa: E501
-
-
-def _validate_questions(questions: list[Question]) -> None:
-    """Validate ask_user question structure before interrupting.
-
-    Args:
-        questions: Question definitions provided to the `ask_user` tool.
-
-    Raises:
-        ValueError: If the questions list or an individual question is invalid.
-    """
-    if not questions:
-        msg = "ask_user requires at least one question"
-        raise ValueError(msg)
-
-    for q in questions:
-        question_text = q.get("question")
-        if not isinstance(question_text, str) or not question_text.strip():
-            msg = "ask_user questions must have non-empty 'question' text"
-            raise ValueError(msg)
-
-        question_type = q.get("type")
-        if question_type not in {"text", "multiple_choice"}:
-            msg = f"unsupported ask_user question type: {question_type!r}"
-            raise ValueError(msg)
-
-        if question_type == "multiple_choice" and not q.get("choices"):
-            msg = (
-                f"multiple_choice question "
-                f"{q.get('question')!r} requires a "
-                f"non-empty 'choices' list"
-            )
-            raise ValueError(msg)
-
-        if question_type == "text" and q.get("choices"):
-            msg = f"text question {q.get('question')!r} must not define 'choices'"
-            raise ValueError(msg)
 
 
 def _context_string(context: object, name: str) -> str | None:
@@ -345,13 +317,34 @@ def _parse_answers(
     )
 
 
+def _log_rejected_ask_user_call(
+    request: ToolCallRequest, result: ToolMessage | Command[Any]
+) -> None:
+    """Log an `ask_user` call the schema rejected.
+
+    Args:
+        request: The tool call request that produced `result`.
+        result: The handler's result.
+    """
+    if (
+        request.tool_call["name"] == "ask_user"
+        and isinstance(result, ToolMessage)
+        and result.status == "error"
+    ):
+        logger.warning("ask_user rejected the model's arguments: %s", result.content)
+
+
 class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     """Middleware that provides an ask_user tool for interactive questioning.
 
     This middleware adds an `ask_user` tool that allows agents to ask the user
-    questions during execution. Questions can be free-form text or multiple choice.
+    questions during execution. Questions can be free-form text, multiple choice
+    (pick exactly one), or multi-select (pick one or more).
     The tool uses LangGraph interrupts to pause execution and wait for user input.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     def __init__(
         self,
@@ -374,7 +367,8 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         @tool(description=self.tool_description)
         def _ask_user(
             questions: Annotated[
-                list[Question],
+                list[ValidatedQuestion],
+                AfterValidator(_validate_questions),
                 Field(description="Questions to present to the user."),
             ],
             tool_call_id: Annotated[str, InjectedToolCallId],
@@ -384,8 +378,30 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
             Returns:
                 `Command` containing the parsed user answers as a `ToolMessage`.
+
+            Raises:
+                RuntimeError: If the tool body raises a `ValidationError` after
+                    the arguments have been validated. Re-raised as a type
+                    `ToolNode` will not convert, so the fault stays fatal
+                    instead of being reported to the model as bad input.
             """
-            _validate_questions(questions)
+            # The arguments below are already validated: the schema rejects an
+            # empty list, blank question text, an unknown `type`, a non-boolean
+            # `required`, blank choice values, and the cross-field `choices`
+            # rules on `ValidatedQuestion`. `ToolNode` converts that rejection
+            # into an error `ToolMessage` the model can correct and retry from,
+            # so no handling is wired here.
+            #
+            # Two separate mechanisms keep the injected arguments out of that
+            # message, and neither covers the other:
+            #   - `runtime` is dropped by `_filter_validation_errors`, which
+            #     builds its name set from state/store/runtime only.
+            #   - `tool_call_id` is an `InjectedToolCallId`, which that filter
+            #     does *not* know about. It stays out because
+            #     `ToolInvocationError` is built from the pre-injection
+            #     `call["args"]`.
+            # `AskUserMiddleware.wrap_tool_call` logs the rejection, since
+            # `ToolNode` logs nothing itself.
             ask_request = AskUserRequest(
                 type="ask_user",
                 questions=questions,
@@ -396,29 +412,103 @@ class AskUserMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             # wrap_tool_call middleware that catches exceptions MUST re-raise
             # GraphBubbleUp — a broad `except Exception` (e.g. ToolRetryMiddleware)
             # would swallow this interrupt and silently break ask_user.
-            response = interrupt(ask_request)
-            execution_thread_id = _execution_thread_id(runtime)
-            context_thread_id = _context_string(runtime.context, "thread_id")
-            context_turn_id = _context_string(runtime.context, "turn_id")
-            active_turn_id = _active_turn_id(runtime)
-            runtime_tool_call_id = runtime.tool_call_id
-            return _parse_answers(
-                response,
-                questions,
-                tool_call_id,
-                thread_id=(
-                    execution_thread_id
-                    if execution_thread_id == context_thread_id
-                    and runtime_tool_call_id == tool_call_id
-                    else None
-                ),
-                turn_id=(
-                    context_turn_id if context_turn_id == active_turn_id else None
-                ),
-            )
+            # `ToolNode` wraps the tool body in the same `try` as argument
+            # parsing, so any `ValidationError` escaping from here would be
+            # reported to the model as *its* bad input — naming fields that are
+            # not even on the tool schema, against arguments the model wrote
+            # correctly, and discarding the user's answer. Re-raise as a
+            # non-`ValidationError` so it stays fatal, which is what
+            # `_default_handle_tool_errors` does with every other type.
+            #
+            # Nothing in the body raises one today. This guards the next edit,
+            # not a live fault. `GraphInterrupt` from `interrupt()` is not a
+            # `ValidationError` and passes through untouched.
+            try:
+                response = interrupt(ask_request)
+                execution_thread_id = _execution_thread_id(runtime)
+                context_thread_id = _context_string(runtime.context, "thread_id")
+                context_turn_id = _context_string(runtime.context, "turn_id")
+                active_turn_id = _active_turn_id(runtime)
+                runtime_tool_call_id = runtime.tool_call_id
+                return _parse_answers(
+                    response,
+                    questions,
+                    tool_call_id,
+                    thread_id=(
+                        execution_thread_id
+                        if execution_thread_id == context_thread_id
+                        and runtime_tool_call_id == tool_call_id
+                        else None
+                    ),
+                    turn_id=(
+                        context_turn_id if context_turn_id == active_turn_id else None
+                    ),
+                )
+            except ValidationError as exc:
+                msg = (
+                    "ask_user failed internally after its arguments were "
+                    "validated; this is not a model-authored error"
+                )
+                raise RuntimeError(msg) from exc
 
         _ask_user.name = "ask_user"
         self.tools = [_ask_user]
+
+    @override
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Log a rejected `ask_user` call, then pass the result through.
+
+        `ToolNode` converts an argument `ValidationError` into an error
+        `ToolMessage` before it reaches here, and it logs nothing itself, so
+        without this a model sending malformed arguments — or looping on them —
+        leaves no operator-visible record at all. The user sees only a red
+        `ask_user` row in the transcript.
+
+        The result type is the discriminant: `_ask_user` always returns a
+        `Command`, so a `ToolMessage` here means the call never entered the tool
+        body. That keeps this off the `_parse_answers` error path, which reports
+        a malformed *resume payload* inside a `Command` and logs itself.
+
+        Nothing is caught. An exception from the body must stay fatal, and
+        `GraphBubbleUp` from `interrupt()` must keep bubbling.
+
+        Args:
+            request: The tool call request.
+            handler: Callable that executes the tool.
+
+        Returns:
+            The handler's result, unchanged.
+        """
+        result = handler(request)
+        _log_rejected_ask_user_call(request, result)
+        return result
+
+    @override
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Async twin of `wrap_tool_call`.
+
+        Defined so the async path keeps executing tools asynchronously. With
+        only the sync wrapper present, `ToolNode` falls back to running the tool
+        through `_execute_tool_sync`.
+
+        Args:
+            request: The tool call request.
+            handler: Awaitable callable that executes the tool.
+
+        Returns:
+            The handler's result, unchanged.
+        """
+        result = await handler(request)
+        _log_rejected_ask_user_call(request, result)
+        return result
 
     def wrap_model_call(
         self,

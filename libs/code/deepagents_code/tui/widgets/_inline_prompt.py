@@ -6,8 +6,9 @@ import asyncio
 import logging
 import time
 from collections import Counter
-from typing import TYPE_CHECKING, Any, Generic, TypeVar
+from typing import TYPE_CHECKING, Any
 
+from textual.containers import Horizontal
 from textual.content import Content
 from textual.message import Message
 from textual.widgets import Static
@@ -16,6 +17,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from textual import events
+    from textual.app import ComposeResult
     from textual.widget import Widget
 
 from deepagents_code import theme
@@ -23,8 +25,6 @@ from deepagents_code.config import get_glyphs, is_ascii_mode
 from deepagents_code.tui.widgets._paste_textarea import CollapsingPasteTextArea
 
 logger = logging.getLogger(__name__)
-
-ResultT = TypeVar("ResultT")
 
 _UNSET: Any = object()
 
@@ -62,7 +62,7 @@ def _media_unsupported_toast(paths: list[Path]) -> str:
     return f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; {noun} not inserted: {listing}."
 
 
-class InlinePromptCompletion(Generic[ResultT]):
+class InlinePromptCompletion[ResultT]:
     """Resolve an inline prompt result at most once.
 
     `set_future` and `resolve` may be called in either order: a result
@@ -161,21 +161,13 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         now = time.monotonic()
 
         # Drive the shared paste-burst state machine so a paste replayed as rapid
-        # key events (no bracketed paste) stays grouped and can be collapsed.
+        # key events (no bracketed paste) stays grouped without delaying typing.
         if await self._absorb_key_into_burst(event, now):
             event.prevent_default()
             event.stop()
             return
 
-        if self._maybe_start_burst(event, now):
-            event.prevent_default()
-            event.stop()
-            return
-
-        if self._track_burst_run(event, now):
-            event.prevent_default()
-            event.stop()
-            return
+        self._track_burst_run(event, now)
 
         if event.key == "backspace" and self._delete_placeholder_token(backwards=True):
             event.prevent_default()
@@ -204,6 +196,10 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
             return
 
         await super()._on_key(event)
+
+        # Must follow `super()._on_key`: promotion verifies the run against the
+        # document, so the current character has to be in it already.
+        self._check_burst_run_for_promotion()
 
     async def _on_paste(self, event: events.Paste) -> None:
         """Reject a dragged media file, else defer to shared paste handling."""
@@ -294,8 +290,28 @@ class InlinePromptTextArea(CollapsingPasteTextArea):
         return True
 
 
-class InlinePromptOption(Static):
-    """Render a selectable inline-prompt option with a cursor."""
+class InlinePromptOption(Horizontal):
+    """Render a selectable inline-prompt option with a cursor gutter."""
+
+    DEFAULT_CSS = """
+    InlinePromptOption {
+        height: auto;
+    }
+
+    InlinePromptOption > .inline-prompt-option-cursor {
+        width: 2;
+        height: 1;
+    }
+
+    InlinePromptOption > .inline-prompt-option-label {
+        width: 1fr;
+        height: auto;
+    }
+
+    InlinePromptOption.inline-prompt-option-selected > .inline-prompt-option-label {
+        color: $primary;
+    }
+    """
 
     def __init__(
         self,
@@ -303,7 +319,7 @@ class InlinePromptOption(Static):
         index: int,
         *,
         selected: bool = False,
-        selected_class: str | None = None,
+        selected_class: str | None = "inline-prompt-option-selected",
         **kwargs: Any,
     ) -> None:
         """Initialize an option.
@@ -313,15 +329,32 @@ class InlinePromptOption(Static):
             index: Position in its owning prompt's option list.
             selected: Whether to render the option selected initially.
             selected_class: CSS class applied while the option is highlighted.
-            **kwargs: Additional `Static` arguments.
+            **kwargs: Additional `Horizontal` arguments.
         """
         self.option_index = index
         self._cursor_visible = selected
         self._highlighted = selected
         self._text = text
         self._selected_class = selected_class
-        super().__init__(self._render(), **kwargs)
+        self._cursor_widget: Static | None = None
+        super().__init__(**kwargs)
         self._sync_selected_class()
+
+    def compose(self) -> ComposeResult:
+        """Compose the cursor gutter and independently wrapping label.
+
+        Yields:
+            The fixed cursor gutter followed by the wrapping label.
+        """
+        self._cursor_widget = Static(
+            self._cursor_content(),
+            classes="inline-prompt-option-cursor",
+        )
+        yield self._cursor_widget
+        yield Static(
+            Content.from_markup("$text", text=self._text),
+            classes="inline-prompt-option-label",
+        )
 
     @property
     def selected(self) -> bool:
@@ -345,13 +378,19 @@ class InlinePromptOption(Static):
         """
         self._cursor_visible = cursor
         self._highlighted = highlighted
-        self.update(self._render())
+        if self._cursor_widget is not None:
+            self._cursor_widget.update(self._cursor_content())
         self._sync_selected_class()
 
-    def _render(self) -> Content:
+    def _cursor_content(self) -> Content:
         glyphs = get_glyphs()
-        prefix = f"{glyphs.cursor} " if self._cursor_visible else "  "
-        return Content.from_markup("$prefix$text", prefix=prefix, text=self._text)
+        marker = glyphs.cursor if self._cursor_visible else self._unselected_marker
+        return Content(f"{marker} ")
+
+    @property
+    def _unselected_marker(self) -> str:
+        """Marker shown in the cursor gutter when this option is not selected."""
+        return " "
 
     def _sync_selected_class(self) -> None:
         if self._selected_class is None:

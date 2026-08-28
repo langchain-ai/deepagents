@@ -356,7 +356,10 @@ class TestThreadFunctions:
 
     def test_delete_thread(self, temp_db, monkeypatch, tmp_path):
         """Delete thread removes thread."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("thread1"))
             assert result is True
@@ -364,7 +367,10 @@ class TestThreadFunctions:
 
     def test_delete_thread_not_found(self, temp_db, monkeypatch, tmp_path):
         """Delete thread returns False for non-existing thread."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         with patch.object(sessions, "get_db_path", return_value=temp_db):
             result = asyncio.run(sessions.delete_thread("nonexistent"))
             assert result is False
@@ -373,7 +379,10 @@ class TestThreadFunctions:
         self, temp_db, monkeypatch, tmp_path
     ):
         """Deleting a thread removes its offloaded conversation history."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         archive_dir = tmp_path / ".deepagents" / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "thread1.md"
@@ -387,7 +396,10 @@ class TestThreadFunctions:
         self, temp_db, monkeypatch, tmp_path
     ):
         """Checkpoint deletion drives the result; history cleanup is best-effort."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         # `delete_thread` imports the helper from `offload` at call time, so
         # patching it there simulates a failed (but swallowed) cleanup.
         from deepagents_code import offload
@@ -403,7 +415,10 @@ class TestThreadFunctions:
         self, temp_db, monkeypatch, tmp_path
     ):
         """A thread with no checkpoints still has its orphaned archive cleaned."""
-        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setattr(
+            "deepagents_code.offload.get_deepagents_home",
+            lambda: tmp_path / ".deepagents",
+        )
         archive_dir = tmp_path / ".deepagents" / "conversation_history"
         archive_dir.mkdir(parents=True)
         archive = archive_dir / "orphan-thread.md"
@@ -601,6 +616,41 @@ class TestFormatTimestamp:
         """Returns empty for invalid timestamp."""
         result = sessions.format_timestamp("not a timestamp")
         assert result == ""
+
+    # Naive inputs keep these exact: `astimezone` attaches the local zone to a
+    # naive datetime without shifting the wall clock, so the rendering is the
+    # same in every `TZ`. Offset-bearing inputs would not be.
+    RENDERINGS: ClassVar = [
+        ("2024-12-30T00:30:00", "dec 30, 12:30am"),  # midnight is 12, not 0
+        ("2024-12-30T12:30:00", "dec 30, 12:30pm"),  # noon is 12, not 0
+        ("2024-12-30T09:05:00", "dec 30, 9:05am"),  # hour unpadded, day padded
+        ("2024-12-05T21:18:00", "dec 05, 9:18pm"),  # 12-hour clock, not 24
+    ]
+
+    def test_renders_expected_clock(self):
+        """Pins the hand-derived 12-hour clock at every boundary."""
+        for iso_timestamp, expected in self.RENDERINGS:
+            assert sessions.format_timestamp(iso_timestamp) == expected
+
+    def test_renders_where_strftime_rejects_dash_flag(self):
+        """Renders identically where the platform strftime has no `-` flag.
+
+        MSVC's CRT documents `#` as its only strftime flag and treats any
+        other flag as an invalid formatting code; CPython surfaces that as
+        `ValueError`. The stand-in reproduces that on any host, so the
+        regression is caught without a Windows runner.
+        """
+
+        class _NoDashFlagDatetime(datetime):
+            def strftime(self, format: str) -> str:  # noqa: A002  # matches `date.strftime`
+                if "%-" in format:
+                    msg = "Invalid format string"
+                    raise ValueError(msg)
+                return super().strftime(format)
+
+        with patch.object(sessions, "datetime", _NoDashFlagDatetime):
+            for iso_timestamp, expected in self.RENDERINGS:
+                assert sessions.format_timestamp(iso_timestamp) == expected
 
 
 class TestFormatRelativeTimestamp:
@@ -3078,6 +3128,13 @@ class TestCountMessagesFromDeltas:
                     additional_kwargs={"lc_source": "summarization"},
                 )
             ],
+            [
+                HumanMessage(
+                    content="hidden local context",
+                    id="h6",
+                    additional_kwargs={"lc_source": "local_context"},
+                )
+            ],
         ]
 
         assert sessions._count_messages_from_deltas(deltas) == 1  # pyright: ignore[reportPrivateUsage]
@@ -3143,6 +3200,11 @@ def test_inlined_checkpoint_count_excludes_internal_messages() -> None:
                         content="hidden",
                         id="h2",
                         additional_kwargs={"lc_source": "goal_state"},
+                    ),
+                    HumanMessage(
+                        content="hidden context",
+                        id="h3",
+                        additional_kwargs={"lc_source": "local_context"},
                     ),
                 ]
             }
@@ -3228,6 +3290,24 @@ class TestInitialPromptFromMessages:
         )
 
         assert result == "real prompt"
+
+    def test_skips_rendered_goal_context_with_objective_and_criteria(self) -> None:
+        """Detailed model context must not leak into a thread title."""
+        from deepagents_code.goal_state_notice import build_goal_state_notice
+
+        notice = build_goal_state_notice(
+            {
+                "_goal_objective": "Keep the SSO migration confidential",
+                "_goal_status": "active",
+                "_goal_rubric": "Do not expose the customer rollout list",
+            }
+        )
+
+        result = sessions._initial_prompt_from_messages(  # pyright: ignore[reportPrivateUsage]
+            [notice, {"role": "user", "content": "continue the migration"}]
+        )
+
+        assert result == "continue the migration"
 
     def test_unknown_source_can_be_the_initial_prompt(self) -> None:
         from langchain_core.messages import HumanMessage

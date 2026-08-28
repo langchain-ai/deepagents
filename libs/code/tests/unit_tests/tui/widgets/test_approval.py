@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Callable, Iterator
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -39,6 +39,41 @@ def wired_menu() -> Iterator[MenuFactory]:
     yield _make
     for loop in loops:
         loop.close()
+
+
+@pytest.mark.parametrize(
+    ("configured", "renderer_value", "expected"),
+    [(False, True, False), (True, True, True), (True, False, False)],
+)
+async def test_diff_line_number_preference_gates_approval_preview(
+    configured: bool,
+    renderer_value: bool,
+    expected: bool,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """App config can hide valid gutters but cannot enable invalid ones."""
+    data = {"show_numbers": renderer_value}
+    renderer = MagicMock()
+    widget_class = MagicMock()
+    renderer.get_approval_widget.return_value = (widget_class, data)
+    monkeypatch.setattr(
+        "deepagents_code.tui.widgets.approval.get_renderer",
+        lambda _tool_name: renderer,
+    )
+
+    menu = ApprovalMenu(
+        {"name": "edit_file", "args": {}},
+        show_diff_line_numbers=configured,
+    )
+    container = MagicMock()
+    container.remove_children = AsyncMock()
+    container.mount = AsyncMock()
+    menu._tool_info_container = container
+
+    await menu._update_tool_info()
+
+    assert data["show_numbers"] is expected
+    widget_class.assert_called_once_with(data)
 
 
 class TestCheckExpandableCommand:
@@ -324,7 +359,7 @@ class TestOptionOrdering:
             {
                 "name": "delete",
                 "args": {"file_path": "old.py"},
-                "description": "Auto human fallback (consecutive denials: 3).",
+                "description": "Auto human fallback: this action needs your review.",
             }
         )
         menu.set_future(future)
@@ -504,7 +539,7 @@ class TestAutoOptionEligibility:
             {
                 "name": "delete",
                 "args": {"file_path": "old.py"},
-                "description": "Auto human fallback (consecutive denials: 3).",
+                "description": "Auto human fallback: this action needs your review.",
             },
             auto_mode_eligible=False,
         )

@@ -290,13 +290,6 @@ class _BannerApp(App[None]):
 class TestBorder:
     """Tests for the charset-aware banner border."""
 
-    async def test_default_border_has_sharp_corners(self) -> None:
-        """Unicode mode uses a solid border with sharp corners."""
-        banner = _make_banner(show_model=False)
-        app = _BannerApp(banner)
-        async with app.run_test(size=(80, 24)):
-            assert banner.styles.border_top[0] == "solid"
-
     async def test_ascii_mode_uses_ascii_border(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

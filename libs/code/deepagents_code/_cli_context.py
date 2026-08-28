@@ -30,6 +30,15 @@ startup classifier authorizing actions after the UI reported the clear, so the
 sentinel stays plain ASCII.
 """
 
+INHERIT_SUMMARIZATION_MODEL = "__dcode_inherit_summarization__"
+"""Per-run `summarization_model` value meaning "use the main agent model".
+
+An absent (or `None`) `summarization_model` leaves the graph's startup summary
+model in effect. `/summarization-model clear` needs the stronger statement that
+summaries go back to the main agent model, which this sentinel carries across
+the remote JSON boundary without being mistaken for a model spec.
+"""
+
 
 @dataclass
 class CLIContextSchema:
@@ -53,6 +62,8 @@ class CLIContextSchema:
     model: str | None = None
 
     model_params: dict[str, Any] = field(default_factory=dict)
+
+    summarization_model: str | None = None
 
     profile_overrides: dict[str, Any] = field(default_factory=dict)
 
@@ -132,6 +143,7 @@ class CLIContextSchema:
         return cls(
             model=_str("model"),
             model_params=_mapping("model_params"),
+            summarization_model=_str("summarization_model"),
             profile_overrides=_mapping("profile_overrides"),
             model_context_limit=limit,
             classifier_model=_str("classifier_model"),
@@ -166,6 +178,17 @@ class CLIContext(TypedDict, total=False):
     model_params: dict[str, Any]
     """Invocation params (e.g. `temperature`, `max_tokens`) to merge
     into `model_settings`."""
+
+    summarization_model: str | None
+    """Model spec used only for context-compaction summary generation.
+
+    `None` or an absent key keeps the graph's startup summary model.
+    `INHERIT_SUMMARIZATION_MODEL` explicitly selects the main agent model. This
+    value never changes the main model or its system-prompt identity: its only
+    consumers are the summary-generation slots installed by
+    `offload_middleware._summarization_for_runtime`, so compaction thresholds
+    and token counting still track the main model.
+    """
 
     profile_overrides: dict[str, Any]
     """Model profile metadata supplied by `--profile-override`."""

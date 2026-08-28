@@ -8,7 +8,7 @@ Regenerate this file with `make commands-catalog` after changing command names,
 aliases, descriptions, visibility, or hidden-command metadata.
 
 
-## Public (43)
+## Public (45)
 
 | Command | Aliases | Description |
 | --- | --- | --- |
@@ -46,12 +46,14 @@ aliases, descriptions, visibility, or hidden-command metadata.
 | `/rubric` | `/criteria` | Set explicit acceptance criteria for rubric grading |
 | `/scrollbar` |  | Show or hide the chat scrollbar |
 | `/skill-creator` |  | Create or refine agent skills |
+| `/summarization-model` |  | Set the model used for context-compaction summaries |
 | `/theme` |  | Change color theme |
 | `/threads` |  | Browse and resume past threads |
 | `/timestamps` |  | Show or hide message timestamps |
 | `/tokens` |  | Show token usage |
 | `/tools` |  | List the tools available to the agent |
 | `/trace` |  | Open this thread in LangSmith |
+| `/uninstall` |  | Remove an installed optional extra |
 | `/update` |  | Check for and install updates |
 | `/version` | `/about` | Show version information |
 | `/yolo` |  | Switch to YOLO approval mode (no review) |

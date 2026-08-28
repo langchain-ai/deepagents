@@ -2450,6 +2450,20 @@ def parse_args() -> argparse.Namespace:
         help="Skip interactive confirmation prompts",
     )
 
+    uninstall_parser = subparsers.add_parser(
+        "uninstall",
+        help="Remove an installed optional extra",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_uninstall_help")),
+    )
+    uninstall_parser.add_argument(
+        "uninstall_target",
+        nargs="?",
+        default=None,
+        metavar="NAME",
+        help="Installed optional extra to remove",
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -2490,6 +2504,13 @@ def parse_args() -> argparse.Namespace:
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
         "These take priority, overriding config file values.",
+    )
+
+    parser.add_argument(
+        "--summarization-model",
+        metavar="MODEL",
+        help="Model to use for context-compaction summaries. Falls back to "
+        "[models].summarization_default, then the main agent model.",
     )
 
     from deepagents_code.ui import non_negative_int, positive_int, shell_allow_list_arg
@@ -2589,6 +2610,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Buffer the full response and write it to stdout at once "
         "instead of streaming token-by-token. Requires -n or piped stdin.",
+    )
+
+    parser.add_argument(
+        "--show-reasoning",
+        action="store_true",
+        default=None,
+        help="Show provider-visible reasoning (off by default).",
     )
 
     parser.add_argument(
@@ -2807,12 +2835,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Toggle automatic updates on or off, then exit",
     )
-    parser.add_argument(
+    extra_group = parser.add_mutually_exclusive_group()
+    extra_group.add_argument(
         "--install",
         metavar="NAME",
         help=(
             "Alias for `install NAME`. Install an optional extra "
             "(e.g. daytona, fireworks), then exit"
+        ),
+    )
+    extra_group.add_argument(
+        "--uninstall",
+        metavar="NAME",
+        help=(
+            "Alias for `uninstall NAME`. Remove an installed optional extra, then exit"
         ),
     )
     parser.add_argument(
@@ -2857,6 +2893,9 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    if args.package and (args.uninstall is not None or args.command == "uninstall"):
+        parser.error("--package cannot be used with uninstall")
+
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
     if (
@@ -3054,6 +3093,28 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
     return None
 
 
+def _resolve_summarization_model(spec: str | None) -> str | None:
+    """Resolve the invocation override before entering a supported launch mode.
+
+    Deliberately does not build the model: an invalid spec surfaces at the
+    first compaction rather than at launch, which keeps `create_model`'s
+    provider imports off the pre-first-paint path. `_LazySummaryModel` degrades
+    to the main model and logs, so a bad spec cannot wedge the session.
+
+    Args:
+        spec: The `--summarization-model` value, or `None` when unset. A blank
+            string overrides the configured default with "use the main model".
+
+    Returns:
+        The explicit spec, configured default, or `None` to reuse the main model.
+    """
+    if spec is not None:
+        return spec
+    from deepagents_code.model_config import ModelConfig
+
+    return ModelConfig.load().summarization_default_model
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -3065,6 +3126,7 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
@@ -3107,6 +3169,11 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        summarization_model: Model spec used only for context-compaction
+            summaries, already resolved by `_resolve_summarization_model`.
+
+            `None` reuses the effective main agent model, as does the blank
+            string a valueless `--summarization-model` produces.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
 
@@ -3277,6 +3344,7 @@ async def run_textual_cli_async(
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
+        "summarization_model": summarization_model,
         "model_params": model_params,
         "cli_max_retries": cli_max_retries,
         "profile_overrides": profile_override,
@@ -3321,6 +3389,7 @@ async def run_textual_cli_async(
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
+            summarization_model=summarization_model,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
@@ -3357,6 +3426,7 @@ async def _run_acp_cli_async(
     agent_server_cls: type[Any],
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     mcp_config_path: str | None = None,
@@ -3376,6 +3446,7 @@ async def _run_acp_cli_async(
         agent_server_cls: ACP server class constructor.
         model_name: Optional model name to use.
         model_params: Extra kwargs from `--model-params` to pass to the model.
+        summarization_model: Model spec used only for context-compaction summaries.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
@@ -3538,6 +3609,7 @@ async def _run_acp_cli_async(
                     project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
                     model_retries=session_model.model_retries,
                     cli_max_retries=session_model.cli_max_retries,
+                    summarization_model=summarization_model,
                 )
                 return agent_graph
 
@@ -5205,6 +5277,11 @@ def cli_main() -> None:
 
             sys.exit(run_install_command(args))
 
+        if command == "uninstall":
+            from deepagents_code.client.commands.extras import run_uninstall_command
+
+            sys.exit(run_uninstall_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -5301,6 +5378,12 @@ def cli_main() -> None:
 
         max_retries = getattr(args, "max_retries", None)
 
+        # Resolved once here rather than per launch mode, so every mode below
+        # receives the same already-resolved spec.
+        resolved_summarization_model = _resolve_summarization_model(
+            getattr(args, "summarization_model", None)
+        )
+
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)
         if raw_profile:
@@ -5382,6 +5465,7 @@ def cli_main() -> None:
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    summarization_model=resolved_summarization_model,
                     cli_max_retries=max_retries,
                     profile_override=profile_override,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -5800,6 +5884,11 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        if args.uninstall is not None:
+            from deepagents_code.client.commands.extras import run_uninstall_request
+
+            sys.exit(run_uninstall_request(name=args.uninstall))
+
         if args.package and not args.install:
             console.print(
                 "[bold red]Error:[/bold red] --package requires "
@@ -6118,6 +6207,7 @@ def cli_main() -> None:
 
             # Non-interactive mode - execute single task and exit
             from deepagents_code.client.non_interactive import run_non_interactive
+            from deepagents_code.config_manifest import load_bool_display_preference
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
@@ -6144,6 +6234,7 @@ def cli_main() -> None:
                             assistant_id=assistant_id,
                             model_name=getattr(args, "model", None),
                             model_params=model_params,
+                            summarization_model=resolved_summarization_model,
                             cli_max_retries=max_retries,
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
@@ -6154,6 +6245,9 @@ def cli_main() -> None:
                             startup_cmd=getattr(args, "startup_cmd", None),
                             quiet=args.quiet,
                             stream=not args.no_stream,
+                            show_reasoning=load_bool_display_preference(
+                                "display.show_reasoning", fallback=False
+                            ),
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
@@ -6336,6 +6430,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        summarization_model=resolved_summarization_model,
                         cli_max_retries=max_retries,
                         profile_override=profile_override,
                         thread_id=thread_id,

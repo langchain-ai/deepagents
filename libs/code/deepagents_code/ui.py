@@ -147,6 +147,9 @@ def show_help() -> None:
         "  dcode tools <install|list>                Manage managed tools (ripgrep)"
     )
     console.print("  dcode install NAME                        Install optional extras")
+    console.print(
+        "  dcode uninstall NAME                      Remove an optional extra"
+    )
     console.print()
 
     console.print("[bold]Options:[/bold]", style=theme.PRIMARY)
@@ -158,6 +161,8 @@ def show_help() -> None:
     console.print(
         "  --model-params JSON        Extra model kwargs (e.g., '{\"temperature\": 0.7}')"  # noqa: E501
     )
+    console.print("  --summarization-model MODEL")
+    console.print("                             Model for context-compaction summaries")
     console.print(
         "  --max-retries N            Retries after a failed model request; 0 disables"
     )
@@ -243,6 +248,7 @@ def show_help() -> None:
     console.print(
         "  --no-stream                Buffer full response instead of streaming"
     )
+    console.print("  --show-reasoning           Show provider-visible reasoning")
     console.print(
         "  --max-turns N              Max agentic turns before stopping (needs -n)"
     )
@@ -287,6 +293,7 @@ def show_help() -> None:
         "  --auto-update              Toggle automatic updates on or off, then exit"
     )
     console.print("  --install NAME             Alias for `install NAME`")
+    console.print("  --uninstall NAME           Alias for `uninstall NAME`")
     console.print(
         "  --package                  With install/--install, treat NAME as a "
         "package (uv --with), not an extra"
@@ -746,6 +753,41 @@ def show_install_help() -> None:
         style=theme.MUTED,
         highlight=False,
     )
+    console.print()
+
+
+def show_uninstall_help() -> None:
+    """Show help information for the `uninstall` subcommand."""
+    console.print()
+    console.print("[bold]Usage:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode uninstall NAME")
+    console.print()
+    console.print("Remove an installed optional deepagents-code extra.")
+    console.print("dcode rebuilds the tool environment with the remaining extras.")
+    console.print()
+    console.print("[bold]Examples:[/bold]", style=theme.PRIMARY)
+    console.print("  dcode uninstall ollama")
+    console.print()
+    from deepagents_code.extras_info import (
+        BASE_DEPENDENCY_EXTRAS,
+        COMPOSITE_EXTRA_MEMBERS,
+    )
+
+    base = ", ".join(sorted(BASE_DEPENDENCY_EXTRAS))
+    composites = " or ".join(sorted(COMPOSITE_EXTRA_MEMBERS))
+    console.print("[bold]Restrictions:[/bold]", style=theme.PRIMARY)
+    console.print(f"  These extras are base dependencies: {base}.")
+    console.print("  They cannot be removed.")
+    console.print("  Editable and Homebrew installs cannot remove extras in place.")
+    console.print(f"  An extra installed through {composites} cannot be")
+    console.print("  removed on its own. Remove the composite extra instead.")
+    console.print()
+    console.print(
+        "In-session equivalent: `/uninstall NAME`. Legacy CLI alias:",
+        style=theme.MUTED,
+        highlight=False,
+    )
+    console.print("  dcode --uninstall ollama", style=theme.MUTED)
     console.print()
 
 

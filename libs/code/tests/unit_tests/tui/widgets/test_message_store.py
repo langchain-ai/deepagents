@@ -25,6 +25,7 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     LazyToolGroupSummary,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
@@ -1618,6 +1619,18 @@ class TestMessageStoreIndex:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_reasoning_roundtrip_preserves_content_and_expansion() -> None:
+    widget = ReasoningMessage("[bold]plain[/bold]")
+    widget._expanded = False
+
+    restored = MessageData.from_widget(widget).to_widget()
+
+    assert isinstance(restored, ReasoningMessage)
+    assert restored._content == "[bold]plain[/bold]"
+    assert restored._deferred_expanded is False
+    assert restored._streaming is False
 
 
 def test_display_caveat_survives_the_store_roundtrip() -> None:

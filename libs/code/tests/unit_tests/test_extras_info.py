@@ -8,9 +8,12 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 import pytest
 from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from deepagents_code.extras_info import (
     _COMPOSITE_EXTRAS,
+    BASE_DEPENDENCY_EXTRAS,
+    COMPOSITE_EXTRA_MEMBERS,
     KNOWN_EXTRAS,
     MODEL_PROVIDER_EXTRAS,
     SANDBOX_EXTRAS,
@@ -29,6 +32,7 @@ from deepagents_code.extras_info import (
     collect_cli_version_info,
     collect_sdk_version_info,
     collect_version_report,
+    composite_extras_providing,
     extra_for_package,
     format_cli_version_annotation,
     format_extras_status,
@@ -392,6 +396,88 @@ def test_extras_taxonomy_covers_pyproject() -> None:
     assert not stale, (
         f"extras_info classifies extras not declared in pyproject.toml: {sorted(stale)}"
     )
+
+
+class TestBaseDependencyExtras:
+    """`BASE_DEPENDENCY_EXTRAS` must mirror `pyproject.toml`."""
+
+    def test_matches_extras_fully_covered_by_base_dependencies(self) -> None:
+        """The set equals the extras whose packages are all base dependencies.
+
+        Removal refuses these because deselecting them frees nothing. An extra
+        that gains or loses that property in `pyproject.toml` without a matching
+        update here would either be refused for no reason or accepted and then
+        rebuild the environment to no effect.
+        """
+        data = tomllib.loads(_PYPROJECT_PATH.read_text(encoding="utf-8"))
+        base_packages = {
+            canonicalize_name(Requirement(requirement).name)
+            for requirement in data["project"]["dependencies"]
+        }
+        covered = {
+            extra
+            for extra, requirements in _optional_dependencies().items()
+            # An empty extra (e.g. `quickjs`, kept for backwards-compatible
+            # install commands) adds nothing to remove either, so it belongs
+            # here too.
+            if all(
+                canonicalize_name(Requirement(requirement).name) in base_packages
+                for requirement in requirements
+            )
+        }
+        assert covered == set(BASE_DEPENDENCY_EXTRAS)
+
+
+class TestCompositeExtraMembers:
+    """`COMPOSITE_EXTRA_MEMBERS` must mirror `pyproject.toml`."""
+
+    def test_mapping_covers_every_composite(self) -> None:
+        """Every self-referencing extra in pyproject.toml has a member set.
+
+        A composite is exactly an extra that expands through a single
+        `deepagents-code[...]` requirement, so a new one added to
+        `pyproject.toml` must appear here rather than being silently treated
+        as an ordinary extra.
+        """
+        composites = {
+            extra
+            for extra, requirements in _optional_dependencies().items()
+            if len(requirements) == 1
+            and canonicalize_name(Requirement(requirements[0]).name)
+            == canonicalize_name("deepagents-code")
+        }
+        assert composites == set(COMPOSITE_EXTRA_MEMBERS)
+
+    def test_members_match_pyproject_expansion(self) -> None:
+        """The mapped members equal the extras the composite requirement selects.
+
+        Removal reports which composite provides an unremovable member, so a
+        composite that gained or lost providers in `pyproject.toml` without a
+        matching update here would name the wrong extra — or stay silent and
+        report an installed member as "not installed".
+        """
+        optional = _optional_dependencies()
+        for composite, members in COMPOSITE_EXTRA_MEMBERS.items():
+            requirements = optional[composite]
+            assert len(requirements) == 1, (
+                f"{composite} must expand through a single self-referencing "
+                f"requirement, got {requirements}"
+            )
+            declared = Requirement(requirements[0]).extras
+            assert declared == set(members), (
+                f"pyproject.toml {composite} selects {sorted(declared)}, "
+                f"COMPOSITE_EXTRA_MEMBERS has {sorted(members)}"
+            )
+
+    def test_lookup_finds_providing_composite(self) -> None:
+        """A member maps back to the composite that provides it."""
+        assert composite_extras_providing("ollama") == frozenset({"all-providers"})
+        assert composite_extras_providing("daytona") == frozenset({"all-sandboxes"})
+
+    def test_lookup_is_empty_for_unbundled_extras(self) -> None:
+        """Extras no composite expands to return an empty set."""
+        assert composite_extras_providing("media") == frozenset()
+        assert composite_extras_providing("all-providers") == frozenset()
 
 
 def test_known_extras_is_union_of_categories() -> None:

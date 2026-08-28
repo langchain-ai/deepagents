@@ -6,10 +6,12 @@ import os
 import sys
 from typing import Literal
 
+from deepagents_code._env_vars import UI_CHARSET_MODE
+
 
 def detect_charset_mode() -> Literal["ascii", "unicode"]:
     """Return the effective terminal character-set mode."""
-    prefixed = os.environ.get("DEEPAGENTS_CODE_UI_CHARSET_MODE")
+    prefixed = os.environ.get(UI_CHARSET_MODE)
     mode = prefixed if prefixed is not None else os.environ.get("UI_CHARSET_MODE")
     mode = (mode or "auto").lower()
     if mode == "unicode":

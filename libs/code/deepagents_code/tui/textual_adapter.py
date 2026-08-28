@@ -94,6 +94,7 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -133,6 +134,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -1550,6 +1552,7 @@ async def execute_task_textual(
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
     *,
+    show_reasoning: bool = False,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     skill_name: str | None = None,
@@ -1571,6 +1574,7 @@ async def execute_task_textual(
         session_state: Session state with a typed approval mode.
         adapter: The TextualUIAdapter for UI operations.
         backend: Optional backend for file operations.
+        show_reasoning: Show provider-visible reasoning in the transcript.
         image_tracker: Optional tracker for images.
         context: Optional `CLIContext` with model override and params. The current
             mode is persisted and copied into runtime context before every stream
@@ -1777,6 +1781,7 @@ async def execute_task_textual(
     # when multiple subagents stream in parallel
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] = {}
     # Active model-attempt scope per stream namespace, opened/closed by the
     # `model_attempt` lifecycle events on the custom stream. It scopes usage
     # accounting so a retried attempt's replayed chunks don't double-count, and
@@ -2949,6 +2954,10 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
+                                if reasoning_message_by_namespace:
+                                    await _flush_reasoning_ns(
+                                        adapter, ns_key, reasoning_message_by_namespace
+                                    )
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
@@ -2988,7 +2997,39 @@ async def execute_task_textual(
                                 await current_msg.append_content(text)
                                 _notify_user_visible_output_started()
 
+                        elif block_type == "reasoning" and show_reasoning:
+                            reasoning = reasoning_text(block)
+                            if reasoning is not None:
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                if pending_text:
+                                    await _flush_assistant_text_ns(
+                                        adapter,
+                                        pending_text,
+                                        ns_key,
+                                        assistant_message_by_namespace,
+                                    )
+                                    pending_text_by_namespace[ns_key] = ""
+                                    assistant_message_by_namespace.pop(ns_key, None)
+                                current_reasoning = reasoning_message_by_namespace.get(
+                                    ns_key
+                                )
+                                if current_reasoning is None:
+                                    msg_id = f"reason-{uuid.uuid4().hex}"
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_reasoning = ReasoningMessage(id=msg_id)
+                                    await adapter._mount_message(current_reasoning)
+                                    reasoning_message_by_namespace[ns_key] = (
+                                        current_reasoning
+                                    )
+                                await current_reasoning.append_content(reasoning)
+                                _notify_user_visible_output_started()
+
                         elif block_type in {"tool_call_chunk", "tool_call"}:
+                            if reasoning_message_by_namespace:
+                                await _flush_reasoning_ns(
+                                    adapter, ns_key, reasoning_message_by_namespace
+                                )
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
                             chunk_id = block.get("id")
@@ -3139,6 +3180,7 @@ async def execute_task_textual(
                     )
             pending_text_by_namespace.clear()
             assistant_message_by_namespace.clear()
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
 
             # Handle HITL after stream completes
             if interrupt_occurred:
@@ -3921,6 +3963,7 @@ async def execute_task_textual(
             config=config,
             pending_text_by_namespace=pending_text_by_namespace,
             assistant_message_by_namespace=assistant_message_by_namespace,
+            reasoning_message_by_namespace=reasoning_message_by_namespace,
             captured_input_tokens=captured_input_tokens,
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
@@ -3988,6 +4031,15 @@ async def execute_task_textual(
             await _stop_assistant_streams(adapter, assistant_message_by_namespace)
         except Exception:  # drain must not mask the original error
             logger.exception("Failed to drain assistant streams on exit")
+
+        # Reasoning needs the same drain for the same reason, plus one of its
+        # own: the store recorded this widget at mount time with empty content,
+        # so without the `_sync_message_content` inside the flush a re-hydrated
+        # row would come back blank and lose text the user had already read.
+        try:
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
+        except Exception:  # drain must not mask the original error
+            logger.exception("Failed to drain reasoning streams on exit")
 
         # Self-contained backstop for the "every `tool.use` is terminated" hook
         # guarantee. The clean-end branch, HITL-reject branches, and interrupt
@@ -4094,6 +4146,7 @@ async def _handle_interrupt_cleanup(
     config: RunnableConfig,
     pending_text_by_namespace: dict[tuple, str],
     assistant_message_by_namespace: dict[tuple, Any] | None = None,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
     turn_stats: _session_stats.SessionStats,
@@ -4108,6 +4161,7 @@ async def _handle_interrupt_cleanup(
         config: Runnable config with `thread_id`.
         pending_text_by_namespace: Accumulated text per namespace.
         assistant_message_by_namespace: Active assistant message widgets per namespace.
+        reasoning_message_by_namespace: Active reasoning widgets per namespace.
         captured_input_tokens: Input tokens captured before interrupt.
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
@@ -4134,6 +4188,7 @@ async def _handle_interrupt_cleanup(
         await adapter._set_spinner(None)
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
+    await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
 
     if recover_interrupted_turn:
         glyphs = get_glyphs()
@@ -4302,6 +4357,47 @@ def _report_tokens(
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
+
+
+async def _flush_reasoning_ns(
+    adapter: TextualUIAdapter,
+    ns_key: tuple,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage],
+) -> None:
+    """Finalize and collapse reasoning for one namespace.
+
+    Syncs the accumulated text back to the store for the same re-hydration
+    reason as `_flush_assistant_text_ns`, then clears the adapter's active
+    message -- which is a single global slot, not per-namespace.
+    """
+    message = reasoning_message_by_namespace.pop(ns_key, None)
+    if message is None:
+        return
+    await message.stop_stream()
+    if adapter._sync_message_content and message.id:
+        adapter._sync_message_content(message.id, message._content)
+    if adapter._set_active_message:
+        adapter._set_active_message(None)
+
+
+async def _stop_reasoning_streams(
+    adapter: TextualUIAdapter,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None,
+) -> None:
+    """Finalize every active reasoning stream, isolating each widget.
+
+    One failing widget must not abort the rest of the drain, so each flush is
+    guarded the way `_stop_assistant_streams` guards its own. `_flush_reasoning_ns`
+    pops before it awaits, so a raising widget is already out of the dict.
+    """
+    if not reasoning_message_by_namespace:
+        return
+
+    for ns_key in list(reasoning_message_by_namespace):
+        try:
+            await _flush_reasoning_ns(adapter, ns_key, reasoning_message_by_namespace)
+        except Exception:
+            logger.warning("Failed to stop reasoning stream", exc_info=True)
 
 
 async def _flush_assistant_text_ns(

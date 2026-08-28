@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import re
 import threading
 import time
 from types import SimpleNamespace
@@ -1376,6 +1377,89 @@ def _join_flush_threads(existing: set[threading.Thread]) -> None:
     for thread in threading.enumerate():
         if thread not in existing and thread.name == "langsmith-shutdown-flush":
             thread.join(_ORPHAN_JOIN_TIMEOUT)
+
+
+class TestCheckpointModelContext:
+    """The trust boundary between a request's context and the models it picks.
+
+    `/offload` is server-owned and the dev server accepts connections from any
+    local process, so every model spec the operation resolves must be
+    server-sourced. A field that is merely *narrowed* downstream still reached
+    `create_model` first.
+    """
+
+    def test_request_model_selection_is_replaced_by_checkpointed_values(self) -> None:
+        from deepagents_code.offload_api import _checkpoint_model_context
+
+        trusted = _checkpoint_model_context(
+            {"model": "evil:model", "model_params": {"base_url": "http://attacker"}},
+            {"_model_spec": "openai:gpt-5.4", "_model_params": {"temperature": 0}},
+        )
+
+        assert trusted["model"] == "openai:gpt-5.4"
+        assert trusted["model_params"] == {"temperature": 0}
+
+    def test_client_supplied_summarization_model_is_discarded(self) -> None:
+        """A bare spec carries no endpoint, but it still names a provider.
+
+        The server holds credentials for every configured provider, so honoring
+        this key would let any local client route the thread's conversation
+        history to a provider its owner never chose. There is no checkpointed
+        summary spec to substitute, so the operation falls back to the server's
+        own launch configuration.
+        """
+        from deepagents_code.offload_api import _checkpoint_model_context
+
+        trusted = _checkpoint_model_context(
+            {"summarization_model": "attacker-provider:model"},
+            {"_model_spec": "openai:gpt-5.4"},
+        )
+
+        assert "summarization_model" not in trusted
+
+    def test_summarization_model_is_dropped_without_a_model_checkpoint(self) -> None:
+        """Threads predating model checkpointing must not become a bypass."""
+        from deepagents_code.offload_api import _checkpoint_model_context
+
+        trusted = _checkpoint_model_context(
+            {"summarization_model": "attacker-provider:model"}, {}
+        )
+
+        assert "summarization_model" not in trusted
+        assert "model" not in trusted
+
+    def test_unrelated_context_survives(self) -> None:
+        from deepagents_code.offload_api import _checkpoint_model_context
+
+        trusted = _checkpoint_model_context(
+            {"thread_id": "t1", "profile_overrides": {"max_input_tokens": 1}},
+            {"_model_spec": "openai:gpt-5.4"},
+        )
+
+        assert trusted["thread_id"] == "t1"
+        assert trusted["profile_overrides"] == {"max_input_tokens": 1}
+
+
+class TestValidateContext:
+    """Type checks on the context fields the offload operation consumes."""
+
+    def test_summarization_model_must_be_a_string_or_null(self) -> None:
+        """Reject a wrong-typed value instead of silently ignoring it.
+
+        `_runtime_model_config` narrows this field with `isinstance`, so
+        without a type check the client gets a field that quietly does nothing
+        rather than an error naming it.
+        """
+        from deepagents_code.offload_api import _validate_context
+
+        with pytest.raises(TypeError, match=re.escape("context.summarization_model")):
+            _validate_context({"summarization_model": 7})
+
+    @pytest.mark.parametrize("value", [None, "provider:model"])
+    def test_accepts_a_string_or_null(self, value: str | None) -> None:
+        from deepagents_code.offload_api import _validate_context
+
+        _validate_context({"summarization_model": value})
 
 
 class TestLifespan:

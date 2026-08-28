@@ -126,7 +126,7 @@ else:
     if detect_charset_mode() == "ascii":
         ascii_border = _border.BORDER_CHARS["ascii"]
         for edge_type in _border.BORDER_CHARS:
-            if edge_type not in _border.INVISIBLE_EDGE_TYPES:
+            if edge_type not in {*_border.INVISIBLE_EDGE_TYPES, "blank"}:
                 _border.BORDER_CHARS[edge_type] = ascii_border
         _border.get_box.cache_clear()
 

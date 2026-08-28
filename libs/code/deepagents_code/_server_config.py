@@ -270,6 +270,12 @@ class ServerConfig:
     """Model spec string (e.g. `'anthropic:claude-opus-4-7'`); `None` lets the
     server pick its default."""
 
+    summarization_model: str | None = None
+    """Model spec used only for context-compaction summaries.
+
+    `None` reuses the main agent model.
+    """
+
     model_params: dict[str, Any] | None = None
     """Extra kwargs forwarded to the chat model constructor (temperature,
     max_tokens, etc.)."""
@@ -481,6 +487,7 @@ class ServerConfig:
         """
         return {
             "MODEL": self.model,
+            "SUMMARIZATION_MODEL": self.summarization_model,
             "MODEL_PARAMS": (
                 json.dumps(self.model_params) if self.model_params is not None else None
             ),
@@ -561,6 +568,7 @@ class ServerConfig:
         """
         return cls(
             model=_read_env_str("MODEL"),
+            summarization_model=_read_env_str("SUMMARIZATION_MODEL") or None,
             model_params=_read_env_json("MODEL_PARAMS"),
             cli_max_retries=_read_env_int("MAX_RETRIES", default=None),
             profile_overrides=_read_env_json("PROFILE_OVERRIDES"),
@@ -612,6 +620,7 @@ class ServerConfig:
         *,
         project_context: ProjectContext | None,
         model_name: str | None,
+        summarization_model: str | None = None,
         model_params: dict[str, Any] | None,
         cli_max_retries: int | None = None,
         profile_overrides: dict[str, Any] | None = None,
@@ -649,6 +658,8 @@ class ServerConfig:
         Args:
             project_context: Explicit user/project path context.
             model_name: Model spec string.
+            summarization_model: Model spec used only for context-compaction
+                summaries; `None` reuses the main model.
             model_params: Extra model kwargs.
             cli_max_retries: Explicit `--max-retries` value.
             profile_overrides: Model profile metadata overrides.
@@ -698,6 +709,7 @@ class ServerConfig:
 
         return cls(
             model=model_name,
+            summarization_model=summarization_model,
             model_params=model_params,
             cli_max_retries=cli_max_retries,
             profile_overrides=profile_overrides,

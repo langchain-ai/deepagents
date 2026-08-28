@@ -59,6 +59,7 @@ from deepagents_code import (
 )
 from deepagents_code._cli_context import (
     INHERIT_CLASSIFIER_MODEL,
+    INHERIT_SUMMARIZATION_MODEL,
     CLIContext,
 )
 from deepagents_code._constants import (
@@ -67,6 +68,7 @@ from deepagents_code._constants import (
     SDK_DEFAULT_RUBRIC_MAX_ITERATIONS,
     SESSION_END_DRAIN_TIMEOUT_SECONDS,
 )
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
@@ -156,6 +158,7 @@ from deepagents_code.tui.widgets.messages import (
     ErrorMessage,
     LazyToolGroupSummary,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     ToolCallMessage,
@@ -321,18 +324,28 @@ _MESSAGE_BOTTOM_SPACER_ID = "message-bottom-spacer"
 """DOM id for the spacer representing source messages below the mounted window."""
 
 _TIMESTAMP_FOOTER_EXCLUDED_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.APP, MessageType.SUMMARIZATION}
+    {MessageType.APP, MessageType.SUMMARIZATION, MessageType.REASONING}
 )
 """Message types that never receive a timestamp footer.
 
 App-status notes (e.g. "Resumed thread: ...", version/update notices, command
 feedback) are not conversation turns, so they do not get timestamp footers.
 `SUMMARIZATION` is an `APP`-style system notice and is excluded for the same
-reason.
+reason. `REASONING` is part of the assistant turn that follows it rather than a
+turn of its own, so the answer's footer times the whole turn and a second footer
+above it would only add noise.
+"""
+
+_STREAMED_TEXT_WIDGETS = (AssistantMessage, ReasoningMessage)
+"""Widget types whose content is (re)written from a stored transcript row.
+
+A module-level tuple rather than an inline `A | B` union: the `isinstance`
+checks live in scroll-driven hydration comprehensions, and an inline union
+builds a fresh `types.UnionType` on every iteration.
 """
 
 _SERVER_OUTPUT_MESSAGE_TYPES: frozenset[MessageType] = frozenset(
-    {MessageType.ASSISTANT, MessageType.TOOL, MessageType.SKILL}
+    {MessageType.ASSISTANT, MessageType.REASONING, MessageType.TOOL, MessageType.SKILL}
 )
 """Message types marking a thread the user did conversational work in.
 
@@ -356,6 +369,7 @@ brand-new thread as resumable. Threads holding only that state are
 intentionally treated as "nothing happened here" — `/rubric set` with no
 conversation is a config tweak, not work left behind.
 
+`REASONING` covers turns cut off before assistant text or a tool call arrives.
 `SKILL` is the loosest member: `SkillMessage` mounts just *before*
 `_send_to_agent`, which can bail out without reaching the server, so a
 `SKILL` row means a turn was attempted rather than completed. That
@@ -1415,6 +1429,15 @@ def _load_show_diff_line_numbers() -> bool:
     )
 
 
+def _load_show_reasoning() -> bool:
+    """Resolve whether local output shows provider-visible reasoning.
+
+    Returns:
+        The resolved preference, defaulting to `False`.
+    """
+    return _load_bool_display_preference("display.show_reasoning", fallback=False)
+
+
 def _load_show_scrollbar() -> bool:
     """Resolve whether the chat area shows a vertical scrollbar.
 
@@ -1999,6 +2022,13 @@ def _display_model_label(spec: str | None) -> str | None:
 InputMode = Literal["normal", "shell", "shell_incognito", "command"]
 
 _RECONNECT_FORCE_TOKENS: frozenset[str] = frozenset({"force", "--force", "-f"})
+
+_CLEAR_TOKENS: frozenset[str] = frozenset({"clear", "--clear", "reset"})
+"""Spellings that reset a per-session override back to its default.
+
+Shared by every such command -- `/effort`, `/summarization-model` -- so the
+habit transfers and the accepted spellings cannot drift apart.
+"""
 
 
 def _parse_reconnect_args(rest: str) -> tuple[bool, bool]:
@@ -3247,6 +3277,7 @@ class DeepAgentsApp(App):
         launch_init: bool = False,
         mcp_server_info: list[MCPServerInfo] | None = None,
         profile_override: dict[str, Any] | None = None,
+        summarization_model: str | None = None,
         server_proc: ServerProcess | None = None,
         server_kwargs: dict[str, Any] | None = None,
         mcp_preload_kwargs: dict[str, Any] | None = None,
@@ -3298,6 +3329,7 @@ class DeepAgentsApp(App):
                 the app override, including model selection details,
                 offload budget display, and on-demand `create_model()`
                 calls such as `/offload`.
+            summarization_model: Initial model used only for compaction summaries.
             server_proc: LangGraph server process for the interactive session.
             server_kwargs: When provided, server startup is deferred.
 
@@ -3365,6 +3397,9 @@ class DeepAgentsApp(App):
 
         self._cursor_blink_enabled = _load_cursor_blink_preference()
         """Whether the chat input cursor should blink (user preference)."""
+
+        self._show_reasoning = _load_show_reasoning()
+        """Whether provider-visible reasoning is shown in the transcript."""
 
         self._terminal_progress_enabled = _load_terminal_progress_preference()
         """Whether to emit `OSC 9;4` taskbar progress (user preference)."""
@@ -3773,6 +3808,20 @@ class DeepAgentsApp(App):
             model_kwargs.get("extra_kwargs") if model_kwargs is not None else None
         )
         """Per-turn model params override set via startup or `/model` params."""
+
+        self._summarization_model_override: str | None = (
+            # An empty-string test, spelled the long way because ruff's
+            # `compare-to-empty-string` rejects `== ""` and the falsey
+            # shorthand it suggests would also catch `None`.
+            INHERIT_SUMMARIZATION_MODEL
+            if summarization_model is not None and not summarization_model
+            else summarization_model
+        )
+        """Per-session model used only for context-compaction summaries.
+
+        `None` leaves the graph's startup choice unchanged, while
+        `INHERIT_SUMMARIZATION_MODEL` explicitly returns to the main model.
+        """
 
         self._last_model_unchanged: tuple[str, float] | None = None
         """Most recent same-model toast, as `(text, monotonic timestamp)`.
@@ -7485,7 +7534,7 @@ class DeepAgentsApp(App):
             )
             return False
         try:
-            success, output = await perform_install_extra(extra, log_path=log_path)
+            outcome = await perform_install_extra(extra, log_path=log_path)
         except (OSError, asyncio.CancelledError) as exc:
             logger.warning("/install command failed", exc_info=True)
             # Best-effort upgrade of `manual_cmd` to the install-method-specific
@@ -7505,20 +7554,21 @@ class DeepAgentsApp(App):
             )
             return False
 
-        if not success:
+        if not outcome.success:
             # Tail the last 200 chars — uv resolver prints the resolved
             # error at the end, not the beginning.
-            detail = f": {output[-200:]}" if output else ""
-            # See the OSError branch above: best-effort recovery command, falling
-            # back to the already-bound install-script command on failure.
-            manual_cmd = await asyncio.to_thread(
-                safe_install_extra_recovery_command, extra, fallback=manual_cmd
-            )
+            detail = f": {outcome.output[-200:]}" if outcome.output else ""
+            recovery = ""
+            if outcome.manual_recovery_safe:
+                # See the OSError branch above: best-effort recovery command,
+                # falling back to the already-bound install-script command.
+                manual_cmd = await asyncio.to_thread(
+                    safe_install_extra_recovery_command, extra, fallback=manual_cmd
+                )
+                recovery = f"\nRun manually: {manual_cmd}"
             await self._mount_message(
                 ErrorMessage(
-                    f"Install failed{detail}\n"
-                    f"Log: {log_path}\n"
-                    f"Run manually: {manual_cmd}",
+                    f"Install failed{detail}\nLog: {log_path}{recovery}",
                 ),
             )
             return False
@@ -7580,6 +7630,163 @@ class DeepAgentsApp(App):
             self._offer_restart_after_install(extra), context=f"extra:{extra}"
         )
         return True
+
+    async def _handle_uninstall_command(self, command: str) -> None:
+        """Handle `/uninstall <extra>` while serializing environment mutation.
+
+        Args:
+            command: The full slash command line (e.g. `'/uninstall ollama'`).
+        """
+        parts = command.split()
+        args = parts[1:]
+        names = [part for part in args if not part.startswith("-")]
+        flags = [part for part in args if part.startswith("-")]
+        if not names:
+            await self._mount_message(
+                AppMessage(
+                    "Usage: /uninstall <extra>\nExample: /uninstall ollama\n\n"
+                    + await asyncio.to_thread(self._format_removable_extras)
+                )
+            )
+            return
+        if len(names) > 1:
+            await self._mount_message(
+                AppMessage(
+                    "Only one extra may be removed per /uninstall command. "
+                    f"Got: {', '.join(names)}"
+                )
+            )
+            return
+        # `/uninstall` takes no flags. Dropping them silently would accept
+        # `/uninstall --force ollama` and quietly ignore the user's intent.
+        if flags:
+            await self._mount_message(
+                AppMessage(
+                    f"/uninstall takes no options. Unrecognized: {', '.join(flags)}"
+                )
+            )
+            return
+        from packaging.utils import canonicalize_name
+
+        await self._mount_message(UserMessage(command))
+        async with self._environment_mutation_lock:
+            await self._uninstall_extra_unlocked(canonicalize_name(names[0]))
+
+    @staticmethod
+    def _format_removable_extras() -> str:
+        """Return the removable extras selected on this install, as plain text.
+
+        `/install` lists every *available* extra; the useful answer for removal is
+        the much shorter list of what this install actually selected. Falls back
+        to a hint when the receipt cannot be read (editable and brew installs have
+        none), since the no-argument help must never fail.
+
+        Returns:
+            A one-line listing, or a short explanatory message.
+        """
+        try:
+            from deepagents_code.update_check import removable_extras
+
+            selected = removable_extras()
+        except Exception:
+            logger.debug("could not list selected extras", exc_info=True)
+            return "Could not read the selected extras for this install."
+        if not selected:
+            return "No removable extras are selected on this install."
+        return f"Removable extras: {', '.join(selected)}"
+
+    async def _uninstall_extra_unlocked(self, extra: str) -> None:
+        """Remove a selected extra and report the required relaunch.
+
+        Callers must hold `self._environment_mutation_lock`.
+
+        Args:
+            extra: Canonicalized extra name to remove.
+
+        Raises:
+            asyncio.CancelledError: Re-raised after reporting an interrupted
+                removal, so cancellation is never swallowed.
+        """
+        try:
+            from deepagents_code.update_check import (
+                create_update_log_file,
+                is_valid_extra_name,
+                perform_uninstall_extra,
+                uninstall_extra_method_error,
+            )
+        except ImportError as exc:
+            # A removal rebuilds the env this process imports from, so a second
+            # `/uninstall` in the same session can find the package tree already
+            # replaced. Mirror `_install_extra_unlocked`, which guards for the
+            # same reason.
+            logger.warning("/uninstall command import failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}")
+            )
+            return
+
+        if not is_valid_extra_name(extra):
+            await self._mount_message(AppMessage("Invalid extra name."))
+            return
+        method_error = await asyncio.to_thread(uninstall_extra_method_error, extra)
+        if method_error is not None:
+            await self._mount_message(ErrorMessage(method_error))
+            return
+        log_path = create_update_log_file()
+        log_line = f"\nLog: {log_path}" if log_path is not None else ""
+        await self._mount_message(AppMessage(f"Uninstalling extra '{extra}'..."))
+        try:
+            outcome = await perform_uninstall_extra(extra, log_path=log_path)
+        except asyncio.CancelledError as exc:
+            logger.warning("/uninstall command cancelled", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall interrupted: {type(exc).__name__}{log_line}")
+            )
+            raise
+        except OSError as exc:
+            logger.warning("/uninstall command failed", exc_info=True)
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed: {type(exc).__name__}: {exc}{log_line}")
+            )
+            return
+        if outcome.interrupted:
+            recovery = (
+                f"\nRun manually to repair: {outcome.manual_recovery_command}"
+                if outcome.manual_recovery_command is not None
+                else ""
+            )
+            await self._mount_message(
+                ErrorMessage(
+                    "Uninstall interrupted. The tool environment may be partially "
+                    f"rebuilt.{log_line}{recovery}"
+                )
+            )
+            raise asyncio.CancelledError
+        if outcome.extra_was_absent:
+            await self._mount_message(AppMessage(outcome.output))
+            return
+        if not outcome.success:
+            detail = f": {outcome.output[-200:]}" if outcome.output else ""
+            recovery = (
+                f"\nRun manually: {outcome.manual_recovery_command}"
+                if outcome.manual_recovery_safe
+                and outcome.manual_recovery_command is not None
+                else ""
+            )
+            await self._mount_message(
+                ErrorMessage(f"Uninstall failed{detail}{log_line}{recovery}")
+            )
+            return
+        # The rebuild already replaced the env this process imports from, so the
+        # packages are gone now — not on next launch. Say that, rather than the
+        # install path's "relaunch to use the new dependencies".
+        await self._mount_message(
+            AppMessage(
+                f"Uninstalled extra '{extra}'. Its packages are already gone from "
+                f"this environment, so the current session may fail if it needs "
+                f"them — exit and relaunch {invoked_name()} now."
+            )
+        )
 
     async def _handle_install_package(self, package: str, *, force: bool) -> None:
         """Install an arbitrary package into the dcode tool env via `uv --with`.
@@ -8884,7 +9091,7 @@ class DeepAgentsApp(App):
         assistant_updates = [
             widget.set_content(data.content)
             for widget, data, _footer in entries
-            if isinstance(widget, AssistantMessage) and data.content
+            if isinstance(widget, _STREAMED_TEXT_WIDGETS) and data.content
         ]
         if assistant_updates:
             try:
@@ -16034,6 +16241,8 @@ class DeepAgentsApp(App):
             await self._handle_auto_update_toggle()
         elif cmd == "/install" or cmd.startswith("/install "):
             await self._handle_install_command(command)
+        elif cmd == "/uninstall" or cmd.startswith("/uninstall "):
+            await self._handle_uninstall_command(command)
         elif cmd == "/scrollbar":
             await self._toggle_scrollbar()
             label = "shown" if self._show_scrollbar else "hidden"
@@ -16177,6 +16386,8 @@ class DeepAgentsApp(App):
             self._open_notification_center()
         elif cmd == "/effort" or cmd.startswith("/effort "):
             await self._handle_effort_command(command)
+        elif cmd == "/summarization-model" or cmd.startswith("/summarization-model "):
+            await self._handle_summarization_model_command(command)
         elif cmd == "/model" or cmd.startswith("/model "):
             model_arg = None
             set_default = False
@@ -17063,6 +17274,7 @@ class DeepAgentsApp(App):
             context = CLIContext(
                 model=self._effective_model_spec(),
                 model_params=self._model_params_override or {},
+                summarization_model=self._summarization_model_override,
                 profile_overrides=self._profile_override or {},
                 model_context_limit=runtime_state.model_context_limit,
                 thread_id=self._lc_thread_id,
@@ -17769,7 +17981,7 @@ class DeepAgentsApp(App):
             without_effort_model_params,
         )
 
-        if effort.lower() in {"clear", "--clear", "reset"}:
+        if effort.lower() in _CLEAR_TOKENS:
             spec = self._effective_model_spec()
             if not spec:
                 await self._mount_message(
@@ -18038,6 +18250,7 @@ class DeepAgentsApp(App):
                 session_state=self._session_state,
                 adapter=self._ui_adapter,
                 backend=self._backend,
+                show_reasoning=self._show_reasoning,
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
@@ -18051,6 +18264,7 @@ class DeepAgentsApp(App):
                 context=CLIContext(
                     model=self._model_override,
                     model_params=self._model_params_override or {},
+                    summarization_model=self._summarization_model_override,
                     profile_overrides=self._profile_override or {},
                     model_context_limit=runtime_state.model_context_limit,
                     classifier_model=self._auto_classifier_context_value(),
@@ -18443,7 +18657,9 @@ class DeepAgentsApp(App):
             self._schedule_thread_cache_refresh()
 
     @staticmethod
-    def _convert_messages_to_data(messages: list[Any]) -> list[MessageData]:
+    def _convert_messages_to_data(
+        messages: list[Any], *, show_reasoning: bool = False
+    ) -> list[MessageData]:
         """Convert LangChain messages into lightweight `MessageData` objects.
 
         This is a pure function with zero DOM operations. Tool call matching
@@ -18452,6 +18668,7 @@ class DeepAgentsApp(App):
 
         Args:
             messages: LangChain message objects from a thread checkpoint.
+            show_reasoning: Whether to include provider-visible reasoning blocks.
 
         Returns:
             Ordered list of `MessageData` ready for `MessageStore.bulk_load`.
@@ -18490,21 +18707,36 @@ class DeepAgentsApp(App):
                     result.append(MessageData(type=MessageType.USER, content=content))
 
             elif isinstance(msg, AIMessage):
-                # Extract text content
-                content = msg.content
-                text = ""
-                if isinstance(content, str):
-                    text = content.strip()
-                elif isinstance(content, list):
-                    for block in content:
-                        if isinstance(block, dict) and block.get("type") == "text":
-                            text += block.get("text", "")
-                        elif isinstance(block, str):
-                            text += block
-                    text = text.strip()
+                # Accumulated separately from `result` so the runs of this one
+                # message can be merged and filtered without indexing back into
+                # the shared list.
+                runs: list[MessageData] = []
+                for block in msg.content_blocks:
+                    reasoning = reasoning_text(block) if show_reasoning else None
+                    if reasoning is not None:
+                        text = reasoning
+                        message_type = MessageType.REASONING
+                    elif block.get("type") == "text":
+                        text = block.get("text", "")
+                        if not isinstance(text, str):
+                            continue
+                        message_type = MessageType.ASSISTANT
+                    else:
+                        continue
+                    if runs and runs[-1].type == message_type:
+                        runs[-1].content += text
+                    else:
+                        runs.append(MessageData(type=message_type, content=text))
 
-                if text:
-                    result.append(MessageData(type=MessageType.ASSISTANT, content=text))
+                # A bare-string `msg.content` yields a single text block whose
+                # surrounding whitespace is transport padding, not layout.
+                if isinstance(msg.content, str):
+                    for run in runs:
+                        if run.type == MessageType.ASSISTANT:
+                            run.content = run.content.strip()
+                result.extend(
+                    run for run in runs if run.content and not run.content.isspace()
+                )
 
                 # Track tool calls for later matching
                 for tc in getattr(msg, "tool_calls", []):
@@ -18614,8 +18846,8 @@ class DeepAgentsApp(App):
                 collapsed.extend(group)
         return collapsed
 
-    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
-        """Fetch thread state values for a thread.
+    async def _get_thread_state(self, thread_id: str) -> Any | None:  # noqa: ANN401
+        """Fetch the checkpoint state snapshot for a thread.
 
         In server mode the LangGraph dev server starts with an empty in-memory
         thread store, so `aget_state` returns empty state for any thread that
@@ -18628,32 +18860,45 @@ class DeepAgentsApp(App):
             thread_id: Thread ID to fetch from checkpoint storage.
 
         Returns:
+            The state snapshot, or `None` when no state is available.
+        """
+        if not self._agent:
+            return None
+
+        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
+
+        if remote := self._remote_agent():
+            await remote.aensure_thread(dict(config))
+
+        return await self._agent.aget_state(config)
+
+    async def _get_thread_state_values(self, thread_id: str) -> dict[str, Any]:
+        """Fetch thread state values for a thread.
+
+        Args:
+            thread_id: Thread ID to fetch from checkpoint storage.
+
+        Returns:
             Thread state values keyed by channel name. Returns an empty dict
                 when no checkpointed values are available.
         """
-        if not self._agent:
-            return {}
-
-        config: RunnableConfig = {"configurable": {"thread_id": thread_id}}
-        remote_config: dict[str, Any] = {"configurable": {"thread_id": thread_id}}
-
-        if remote := self._remote_agent():
-            await remote.aensure_thread(remote_config)
-
-        state = await self._agent.aget_state(config)
-
+        state = await self._get_thread_state(thread_id)
         if state and state.values:
             return dict(state.values)
         return {}
 
     @staticmethod
     def _prepare_thread_history_messages(
-        messages: list[Any],
+        messages: list[Any], *, show_reasoning: bool = False
     ) -> tuple[list[MessageData], tuple[BaseMessage, ...]]:
         """Deserialize and project checkpoint messages for a resumed thread.
 
         Blocking and CPU-bound over the whole history; callers must offload it
         with `asyncio.to_thread` rather than run it on the event loop.
+
+        Args:
+            messages: Serialized or deserialized messages from the checkpoint.
+            show_reasoning: Whether to include provider-visible reasoning blocks.
 
         Returns:
             Render data and validated messages for hook transcript projection.
@@ -18667,7 +18912,9 @@ class DeepAgentsApp(App):
 
         from langchain_core.messages import BaseMessage
 
-        data = DeepAgentsApp._convert_messages_to_data(messages)
+        data = DeepAgentsApp._convert_messages_to_data(
+            messages, show_reasoning=show_reasoning
+        )
         transcript_messages = tuple(
             message for message in messages if isinstance(message, BaseMessage)
         )
@@ -18711,6 +18958,7 @@ class DeepAgentsApp(App):
         data, transcript_messages = await asyncio.to_thread(
             self._prepare_thread_history_messages,
             messages,
+            show_reasoning=self._show_reasoning,
         )
         return replace(
             payload,
@@ -19158,7 +19406,7 @@ class DeepAgentsApp(App):
             assistant_updates = [
                 widget.set_content(msg_data.content)
                 for widget, msg_data in mounted
-                if isinstance(widget, AssistantMessage) and msg_data.content
+                if isinstance(widget, _STREAMED_TEXT_WIDGETS) and msg_data.content
             ]
             if assistant_updates:
                 assistant_results = await asyncio.gather(
@@ -19463,7 +19711,11 @@ class DeepAgentsApp(App):
 
     async def _mount_message(
         self,
-        widget: Static | AssistantMessage | ToolCallMessage | SkillMessage,
+        widget: Static
+        | AssistantMessage
+        | ReasoningMessage
+        | ToolCallMessage
+        | SkillMessage,
     ) -> bool:
         """Mount a message widget to the messages area.
 
@@ -19913,6 +20165,18 @@ class DeepAgentsApp(App):
             self._message_store.update_message(
                 event.widget.id,
                 tool_group_expanded=event.expanded,
+            )
+            self._schedule_message_height_measurements([event.widget.id])
+
+    def on_reasoning_message_expansion_changed(
+        self,
+        event: ReasoningMessage.ExpansionChanged,
+    ) -> None:
+        """Keep reasoning expansion state across transcript virtualization."""
+        if event.widget.id:
+            self._message_store.update_message(
+                event.widget.id,
+                reasoning_expanded=event.expanded,
             )
             self._schedule_message_height_measurements([event.widget.id])
 
@@ -22186,6 +22450,9 @@ class DeepAgentsApp(App):
         for child in reversed(list(messages.children)):
             if isinstance(child, RubricResultMessage) and child._details:
                 child.toggle_details()
+                return
+            if isinstance(child, ReasoningMessage) and child.has_content:
+                child.toggle_expanded()
                 return
             if isinstance(child, LazyToolGroupSummary | ToolGroupSummary):
                 child.toggle()
@@ -28397,6 +28664,61 @@ class DeepAgentsApp(App):
         if tokens > 0:
             self._on_tokens_update(tokens)
 
+    async def _resumed_thread_has_pending_work(self) -> bool:
+        """Return whether the current checkpoint still contains unfinished work.
+
+        Returns `False` for local agents: recovery, like compaction, is a
+        server-mode operation, so there is no prompt to offer without a remote.
+
+        Returns:
+            Whether the resumed thread has a queued node, task, or interrupt.
+        """
+        from deepagents_code.client.remote_client import state_has_pending_work
+
+        if not self._lc_thread_id or self._remote_agent() is None:
+            return False
+        return state_has_pending_work(await self._get_thread_state(self._lc_thread_id))
+
+    async def _cancel_pending_work_and_compact(self) -> None:
+        """Discard a confirmed stale step, then compact the preserved thread.
+
+        Holds the agent-running reservation across the whole recovery so the
+        checkpoint cannot be written from under it, and hands the reservation
+        to `_handle_offload`, which releases it. Releasing here too is
+        redundant but harmless -- `_set_agent_running` is idempotent -- and it
+        is what covers the paths that never reach the offload.
+        """
+        self._set_agent_running(True)
+        try:
+            await self._cancel_pending_work_and_compact_impl()
+        finally:
+            self._set_agent_running(False)
+
+    async def _cancel_pending_work_and_compact_impl(self) -> None:
+        """Perform recovery while the caller holds the agent-running reservation."""
+        remote = self._remote_agent()
+        if remote is None or not self._lc_thread_id:
+            # Unreachable: the prompt is only offered when both are present.
+            return
+        config: RunnableConfig = {"configurable": {"thread_id": self._lc_thread_id}}
+        try:
+            await remote.aabandon_pending_work(config)
+        except Exception:
+            logger.exception("Failed to abandon pending graph work before compaction")
+            await self._mount_message(
+                ErrorMessage(
+                    "The interrupted operation could not be cancelled safely. "
+                    "The conversation was not compacted."
+                )
+            )
+            return
+        await self._mount_message(
+            AppMessage(
+                "Cancelled the interrupted operation. Files and chat were preserved."
+            )
+        )
+        await self._handle_offload(reserved=True)
+
     async def _maybe_compact_after_resume(self) -> None:
         """Offer to compact a just-resumed thread with an oversized context.
 
@@ -28422,6 +28744,18 @@ class DeepAgentsApp(App):
         if threshold <= 0 or self._context_tokens <= threshold:
             return
 
+        try:
+            pending_work = await self._resumed_thread_has_pending_work()
+        except Exception:
+            logger.exception("Failed to inspect resumed thread before compaction")
+            await self._mount_message(
+                ErrorMessage(
+                    "Could not check whether the previous operation finished. "
+                    "The conversation was not compacted."
+                )
+            )
+            return
+
         from deepagents_code.tui.modals.resume_compact import ResumeCompactPromptScreen
 
         try:
@@ -28429,12 +28763,17 @@ class DeepAgentsApp(App):
                 ResumeCompactPromptScreen(
                     context_tokens=self._context_tokens,
                     threshold=threshold,
+                    pending_work=pending_work,
                 )
             )
         except Exception:
             logger.exception("Failed to show the compact-on-resume prompt")
             return
-        if compact:
+        if not compact:
+            return
+        if pending_work:
+            await self._cancel_pending_work_and_compact()
+        else:
             await self._handle_offload()
 
     async def _offer_thread_cwd_switch(
@@ -28879,6 +29218,63 @@ class DeepAgentsApp(App):
             return last
         self.notify(message, markup=False)
         return (message, now)
+
+    async def _handle_summarization_model_command(self, command: str) -> None:
+        """Set, clear, or display the session's summary-model override.
+
+        The override is session-scoped: unlike `/model --default` there is no
+        persistent tier, so `[models].summarization_default` is the only way to
+        carry a choice across launches. A single bare spec is the whole grammar
+        -- no params and no trailing words, unlike `/model`.
+
+        Args:
+            command: The raw slash command line as typed.
+        """
+        await self._mount_message(UserMessage(command))
+        argument = command.strip()[len("/summarization-model") :].strip()
+        if not argument:
+            current = self._summarization_model_override
+            if current in {None, INHERIT_SUMMARIZATION_MODEL}:
+                current = "the main agent model"
+            await self._mount_message(AppMessage(f"Summarization model: {current}"))
+            return
+        if argument.lower() in _CLEAR_TOKENS:
+            self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
+            await self._mount_message(
+                AppMessage("Summarization model cleared; using the main agent model.")
+            )
+            return
+        if " " in argument:
+            await self._mount_message(
+                ErrorMessage("Usage: /summarization-model [<spec>|clear]")
+            )
+            return
+
+        if self._remote_agent() is not None and self._server_kwargs is None:
+            self._summarization_model_override = argument
+            await self._mount_message(
+                AppMessage(
+                    f"Summarization model requested: {argument}. The remote server "
+                    "will validate it at compaction time and use the main agent "
+                    "model if initialization fails."
+                )
+            )
+            return
+
+        try:
+            result = await asyncio.to_thread(
+                _create_model_with_deepagents_import_lock,
+                argument,
+                cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
+            )
+        except Exception as exc:
+            logger.exception("Failed to resolve summarization model %s", argument)
+            await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
+            return
+
+        display = f"{result.provider}:{result.model_name}"
+        self._summarization_model_override = display
+        await self._mount_message(AppMessage(f"Summarization model set to {display}."))
 
     async def _switch_model(
         self,
@@ -29367,6 +29763,7 @@ async def run_textual_app(
     launch_init: bool = False,
     mcp_server_info: list[MCPServerInfo] | None = None,
     profile_override: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     server_proc: ServerProcess | None = None,
     server_kwargs: dict[str, Any] | None = None,
     mcp_preload_kwargs: dict[str, Any] | None = None,
@@ -29416,6 +29813,7 @@ async def run_textual_app(
             the app override, including model selection details, offload
             budget display, and on-demand `create_model()` calls such
             as `/offload`.
+        summarization_model: Initial model used only for compaction summaries.
         server_proc: LangGraph server process for the interactive session.
         server_kwargs: Kwargs for deferred `start_server_and_get_agent` call.
         mcp_preload_kwargs: Kwargs for concurrent MCP metadata preload.
@@ -29472,6 +29870,7 @@ async def run_textual_app(
         launch_init=launch_init,
         mcp_server_info=mcp_server_info,
         profile_override=profile_override,
+        summarization_model=summarization_model,
         server_proc=server_proc,
         server_kwargs=server_kwargs,
         mcp_preload_kwargs=mcp_preload_kwargs,

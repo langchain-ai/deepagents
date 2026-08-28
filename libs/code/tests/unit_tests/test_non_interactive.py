@@ -51,6 +51,7 @@ from deepagents_code.client.non_interactive import (
     _run_agent_loop,
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
+    _stream_agent,
     _summarization_stream_status,
     run_non_interactive,
 )
@@ -130,6 +131,126 @@ def test_ascii_headless_status_uses_ascii_glyphs(
     assert output.getvalue().isascii()
     assert ASCII_GLYPHS.hourglass in output.getvalue()
     assert spinner.frames == list(ASCII_GLYPHS.spinner_frames)
+
+
+def test_visible_reasoning_is_opt_in_and_stays_out_of_final_answer(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    state = StreamState(show_reasoning=True)
+    message = AIMessage(
+        content=[
+            {"type": "reasoning", "reasoning": "first"},
+            {"type": "reasoning", "reasoning": " "},
+            {"type": "reasoning", "reasoning": "second"},
+            {"type": "reasoning", "reasoning": "\n"},
+            {"type": "text", "text": "answer"},
+            {"type": "reasoning", "reasoning": "third"},
+            {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+            {"type": "tool_call", "name": "search", "args": {}, "id": None},
+        ]
+    )
+
+    _process_ai_message(message, state, console)
+
+    assert stdout.getvalue() == "answer\n"
+    assert stderr.getvalue() == "Reasoning:\nfirst second\n\n\nReasoning:\nthird\n"
+    assert state.reasoning_active is False
+    assert state.full_response == ["answer"]
+
+
+def test_reasoning_after_streamed_text_starts_on_a_new_terminal_line(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    terminal = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", terminal)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    state = StreamState(show_reasoning=True)
+
+    _process_ai_message(
+        AIMessage(
+            content=[
+                {"type": "text", "text": "answer"},
+                {"type": "reasoning", "reasoning": "follow-up"},
+            ]
+        ),
+        state,
+        console,
+    )
+
+    assert terminal.getvalue() == "answer\nReasoning:\nfollow-up"
+
+
+def test_reasoning_separator_stays_out_of_streamed_stdout(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "stderr", stderr)
+    state = StreamState(show_reasoning=True)
+
+    _process_ai_message(
+        AIMessage(
+            content=[
+                {"type": "text", "text": "first"},
+                {"type": "reasoning", "reasoning": "thinking"},
+                {"type": "text", "text": "second"},
+            ]
+        ),
+        state,
+        console,
+    )
+
+    assert stdout.getvalue() == "firstsecond"
+    assert stderr.getvalue() == "\nReasoning:\nthinking\n"
+
+
+async def test_reasoning_only_stream_ends_with_newline(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ReasoningOnlyAgent:
+        async def astream(self, *_args: Any, **_kwargs: Any) -> AsyncIterator[object]:
+            yield (
+                (),
+                "messages",
+                (AIMessage(content=[{"type": "reasoning", "reasoning": "solo"}]), {}),
+            )
+
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    state = StreamState(show_reasoning=True)
+
+    await _stream_agent(
+        ReasoningOnlyAgent(),
+        {"messages": []},
+        {},
+        state,
+        console,
+        FileOpTracker(assistant_id="assistant"),
+        {},
+    )
+
+    assert stderr.getvalue() == "Reasoning:\nsolo\n"
+    assert state.reasoning_active is False
+
+
+def test_visible_reasoning_defaults_off(
+    console: Console, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stderr = io.StringIO()
+    monkeypatch.setattr(sys, "stderr", stderr)
+
+    _process_ai_message(
+        AIMessage(content=[{"type": "reasoning", "reasoning": "hidden"}]),
+        StreamState(),
+        console,
+    )
+
+    assert stderr.getvalue() == ""
 
 
 def test_nested_usage_event_updates_headless_stats(console: Console) -> None:
@@ -562,7 +683,9 @@ class TestSandboxTypeForwarding:
             mock_settings.has_tavily = False
             runtime_state.model_name = None
 
-            await run_non_interactive(message="test task")
+            await run_non_interactive(
+                message="test task", summarization_model="openai:summary-model"
+            )
 
         _, server_kwargs = mock_start_server.call_args
         assert server_kwargs["auto_approve"] is False
@@ -571,6 +694,7 @@ class TestSandboxTypeForwarding:
         assert loop_kwargs["hooks"].has_handlers(HookEvent.PERMISSION_REQUEST)
         assert loop_kwargs["approval_mode"] is ApprovalMode.YOLO
         assert loop_kwargs["prompt_id"] is not None
+        assert loop_kwargs["summarization_model"] == "openai:summary-model"
 
     async def test_sandbox_snapshot_name_passed_to_server(self) -> None:
         """`sandbox_snapshot_name` must reach `start_server_and_get_agent`."""
@@ -796,6 +920,61 @@ class TestQuietMode:
         assert "read_file" not in stderr
         assert "Task completed" not in stderr
         assert "Running task" not in stderr
+
+    async def test_post_answer_reasoning_preserves_stdout_newline(self) -> None:
+        """A stderr separator must not mark stdout's text line as closed."""
+        ai_msg = MagicMock(spec=AIMessage)
+        ai_msg.content_blocks = [
+            {"type": "text", "text": "answer"},
+            {"type": "reasoning", "reasoning": "thinking"},
+        ]
+        mock_agent = MagicMock()
+        mock_agent.astream = MagicMock(
+            return_value=_async_iter([("", "messages", (ai_msg, {}))])
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+
+        with (
+            patch(
+                "deepagents_code.client.non_interactive.create_model",
+                return_value=ModelResult(
+                    model=MagicMock(),
+                    model_name="test-model",
+                    provider="test",
+                ),
+            ),
+            patch(
+                "deepagents_code.client.non_interactive.generate_thread_id",
+                return_value="test-thread",
+            ),
+            patch(
+                "deepagents_code.client.non_interactive._resolve_shell_allow_list",
+            ) as mock_settings,
+            patch(
+                "deepagents_code.client.non_interactive.build_langsmith_thread_url",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.client.launch.server_manager.start_server_and_get_agent",
+                new_callable=AsyncMock,
+                return_value=(mock_agent, MagicMock(), None),
+            ),
+            patch.object(sys, "stdout", stdout),
+            patch.object(sys, "stderr", stderr),
+        ):
+            mock_settings.return_value = None
+            mock_settings.has_tavily = False
+            runtime_state.model_name = None
+
+            await run_non_interactive(
+                message="test",
+                quiet=True,
+                show_reasoning=True,
+            )
+
+        assert stdout.getvalue() == "answer\n"
+        assert stderr.getvalue() == "\nReasoning:\nthinking\n"
 
 
 class TestQuietFileOpNotification:
@@ -1769,10 +1948,12 @@ class TestMaxTurns:
                 console,
                 file_op_tracker,
                 quiet=True,
+                summarization_model="openai:summary-model",
             )
 
         _, kwargs = agent.astream.call_args
         assert kwargs["context"]["thread_id"] == "t1"
+        assert kwargs["context"]["summarization_model"] == "openai:summary-model"
 
     async def test_user_prompt_hook_suppresses_legacy_duplicate_and_prompt(
         self,

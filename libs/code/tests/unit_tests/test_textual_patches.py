@@ -46,7 +46,9 @@ def test_ascii_mode_replaces_every_textual_border_glyph() -> None:
         "from textual._border import BORDER_CHARS, INVISIBLE_EDGE_TYPES\n"
         "ascii_border = BORDER_CHARS['ascii']\n"
         "assert all(border == ascii_border for name, border in "
-        "BORDER_CHARS.items() if name not in INVISIBLE_EDGE_TYPES)\n"
+        "BORDER_CHARS.items() if name not in {*INVISIBLE_EDGE_TYPES, 'blank'})\n"
+        "assert all(not character.strip() for edge in BORDER_CHARS['blank'] "
+        "for character in edge)\n"
     )
     result = subprocess.run(
         [sys.executable, "-c", code],

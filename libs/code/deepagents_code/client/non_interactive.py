@@ -41,6 +41,7 @@ from rich.text import Text
 
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._session_stats import (
     RecordedRequest,
     SessionStats,
@@ -436,6 +437,23 @@ class StreamState:
     agent finishes.
     """
 
+    show_reasoning: bool = False
+    """Whether provider-visible reasoning is rendered to stderr.
+
+    Immutable configuration. Reasoning is written as it arrives even when
+    `stream` is `False`, and is never accumulated into `full_response`.
+    """
+
+    reasoning_active: bool = False
+    """Whether the `Reasoning:` heading is already written for the current run.
+
+    Cleared by `_end_reasoning` at the next text block, tool call, or round
+    boundary, so each unbroken run of reasoning blocks gets one heading.
+    """
+
+    text_line_open: bool = False
+    """Whether streamed response text left stdout's current line unterminated."""
+
     full_response: list[str] = field(default_factory=list)
     """Accumulated text fragments from the AI message stream."""
 
@@ -690,6 +708,32 @@ def _record_usage_from_message(
     )
 
 
+def _write_reasoning(text: str, state: StreamState) -> None:
+    """Write reasoning to stderr under a one-time `Reasoning:` heading.
+
+    Sets `state.reasoning_active` so the heading is not repeated until
+    `_end_reasoning` closes the phase. Gated on `state.show_reasoning` so the
+    invariant holds for every call site, not just the current one.
+    """
+    if not state.show_reasoning:
+        return
+    if not state.reasoning_active:
+        if state.text_line_open:
+            sys.stderr.write("\n")
+        sys.stderr.write("Reasoning:\n")
+        state.reasoning_active = True
+    sys.stderr.write(text)
+    sys.stderr.flush()
+
+
+def _end_reasoning(state: StreamState) -> None:
+    """Terminate an active reasoning phase before other output begins."""
+    if state.reasoning_active:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        state.reasoning_active = False
+
+
 def _process_ai_message(
     message_obj: AIMessage,
     state: StreamState,
@@ -718,12 +762,21 @@ def _process_ai_message(
         if block_type == "text":
             text = block.get("text", "")
             if text:
+                _end_reasoning(state)
                 if state.stream:
                     if state.spinner:
                         state.spinner.stop()
                     _write_text(text)
+                    state.text_line_open = not text.endswith("\n")
                 state.full_response.append(text)
+        elif block_type == "reasoning":
+            reasoning = reasoning_text(block)
+            if state.show_reasoning and reasoning is not None:
+                if state.spinner:
+                    state.spinner.stop()
+                _write_reasoning(reasoning, state)
         elif block_type in {"tool_call_chunk", "tool_call"}:
+            _end_reasoning(state)
             chunk_name = block.get("name")
             chunk_id = block.get("id")
             chunk_index = block.get("index")
@@ -750,8 +803,9 @@ def _process_ai_message(
                     if state.spinner:
                         state.spinner.stop()
                     if not state.quiet:
-                        if state.full_response:
+                        if state.text_line_open:
                             _write_newline()
+                            state.text_line_open = False
                         console.print(
                             f"[dim]{glyphs.tool} Calling tool: "
                             f"{escape_markup(buffer_name)}[/dim]",
@@ -1875,6 +1929,7 @@ async def _stream_agent(
             await _after_headless_compact(state)
             state.summarization_observed = False
     finally:
+        _end_reasoning(state)
         # Close the ledger at the round boundary, including on an aborted round:
         # the next HITL pass replays these chunks, which would otherwise revise
         # their requests a second time and double the run's tokens and cost.
@@ -2021,6 +2076,7 @@ async def _run_agent_loop(
     *,
     quiet: bool = False,
     stream: bool = True,
+    show_reasoning: bool = False,
     message_kwargs: dict[str, Any] | None = None,
     thread_url_lookup: ThreadUrlLookupState | None = None,
     max_turns: int | None = None,
@@ -2030,6 +2086,7 @@ async def _run_agent_loop(
     hooks: HooksManager | None = None,
     approval_mode: ApprovalMode | None = None,
     prompt_id: UUID | None = None,
+    summarization_model: str | None = None,
 ) -> None:
     """Run the agent and handle HITL interrupts until the task completes.
 
@@ -2048,6 +2105,8 @@ async def _run_agent_loop(
 
             When `False`, the full response is buffered and flushed at
             the end.
+        show_reasoning: Write provider-visible reasoning to stderr as it
+            arrives, independent of `stream`.
         message_kwargs: Extra fields merged into the initial HumanMessage
             dict (e.g., `additional_kwargs` for persisted skill metadata).
         thread_url_lookup: Optional non-blocking lookup state for rendering
@@ -2070,6 +2129,7 @@ async def _run_agent_loop(
         hooks: Preloaded Hooks v2 coordinator; one is built when omitted.
         approval_mode: Effective client approval policy. Defaults to manual.
         prompt_id: Stable identifier for the headless turn.
+        summarization_model: Model spec used only for context-compaction summaries.
 
     Raises:
         ClientHookStopError: If a client-owned hook stops processing.
@@ -2080,6 +2140,7 @@ async def _run_agent_loop(
         thread_id=thread_id if isinstance(thread_id, str) else "",
         quiet=quiet,
         stream=stream,
+        show_reasoning=show_reasoning,
         spinner=spinner,
         show_rubric_iterations=show_rubric_iterations,
     )
@@ -2097,7 +2158,10 @@ async def _run_agent_loop(
     # An empty or missing thread ID carries no session identity, so leave it
     # unset in context rather than passing a blank string to model middleware.
     context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
-    context = CLIContext(thread_id=context_thread_id)
+    context = CLIContext(
+        thread_id=context_thread_id,
+        summarization_model=summarization_model,
+    )
 
     from pathlib import Path
 
@@ -2328,7 +2392,8 @@ async def _run_agent_loop(
     if state.full_response:
         if not state.stream:
             _write_text("".join(state.full_response))
-        _write_newline()
+        if not state.stream or state.text_line_open:
+            _write_newline()
 
     if not quiet:
         console.print()
@@ -2504,11 +2569,13 @@ async def run_non_interactive(
     sandbox_setup: str | None = None,
     *,
     cli_max_retries: int | None = None,
+    summarization_model: str | None = None,
     initial_skill: str | None = None,
     startup_cmd: str | None = None,
     profile_override: dict[str, Any] | None = None,
     quiet: bool = False,
     stream: bool = True,
+    show_reasoning: bool = False,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool = False,
@@ -2550,6 +2617,7 @@ async def run_non_interactive(
 
             These override config file values.
         cli_max_retries: Explicit `--max-retries` value.
+        summarization_model: Model spec used only for context-compaction summaries.
         sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
             `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
         sandbox_id: Optional existing sandbox ID to reuse.
@@ -2574,6 +2642,11 @@ async def run_non_interactive(
 
             When `False`, the full response is buffered and written to stdout in
             one shot after the agent finishes.
+        show_reasoning: Write provider-visible reasoning to stderr as it
+            arrives, under a one-time `Reasoning:` heading per phase.
+
+            Independent of `stream`: reasoning is never buffered into the final
+            response, so it streams even when `stream` is `False`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
             Merged on top of auto-discovered configs (highest precedence).
         no_mcp: Disable all MCP tool loading.
@@ -2895,6 +2968,7 @@ async def run_non_interactive(
                 file_op_tracker,
                 quiet=quiet,
                 stream=stream,
+                show_reasoning=show_reasoning,
                 message_kwargs=message_kwargs,
                 thread_url_lookup=thread_url_lookup,
                 max_turns=max_turns,
@@ -2904,6 +2978,7 @@ async def run_non_interactive(
                 hooks=hooks,
                 approval_mode=approval_mode,
                 prompt_id=turn_id,
+                summarization_model=summarization_model,
             )
 
     except KeyboardInterrupt:

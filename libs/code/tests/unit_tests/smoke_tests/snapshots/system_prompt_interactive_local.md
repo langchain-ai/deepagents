@@ -324,6 +324,8 @@ Sources labeled "Deepagents" are specific to this agent tool; sources labeled "A
   -> Read `<built_in_skills_dir>/remember/SKILL.md` for full instructions
 - **skill-creator**: Guide for creating effective skills that extend agent capabilities with specialized knowledge, workflows, or tool integrations. Use this skill when the user asks to: (1) create a new skill, (2) make a skill, (3) build a skill, (4) set up a skill, (5) initialize a skill, (6) scaffold a skill, (7) update or modify an existing skill, (8) validate a skill, (9) learn about skill structure, (10) understand how skills work, or (11) get guidance on skill design patterns. Trigger on phrases like "create a skill", "new skill", "make a skill", "skill for X", "how do I create a skill", or "help me build a skill". (License: MIT, Compatibility: designed for deepagents-code)
   -> Read `<built_in_skills_dir>/skill-creator/SKILL.md` for full instructions
+- **textual-screenshot**: Capture a Textual terminal UI as an SVG using its headless test harness. Use when asked to make, attach, or preview a screenshot of deepagents-code/dcode or another Textual app, visually verify a TUI state, or render a modal, screen, or widget without a desktop or browser. (License: MIT, Compatibility: designed for deepagents-code and Textual apps)
+  -> Read `<built_in_skills_dir>/textual-screenshot/SKILL.md` for full instructions
 
 **How to Use Skills (Progressive Disclosure):**
 

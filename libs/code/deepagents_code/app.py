@@ -29255,7 +29255,7 @@ class DeepAgentsApp(App):
             def start_selection_worker() -> None:
                 self.run_worker(
                     apply_selection(),
-                    exclusive=False,
+                    exclusive=True,
                     group="summarization-model",
                 )
                 if self._chat_input:

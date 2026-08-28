@@ -1673,6 +1673,35 @@ class TestSummarizationModelCommand:
         assert screen._current_provider == "openai"
         assert screen._current_model == "gpt-5.4-mini"
 
+    async def test_selector_replaces_in_flight_selection_worker(self) -> None:
+        """The latest picker result cancels an older validation worker."""
+        app = DeepAgentsApp()
+
+        with (
+            patch.object(app, "push_screen") as push,
+            patch.object(app, "run_worker") as run_worker,
+            patch.object(
+                app,
+                "call_after_refresh",
+                side_effect=lambda callback: callback(),
+            ),
+            patch.object(
+                app,
+                "_apply_summarization_model_selection",
+                new_callable=AsyncMock,
+            ) as apply_selection,
+        ):
+            await app._show_summarization_model_selector()
+            handle_result = push.call_args.args[1]
+            handle_result(("openai:gpt-5.6-sol", "openai"))
+
+            run_worker.assert_called_once()
+            assert run_worker.call_args.kwargs["exclusive"] is True
+            assert run_worker.call_args.kwargs["group"] == "summarization-model"
+            await run_worker.call_args.args[0]
+
+        apply_selection.assert_awaited_once_with("openai:gpt-5.6-sol", None)
+
     async def test_external_remote_selector_skips_local_provider_requirements(
         self,
     ) -> None:

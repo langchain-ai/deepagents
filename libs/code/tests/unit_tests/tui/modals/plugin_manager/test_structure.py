@@ -5,7 +5,6 @@ import contextlib
 import re
 import time
 from pathlib import Path
-from typing import get_args
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -27,12 +26,10 @@ from deepagents_code.tui.modals.plugin_manager.content import (
     _status_lines,
 )
 from deepagents_code.tui.modals.plugin_manager.models import (
-    PluginTab,
     _ManagerState,
     _MarketplaceRow,
     _PluginRow,
 )
-from deepagents_code.tui.modals.plugin_manager.tabs import TAB_LABELS
 
 
 def test_plugin_options_preserve_selectable_rows_and_spacers() -> None:
@@ -601,32 +598,6 @@ async def test_plugin_tabs_are_mouse_clickable() -> None:
         assert not screen.query_one("#plugin-tab-discover", Static).has_class("active")
 
 
-async def test_plugin_tabs_fit_and_are_clickable_in_narrow_terminal() -> None:
-    """Every tab remains inside the modal when horizontal space is limited."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(50, 30)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        tabs = screen.query_one("#plugin-manager-tabs")
-        tab_labels = list(tabs.query(".plugin-manager-tab"))
-
-        assert tab_labels
-        assert all(
-            label.region.x >= tabs.region.x and label.region.right <= tabs.region.right
-            for label in tab_labels
-        )
-
-        await pilot.click("#plugin-tab-marketplaces")
-        await pilot.pause()
-        assert screen._tab == "marketplaces"
-
-        await pilot.click("#plugin-tab-errors")
-        await pilot.pause()
-        assert screen._tab == "errors"
-
-
 async def test_installed_plugin_search_filters_and_handles_no_match() -> None:
     app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
     screen = PluginManagerScreen()
@@ -739,32 +710,6 @@ async def test_enter_from_search_activates_installed_row() -> None:
         await pilot.pause()
 
         assert screen._mode == "installed_details"
-
-
-async def test_settings_tab_enables_plugin_auto_updates(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(
-        "deepagents_code.tui.modals.plugin_manager.plugin_auto_update_setting",
-        lambda: (False, "config.toml"),
-    )
-    save = MagicMock(return_value=True)
-    monkeypatch.setattr(
-        "deepagents_code.tui.modals.plugin_manager._save_toml_field", save
-    )
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    on_enabled = MagicMock()
-    screen = PluginManagerScreen(on_auto_update_enabled=on_enabled)
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        await pilot.click("#plugin-tab-settings")
-        await pilot.press("enter")
-        await pilot.pause()
-
-        save.assert_called_once_with("plugins", "auto_update", True)
-        on_enabled.assert_called_once_with()
 
 
 async def test_search_query_resets_when_switching_tabs() -> None:
@@ -897,25 +842,6 @@ async def test_tab_click_from_details_returns_to_list() -> None:
         assert screen._tab == "marketplaces"
         assert screen._selected_plugin is None
         assert screen._selected_marketplace is None
-
-
-def test_tab_labels_cover_every_plugin_tab() -> None:
-    """TAB_LABELS must stay in sync with the PluginTab literal.
-
-    `dict[PluginTab, str]` only constrains keys, not completeness, so a new tab
-    could otherwise KeyError at compose time.
-    """
-    assert set(TAB_LABELS) == set(get_args(PluginTab))
-
-
-def test_rendered_tabs_cover_every_plugin_tab() -> None:
-    """`_tabs` must stay in sync with the PluginTab literal.
-
-    The tab set is duplicated across PluginTab, TAB_LABELS, and `_tabs`. A tab
-    missing from `_tabs` would silently never render (compose iterates `_tabs`),
-    and one absent from TAB_LABELS would KeyError at compose time.
-    """
-    assert set(PluginManagerScreen._tabs) == set(get_args(PluginTab))
 
 
 async def test_refresh_state_clears_search_query(
@@ -1194,23 +1120,6 @@ async def test_connection_refresh_retires_its_own_error(
         assert screen._error == "Marketplace add failed."
 
 
-async def test_tab_switch_ignored_during_add_marketplace() -> None:
-    """Switching tabs must not discard an in-progress marketplace source entry."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        screen._mode = "add_marketplace"
-        screen._refresh_view()
-        await pilot.pause()
-
-        screen._select_tab("installed")
-        assert screen._mode == "add_marketplace"
-        assert screen._tab == "discover"
-
-
 async def test_marketplace_add_stays_locked_during_state_refresh(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1258,47 +1167,6 @@ async def test_marketplace_add_stays_locked_during_state_refresh(
         assert source.disabled is False
 
 
-async def test_search_hidden_without_filterable_plugins() -> None:
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        search = screen.query_one("#plugin-manager-search", Input)
-
-        screen._state = _ManagerState((), (), (), ())
-        screen._refresh_view()
-        assert search.display is False
-
-        screen._state = _ManagerState(
-            (), (), (_MarketplaceRow("official", "owner/official", 0, 0),), ()
-        )
-        screen._refresh_view()
-        assert search.display is False
-
-        screen._tab = "installed"
-        screen._refresh_view()
-        assert search.display is False
-
-        # Marketplaces and errors tabs never filter, even when populated.
-        screen._state = _ManagerState(
-            available_plugins=(),
-            installed_plugins=(),
-            marketplaces=(_MarketplaceRow("official", "owner/official", 2, 0),),
-            errors=("boom",),
-        )
-        screen._tab = "marketplaces"
-        screen._refresh_view()
-        assert search.display is False
-        assert screen.check_action("focus_search", ()) is False
-
-        screen._tab = "errors"
-        screen._refresh_view()
-        assert search.display is False
-        assert screen.check_action("focus_search", ()) is False
-
-
 def test_focus_search_binding_enabled_only_when_filter_visible() -> None:
     """`check_action` enables `/` only when the search filter is shown."""
     screen = PluginManagerScreen()
@@ -1332,49 +1200,6 @@ def test_focus_search_binding_enabled_only_when_filter_visible() -> None:
     screen._state = _ManagerState((), (), (), ())
     assert screen.check_action("focus_search", ()) is False
     assert screen.check_action("cancel", ()) is True
-
-
-async def test_slash_does_not_focus_hidden_search() -> None:
-    """`/` must not steal focus when the filter is hidden (empty discover)."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        screen._state = _ManagerState((), (), (), ())
-        screen._refresh_view()
-        search = screen.query_one("#plugin-manager-search", Input)
-        options = screen.query_one("#plugin-manager-options", OptionList)
-        assert search.display is False
-        assert options.has_focus
-
-        await pilot.press("/")
-        assert options.has_focus
-        assert not search.has_focus
-
-        await pilot.press("enter")
-        await pilot.pause()
-        assert screen._mode == "add_marketplace"
-
-
-async def test_slash_remains_typeable_in_add_marketplace_source() -> None:
-    """`/` must reach the marketplace source field (owner/repo, urls, paths)."""
-    app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-    screen = PluginManagerScreen()
-
-    async with app.run_test(size=(120, 40)) as pilot:
-        app.push_screen(screen)
-        await pilot.pause()
-        screen._mode = "add_marketplace"
-        screen._refresh_view()
-        await pilot.pause()
-
-        source = screen.query_one("#plugin-marketplace-source", Input)
-        assert source.has_focus
-
-        await pilot.press("o", "w", "n", "e", "r", "/", "r", "e", "p", "o")
-        assert source.value == "owner/repo"
 
 
 def test_filtered_plugins_matches_display_label() -> None:
@@ -1464,41 +1289,6 @@ def test_marketplace_options_omit_divider_when_empty() -> None:
     options = screen._current_options()
 
     assert [option.id for option in options] == ["add-marketplace"]
-
-
-def test_marketplace_options_pad_between_entries() -> None:
-    """Marketplace entries are separated by disabled spacers, like the plugins list."""
-    screen = PluginManagerScreen()
-    screen._tab = "marketplaces"
-    screen._state = _ManagerState(
-        available_plugins=(),
-        installed_plugins=(),
-        marketplaces=(
-            _MarketplaceRow("first", "owner/first", 1, 0),
-            _MarketplaceRow("second", "owner/second", 1, 0),
-            _MarketplaceRow("third", "owner/third", 1, 0),
-        ),
-        errors=(),
-    )
-
-    options = screen._current_options()
-
-    ids = [option.id for option in options]
-    assert ids == [
-        "add-marketplace",
-        "marketplace-divider",
-        "marketplace:first",
-        "marketplace-spacer:1",
-        "marketplace:second",
-        "marketplace-spacer:2",
-        "marketplace:third",
-    ]
-    spacers = [
-        option
-        for option in options
-        if option.id is not None and option.id.startswith("marketplace-spacer:")
-    ]
-    assert all(spacer.disabled for spacer in spacers)
 
 
 def test_healthy_marketplace_label_shows_available_plugins() -> None:

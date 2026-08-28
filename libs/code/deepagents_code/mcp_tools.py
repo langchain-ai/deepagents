@@ -273,10 +273,12 @@ def _server_log_handler(server_name: str) -> Callable[[Any], Awaitable[None]]:
     """Return a handler for the log messages `server_name` sends over MCP.
 
     MCP servers report their own diagnostics in-band, as `notifications/message`.
-    Declaring a handler is what makes a server willing to send them, and routes
-    each one to this module's logger at the level the server chose — so a server
-    explaining *why* a tool failed reaches `--debug` output as a structured
-    record, instead of being scraped back out of its stderr.
+    FastMCP installs a callback either way; what this adds over its default
+    handler is the server's identity — which matters once several backends are
+    mounted behind one router — and routing to this module's logger at the level
+    the server chose, so a server explaining *why* a tool failed reaches
+    `--debug` output as a structured record rather than being scraped out of its
+    stderr.
 
     Args:
         server_name: MCP server name used in log records.
@@ -1729,19 +1731,22 @@ def _build_transport(
     from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
 
     if server_type in _SUPPORTED_REMOTE_TYPES:
-        return RemoteMCPServer(
-            url=server_config["url"],
-            transport="sse" if server_type == "sse" else "http",
-            headers=dict(server_config.get("headers") or {}),
-            auth=auth,
-        ).to_transport()
+        # Only pin the transport when the config actually named one. Left unset,
+        # FastMCP infers it from the URL, which is what makes a bare
+        # `{"url": ".../sse"}` entry connect over SSE instead of streamable HTTP.
+        declared = server_config.get("type") or server_config.get("transport")
+        remote = RemoteMCPServer.model_validate(dict(server_config))
+        remote.transport = (
+            ("sse" if server_type == "sse" else "http") if declared else None
+        )
+        # The config's `auth` is a mode name (`"oauth"`), not a credential; the
+        # resolved provider replaces it.
+        remote.auth = auth
+        return remote.to_transport()
 
-    transport = StdioMCPServer(
-        command=server_config["command"],
-        args=list(server_config.get("args", [])),
-        env=dict(server_config.get("env") or {}),
-        keep_alive=keep_alive,
-    ).to_transport()
+    stdio = StdioMCPServer.model_validate(dict(server_config))
+    stdio.keep_alive = keep_alive
+    transport = stdio.to_transport()
     transport.log_file = _server_stderr_log(server_name)
     return transport
 
@@ -1786,7 +1791,17 @@ async def _mount_backends(
                 transport=transport,
                 log_handler=_server_log_handler(server_name),
             )
-            await stack.enter_async_context(backend)
+            await backend.__aenter__()  # noqa: PLC2801 - paired with explicit callbacks below
+            # `StatefulProxyClient.__aexit__` is deliberately a no-op — it only
+            # decrements a nesting count — so `async with` would not itself stop
+            # a `keep_alive` stdio subprocess. Closing the router client happens
+            # to cascade to the mounted backends today, but that is an
+            # implementation detail of the proxy; tear down explicitly so
+            # teardown does not depend on it, mirroring
+            # `MCPConfigTransport._create_proxy`. Callbacks run LIFO, so
+            # `transport.close()` is pushed first in order to run last.
+            stack.push_async_callback(transport.close)
+            stack.push_async_callback(backend._disconnect, force=True)
             router.mount(create_proxy(backend), namespace=server_name)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise

@@ -6,7 +6,10 @@ import asyncio
 import json
 import logging
 import os
+import subprocess
 import sys
+import tempfile
+import textwrap
 import threading
 import time
 from contextlib import asynccontextmanager
@@ -24,7 +27,6 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Generator, Sequence
     from types import ModuleType
 
-    from langchain_mcp_adapters.client import Connection
 
 from deepagents_code.mcp_auth import FileTokenStorage, MCPReauthRequiredError
 from deepagents_code.mcp_middleware import (
@@ -100,7 +102,7 @@ def _make_mcp_tool(
     tool = MagicMock(spec=["name", "description", "inputSchema", "annotations", "meta"])
     tool.name = name
     tool.description = description
-    tool.inputSchema = input_schema or {"type": "object", "additionalProperties": False, "properties": {}}
+    tool.inputSchema = input_schema or {"type": "object", "additionalProperties": False, "properties": {}}  # noqa: E501
     tool.annotations = None
     tool.meta = None
     return tool
@@ -249,9 +251,9 @@ def mcp_servers() -> Generator[MCPServerRegistry]:
     def _build(
         server_name: str,
         server_type: str,
-        server_config: Any,
+        server_config: Any,  # noqa: ANN401
         **kwargs: Any,
-    ) -> Any:
+    ) -> Any:  # noqa: ANN401
         # Build the real transport first, so tests can assert on what it carries.
         registry.transports.append(
             real_build(server_name, server_type, server_config, **kwargs)
@@ -1364,7 +1366,7 @@ class TestGetMCPTools:
 
 
 @pytest.mark.usefixtures("fake_home")
-def _failing_backend(error: BaseException) -> Any:
+def _failing_backend(error: BaseException) -> Any:  # noqa: ANN401
     """Patch every configured server onto a transport that fails the dial.
 
     Discovery no longer has a mockable client seam: a remote server's failure
@@ -1395,7 +1397,7 @@ def _failing_backend(error: BaseException) -> Any:
             raise error
             yield
 
-    def _build(*_args: Any, **_kwargs: Any) -> Any:
+    def _build(*_args: Any, **_kwargs: Any) -> Any:  # noqa: ANN401
         return _FailingTransport()
 
     return patch("deepagents_code.mcp_tools._build_transport", _build)

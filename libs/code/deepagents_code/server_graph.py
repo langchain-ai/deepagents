@@ -552,6 +552,7 @@ _get_runtime = _build_runtime_factory()
 _MAX_WORKSPACE_RUNTIMES = 32
 _workspace_runtimes: OrderedDict[str, tuple[str, ServerRuntime]] = OrderedDict()
 _workspace_runtime_lock = asyncio.Lock()
+_sandbox_workspace_id: str | None = None
 
 
 def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None:
@@ -563,15 +564,18 @@ def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None
     return cached[1]
 
 
-def _raise_if_sandbox_owned_by_another_workspace(
+def _claim_sandbox_workspace(
     config: ServerConfig,
     binding: WorkspaceBinding,
 ) -> None:
-    """Refuse to replace a process-wide sandbox owned by another workspace."""
-    if not config.sandbox_type or all(
-        workspace_id == binding.workspace_id
-        for workspace_id, _ in _workspace_runtimes.values()
-    ):
+    """Reserve the process-wide sandbox for the first requesting workspace."""
+    global _sandbox_workspace_id  # noqa: PLW0603  # process-lifetime ownership
+    if not config.sandbox_type:
+        return
+    if _sandbox_workspace_id is None:
+        _sandbox_workspace_id = binding.workspace_id
+        return
+    if _sandbox_workspace_id == binding.workspace_id:
         return
     reason = (
         "a runtime for another workspace already exists and the configured "
@@ -635,7 +639,7 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
             reason = "the server configuration changed after this workspace was bound"
             conflict = WorkspaceConflictError.from_reason(reason)
             raise conflict
-        _raise_if_sandbox_owned_by_another_workspace(current_config, binding)
+        _claim_sandbox_workspace(current_config, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
             project_root=Path(binding.project_root) if binding.project_root else None,
@@ -668,7 +672,7 @@ async def get_server_runtime() -> ServerRuntime:
             cached = _cached_workspace_runtime(binding)
             if cached is not None:
                 return cached
-            _raise_if_sandbox_owned_by_another_workspace(config, binding)
+            _claim_sandbox_workspace(config, binding)
         runtime = await _get_runtime()
         if binding is not None:
             _remember_workspace_runtime(binding, runtime)

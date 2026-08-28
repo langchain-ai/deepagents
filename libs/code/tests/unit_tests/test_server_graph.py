@@ -402,6 +402,43 @@ class TestWorkspaceRuntime:
 
         make.assert_awaited_once()
 
+    async def test_failed_sandbox_runtime_keeps_workspace_ownership(
+        self, tmp_path
+    ) -> None:
+        """A failed build must not let another workspace claim the sandbox."""
+        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(sandbox_type="daytona")
+        first_dir = tmp_path / "first"
+        second_dir = tmp_path / "second"
+        first_dir.mkdir()
+        second_dir.mkdir()
+        first = resolve_workspace(
+            str(first_dir),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        second = resolve_workspace(
+            str(second_dir),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        first_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(side_effect=[SystemExit(1), first_runtime])
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            with pytest.raises(SystemExit):
+                await module._workspace_runtime(first)
+            with pytest.raises(WorkspaceConflictError, match="another workspace"):
+                await module._workspace_runtime(second)
+            assert await module._workspace_runtime(first) is first_runtime
+
+        assert make.await_count == 2
+
     async def test_without_sandbox_builds_second_workspace(self, tmp_path) -> None:
         from deepagents_code.workspace import resolve_workspace
 

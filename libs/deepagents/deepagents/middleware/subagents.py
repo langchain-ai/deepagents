@@ -210,11 +210,7 @@ class ForkedSubAgent(_SubAgentBase):
     `skills`, since either would diverge from the parent's exact message.
 
     `tools` isn't restricted the same way -- a forked subagent's own tools
-    work normally. The tradeoff is cache cost, not correctness: on
-    exact-match caching providers (confirmed for Anthropic), any tools
-    difference invalidates the whole cached prefix, so a fork with its own
-    tools generally can't share the parent's cache there. Context
-    inheritance still works either way.
+    work normally. The tradeoff is cache misses.
     """
 
     mode: Literal["fork"]
@@ -638,8 +634,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         _validate_subagent_mode(spec)
 
     # Computed early (from raw specs) so the mirrored `task` tool below has
-    # this exact string -- staying byte-identical to the parent's is what
-    # lets Anthropic's cache treat both tools blocks as the same content.
+    # this exact string for cache hits.
     subagent_description_str = "\n".join(_describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents)
     if task_description is None:
         description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)

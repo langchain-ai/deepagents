@@ -20,6 +20,12 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NamedTuple
 
+# Imported at runtime rather than under TYPE_CHECKING: the LangGraph server
+# classifies `make_graph` by resolving its annotations with
+# `typing.get_type_hints` at graph-load time. A name that only type checkers
+# can see fails to resolve, and the server then refuses to load the graph.
+from langgraph_sdk.runtime import ServerRuntime as LangGraphServerRuntime  # noqa: TC002
+
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._server_config import ServerConfig
 from deepagents_code._startup_error import (
@@ -34,7 +40,6 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from deepagents.backends.composite import CompositeBackend
-    from langgraph_sdk.runtime import ServerRuntime as LangGraphServerRuntime
 
     from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.offload_middleware import OffloadOperation

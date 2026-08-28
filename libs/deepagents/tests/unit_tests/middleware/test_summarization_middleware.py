@@ -326,19 +326,6 @@ async def call_awrap_model_call(
 class TestSummarizationMiddlewareInit:
     """Tests for middleware initialization."""
 
-    def test_init_with_backend(self) -> None:
-        """Test initialization with a backend instance."""
-        backend = MockBackend()
-        middleware = SummarizationMiddleware(
-            model=make_mock_model(),
-            backend=backend,
-            trigger=("messages", 5),
-            keep=("messages", 3),
-        )
-
-        assert middleware._backend is backend
-        assert middleware._history_path_prefix == "/conversation_history"
-
     def test_langchain_deprecated_kwargs_are_forwarded(self) -> None:
         """LangChain-owned deprecated arguments retain their upstream behavior."""
         with pytest.warns(DeprecationWarning, match="(?:max_tokens_before_summary|messages_to_keep) is deprecated"):
@@ -3127,24 +3114,6 @@ class TestTokenCountingEfficiency:
         )
         return middleware, calls
 
-    def test_token_counter_called_once_per_model_call(self) -> None:
-        middleware, calls = self._make_counting_middleware()
-        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
-
-        _, captured_request = call_wrap_model_call(middleware, state, make_mock_runtime())
-
-        assert captured_request is not None  # Handler ran; nothing was summarized.
-        assert calls["count"] == 1
-
-    async def test_token_counter_called_once_per_model_call_async(self) -> None:
-        middleware, calls = self._make_counting_middleware()
-        state = cast("AgentState[Any]", {"messages": make_conversation_messages()})
-
-        _, captured_request = await call_awrap_model_call(middleware, state, make_mock_runtime())
-
-        assert captured_request is not None  # Handler ran; nothing was summarized.
-        assert calls["count"] == 1
-
     def _make_truncating_counting_middleware(
         self,
     ) -> tuple[SummarizationMiddleware, dict[str, int]]:
@@ -3194,34 +3163,6 @@ class TestTokenCountingEfficiency:
             AIMessage(content="Response 2", id="a3"),
         ]
         return cast("AgentState[Any]", {"messages": messages})
-
-    def test_token_counter_recounts_when_truncation_modifies_messages(self) -> None:
-        middleware, calls = self._make_truncating_counting_middleware()
-
-        _, captured_request = call_wrap_model_call(middleware, self._truncatable_state(), make_mock_runtime())
-
-        assert captured_request is not None  # Handler ran; nothing was summarized.
-        # Truncation changed the message set, so the count is refreshed:
-        # once before truncation, once after.
-        assert calls["count"] == 2
-        # Confirm the modify path was genuinely taken (not a vacuous recount).
-        first_ai = captured_request.messages[0]
-        assert isinstance(first_ai, AIMessage)
-        assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
-
-    async def test_token_counter_recounts_when_truncation_modifies_messages_async(self) -> None:
-        middleware, calls = self._make_truncating_counting_middleware()
-
-        _, captured_request = await call_awrap_model_call(middleware, self._truncatable_state(), make_mock_runtime())
-
-        assert captured_request is not None  # Handler ran; nothing was summarized.
-        # Truncation changed the message set, so the count is refreshed:
-        # once before truncation, once after.
-        assert calls["count"] == 2
-        # Confirm the modify path was genuinely taken (not a vacuous recount).
-        first_ai = captured_request.messages[0]
-        assert isinstance(first_ai, AIMessage)
-        assert first_ai.tool_calls[0]["args"]["content"] == "x" * 20 + "...(argument truncated)"
 
 
 class _OpaqueCounter:

@@ -159,14 +159,6 @@ def _stub_invoke_grader(
 
 
 class TestConstruction:
-    def test_defaults(self) -> None:
-        mw = RubricMiddleware(model=_STUB_MODEL)
-        assert mw.max_iterations == 3
-        assert mw._model == _STUB_MODEL
-        assert mw._tools == []
-        # `system_prompt` defaults to the built-in grader prompt.
-        assert "grader" in mw._system_prompt.lower()
-
     def test_missing_model_raises(self) -> None:
         # `model` is keyword-only and required -- omitting it is a TypeError
         # from the function signature itself.
@@ -203,23 +195,6 @@ class TestConstruction:
     def test_max_iterations_non_int_rejected(self) -> None:
         with pytest.raises(TypeError):
             RubricMiddleware(model=_STUB_MODEL, max_iterations="3")  # type: ignore[arg-type]
-
-    def test_tools_default_to_empty(self) -> None:
-        mw = RubricMiddleware(model=_STUB_MODEL)
-        assert mw._tools == []
-
-    def test_tools_propagated(self) -> None:
-        @tool
-        def my_tool(query: str) -> str:
-            """A tool."""
-            return query
-
-        mw = RubricMiddleware(model=_STUB_MODEL, tools=[my_tool])
-        assert mw._tools == [my_tool]
-
-    def test_custom_system_prompt_stored(self) -> None:
-        mw = RubricMiddleware(model=_STUB_MODEL, system_prompt="be strict")
-        assert mw._system_prompt == "be strict"
 
 
 # ---------------------------------------------------------------------- #

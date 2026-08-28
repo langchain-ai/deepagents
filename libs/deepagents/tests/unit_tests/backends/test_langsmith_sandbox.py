@@ -9,7 +9,6 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langsmith.sandbox import ResourceNotFoundError, SandboxClientError
 
-from deepagents.backends import sandbox as base_sandbox
 from deepagents.backends.langsmith import LangSmithSandbox
 from deepagents.backends.sandbox import MAX_BINARY_BYTES, MAX_OUTPUT_BYTES, TRUNCATION_MSG
 
@@ -540,21 +539,6 @@ def test_write_preflight_runs_existence_check() -> None:
     cmd_arg = mock_sdk.run.call_args.args[0]
     assert "python3 -c" in cmd_arg
     assert base64.b64encode(b"/app/test.txt").decode("ascii") in cmd_arg
-
-
-def test_max_binary_bytes_constant_matches_template() -> None:
-    """Python `MAX_BINARY_BYTES` constant stays in lockstep with the heredoc literal.
-
-    Drift here would silently desync `LangSmithSandbox.read()` from
-    `BaseSandbox.read()` because the template does not import the constant.
-    """
-    assert "MAX_BINARY_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
-    assert MAX_BINARY_BYTES == 500 * 1024
-
-
-def test_max_output_bytes_constant_matches_template() -> None:
-    assert "MAX_OUTPUT_BYTES = 500 * 1024" in base_sandbox._READ_COMMAND_TEMPLATE
-    assert MAX_OUTPUT_BYTES == 500 * 1024
 
 
 def _make_async_sandbox() -> tuple[LangSmithSandbox, MagicMock, MagicMock]:

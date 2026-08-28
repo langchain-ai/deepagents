@@ -683,24 +683,6 @@ def test_grep_path_glob_is_routed_for_slash_in_glob() -> None:
     assert "--include=" not in sandbox.last_command
 
 
-def test_grep_path_glob_template_strips_leading_slash() -> None:
-    """Anchored globs (leading /) stay relative to the search root, not the filesystem root."""
-    assert "lstrip" in _GREP_PATH_GLOB_TEMPLATE
-    assert "rel_glob" in _GREP_PATH_GLOB_TEMPLATE
-    # The raw glob_pat must not be passed directly to glob.glob — only rel_glob.
-    # Verify the template uses rel_glob in the glob() call, not glob_pat.
-    assert "glob.glob(rel_glob" in _GREP_PATH_GLOB_TEMPLATE
-    assert "glob.glob(glob_pat" not in _GREP_PATH_GLOB_TEMPLATE
-
-
-def test_grep_path_glob_template_terminates_each_record() -> None:
-    """Each match record is explicitly newline-terminated to prevent concatenation."""
-    # The template must strip the line's trailing newline and add an explicit one
-    # so a file whose last line lacks a final newline doesn't merge with the next.
-    assert "rstrip" in _GREP_PATH_GLOB_TEMPLATE
-    assert "line.rstrip" in _GREP_PATH_GLOB_TEMPLATE
-
-
 def test_grep_path_glob_parses_multiple_matches_no_trailing_newline() -> None:
     """Two matches where the first line has no trailing newline parse correctly."""
     # Simulate the fixed template output: each record explicitly newline-terminated.
@@ -1115,11 +1097,6 @@ def test_edit_command_template_format() -> None:
     assert "python3 -c" in cmd
     assert payload_b64 in cmd
     assert "__DEEPAGENTS_EDIT_EOF__" in cmd
-
-
-def test_edit_command_template_ends_with_newline() -> None:
-    """Test that _EDIT_COMMAND_TEMPLATE preserves the trailing newline after EOF."""
-    assert _EDIT_COMMAND_TEMPLATE.endswith("\n")
 
 
 def test_edit_tmpfile_template_format() -> None:

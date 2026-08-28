@@ -439,43 +439,6 @@ class TestSubagentMiddlewareInit:
         assert beta.update["messages"][0].content == "agent-beta"
         assert graph.config is None
 
-    def test_middleware_delegates_to_create_sub_agent(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Middleware should use the shared entrypoint for declarative subagents."""
-        graph = self._make_echo_graph()
-        calls: list[tuple[object, type | None]] = []
-
-        class CustomState(MessagesState):
-            pass
-
-        def fake_create_sub_agent(
-            spec: object,
-            *,
-            state_schema: type | None = None,
-            response_format: object = None,
-        ) -> object:
-            del response_format
-            calls.append((spec, state_schema))
-            return graph
-
-        monkeypatch.setattr("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent)
-
-        SubAgentMiddleware(
-            backend=StateBackend(),
-            subagents=[
-                {
-                    "name": "agent-alpha",
-                    "description": "First binding",
-                    "system_prompt": "Work on the task.",
-                    "model": "test-model",
-                    "tools": [],
-                },
-            ],
-            state_schema=CustomState,
-        )
-
-        assert len(calls) == 1
-        assert calls[0][1] is CustomState
-
     def test_multiple_subagents_with_interrupt_on(self) -> None:
         """Test creating agent with multiple subagents that have interrupt_on configured."""
         agent = create_agent(

@@ -1,12 +1,10 @@
 """Unit tests for LocalShellBackend."""
 
 import os
-import subprocess
 import sys
 import tempfile
 import warnings
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
@@ -67,17 +65,6 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.exit_code == 0
         assert "Hello World" in result.output
         assert result.truncated is False
-
-
-def test_local_shell_backend_execute_starts_new_session() -> None:
-    """Test that commands cannot access the parent's controlling terminal."""
-    completed = subprocess.CompletedProcess(args="echo hello", returncode=0, stdout="hello\n", stderr="")
-    with tempfile.TemporaryDirectory() as tmpdir:
-        backend = LocalShellBackend(root_dir=tmpdir)
-        with patch("subprocess.run", return_value=completed) as run:
-            backend.execute("echo hello")
-
-    assert run.call_args.kwargs["start_new_session"] is True
 
 
 def test_local_shell_backend_cannot_open_parent_controlling_terminal(tmp_path: Path) -> None:

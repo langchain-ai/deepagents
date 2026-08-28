@@ -13,6 +13,7 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
   merge_group:
 
 # Cancel redundant workflow runs
@@ -616,6 +617,169 @@ jobs:
                 .write();
             }
 
+  project-readme-check:
+    name: "Project README check"
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      pull-requests: write
+    concurrency:
+      group: project-readme-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: "📋 Checkout trusted detector"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: .readme-check-base
+          sparse-checkout: |
+            .github/scripts/checks/check_project_readmes.py
+          persist-credentials: false
+
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - name: "Collect changed files"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const pr = context.payload.pull_request;
+            if (!pr || typeof pr.changed_files !== 'number') {
+              core.setFailed('PR payload is missing a numeric changed_files total; failing closed.');
+              return;
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: pr.number,
+              per_page: 100,
+            });
+            if (files.length !== pr.changed_files) {
+              core.setFailed(`Changed-file list is incomplete (${files.length} of ${pr.changed_files}); failing closed.`);
+              return;
+            }
+            const paths = new Set();
+            for (const file of files) {
+              paths.add(file.filename);
+              if (file.previous_filename) paths.add(file.previous_filename);
+            }
+            fs.writeFileSync('changed_files.json', JSON.stringify([...paths]));
+
+      - name: "Detect protected README edits"
+        id: detect
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          detector=".readme-check-base/.github/scripts/checks/check_project_readmes.py"
+          if [[ ! -f "$detector" ]]; then
+            echo "::warning::Project README detector absent on base; gate is in its bootstrap window."
+            result='{"pr_type":null,"readmes":[]}'
+          else
+            result=$(python "$detector" "$PR_TITLE" < changed_files.json)
+          fi
+          {
+            echo "result<<__README_EOF__"
+            echo "$result"
+            echo "__README_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "Comment and enforce acknowledgment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RESULT: ${{ steps.detect.outputs.result }}
+        with:
+          script: |
+            const STICKY_MARKER = '<!-- project-readme-check -->';
+            const ACKNOWLEDGMENT_LABEL = 'readme: acknowledged';
+            const pr = context.payload.pull_request;
+            let result;
+            try {
+              result = JSON.parse(process.env.RESULT || '');
+            } catch (error) {
+              core.setFailed(`README detector returned invalid JSON: ${error.message}`);
+              return;
+            }
+            if (!result || !Array.isArray(result.readmes) || result.readmes.some(path => typeof path !== 'string')) {
+              core.setFailed(`README detector returned an invalid result: ${JSON.stringify(result)}`);
+              return;
+            }
+
+            const findSticky = async () => {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...context.repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+              return comments.find(comment => comment.body && comment.body.startsWith(STICKY_MARKER));
+            };
+            const upsertSticky = async body => {
+              try {
+                const existing = await findSticky();
+                if (existing && existing.body !== body) {
+                  await github.rest.issues.updateComment({ ...context.repo, comment_id: existing.id, body });
+                } else if (!existing) {
+                  await github.rest.issues.createComment({ ...context.repo, issue_number: pr.number, body });
+                }
+              } catch (error) {
+                core.warning(`Could not post README gate comment: ${error.message}`);
+                try {
+                  await core.summary.addHeading('Project README check').addRaw(body).write();
+                } catch (summaryError) {
+                  core.warning(`Could not write README gate job summary: ${summaryError.message}`);
+                }
+              }
+            };
+
+            if (result.readmes.length === 0) {
+              try {
+                const existing = await findSticky();
+                if (existing) await github.rest.issues.deleteComment({ ...context.repo, comment_id: existing.id });
+              } catch (error) {
+                core.warning(`Could not remove stale README gate comment: ${error.message}`);
+              }
+              return;
+            }
+
+            let labels;
+            try {
+              ({ data: labels } = await github.rest.issues.listLabelsOnIssue({
+                ...context.repo,
+                issue_number: pr.number,
+              }));
+            } catch (error) {
+              core.setFailed(`Could not read live PR labels; failing closed: ${error.message}`);
+              return;
+            }
+            const acknowledged = labels.some(label => label.name === ACKNOWLEDGMENT_LABEL);
+            const pathList = result.readmes.map(path => `- \`${path}\``).join('\n');
+            if (acknowledged) {
+              await upsertSticky([
+                STICKY_MARKER,
+                `ℹ️ **Project README edits acknowledged** via the \`${ACKNOWLEDGMENT_LABEL}\` label.`,
+                '',
+                pathList,
+                '',
+                'Remove the label to re-enable the block.',
+              ].join('\n'));
+              return;
+            }
+
+            const body = [
+              STICKY_MARKER,
+              '⛔ **This PR edits a project README but is not a `docs` PR.**',
+              '',
+              pathList,
+              '',
+              `Change the PR title type to \`docs\` if the PR is documentation-only. Otherwise, apply the \`${ACKNOWLEDGMENT_LABEL}\` label to confirm these landing-page changes are intentional.`,
+            ].join('\n');
+            core.setFailed(`Project README edits require a docs PR or the '${ACKNOWLEDGMENT_LABEL}' label: ${result.readmes.join(', ')}`);
+            await upsertSticky(body);
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
@@ -644,6 +808,7 @@ jobs:
       - test-quickjs-sdk-smoke
       - drbench-dataset
       - check-release-options
+      - project-readme-check
     if: always()
     runs-on: ubuntu-latest
     steps:

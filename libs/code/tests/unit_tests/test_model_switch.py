@@ -1691,6 +1691,33 @@ class TestSummarizationModelCommand:
         assert screen._current_provider == "anthropic"
         assert screen._current_model == "claude-sonnet-4-5"
 
+    async def test_install_selection_waits_until_current_work_finishes(self) -> None:
+        """Provider installation must not race an active turn's server use."""
+        app = DeepAgentsApp()
+        app._agent_running = True
+        notify = Mock()
+        install = AsyncMock(return_value=True)
+        set_model = AsyncMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        install.assert_not_awaited()
+        set_model.assert_not_awaited()
+        assert len(app._deferred_actions) == 1
+        assert app._deferred_actions[0].kind == "summarization_model_switch"
+        notify.assert_called_once()
+
+        app._agent_running = False
+        await app._deferred_actions.pop().execute()
+
+        install.assert_awaited_once_with("baseten", auto_restart=True)
+        set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
     async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
         """The grammar is a single bare spec -- no params, unlike `/model`."""
         app = DeepAgentsApp()

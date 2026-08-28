@@ -2103,6 +2103,7 @@ class ExternalInput(Message):
 
 DeferredActionKind = Literal[
     "model_switch",
+    "summarization_model_switch",
     "thread_switch",
     "chat_output",
     "agent_switch",
@@ -29243,9 +29244,7 @@ class DeepAgentsApp(App):
             extra = screen.pending_install_extra
 
             async def apply_selection() -> None:
-                if extra and not await self._install_extra(extra, auto_restart=True):
-                    return
-                await self._set_summarization_model(model_spec)
+                await self._apply_summarization_model_selection(model_spec, extra)
 
             def start_selection_worker() -> None:
                 self.run_worker(
@@ -29273,6 +29272,30 @@ class DeepAgentsApp(App):
             ),
         )
         self.push_screen(screen, handle_result)
+
+    async def _apply_summarization_model_selection(
+        self, model_spec: str, extra: str | None
+    ) -> None:
+        """Install any provider extra, then apply a picker selection."""
+        from functools import partial
+
+        if extra and (self._agent_running or self._shell_running or self._connecting):
+            self._defer_action(
+                DeferredAction(
+                    kind="summarization_model_switch",
+                    execute=partial(
+                        self._apply_summarization_model_selection, model_spec, extra
+                    ),
+                )
+            )
+            self.notify(
+                "Summarization model will switch after current work finishes.",
+                markup=False,
+            )
+            return
+        if extra and not await self._install_extra(extra, auto_restart=True):
+            return
+        await self._set_summarization_model(model_spec)
 
     async def _set_summarization_model(self, model_spec: str) -> None:
         """Validate and set the session's summarization model."""

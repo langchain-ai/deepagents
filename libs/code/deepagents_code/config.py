@@ -35,6 +35,7 @@ from deepagents_code._env_vars import (
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
     READ_PROJECT_DOTENV,
+    UI_CHARSET_MODE,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -1817,9 +1818,19 @@ def _compute_charset_mode() -> CharsetMode:
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
     """
-    from deepagents_code._charset import detect_charset_mode
+    prefixed = os.environ.get(UI_CHARSET_MODE)
+    mode = prefixed if prefixed is not None else os.environ.get("UI_CHARSET_MODE")
+    mode = (mode or "auto").lower()
+    if mode == "unicode":
+        return CharsetMode.UNICODE
+    if mode == "ascii":
+        return CharsetMode.ASCII
 
-    return CharsetMode(detect_charset_mode())
+    encoding = getattr(sys.stdout, "encoding", "") or ""
+    if "utf" in encoding.lower():
+        return CharsetMode.UNICODE
+    lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
+    return CharsetMode.UNICODE if "utf" in lang.lower() else CharsetMode.ASCII
 
 
 def get_glyphs() -> Glyphs:

@@ -119,11 +119,11 @@ logger = logging.getLogger(__name__)
 try:
     from textual import _border  # noqa: PLC2701
 
-    from deepagents_code._charset import detect_charset_mode
+    from deepagents_code.config import is_ascii_mode
 except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
     logger.warning("Textual ASCII border patch skipped: %s", exc)
 else:
-    if detect_charset_mode() == "ascii":
+    if is_ascii_mode():
         ascii_border = _border.BORDER_CHARS["ascii"]
         for edge_type in _border.BORDER_CHARS:
             if edge_type not in {*_border.INVISIBLE_EDGE_TYPES, "blank"}:

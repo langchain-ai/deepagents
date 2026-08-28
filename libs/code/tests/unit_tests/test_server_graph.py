@@ -6,6 +6,7 @@ import importlib
 import os
 import sys
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -355,3 +356,43 @@ class TestStartupErrorMarker:
     The marker is the contract `wait_for_server_healthy` parses to surface
     a one-line summary instead of "Server process exited with code N".
     """
+
+
+class TestGraphFactorySignature:
+    """`make_graph` must stay loadable as a LangGraph server graph factory.
+
+    The server does not call the factory to learn what it wants. It resolves
+    the factory's annotations with `typing.get_type_hints` at graph-load time
+    and builds a keyword dispatch from them. An annotation that names a symbol
+    which exists only for type checkers fails to resolve, and the server then
+    rejects the graph before it serves a request. Calling `make_graph`
+    directly cannot detect this, because Python never evaluates annotations.
+    """
+
+    def test_factory_annotations_resolve_at_runtime(self) -> None:
+        """Every `make_graph` annotation must resolve outside TYPE_CHECKING."""
+        import typing
+
+        module = _import_fresh_server_graph()
+
+        hints = typing.get_type_hints(module.make_graph)
+
+        assert "runtime" in hints
+        assert "config" in hints
+
+    def test_server_classifies_factory_as_config_and_runtime(self) -> None:
+        """The server must map both parameters, not reject the factory."""
+        from langgraph_api._factory_utils import _classify_factory
+
+        module = _import_fresh_server_graph()
+
+        # `_classify_factory` returns the keyword dispatch the server uses for
+        # every graph load. The public `classify_factory` caches into a process
+        # global, so it is deliberately not used here.
+        dispatch = _classify_factory(module.make_graph)
+
+        assert dispatch is not None
+        # Sentinels: the dispatch only routes these values by keyword.
+        config: Any = object()
+        runtime: Any = object()
+        assert dispatch(config, runtime) == {"config": config, "runtime": runtime}

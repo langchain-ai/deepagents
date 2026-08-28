@@ -35,7 +35,7 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.deepagentsignore import DeepagentsIgnore
+from deepagents_code.deepagentsignore import IGNORE_FILENAME, DeepagentsIgnore
 from deepagents_code.input import (
     IMAGE_PLACEHOLDER_PATTERN,
     VIDEO_PLACEHOLDER_PATTERN,
@@ -3404,7 +3404,7 @@ class ChatInput(Vertical):
         for path in paths:
             if ignore.is_ignored_path(path):
                 self.app.notify(
-                    f"File excluded by .deepagentsignore: {path.name}",
+                    f"File excluded by {IGNORE_FILENAME}: {path.name}",
                     severity="warning",
                     timeout=5,
                     markup=False,

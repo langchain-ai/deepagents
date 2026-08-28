@@ -41,6 +41,8 @@ class DiagnosticItem:
     label: str
     value: str
     ok: bool = True
+    url: str | None = None
+    """Optional target the rendered value links to."""
 
 
 @dataclass
@@ -100,6 +102,24 @@ def _build_commit() -> str | None:
         return None
     commit = (BUILD_COMMIT or "").strip()
     return commit or None
+
+
+def _commit_hash_item(path: str) -> DiagnosticItem:
+    """Return the commit-hash diagnostic, linked to the commit on GitHub.
+
+    Args:
+        path: Directory used as the git command working directory.
+
+    Returns:
+        The commit-hash item, with a link only when the hash is real.
+    """
+    commit = _commit_hash(path)
+    url = (
+        f"https://github.com/langchain-ai/deepagents/commit/{commit}"
+        if re.fullmatch(r"[0-9a-fA-F]{7,40}", commit)
+        else None
+    )
+    return DiagnosticItem("Commit hash", commit, url=url)
 
 
 def _commit_hash(path: str) -> str:
@@ -191,7 +211,7 @@ def _collect_diagnostics() -> DiagnosticSection:
         items=[
             DiagnosticItem("deepagents-code", cli_value),
             DiagnosticItem("deepagents (SDK)", sdk_version, ok=sdk_ok),
-            DiagnosticItem("Commit hash", _commit_hash(path)),
+            _commit_hash_item(path),
             DiagnosticItem("Python", platform.python_version()),
             DiagnosticItem("Platform", _platform_tag()),
             DiagnosticItem("Install method", method),
@@ -795,15 +815,9 @@ def _render_text(sections: list[DiagnosticSection]) -> None:
         for index, item in enumerate(section.items):
             connector = corner if index == len(section.items) - 1 else tee
             value_color = theme.MUTED if item.ok else "red"
-            url = (
-                f"https://github.com/langchain-ai/deepagents/commit/{item.value}"
-                if item.label == "Commit hash"
-                and re.fullmatch(r"[0-9a-fA-F]{7,40}", item.value)
-                else None
-            )
             console.print(
                 f"  {connector} {escape(item.label)}: ",
-                Text(item.value, style=Style(color=value_color, link=url)),
+                Text(item.value, style=Style(color=value_color, link=item.url)),
                 sep="",
                 highlight=False,
             )

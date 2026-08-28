@@ -597,6 +597,24 @@ def _scope_files_to_cwd(files: list[str], project_root: Path, cwd: Path) -> list
     return [path[len(prefix) :] for path in files if path.startswith(prefix)]
 
 
+def _collect_project_files(project_root: Path, cwd: Path) -> list[str]:
+    """List the cwd-relative project files that ignore rules allow.
+
+    Blocking: reads the ignore files and walks the project, so callers on an
+    event loop must run this in a worker thread.
+
+    Args:
+        project_root: Root the file list is produced relative to.
+        cwd: Directory the returned paths are relative to.
+
+    Returns:
+        Non-excluded file paths relative to `cwd`.
+    """
+    ignore = DeepagentsIgnore.from_project(cwd, project_root=project_root)
+    files = ignore.filter_relative(_get_project_files(project_root))
+    return _scope_files_to_cwd(files, project_root, cwd)
+
+
 class FuzzyFileController:
     """Controller for @ file completion with fuzzy matching from current cwd."""
 
@@ -630,11 +648,7 @@ class FuzzyFileController:
             List of project file paths.
         """
         if self._file_cache is None:
-            ignore = DeepagentsIgnore.from_project(
-                self._cwd, project_root=self._project_root
-            )
-            files = ignore.filter_relative(_get_project_files(self._project_root))
-            self._file_cache = _scope_files_to_cwd(files, self._project_root, self._cwd)
+            self._file_cache = _collect_project_files(self._project_root, self._cwd)
         return self._file_cache
 
     def refresh_cache(self) -> None:
@@ -701,12 +715,9 @@ class FuzzyFileController:
         # list visible. Log at debug so a recurring background refresh failure
         # (the 30s timer) is diagnosable rather than silently stale.
         try:
-            files = await asyncio.to_thread(_get_project_files, project_root)
-            ignore = DeepagentsIgnore.from_project(cwd, project_root=project_root)
+            scoped = await asyncio.to_thread(_collect_project_files, project_root, cwd)
             if generation == self._cache_generation:
-                self._file_cache = _scope_files_to_cwd(
-                    ignore.filter_relative(files), project_root, cwd
-                )
+                self._file_cache = scoped
         except Exception:  # best-effort refresh; prior cache is the fallback
             logger.debug("File-cache warm failed for %s", project_root, exc_info=True)
 

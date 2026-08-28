@@ -104,7 +104,7 @@ from deepagents_code.configuration.theme_resolution import (
     resolve_terminal_mapping as _resolve_terminal_mapping,
     resolve_theme_name as _resolve_theme_name,
 )
-from deepagents_code.deepagentsignore import DeepagentsIgnore
+from deepagents_code.deepagentsignore import IGNORE_FILENAME, DeepagentsIgnore
 from deepagents_code.formatting import format_message_timestamp
 from deepagents_code.goal_state_limits import (
     GOAL_APPLICATION_CHAR_LIMIT,
@@ -383,7 +383,7 @@ def _read_rubric_file(path_arg: str, cwd: str) -> tuple[Path, str]:
     if not path.is_absolute():
         path = Path(cwd) / path
     if DeepagentsIgnore.from_project(cwd).is_ignored_path(path):
-        msg = f"Rubric file is excluded by .deepagentsignore: {path}"
+        msg = f"Rubric file is excluded by {IGNORE_FILENAME}: {path}"
         raise PermissionError(msg)
     return _read_text_file_expanding_user(str(path))
 

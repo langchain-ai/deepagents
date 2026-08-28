@@ -6,6 +6,7 @@ import logging
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING, TypeVar
 
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import (
@@ -30,7 +31,12 @@ from deepagents.backends.utils import to_posix_path, validate_path
 from deepagents_code._paths import PATHS
 from deepagents_code.project_utils import find_project_root
 
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
 logger = logging.getLogger(__name__)
+
+_ResultT = TypeVar("_ResultT")
 
 IGNORE_FILENAME = ".deepagentsignore"
 DEFAULT_PATTERNS = (
@@ -42,7 +48,7 @@ DEFAULT_PATTERNS = (
     "dist/",
     "build/",
 )
-_EXCLUDED_ERROR = "Path is excluded by .deepagentsignore"
+EXCLUDED_ERROR = f"Path is excluded by {IGNORE_FILENAME}"
 _GREP_SCAN_LIMIT = 10_000
 
 
@@ -140,9 +146,7 @@ class DeepagentsIgnore:
             Whether the destination is excluded.
         """
         normalized = validate_path(path)
-        if virtual_mode:
-            candidate = backend_root / normalized.lstrip("/")
-        elif Path(path).is_absolute():
+        if not virtual_mode and Path(path).is_absolute():
             candidate = Path(normalized)
         else:
             candidate = backend_root / normalized.lstrip("/")
@@ -178,9 +182,39 @@ class IgnoringBackend(BackendProtocol):
             is_dir=is_dir,
         )
 
-    @staticmethod
-    def _error(path: str) -> str:
-        return f"{_EXCLUDED_ERROR}: {path}"
+    def _reject(
+        self,
+        path: str,
+        factory: Callable[..., _ResultT],
+        *,
+        is_dir: bool = False,
+    ) -> _ResultT | None:
+        """Return a rejection result for `path`, or `None` when it is allowed."""
+        try:
+            if self._ignored(path, is_dir=is_dir):
+                return factory(error=f"{EXCLUDED_ERROR}: {path}")
+        except ValueError as exc:
+            return factory(error=str(exc))
+        return None
+
+    def _reject_scope(
+        self,
+        path: str | None,
+        factory: Callable[..., _ResultT],
+    ) -> _ResultT | None:
+        """Return an empty or error result when a search root is excluded.
+
+        An excluded search root yields no matches rather than an error, so the
+        agent sees the same shape it would for a directory with no hits.
+        """
+        if path is None:
+            return None
+        try:
+            if self._ignored(path, is_dir=True):
+                return factory(matches=[])
+        except ValueError as exc:
+            return factory(error=str(exc))
+        return None
 
     def _ignored_info(self, info: FileInfo) -> bool:
         path = info["path"]
@@ -198,11 +232,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Filtered listing result.
         """
-        try:
-            if self._ignored(path, is_dir=True):
-                return LsResult(error=self._error(path))
-        except ValueError as exc:
-            return LsResult(error=str(exc))
+        if (blocked := self._reject(path, LsResult, is_dir=True)) is not None:
+            return blocked
         result = self._backend.ls(path)
         if result.entries is None:
             return result
@@ -220,11 +251,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Filtered listing result.
         """
-        try:
-            if self._ignored(path, is_dir=True):
-                return LsResult(error=self._error(path))
-        except ValueError as exc:
-            return LsResult(error=str(exc))
+        if (blocked := self._reject(path, LsResult, is_dir=True)) is not None:
+            return blocked
         result = await self._backend.als(path)
         if result.entries is None:
             return result
@@ -242,11 +270,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Read result.
         """
-        try:
-            if self._ignored(file_path):
-                return ReadResult(error=self._error(file_path))
-        except ValueError as exc:
-            return ReadResult(error=str(exc))
+        if (blocked := self._reject(file_path, ReadResult)) is not None:
+            return blocked
         return self._backend.read(file_path, offset, limit)
 
     async def aread(
@@ -257,11 +282,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Read result.
         """
-        try:
-            if self._ignored(file_path):
-                return ReadResult(error=self._error(file_path))
-        except ValueError as exc:
-            return ReadResult(error=str(exc))
+        if (blocked := self._reject(file_path, ReadResult)) is not None:
+            return blocked
         return await self._backend.aread(file_path, offset, limit)
 
     def grep(
@@ -277,23 +299,20 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Filtered search result.
         """
-        try:
-            if path is not None and self._ignored(path, is_dir=True):
-                return GrepResult(matches=[])
-        except ValueError as exc:
-            return GrepResult(error=str(exc))
+        if (blocked := self._reject_scope(path, GrepResult)) is not None:
+            return blocked
         if max_count is None:
             return self._filter_grep(self._backend.grep(pattern, path, glob))
+        scan_limit = max(max_count, _GREP_SCAN_LIMIT)
         scan_count = max(max_count, 1)
         while True:
             result = self._backend.grep(
-                pattern,
-                path,
-                glob,
-                max_count=min(scan_count, max(max_count, _GREP_SCAN_LIMIT)),
+                pattern, path, glob, max_count=min(scan_count, scan_limit)
             )
             filtered = self._filter_grep(result, max_count=max_count)
-            if self._grep_scan_complete(result, filtered, scan_count, max_count):
+            if self._grep_scan_complete(
+                result, filtered, scan_count, scan_limit, max_count
+            ):
                 return filtered
             scan_count *= 2
 
@@ -310,23 +329,20 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Filtered search result.
         """
-        try:
-            if path is not None and self._ignored(path, is_dir=True):
-                return GrepResult(matches=[])
-        except ValueError as exc:
-            return GrepResult(error=str(exc))
+        if (blocked := self._reject_scope(path, GrepResult)) is not None:
+            return blocked
         if max_count is None:
             return self._filter_grep(await self._backend.agrep(pattern, path, glob))
+        scan_limit = max(max_count, _GREP_SCAN_LIMIT)
         scan_count = max(max_count, 1)
         while True:
             result = await self._backend.agrep(
-                pattern,
-                path,
-                glob,
-                max_count=min(scan_count, max(max_count, _GREP_SCAN_LIMIT)),
+                pattern, path, glob, max_count=min(scan_count, scan_limit)
             )
             filtered = self._filter_grep(result, max_count=max_count)
-            if self._grep_scan_complete(result, filtered, scan_count, max_count):
+            if self._grep_scan_complete(
+                result, filtered, scan_count, scan_limit, max_count
+            ):
                 return filtered
             scan_count *= 2
 
@@ -335,9 +351,9 @@ class IgnoringBackend(BackendProtocol):
         result: GrepResult,
         filtered: GrepResult,
         scan_count: int,
+        scan_limit: int,
         max_count: int,
     ) -> bool:
-        scan_limit = max(max_count, _GREP_SCAN_LIMIT)
         return (
             result.matches is None
             or not result.truncated
@@ -368,11 +384,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Filtered glob result.
         """
-        try:
-            if path is not None and self._ignored(path, is_dir=True):
-                return GlobResult(matches=[])
-        except ValueError as exc:
-            return GlobResult(error=str(exc))
+        if (blocked := self._reject_scope(path, GlobResult)) is not None:
+            return blocked
         return self._filter_glob(self._backend.glob(pattern, path))
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
@@ -381,11 +394,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Filtered glob result.
         """
-        try:
-            if path is not None and self._ignored(path, is_dir=True):
-                return GlobResult(matches=[])
-        except ValueError as exc:
-            return GlobResult(error=str(exc))
+        if (blocked := self._reject_scope(path, GlobResult)) is not None:
+            return blocked
         return self._filter_glob(await self._backend.aglob(pattern, path))
 
     def _filter_glob(self, result: GlobResult) -> GlobResult:
@@ -410,11 +420,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Write result.
         """
-        try:
-            if self._ignored(file_path):
-                return WriteResult(error=self._error(file_path))
-        except ValueError as exc:
-            return WriteResult(error=str(exc))
+        if (blocked := self._reject(file_path, WriteResult)) is not None:
+            return blocked
         return self._backend.write(file_path, content)
 
     async def awrite(self, file_path: str, content: str) -> WriteResult:
@@ -423,11 +430,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Write result.
         """
-        try:
-            if self._ignored(file_path):
-                return WriteResult(error=self._error(file_path))
-        except ValueError as exc:
-            return WriteResult(error=str(exc))
+        if (blocked := self._reject(file_path, WriteResult)) is not None:
+            return blocked
         return await self._backend.awrite(file_path, content)
 
     def edit(
@@ -442,11 +446,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Edit result.
         """
-        try:
-            if self._ignored(file_path):
-                return EditResult(error=self._error(file_path))
-        except ValueError as exc:
-            return EditResult(error=str(exc))
+        if (blocked := self._reject(file_path, EditResult)) is not None:
+            return blocked
         return self._backend.edit(file_path, old_string, new_string, replace_all)
 
     async def aedit(
@@ -461,11 +462,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Edit result.
         """
-        try:
-            if self._ignored(file_path):
-                return EditResult(error=self._error(file_path))
-        except ValueError as exc:
-            return EditResult(error=str(exc))
+        if (blocked := self._reject(file_path, EditResult)) is not None:
+            return blocked
         return await self._backend.aedit(file_path, old_string, new_string, replace_all)
 
     def delete(self, file_path: str) -> DeleteResult:
@@ -474,11 +472,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Delete result.
         """
-        try:
-            if self._ignored(file_path, is_dir=True):
-                return DeleteResult(error=self._error(file_path))
-        except ValueError as exc:
-            return DeleteResult(error=str(exc))
+        if (blocked := self._reject(file_path, DeleteResult, is_dir=True)) is not None:
+            return blocked
         return self._backend.delete(file_path)
 
     async def adelete(self, file_path: str) -> DeleteResult:
@@ -487,11 +482,8 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             Delete result.
         """
-        try:
-            if self._ignored(file_path, is_dir=True):
-                return DeleteResult(error=self._error(file_path))
-        except ValueError as exc:
-            return DeleteResult(error=str(exc))
+        if (blocked := self._reject(file_path, DeleteResult, is_dir=True)) is not None:
+            return blocked
         return await self._backend.adelete(file_path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
@@ -500,14 +492,12 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             One response per requested file.
         """
-        blocked, allowed = self._partition_uploads(files)
-        allowed_results = iter(self._backend.upload_files(allowed))
-        return [
-            FileUploadResponse(path=path, error=PERMISSION_DENIED)
-            if index in blocked
-            else next(allowed_results)
-            for index, (path, _content) in enumerate(files)
-        ]
+        paths = [path for path, _content in files]
+        blocked = self._blocked_indices(paths)
+        allowed = [item for index, item in enumerate(files) if index not in blocked]
+        return self._merge_blocked(
+            paths, blocked, self._backend.upload_files(allowed), FileUploadResponse
+        )
 
     async def aupload_files(
         self, files: list[tuple[str, bytes]]
@@ -517,30 +507,15 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             One response per requested file.
         """
-        blocked, allowed = self._partition_uploads(files)
-        allowed_results = iter(await self._backend.aupload_files(allowed))
-        return [
-            FileUploadResponse(path=path, error=PERMISSION_DENIED)
-            if index in blocked
-            else next(allowed_results)
-            for index, (path, _content) in enumerate(files)
-        ]
-
-    def _partition_uploads(
-        self, files: list[tuple[str, bytes]]
-    ) -> tuple[set[int], list[tuple[str, bytes]]]:
-        blocked: set[int] = set()
-        allowed: list[tuple[str, bytes]] = []
-        for index, item in enumerate(files):
-            try:
-                ignored = self._ignored(item[0])
-            except ValueError:
-                ignored = True
-            if ignored:
-                blocked.add(index)
-            else:
-                allowed.append(item)
-        return blocked, allowed
+        paths = [path for path, _content in files]
+        blocked = self._blocked_indices(paths)
+        allowed = [item for index, item in enumerate(files) if index not in blocked]
+        return self._merge_blocked(
+            paths,
+            blocked,
+            await self._backend.aupload_files(allowed),
+            FileUploadResponse,
+        )
 
     def download_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download non-ignored files.
@@ -548,14 +523,11 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             One response per requested path.
         """
-        blocked, allowed = self._partition_downloads(paths)
-        allowed_results = iter(self._backend.download_files(allowed))
-        return [
-            FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-            if index in blocked
-            else next(allowed_results)
-            for index, path in enumerate(paths)
-        ]
+        blocked = self._blocked_indices(paths)
+        allowed = [path for index, path in enumerate(paths) if index not in blocked]
+        return self._merge_blocked(
+            paths, blocked, self._backend.download_files(allowed), FileDownloadResponse
+        )
 
     async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
         """Download non-ignored files asynchronously.
@@ -563,18 +535,18 @@ class IgnoringBackend(BackendProtocol):
         Returns:
             One response per requested path.
         """
-        blocked, allowed = self._partition_downloads(paths)
-        allowed_results = iter(await self._backend.adownload_files(allowed))
-        return [
-            FileDownloadResponse(path=path, error=PERMISSION_DENIED)
-            if index in blocked
-            else next(allowed_results)
-            for index, path in enumerate(paths)
-        ]
+        blocked = self._blocked_indices(paths)
+        allowed = [path for index, path in enumerate(paths) if index not in blocked]
+        return self._merge_blocked(
+            paths,
+            blocked,
+            await self._backend.adownload_files(allowed),
+            FileDownloadResponse,
+        )
 
-    def _partition_downloads(self, paths: list[str]) -> tuple[set[int], list[str]]:
+    def _blocked_indices(self, paths: Sequence[str]) -> set[int]:
+        """Return the positions of excluded paths. Invalid paths count as excluded."""
         blocked: set[int] = set()
-        allowed: list[str] = []
         for index, path in enumerate(paths):
             try:
                 ignored = self._ignored(path)
@@ -582,9 +554,30 @@ class IgnoringBackend(BackendProtocol):
                 ignored = True
             if ignored:
                 blocked.add(index)
-            else:
-                allowed.append(path)
-        return blocked, allowed
+        return blocked
+
+    @staticmethod
+    def _merge_blocked(
+        paths: Sequence[str],
+        blocked: set[int],
+        allowed_results: Sequence[_ResultT],
+        factory: Callable[..., _ResultT],
+    ) -> list[_ResultT]:
+        """Re-interleave backend results with denials, one entry per request.
+
+        The backend returns one result per allowed path, in request order, so
+        consuming them through a single iterator restores the original order.
+
+        Returns:
+            One result per requested path, in request order.
+        """
+        remaining = iter(allowed_results)
+        return [
+            factory(path=path, error=PERMISSION_DENIED)
+            if index in blocked
+            else next(remaining)
+            for index, path in enumerate(paths)
+        ]
 
 
 class IgnoringSandboxBackend(IgnoringBackend, LocalShellBackend):

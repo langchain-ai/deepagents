@@ -387,6 +387,29 @@ _RUBRIC_GRADER_REPOSITORY_TOOL_NAMES: tuple[FsToolName, ...] = (
 )
 
 
+def _ignoring_readonly_backend(
+    root: Path,
+    ignore: DeepagentsIgnore | None,
+) -> IgnoringBackend:
+    """Build a read-only, ignore-filtered view of a local directory.
+
+    Args:
+        root: Directory exposed as the backend root.
+        ignore: Session ignore rules. Local mode always supplies these; the
+            fallback only guards direct callers that have none.
+
+    Returns:
+        A virtual-mode filesystem backend that hides excluded paths.
+    """
+    filesystem = FilesystemBackend(root_dir=root, virtual_mode=True)
+    return IgnoringBackend(
+        filesystem,
+        ignore or DeepagentsIgnore.from_project(root),
+        backend_root=filesystem.cwd,
+        virtual_mode=filesystem.virtual_mode,
+    )
+
+
 def _rubric_grader_repository_tool_names(
     fs_tools: Sequence[FsToolName] | None,
 ) -> list[FsToolName]:
@@ -3223,15 +3246,8 @@ def create_cli_agent(
                 criteria_backend = None
                 criteria_root = "/"
         elif project_context is not None and project_context.project_root is not None:
-            criteria_filesystem = FilesystemBackend(
-                root_dir=project_context.project_root,
-                virtual_mode=True,
-            )
-            criteria_backend = IgnoringBackend(
-                criteria_filesystem,
-                ignore or DeepagentsIgnore.from_project(project_context.project_root),
-                backend_root=criteria_filesystem.cwd,
-                virtual_mode=criteria_filesystem.virtual_mode,
+            criteria_backend = _ignoring_readonly_backend(
+                project_context.project_root, ignore
             )
             criteria_root = "/"
         else:
@@ -3282,16 +3298,7 @@ def create_cli_agent(
         grader_repository_backend: BackendProtocol | None = backend
         grader_repository_root = get_default_working_dir(sandbox_type)
     elif sandbox is None:
-        grader_filesystem = FilesystemBackend(
-            root_dir=root_dir,
-            virtual_mode=True,
-        )
-        grader_repository_backend = IgnoringBackend(
-            grader_filesystem,
-            ignore or DeepagentsIgnore.from_project(root_dir),
-            backend_root=grader_filesystem.cwd,
-            virtual_mode=grader_filesystem.virtual_mode,
-        )
+        grader_repository_backend = _ignoring_readonly_backend(root_dir, ignore)
         grader_repository_root = "/"
     else:
         grader_repository_backend = None

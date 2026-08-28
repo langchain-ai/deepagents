@@ -1427,6 +1427,20 @@ async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # 
         logger.exception("Failed to mount diff note: %s", text)
 
 
+def _parse_file_mentions_for_cwd(user_input: str) -> tuple[str, list[Path]]:
+    """Resolve `@file` mentions against the current directory's ignore rules.
+
+    Blocking: loads the ignore files, so callers on an event loop must run this
+    in a worker thread.
+
+    Returns:
+        The prompt text and the resolved, non-excluded mentioned files.
+    """
+    return parse_file_mentions(
+        user_input, ignore=DeepagentsIgnore.from_project(Path.cwd())
+    )
+
+
 async def execute_task_textual(
     user_input: str,
     agent: Any,  # noqa: ANN401  # Dynamic agent graph type
@@ -1516,9 +1530,8 @@ async def execute_task_textual(
 
     message_content: str | list[dict[str, Any]] | None = None
     if graph_input is None:
-        ignore = DeepagentsIgnore.from_project(Path.cwd())
         prompt_text, mentioned_files = await asyncio.to_thread(
-            parse_file_mentions, user_input, ignore=ignore
+            _parse_file_mentions_for_cwd, user_input
         )
         max_embed_bytes = 256 * 1024
 

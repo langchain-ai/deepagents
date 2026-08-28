@@ -701,14 +701,7 @@ def _filter_file_context(output: str, ignore: DeepagentsIgnore, *, cwd: Path) ->
             block, index = _take_markdown_block(lines, index)
             match = re.search(r"\(`([^`]+)`", line)
             makefile = match.group(1) if match else "Makefile"
-            if Path(makefile).is_absolute():
-                try:
-                    makefile = (
-                        Path(makefile).resolve().relative_to(ignore.root).as_posix()
-                    )
-                except ValueError:
-                    makefile = ""
-            if not makefile or not ignore.is_ignored_relative(makefile):
+            if not ignore.is_ignored_path(makefile, base=cwd):
                 filtered.extend(block)
             continue
         filtered.append(line)

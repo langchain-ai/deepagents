@@ -12,7 +12,7 @@ from urllib.parse import unquote, urlparse
 from rich.markup import escape as escape_markup
 
 from deepagents_code.config import console
-from deepagents_code.deepagentsignore import DeepagentsIgnore
+from deepagents_code.deepagentsignore import IGNORE_FILENAME, DeepagentsIgnore
 from deepagents_code.media_utils import ImageData, VideoData
 
 logger = logging.getLogger(__name__)
@@ -513,7 +513,7 @@ def parse_file_mentions(
             resolved = path.resolve()
             if ignore is not None and ignore.is_ignored_path(resolved):
                 console.print(
-                    f"[yellow]Warning: File excluded by .deepagentsignore: "
+                    f"[yellow]Warning: File excluded by {IGNORE_FILENAME}: "
                     f"{escape_markup(raw_path)}[/yellow]"
                 )
             elif resolved.exists() and resolved.is_file():

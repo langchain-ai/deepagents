@@ -33,6 +33,7 @@ _TIPS: dict[str, int] = {
     "Open /mcp and press Enter on a remote server to sign in again": 1,
     "Use /remember to save learnings from this conversation": 1,
     "Use /model to switch models mid-conversation": 2,
+    "Use /uninstall to remove an optional integration": 1,
     "Use /effort to change the current model's reasoning effort": 1,
     "Start with --show-reasoning to display provider-visible reasoning": 1,
     _TIP_EXTERNAL_EDITOR: 1,

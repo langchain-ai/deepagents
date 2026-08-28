@@ -326,6 +326,40 @@ class TestWorkspaceRuntime:
         assert config.cwd == binding.cwd
         assert config.project_root == binding.project_root
 
+    async def test_readiness_runtime_owns_sandbox_workspace(self, tmp_path) -> None:
+        """The startup runtime must reserve its sandbox for the launch workspace."""
+        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+
+        module = _import_fresh_server_graph()
+        launch_dir = tmp_path / "launch"
+        other_dir = tmp_path / "other"
+        launch_dir.mkdir()
+        other_dir.mkdir()
+        config = ServerConfig(sandbox_type="daytona", cwd=str(launch_dir))
+        launch = resolve_workspace(
+            str(launch_dir),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        other = resolve_workspace(
+            str(other_dir),
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        readiness_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=readiness_runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module.get_server_runtime() is readiness_runtime
+            assert await module._workspace_runtime(launch) is readiness_runtime
+            with pytest.raises(WorkspaceConflictError, match="another workspace"):
+                await module._workspace_runtime(other)
+
+        make.assert_awaited_once_with()
+
     async def test_sandbox_refuses_second_workspace_and_keeps_first(
         self, tmp_path
     ) -> None:

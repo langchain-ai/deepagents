@@ -555,21 +555,74 @@ _workspace_runtimes: OrderedDict[str, tuple[str, ServerRuntime]] = OrderedDict()
 _workspace_runtime_lock = asyncio.Lock()
 
 
+def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None:
+    """Return and refresh a cached runtime for one workspace binding."""
+    cached = _workspace_runtimes.get(binding.resource_key)
+    if cached is None:
+        return None
+    _workspace_runtimes.move_to_end(binding.resource_key)
+    return cached[1]
+
+
+def _raise_if_sandbox_owned_by_another_workspace(
+    config: ServerConfig,
+    binding: WorkspaceBinding,
+) -> None:
+    """Refuse to replace a process-wide sandbox owned by another workspace."""
+    if not config.sandbox_type or all(
+        workspace_id == binding.workspace_id
+        for workspace_id, _ in _workspace_runtimes.values()
+    ):
+        return
+    reason = (
+        "a runtime for another workspace already exists and the configured "
+        "sandbox is process-wide"
+    )
+    conflict = WorkspaceConflictError.from_reason(reason)
+    raise conflict
+
+
+def _remember_workspace_runtime(
+    binding: WorkspaceBinding,
+    runtime: ServerRuntime,
+) -> None:
+    """Cache one workspace runtime and enforce the bounded LRU size."""
+    _workspace_runtimes[binding.resource_key] = (binding.workspace_id, runtime)
+    if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
+        _workspace_runtimes.popitem(last=False)
+
+
+async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding | None:
+    """Resolve the launch workspace represented by the server configuration.
+
+    Returns:
+        The canonical launch binding, or `None` without a configured workspace.
+    """
+    if config.cwd is None:
+        return None
+    from deepagents_code.workspace import resolve_workspace
+
+    return await asyncio.to_thread(
+        resolve_workspace,
+        config.cwd,
+        config.to_workspace_payload(),
+        config_fingerprint=config.workspace_fingerprint(),
+    )
+
+
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     """Build or reuse a runtime from the persisted workspace resource policy.
 
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
-    cached = _workspace_runtimes.get(binding.resource_key)
+    cached = _cached_workspace_runtime(binding)
     if cached is not None:
-        _workspace_runtimes.move_to_end(binding.resource_key)
-        return cached[1]
+        return cached
     async with _workspace_runtime_lock:
-        cached = _workspace_runtimes.get(binding.resource_key)
+        cached = _cached_workspace_runtime(binding)
         if cached is not None:
-            _workspace_runtimes.move_to_end(binding.resource_key)
-            return cached[1]
+            return cached
         config = ServerConfig.from_env()
         current_config = dataclasses.replace(
             config,
@@ -583,16 +636,7 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
             reason = "the server configuration changed after this workspace was bound"
             conflict = WorkspaceConflictError.from_reason(reason)
             raise conflict
-        if current_config.sandbox_type and any(
-            workspace_id != binding.workspace_id
-            for workspace_id, _ in _workspace_runtimes.values()
-        ):
-            reason = (
-                "a runtime for another workspace already exists and the configured "
-                "sandbox is process-wide"
-            )
-            conflict = WorkspaceConflictError.from_reason(reason)
-            raise conflict
+        _raise_if_sandbox_owned_by_another_workspace(current_config, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
             project_root=Path(binding.project_root) if binding.project_root else None,
@@ -601,9 +645,7 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
             config_override=current_config,
             project_context_override=project_context,
         )
-        _workspace_runtimes[binding.resource_key] = (binding.workspace_id, runtime)
-        if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
-            _workspace_runtimes.popitem(last=False)
+        _remember_workspace_runtime(binding, runtime)
         return runtime
 
 
@@ -620,7 +662,18 @@ async def get_server_runtime() -> ServerRuntime:
     Returns:
         The cached server runtime.
     """
-    return await _get_runtime()
+    config = ServerConfig.from_env()
+    binding = await _default_workspace_binding(config)
+    async with _workspace_runtime_lock:
+        if binding is not None:
+            cached = _cached_workspace_runtime(binding)
+            if cached is not None:
+                return cached
+            _raise_if_sandbox_owned_by_another_workspace(config, binding)
+        runtime = await _get_runtime()
+        if binding is not None:
+            _remember_workspace_runtime(binding, runtime)
+        return runtime
 
 
 async def make_graph(

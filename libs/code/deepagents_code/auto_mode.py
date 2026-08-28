@@ -1719,15 +1719,61 @@ def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
 
 
 def _resolve_path(root: Path, raw: object) -> Path | None:
+    """Return the absolute path a model-authored path argument names.
+
+    The argument is untrusted model output, so expansion is part of what can
+    fail: `Path.expanduser` raises `RuntimeError` for a `~name` prefix that
+    names no account on this host. Expansion runs inside the guard for that
+    reason, and every failure yields `None`.
+
+    Callers treat `None` as "not deterministically safe" and route the call to
+    model review, so an unresolvable path costs one review instead of raising
+    through the approval gate.
+    """
     if not isinstance(raw, str) or not raw:
         return None
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
     try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _path_error_reason(error: Exception, raw: str) -> str:
+    """Return a reason describing why a model-authored path failed to resolve.
+
+    The path is echoed back so the model can see which argument to correct, and
+    it is untrusted: it carries whatever length and bytes the model produced.
+    `sanitize_auto_reason` strips control characters and caps the result at
+    `_REASON_LIMIT`, which keeps an oversized path from failing plan validation
+    and discarding the decisions for every other call in the batch.
+    """
+    return sanitize_auto_reason(f"{type(error).__name__}: {error} (path: {raw})")
+
+
+_WRITE_PATH_TOOLS = frozenset({"write_file", "edit_file", "delete"})
+
+
+def _unresolvable_write_path_reason(root: Path, raw: object) -> str | None:
+    """Return why a write path cannot be resolved, or `None` when it resolves.
+
+    A `file_path` argument is unambiguously a path, so a path this host cannot
+    resolve at all — a `~name` prefix naming no account, an embedded NUL — can
+    only fail. Reporting the resolver's own error tells the model what to
+    correct, which a silent denial or a review pass does not.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as error:
+        return _path_error_reason(error, raw)
+    return None
 
 
 def _is_within(root: Path, path: Path) -> bool:
@@ -2316,15 +2362,27 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 tool_call_id=_tool_call_id(request.tool_call),
                 status="error",
             )
-        if tool_name not in {"write_file", "edit_file", "delete"}:
+        if tool_name not in _WRITE_PATH_TOOLS:
             return None
         raw_path = request.tool_call.get("args", {}).get("file_path")
         if not isinstance(raw_path, str):
             return None
-        candidate = Path(raw_path).expanduser()
-        if not candidate.is_absolute():
-            candidate = self._worktree_root / candidate
-        normalized_path = os.path.normcase(str(candidate.absolute()))
+        try:
+            candidate = Path(raw_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = self._worktree_root / candidate
+            normalized_path = os.path.normcase(str(candidate.absolute()))
+        except (OSError, RuntimeError, ValueError) as error:
+            # The backend does not expand `~`, so letting this through writes to
+            # a literal `~name` directory and reports success. Report the
+            # resolver's error instead, which the model can act on. Reached in
+            # approval modes that do not consult the Auto gate.
+            return ToolMessage(
+                content=_path_error_reason(error, raw_path),
+                name=tool_name,
+                tool_call_id=_tool_call_id(request.tool_call),
+                status="error",
+            )
         artifacts = _active_temp_artifacts(cast("Mapping[str, object]", request.state))
         protected_paths = {
             os.path.normcase(str(Path(artifact["file_path"]).absolute()))
@@ -2832,6 +2890,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 and tool is not None
                 and tool is self._trusted_compaction_tool
             )
+            if call["name"] in _WRITE_PATH_TOOLS:
+                # `resolve` touches the filesystem, so it stays off the event
+                # loop like the deterministic check below.
+                unresolvable = await asyncio.to_thread(
+                    _unresolvable_write_path_reason,
+                    self._worktree_root,
+                    call.get("args", {}).get("file_path"),
+                )
+                if unresolvable is not None:
+                    deterministic_dispositions[_tool_call_id(call)] = "deny"
+                    plan["decisions"].append(
+                        {
+                            "tool_call_id": _tool_call_id(call),
+                            "disposition": "policy_deny",
+                            "category": AutoDecisionCategory.OTHER_POLICY.value,
+                            "reason": unresolvable,
+                            "path": "deterministic",
+                        }
+                    )
+                    continue
             if is_trusted_compaction and trusted_compaction_seen:
                 deterministic_dispositions[_tool_call_id(call)] = "deny"
                 plan["decisions"].append(

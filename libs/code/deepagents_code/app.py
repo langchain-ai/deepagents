@@ -2112,6 +2112,7 @@ class ExternalInput(Message):
 
 DeferredActionKind = Literal[
     "model_switch",
+    "summarization_model_switch",
     "thread_switch",
     "chat_output",
     "agent_switch",
@@ -29220,7 +29221,7 @@ class DeepAgentsApp(App):
         return (message, now)
 
     async def _handle_summarization_model_command(self, command: str) -> None:
-        """Set, clear, or display the session's summary-model override.
+        """Set, clear, or select the session's summary-model override.
 
         The override is session-scoped: unlike `/model --default` there is no
         persistent tier, so `[models].summarization_default` is the only way to
@@ -29233,10 +29234,7 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         argument = command.strip()[len("/summarization-model") :].strip()
         if not argument:
-            current = self._summarization_model_override
-            if current in {None, INHERIT_SUMMARIZATION_MODEL}:
-                current = "the main agent model"
-            await self._mount_message(AppMessage(f"Summarization model: {current}"))
+            await self._show_summarization_model_selector()
             return
         if argument.lower() in _CLEAR_TOKENS:
             self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
@@ -29250,11 +29248,129 @@ class DeepAgentsApp(App):
             )
             return
 
+        await self._set_summarization_model(argument)
+
+    async def _show_summarization_model_selector(self) -> None:
+        """Open the model selector for choosing the summarization model."""
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import ModelSpec
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        current_spec = self._summarization_model_override
+        if current_spec in {None, INHERIT_SUMMARIZATION_MODEL}:
+            current_spec = self._effective_model_spec()
+        parsed = ModelSpec.try_parse(current_spec) if current_spec else None
+        current_provider = parsed.provider if parsed else None
+        current_model = parsed.model if parsed else None
+        if current_spec and parsed is None:
+            current_provider = detect_provider(current_spec)
+            current_model = current_spec if current_provider else None
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                if self._chat_input:
+                    self.call_after_refresh(self._chat_input.focus_input)
+                return
+            model_spec, _ = result
+            extra = screen.pending_install_extra
+
+            async def apply_selection() -> None:
+                await self._apply_summarization_model_selection(model_spec, extra)
+
+            def start_selection_worker() -> None:
+                self.run_worker(
+                    apply_selection(),
+                    exclusive=True,
+                    group="summarization-model",
+                )
+                if self._chat_input:
+                    self._chat_input.focus_input()
+
+            self.call_after_refresh(start_selection_worker)
+
+        screen = ModelSelectorScreen(
+            current_model=current_model,
+            current_provider=current_provider,
+            cli_profile_override=self._profile_override,
+            title="Choose the summarization model",
+            description=(
+                "Pick the model used for context-compaction summaries. Clear it "
+                "with `/summarization-model clear` to follow the main agent model."
+            ),
+            default_scope=None,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _apply_summarization_model_selection(
+        self, model_spec: str, extra: str | None
+    ) -> None:
+        """Install any provider extra, then apply a picker selection."""
+        if self._defer_summarization_model_install_if_busy(model_spec, extra):
+            return
+        if extra and not await self._install_summarization_model_extra(
+            extra, model_spec
+        ):
+            return
+        await self._set_summarization_model(model_spec)
+
+    def _defer_summarization_model_install_if_busy(
+        self, model_spec: str, extra: str | None
+    ) -> bool:
+        """Defer an install-backed summary selection while the app is busy.
+
+        Returns:
+            Whether the selection was deferred.
+        """
+        from functools import partial
+
+        if not extra or not (
+            self._agent_running or self._shell_running or self._connecting
+        ):
+            return False
+        self._defer_action(
+            DeferredAction(
+                kind="summarization_model_switch",
+                execute=partial(
+                    self._apply_summarization_model_selection, model_spec, extra
+                ),
+            )
+        )
+        self.notify(
+            "Summarization model will switch after current work finishes.",
+            markup=False,
+        )
+        return True
+
+    async def _install_summarization_model_extra(
+        self, extra: str, model_spec: str
+    ) -> bool:
+        """Install and authenticate a summary model provider.
+
+        Returns:
+            Whether model selection may continue.
+        """
+        if not await self._install_extra(extra, auto_restart=True):
+            return False
+        if await self._prompt_model_auth_if_needed(model_spec):
+            return True
+        await self._mount_message(
+            AppMessage(
+                f"Installed '{extra}'. Set {model_spec} after adding its "
+                "credentials with `/auth`."
+            )
+        )
+        return False
+
+    async def _set_summarization_model(self, model_spec: str) -> None:
+        """Validate and set the session's summarization model."""
         if self._remote_agent() is not None and self._server_kwargs is None:
-            self._summarization_model_override = argument
+            self._summarization_model_override = model_spec
             await self._mount_message(
                 AppMessage(
-                    f"Summarization model requested: {argument}. The remote server "
+                    f"Summarization model requested: {model_spec}. The remote server "
                     "will validate it at compaction time and use the main agent "
                     "model if initialization fails."
                 )
@@ -29264,11 +29380,11 @@ class DeepAgentsApp(App):
         try:
             result = await asyncio.to_thread(
                 _create_model_with_deepagents_import_lock,
-                argument,
+                model_spec,
                 cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
             )
         except Exception as exc:
-            logger.exception("Failed to resolve summarization model %s", argument)
+            logger.exception("Failed to resolve summarization model %s", model_spec)
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
             return
 

@@ -2478,6 +2478,45 @@ class TestModelSelectorFiltering:
 class TestModelSelectorCurrentModelPreselection:
     """Tests for pre-selecting the current model when opening the selector."""
 
+    async def test_non_discovered_current_model_is_visible_and_preselected(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A remote-only current model survives the recommended-only subset."""
+        from deepagents_code.tui.widgets import model_selector
+
+        monkeypatch.setattr(
+            model_selector,
+            "get_available_models",
+            lambda: {"openai": ["gpt-5.6-sol"]},
+        )
+        monkeypatch.setattr(model_selector, "get_model_profiles", lambda **_kwargs: {})
+        monkeypatch.setattr(model_selector, "load_recent_models", list)
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda provider: ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=provider,
+                source=ProviderAuthSource.ENV,
+            ),
+        )
+
+        app = ModelSelectorTestApp()
+        async with app.run_test() as pilot:
+            screen = ModelSelectorScreen(
+                current_model="remote-model",
+                current_provider="server_provider",
+                recommended_models={"openai:gpt-5.6-sol": "GPT-5.6 Sol"},
+                default_scope=None,
+                check_provider_requirements=False,
+            )
+            app.push_screen(screen)
+            await pilot.pause()
+
+            current = ("server_provider:remote-model", "server_provider")
+            assert current in screen._filtered_models
+            assert screen._filtered_models[screen._selected_index] == current
+
     async def test_current_model_is_preselected(self) -> None:
         """Opening the selector should pre-select the current model, not first."""
         app = ModelSelectorTestApp()
@@ -3948,11 +3987,12 @@ class TestModelSelectorInstallRouting:
             include_uninstalled: bool = True,
             include_recent: bool = True,
             recommended_models: Mapping[str, str] | None = None,
+            current_spec: str | None = None,
             # Mirrors production: required and nullable, so the stub cannot
             # outlive the contract it fakes.
             default_scope: model_selector.DefaultModelScope | None,
         ) -> model_selector._ModelData:
-            del recommended_models, default_scope
+            del recommended_models, current_spec, default_scope
             captured["include_uninstalled"] = include_uninstalled
             captured["include_recent"] = include_recent
             return model_selector._ModelData(
@@ -4281,6 +4321,37 @@ enabled = false
 
         assert results == [("baseten:zai-org/GLM-5.2", "baseten")]
         dismiss.assert_called_once_with(("baseten:zai-org/GLM-5.2", "baseten"))
+
+    async def test_remote_selection_skips_local_provider_requirements(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from deepagents_code.tui.widgets import model_selector
+
+        results: list[tuple[str, str] | None] = []
+        screen = ModelSelectorScreen(
+            check_provider_requirements=False,
+            default_scope=None,
+            result_callback=results.append,
+        )
+        dismiss = MagicMock()
+        screen.dismiss = dismiss  # ty: ignore
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.provider_install_extra",
+            lambda _provider: pytest.fail("local install should not be checked"),
+        )
+        monkeypatch.setattr(
+            model_selector,
+            "get_provider_auth_status",
+            lambda _provider: pytest.fail("local credentials should not be checked"),
+        )
+
+        screen._select_with_auth_check(
+            "server_provider:remote-model", "server_provider"
+        )
+
+        result = ("server_provider:remote-model", "server_provider")
+        assert results == [result]
+        dismiss.assert_called_once_with(result)
 
     async def test_select_uninstalled_provider_prompts_install(
         self, monkeypatch: pytest.MonkeyPatch

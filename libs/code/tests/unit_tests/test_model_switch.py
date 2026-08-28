@@ -1636,37 +1636,179 @@ class TestSummarizationModelCommand:
         create_model.assert_not_called()
         assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
 
-    async def test_no_argument_reports_the_current_value(self) -> None:
+    async def test_no_argument_opens_selector_without_changing_override(self) -> None:
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
+        with patch.object(
+            app,
+            "_show_summarization_model_selector",
+            new_callable=AsyncMock,
+        ) as show_selector:
             await app._handle_command("/summarization-model")
 
-        assert any("openai:gpt-5.4-mini" in text for text in captured)
+        show_selector.assert_awaited_once()
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
 
-    async def test_no_argument_names_the_fallback_when_unset(self) -> None:
+    async def test_selector_highlights_summarization_model(self) -> None:
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "openai"
+        assert screen._current_model == "gpt-5.4-mini"
+        assert screen._default_scope is None
+        assert screen._check_provider_requirements is True
+
+    async def test_selector_resolves_bare_summarization_model_provider(self) -> None:
+        """Bare startup specs still identify the active picker row."""
+        app = DeepAgentsApp(summarization_model="gpt-5.4-mini")
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "openai"
+        assert screen._current_model == "gpt-5.4-mini"
+
+    async def test_selector_replaces_in_flight_selection_worker(self) -> None:
+        """The latest picker result cancels an older validation worker."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
-            await app._handle_command("/summarization-model")
+        with (
+            patch.object(app, "push_screen") as push,
+            patch.object(app, "run_worker") as run_worker,
+            patch.object(
+                app,
+                "call_after_refresh",
+                side_effect=lambda callback: callback(),
+            ),
+            patch.object(
+                app,
+                "_apply_summarization_model_selection",
+                new_callable=AsyncMock,
+            ) as apply_selection,
+        ):
+            await app._show_summarization_model_selector()
+            handle_result = push.call_args.args[1]
+            handle_result(("openai:gpt-5.6-sol", "openai"))
 
-        assert any("main agent model" in text for text in captured)
+            run_worker.assert_called_once()
+            assert run_worker.call_args.kwargs["exclusive"] is True
+            assert run_worker.call_args.kwargs["group"] == "summarization-model"
+            await run_worker.call_args.args[0]
 
-    async def test_blank_launch_override_names_the_main_model(self) -> None:
+        apply_selection.assert_awaited_once_with("openai:gpt-5.6-sol", None)
+
+    async def test_external_remote_selector_skips_local_provider_requirements(
+        self,
+    ) -> None:
+        app = DeepAgentsApp(summarization_model="server_provider:remote-model")
+        app._agent = _make_remote_agent()  # ty: ignore[invalid-assignment]
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._check_provider_requirements is False
+
+    async def test_selector_falls_back_to_main_model_when_unset(self) -> None:
         app = DeepAgentsApp(summarization_model="")
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
-            await app._handle_command("/summarization-model")
+        with (
+            patch.object(
+                app,
+                "_effective_model_spec",
+                return_value="anthropic:claude-sonnet-4-5",
+            ),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_summarization_model_selector()
 
-        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
-        assert any("main agent model" in text for text in captured)
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "anthropic"
+        assert screen._current_model == "claude-sonnet-4-5"
+
+    async def test_install_selection_waits_until_current_work_finishes(self) -> None:
+        """Provider installation must not race an active turn's server use."""
+        app = DeepAgentsApp()
+        app._agent_running = True
+        notify = Mock()
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=True)
+        set_model = AsyncMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        install.assert_not_awaited()
+        set_model.assert_not_awaited()
+        assert len(app._deferred_actions) == 1
+        assert app._deferred_actions[0].kind == "summarization_model_switch"
+        notify.assert_called_once()
+
+        app._agent_running = False
+        await app._deferred_actions.pop().execute()
+
+        install.assert_awaited_once_with("baseten", auto_restart=True)
+        authenticate.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+        set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
+    async def test_install_selection_prompts_for_credentials_before_setting(
+        self,
+    ) -> None:
+        """A newly installed provider must be authenticated before validation."""
+        app = DeepAgentsApp()
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=True)
+        set_model = AsyncMock()
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        install.assert_awaited_once_with("baseten", auto_restart=True)
+        authenticate.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+        set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
+    async def test_cancelled_post_install_auth_keeps_summary_model(self) -> None:
+        """Dismissing auth leaves the installed provider unapplied."""
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=False)
+        set_model = AsyncMock()
+        mount_message = AsyncMock()
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+        app._mount_message = mount_message  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        set_model.assert_not_awaited()
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+        assert mount_message.await_args is not None
+        mounted = str(mount_message.await_args.args[0]._content)
+        assert "Installed 'baseten'" in mounted
+        assert "/auth" in mounted
 
     async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
         """The grammar is a single bare spec -- no params, unlike `/model`."""

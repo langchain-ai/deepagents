@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
 
@@ -154,7 +155,30 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await _flush_traces()
+        try:
+            from deepagents_code.extensions.runtime import shutdown_server_extensions
+
+            await shutdown_server_extensions()
+        finally:
+            await _flush_traces()
+
+
+def _extensions(request: Request) -> JSONResponse:
+    """Return extension provenance only to a loopback client."""
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    host = request.client.host if request.client is not None else ""
+    try:
+        loopback = ip_address(host).is_loopback
+    except ValueError:
+        loopback = host == "localhost"
+    if not loopback:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    from deepagents_code.extensions.runtime import server_extension_report
+
+    return JSONResponse(server_extension_report())
 
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`
@@ -254,6 +278,7 @@ class _OffloadIndeterminateError(RuntimeError):
 _CONTEXT_STR_OR_NONE_FIELDS = (
     "model",
     "classifier_model",
+    "summarization_model",
     "approval_mode",
     "thread_id",
     "hooks_snapshot_id",
@@ -297,9 +322,11 @@ server accepts connections from any local process, so the request's model
 selection must not extend to its network plumbing.
 
 A backstop, not the primary control. `_checkpoint_model_context` discards the
-request's `model` and `model_params` outright and substitutes the checkpointed
-values, so a client-supplied endpoint cannot reach `create_model` even without
-this filter. It is kept for the case that control cannot cover: a future path
+request's `model`, `model_params`, and `summarization_model` outright, and
+substitutes checkpointed values for the first two, so a client-supplied
+endpoint cannot reach `create_model` even without this filter. Every spec the
+operation resolves is server-sourced; no client string reaches a model
+constructor. It is kept for the case that control cannot cover: a future path
 that resolves a model before, or instead of, reading the checkpoint. Treat a
 warning from here as a client sending params it should not, not as a breach.
 
@@ -474,11 +501,19 @@ def _checkpoint_model_context(
     """Replace request model selection with server-checkpointed values.
 
     The client still supplies hook and profile context, but it cannot choose
-    the model's outbound transport for this server-owned operation. Successful
-    agent turns checkpoint the resolved model spec and the runtime overrides
-    they actually used, so those values preserve trusted launch/model-switch
-    settings such as a private `base_url` without accepting an arbitrary
-    offload request's endpoint override.
+    which model runs -- or its outbound transport -- for this server-owned
+    operation. Successful agent turns checkpoint the resolved model spec and
+    the runtime overrides they actually used, so those values preserve trusted
+    launch/model-switch settings such as a private `base_url` without accepting
+    an arbitrary offload request's endpoint override.
+
+    `summarization_model` is dropped for the same reason and has no checkpoint
+    to restore from, so the operation falls back to the server's own launch
+    configuration (`--summarization-model` / `[models].summarization_default`).
+    A bare spec cannot carry an endpoint, but it can still name a provider the
+    server holds credentials for, which would send conversation history
+    somewhere the thread's owner never chose. A mid-session
+    `/summarization-model` override therefore does not apply to `/offload`.
 
     Args:
         context: Validated request context.
@@ -492,6 +527,7 @@ def _checkpoint_model_context(
     trusted = dict(context)
     trusted.pop("model", None)
     trusted.pop("model_params", None)
+    trusted.pop("summarization_model", None)
     model = state.get("_model_spec")
     params = state.get("_model_params")
     if isinstance(model, str) and model:
@@ -1016,5 +1052,6 @@ app = Starlette(
             cancel_offload,
             methods=["POST"],
         ),
+        Route("/extensions", _extensions, methods=["GET"]),
     ],
 )

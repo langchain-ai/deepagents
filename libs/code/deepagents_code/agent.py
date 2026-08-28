@@ -19,7 +19,6 @@ from deepagents.middleware import (
     GRADER_SYSTEM_PROMPT,
     FilesystemMiddleware,
     MemoryMiddleware,
-    RubricMiddleware,
     SkillsMiddleware,  # noqa: F401
 )
 
@@ -41,6 +40,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
+    from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -101,7 +101,6 @@ from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
-    config,
     console,
     credentials,
     get_default_coding_instructions,
@@ -132,6 +131,7 @@ from deepagents_code.offload_middleware import (
 )
 from deepagents_code.plugins.adapters.skills_middleware import PluginSkillsMiddleware
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
+from deepagents_code.reliable_rubric import ReliableRubricMiddleware
 from deepagents_code.subagents import list_subagents
 from deepagents_code.unicode_security import (
     check_url_safety,
@@ -2389,7 +2389,9 @@ def create_cli_agent(
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     model_retries: int = DEFAULT_MODEL_RETRIES,
     cli_max_retries: int | None = None,
+    summarization_model: str | None = None,
     enforce_model_policy: bool = True,
+    extension_registry: ExtensionRegistry | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2504,7 +2506,9 @@ def create_cli_agent(
             Direct callers may omit this to resolve one for the current
             process. The server supplies a snapshot that incorporates its
             invocation-scoped PTC overrides.
-        rubric_model: Grader model for `RubricMiddleware`.
+        rubric_model: Default grader model. `None` makes the grader follow
+            the active main model. Either way a thread's recorded
+            `_rubric_model_spec` selection takes precedence.
 
             A `'provider:model'` string or `BaseChatModel`.
 
@@ -2523,9 +2527,8 @@ def create_cli_agent(
             consult the env var or `config.toml`. Only meaningful when
             `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
-            for the main agent. When `None`, it is resolved from the
-            `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
-            in `config.toml`, then the default via `resolve_recursion_limit`.
+            for the main agent. When `None`, it is resolved from runtime
+            configuration. If unset, no `recursion_limit` is bound.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         store: Optional LangGraph Store for runtime approval state.
@@ -2549,11 +2552,16 @@ def create_cli_agent(
             Forwarded to subagent, Auto classifier, and runtime offload models
             so each one resolves its own provider's configured budget unless the
             user overrode it globally.
+        summarization_model: Model spec used only for context-compaction summaries.
+
+            The model is resolved lazily when compaction first runs. `None`
+            reuses the effective main model.
         enforce_model_policy: Check every model string against `models.allowed`.
             Pass `False` **only** from callers that compile a graph they never
             invoke (tool enumeration), so a blocked subagent model degrades the
             listing rather than raising. Any caller that can run the graph must
             leave this `True`.
+        extension_registry: Server-owned Python extension registrations.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2573,7 +2581,12 @@ def create_cli_agent(
             checked before dcode resolves them with provider retries disabled;
             a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
-    tools = tools or []
+    tools = list(tools or [])
+    if extension_registry is not None:
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
         logger.warning(
@@ -2819,7 +2832,7 @@ def create_cli_agent(
     # `after_model` — so thread-keyed draining makes that
     # coverage independent of position within the model loop. `after_agent`
     # hooks run in reverse list order, though, so this must stay *before*
-    # `RubricMiddleware`: otherwise the grading agent's spend lands in
+    # `ReliableRubricMiddleware`: otherwise the grading agent's spend lands in
     # the next turn's checkpoint, or is lost on a session's final turn.
     # The CLI reads these channels back from `state_values` on thread resume.
     # Goal tools: exposes the constrained write-side `update_goal` tool and
@@ -2891,6 +2904,9 @@ def create_cli_agent(
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
+    artifact_routes: dict[str, BackendProtocol] = {}
+    protected_extension_routes: set[str] = set()
+    artifacts_root: str | None = None
     if sandbox is None:
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
@@ -2901,6 +2917,7 @@ def create_cli_agent(
             # `deepagents-code` default applied at bootstrap) entirely so shell
             # commands don't inherit it.
             shell_env = os.environ.copy()
+            shell_env["GIT_TERMINAL_PROMPT"] = "0"
             if credentials.user_langchain_project is not None:
                 shell_env["LANGSMITH_PROJECT"] = credentials.user_langchain_project
             else:
@@ -3025,14 +3042,17 @@ def create_cli_agent(
         # recovers, so archive paths saved during fallback stay resolvable.
         artifacts_storage = _artifacts_root()
         artifacts_root = artifacts_storage.root
+        conversation_history_root = (
+            _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
+        )
         conversation_history_backend = FilesystemBackend(
-            root_dir=_offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME,
+            root_dir=conversation_history_root,
             virtual_mode=True,
         )
         fallback_history_root = (
             f"{_FALLBACK_ARTIFACTS_ROOT}/{CONVERSATION_HISTORY_DIRNAME}/"
         )
-        artifact_routes: dict[str, BackendProtocol] = {
+        artifact_routes = {
             f"{artifacts_root}/{CONVERSATION_HISTORY_DIRNAME}/": (
                 conversation_history_backend
             ),
@@ -3045,22 +3065,46 @@ def create_cli_agent(
                     virtual_mode=True,
                 )
             )
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes=artifact_routes,
-            artifacts_root=artifacts_root,
-        )
-    else:
-        # Sandbox mode: No special routing needed
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes={},
+        protected_extension_routes = {
+            f"{_FALLBACK_ARTIFACTS_ROOT.rstrip('/')}/",
+            f"{artifacts_root.rstrip('/')}/",
+            f"/{str(conversation_history_root).lstrip('/').rstrip('/')}/",
+        }
+    extension_routes: dict[str, BackendProtocol] = {}
+    if extension_registry is not None:
+        from deepagents_code.extensions.hosting import (
+            bind_runtime_host_policy,
+            validate_backend_route,
         )
 
+        for route in extension_registry.backend_routes:
+            validate_backend_route(
+                route,
+                protected_extension_routes,
+                sandbox_active=sandbox is not None,
+            )
+            extension_routes[route.name] = route.unit
+        bind_runtime_host_policy(
+            extension_registry,
+            protected_extension_routes,
+            sandbox_active=sandbox is not None,
+        )
+    if artifacts_root is None:
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes=extension_routes,
+        )
+    else:
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes={**extension_routes, **artifact_routes},
+            artifacts_root=artifacts_root,
+        )
     compaction_middleware = _create_cli_compaction_middleware(
         model,
         composite_backend,
         cli_max_retries=cli_max_retries,
+        summarization_model_spec=summarization_model,
     )
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
@@ -3242,6 +3286,11 @@ def create_cli_agent(
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
+        ConfigurableModelMiddleware(
+            persist_model_state=False,
+            cli_max_retries=cli_max_retries,
+            strict_model_resolution=True,
+        ),
         # Both clients filter this nested message stream. A transient fault can
         # safely retry the failed model node without replaying grader tools.
         CodeModelRetryMiddleware(
@@ -3311,10 +3360,17 @@ def create_cli_agent(
             "grader_state_schema": RubricGraderState,
             "prepare_messages_for_grader": _rubric_grader_messages,
             "build_grader_state": _rubric_grader_state,
+            # The bootstrap only scaffolds the runtime grader's graph;
+            # `ConfigurableModelMiddleware` swaps in the thread-selected model
+            # before any call. Pass the main model through even as an
+            # unresolved spec so a runtime selection never depends on the
+            # startup rubric model resolving.
+            "runtime_bootstrap_model": model,
+            "inherit_main_model": rubric_model is None,
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
-        agent_middleware.append(RubricMiddleware(**rubric_kwargs))
+        agent_middleware.append(ReliableRubricMiddleware(**rubric_kwargs))
 
     # Create the agent
     all_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = [
@@ -3327,6 +3383,31 @@ def create_cli_agent(
     effective_recursion_limit = (
         recursion_limit if recursion_limit is not None else resolve_recursion_limit()
     )
+    if extension_registry is not None:
+        extension_tools = extension_registry.tool_units()
+        extension_tool_names = {registered.name for registered in extension_tools}
+        tools = [
+            item
+            for item in tools
+            if (getattr(item, "name", None) or getattr(item, "__name__", None))
+            not in extension_tool_names
+        ]
+        tools.extend(registered.unit for registered in extension_tools)
+        extension_middleware_names = {
+            registered.name for registered in extension_registry.middleware
+        }
+        agent_middleware = [
+            item
+            for item in agent_middleware
+            if getattr(item, "name", type(item).__name__)
+            not in extension_middleware_names
+        ]
+        agent_middleware.extend(
+            registered.unit for registered in extension_registry.middleware
+        )
+        from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
+
+        agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
@@ -3339,5 +3420,17 @@ def create_cli_agent(
         store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
-    ).with_config({**config, "recursion_limit": effective_recursion_limit})
+    )
+    if effective_recursion_limit is not None:
+        # `Pregel.with_config` uses `merge_configs`, which discards a value equal
+        # to LangGraph's environment-derived default. Replace the copied graph's
+        # config directly so that inherited default can override the SDK's 9,999.
+        agent = agent.copy(
+            {
+                "config": {
+                    **(agent.config or {}),
+                    "recursion_limit": effective_recursion_limit,
+                }
+            }
+        )
     return agent, composite_backend

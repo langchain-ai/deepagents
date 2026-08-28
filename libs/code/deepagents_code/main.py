@@ -1304,7 +1304,10 @@ def _resolved_recursion_limit(args: argparse.Namespace) -> int | None:
     process so its ordinary configuration sources remain authoritative.
 
     Returns:
-        The effective explicit limit, or `None` when the flag was absent.
+        The effective explicit limit, or `None` when the flag was absent or
+            every configured tier was rejected. `positive_int` on the flag makes
+            the latter unreachable today, but `resolve_recursion_limit` can
+            return `None` with the flag present.
     """
     if getattr(args, "recursion_limit", None) is None:
         return None
@@ -1357,8 +1360,10 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
                 (
                     "class:prompt.help",
                     (
-                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                        "Enter select · Esc Manual · Ctrl+C quit\n"
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
+                        f"{glyphs.separator} "
+                        f"Enter select {glyphs.separator} Esc Manual "
+                        f"{glyphs.separator} Ctrl+C quit\n"
                     ),
                 )
             ]
@@ -2445,6 +2450,20 @@ def parse_args() -> argparse.Namespace:
         help="Skip interactive confirmation prompts",
     )
 
+    uninstall_parser = subparsers.add_parser(
+        "uninstall",
+        help="Remove an installed optional extra",
+        add_help=False,
+        parents=help_parent(_lazy_help("show_uninstall_help")),
+    )
+    uninstall_parser.add_argument(
+        "uninstall_target",
+        nargs="?",
+        default=None,
+        metavar="NAME",
+        help="Installed optional extra to remove",
+    )
+
     # Default interactive mode — argument order here determines the
     # usage line printed by argparse; keep in sync with ui.show_help().
     parser.add_argument(
@@ -2485,6 +2504,13 @@ def parse_args() -> argparse.Namespace:
         help="Extra kwargs to pass to the model as a JSON string "
         '(e.g., \'{"temperature": 0.7, "max_tokens": 4096}\'). '
         "These take priority, overriding config file values.",
+    )
+
+    parser.add_argument(
+        "--summarization-model",
+        metavar="MODEL",
+        help="Model to use for context-compaction summaries. Falls back to "
+        "[models].summarization_default, then the main agent model.",
     )
 
     from deepagents_code.ui import non_negative_int, positive_int, shell_allow_list_arg
@@ -2587,6 +2613,13 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--show-reasoning",
+        action="store_true",
+        default=None,
+        help="Show provider-visible reasoning (off by default).",
+    )
+
+    parser.add_argument(
         "--max-turns",
         dest="max_turns",
         type=positive_int,
@@ -2647,7 +2680,7 @@ def parse_args() -> argparse.Namespace:
         metavar="N",
         help="Override the main agent's LangGraph recursion_limit (graph step "
         "budget; must be >= 1). Overrides DEEPAGENTS_CODE_RECURSION_LIMIT and "
-        "[runtime].recursion_limit; defaults to 2000.",
+        "[runtime].recursion_limit.",
     )
 
     parser.add_argument(
@@ -2746,6 +2779,21 @@ def parse_args() -> argparse.Namespace:
         "(required for headless/CI runs that should load repository hooks)",
     )
     parser.add_argument(
+        "--trust-project-extensions",
+        action="store_true",
+        help="Trust project-level `.deepagents/extensions/` Python extensions "
+        "(requires DEEPAGENTS_CODE_EXPERIMENTAL=1)",
+    )
+    parser.add_argument(
+        "-e",
+        "--extension",
+        action="append",
+        default=[],
+        metavar="PATH",
+        help="Load an extension file or directory for this run; requires "
+        "DEEPAGENTS_CODE_EXPERIMENTAL=1 (repeatable)",
+    )
+    parser.add_argument(
         "--interpreter",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -2787,12 +2835,20 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Toggle automatic updates on or off, then exit",
     )
-    parser.add_argument(
+    extra_group = parser.add_mutually_exclusive_group()
+    extra_group.add_argument(
         "--install",
         metavar="NAME",
         help=(
             "Alias for `install NAME`. Install an optional extra "
             "(e.g. daytona, fireworks), then exit"
+        ),
+    )
+    extra_group.add_argument(
+        "--uninstall",
+        metavar="NAME",
+        help=(
+            "Alias for `uninstall NAME`. Remove an installed optional extra, then exit"
         ),
     )
     parser.add_argument(
@@ -2837,6 +2893,19 @@ def parse_args() -> argparse.Namespace:
     )
 
     args = parser.parse_args()
+    if args.package and (args.uninstall is not None or args.command == "uninstall"):
+        parser.error("--package cannot be used with uninstall")
+
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if (
+        getattr(args, "trust_project_extensions", False)
+        or getattr(args, "extension", ())
+    ) and not is_env_truthy(EXPERIMENTAL):
+        parser.error(
+            "--extension and --trust-project-extensions require "
+            "DEEPAGENTS_CODE_EXPERIMENTAL=1"
+        )
     # `--auto-classifier-model ""` yields the empty string, not `None`. Keep it
     # distinct from an absent flag (just trimmed): an explicit blank is the
     # "inherit the main agent model" instruction and must override a classifier
@@ -3024,6 +3093,28 @@ def _auto_classifier_spec_problem(spec: str) -> str | None:
     return None
 
 
+def _resolve_summarization_model(spec: str | None) -> str | None:
+    """Resolve the invocation override before entering a supported launch mode.
+
+    Deliberately does not build the model: an invalid spec surfaces at the
+    first compaction rather than at launch, which keeps `create_model`'s
+    provider imports off the pre-first-paint path. `_LazySummaryModel` degrades
+    to the main model and logs, so a bad spec cannot wedge the session.
+
+    Args:
+        spec: The `--summarization-model` value, or `None` when unset. A blank
+            string overrides the configured default with "use the main model".
+
+    Returns:
+        The explicit spec, configured default, or `None` to reuse the main model.
+    """
+    if spec is not None:
+        return spec
+    from deepagents_code.model_config import ModelConfig
+
+    return ModelConfig.load().summarization_default_model
+
+
 async def run_textual_cli_async(
     assistant_id: str,
     *,
@@ -3035,6 +3126,7 @@ async def run_textual_cli_async(
     sandbox_setup: str | None = None,
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     thread_id: str | None = None,
@@ -3047,6 +3139,8 @@ async def run_textual_cli_async(
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     hook_trust: "WorkspaceTrust | None" = None,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
     enable_interpreter: bool | None = None,
     interpreter_arg: bool | None = None,
     interpreter_ptc: str | list[str] | None = None,
@@ -3075,6 +3169,11 @@ async def run_textual_cli_async(
         model_params: Extra kwargs from `--model-params` to pass to the model.
 
             These override config file values.
+        summarization_model: Model spec used only for context-compaction
+            summaries, already resolved by `_resolve_summarization_model`.
+
+            `None` reuses the effective main agent model, as does the blank
+            string a valueless `--summarization-model` produces.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
 
@@ -3109,6 +3208,9 @@ async def run_textual_cli_async(
             whole-config decision).
         hook_trust: Policy deciding which workspaces may run project-scoped hook
             commands. `None` consults only the persisted trust store.
+        trust_project_extensions: Allow project-authored Python extensions for
+            this session.
+        extension_paths: Explicit one-run extension files or directories.
         enable_interpreter: Enable `CodeInterpreterMiddleware` (`js_eval`) on
             the main agent. `None` defers to the sandbox-aware/config default.
         interpreter_arg: The raw `--interpreter`/`--no-interpreter` tri-state,
@@ -3130,7 +3232,7 @@ async def run_textual_cli_async(
             with no value: it overrides any env / `config.toml` classifier so
             reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env / `config.toml` / default at agent-build time.
+            from runtime configuration at agent-build time.
 
     Returns:
         An `AppResult` with the return code and final thread ID.
@@ -3242,6 +3344,7 @@ async def run_textual_cli_async(
     server_kwargs: dict[str, Any] = {
         "assistant_id": assistant_id,
         "model_name": model_name or resolved_spec or None,
+        "summarization_model": summarization_model,
         "model_params": model_params,
         "cli_max_retries": cli_max_retries,
         "profile_overrides": profile_override,
@@ -3258,6 +3361,8 @@ async def run_textual_cli_async(
         "mcp_config_path": mcp_config_path,
         "no_mcp": no_mcp,
         "trust_project_mcp": trust_project_mcp,
+        "trust_project_extensions": trust_project_extensions,
+        "extension_paths": extension_paths,
         "interactive": True,
         "recursion_limit": recursion_limit,
     }
@@ -3284,6 +3389,7 @@ async def run_textual_cli_async(
             startup_cmd=startup_cmd,
             launch_init=should_run_onboarding(),
             profile_override=profile_override,
+            summarization_model=summarization_model,
             server_kwargs=server_kwargs,
             mcp_preload_kwargs=mcp_preload_kwargs,
             model_kwargs=model_kwargs,
@@ -3320,6 +3426,7 @@ async def _run_acp_cli_async(
     agent_server_cls: type[Any],
     model_name: str | None = None,
     model_params: dict[str, Any] | None = None,
+    summarization_model: str | None = None,
     cli_max_retries: int | None = None,
     profile_override: dict[str, Any] | None = None,
     mcp_config_path: str | None = None,
@@ -3339,6 +3446,7 @@ async def _run_acp_cli_async(
         agent_server_cls: ACP server class constructor.
         model_name: Optional model name to use.
         model_params: Extra kwargs from `--model-params` to pass to the model.
+        summarization_model: Model spec used only for context-compaction summaries.
         cli_max_retries: Explicit `--max-retries` value.
         profile_override: Extra profile fields from `--profile-override`.
         mcp_config_path: Optional path to MCP servers JSON configuration file.
@@ -3350,7 +3458,7 @@ async def _run_acp_cli_async(
 
             `None` leaves the SDK default (all tools).
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
-            from env/`config.toml`/default at agent-build time.
+            from runtime configuration at agent-build time.
         auto: Enable classifier-backed approval routing.
         yolo: Disable approval prompts for this ACP server.
         auto_classifier_model: Optional model for Auto approval classification.
@@ -3501,6 +3609,7 @@ async def _run_acp_cli_async(
                     project_context=ProjectContext.from_user_cwd(Path(context.cwd)),
                     model_retries=session_model.model_retries,
                     cli_max_retries=session_model.cli_max_retries,
+                    summarization_model=summarization_model,
                 )
                 return agent_graph
 
@@ -3921,8 +4030,9 @@ def _run_trust_action_picker(
             (
                 "class:prompt.help",
                 (
-                    f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                    "Enter select · Esc/Ctrl+D abort\n"
+                    f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
+                    f"{glyphs.separator} "
+                    f"Enter select {glyphs.separator} Esc/Ctrl+D abort\n"
                 ),
             ),
         ]
@@ -4088,6 +4198,9 @@ def _select_trust_action(
         Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
         user presses Ctrl+C.
     """
+    from deepagents_code.config import get_glyphs
+
+    separator = f" {get_glyphs().separator} "
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
@@ -4108,21 +4221,31 @@ def _select_trust_action(
     # instead would split it onto stdout, so `dcode 2>log` would show a bare
     # question with all of its context redirected away.
     if refresh_label is None:
-        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
+        choices = separator.join(
+            (f"{allow_label} [y]", f"{remember_label} [r]", f"{deny_label} [N]")
+        )
         prompt = "Choose [y/r/N]: "
     elif deny_first:
         # Deny keeps its leading position, but the refresh — not the deny —
         # is the default: the uppercase [U] mirrors the picker's initial
         # highlight so a bare Enter repairs the environment.
-        choices = (
-            f"{deny_label} [n] · {refresh_label} [U] · "
-            f"{allow_label} [y] · {remember_label} [r]"
+        choices = separator.join(
+            (
+                f"{deny_label} [n]",
+                f"{refresh_label} [U]",
+                f"{allow_label} [y]",
+                f"{remember_label} [r]",
+            )
         )
         prompt = "Choose [n/U/y/r]: "
     else:
-        choices = (
-            f"{allow_label} [y] · {remember_label} [r] · "
-            f"{refresh_label} [u] · {deny_label} [N]"
+        choices = separator.join(
+            (
+                f"{allow_label} [y]",
+                f"{remember_label} [r]",
+                f"{refresh_label} [u]",
+                f"{deny_label} [N]",
+            )
         )
         prompt = "Choose [y/r/u/N]: "
     console.print(f"[dim]{choices}[/dim]", highlight=False)
@@ -4200,10 +4323,13 @@ def _run_project_mcp_server_checkbox_picker(
                     (
                         "Remembered servers are trusted only for this project while "
                         "their definitions stay unchanged.\n"
-                        f"{selected_index + 1} of {len(names)} · "
+                        f"{selected_index + 1} of {len(names)} {glyphs.separator} "
                         f"{len(selected_names)} selected\n"
-                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                        "Space toggle · a select all · c clear · Enter confirm · "
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
+                        f"{glyphs.separator} "
+                        f"Space toggle {glyphs.separator} a select all "
+                        f"{glyphs.separator} c clear {glyphs.separator} "
+                        f"Enter confirm {glyphs.separator} "
                         "Esc abort\n"
                     ),
                 ),
@@ -4691,6 +4817,103 @@ def _check_project_hooks_trust(
     return WorkspaceTrust.none()
 
 
+def _check_project_extensions_trust(
+    *,
+    trust_flag: bool = False,
+) -> "bool | _TrustPromptOutcome":
+    """Resolve interactive trust for project-authored Python extensions.
+
+    Args:
+        trust_flag: Whether the CLI explicitly trusted project extensions.
+
+    Returns:
+        Whether project extensions may load, `INTERRUPTED` on Ctrl+C, or
+            `CANCELLED` when startup is aborted.
+    """
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return False
+    from rich.console import Console
+
+    from deepagents_code.extensions.discovery import project_extensions_dir
+    from deepagents_code.extensions.settings import (
+        TrustPolicy,
+        load_extension_settings,
+    )
+    from deepagents_code.extensions.trust import (
+        is_project_extensions_trusted,
+        trust_project_extensions,
+    )
+    from deepagents_code.project_utils import ProjectContext
+
+    settings = load_extension_settings()
+    if not settings.enabled or settings.trust is TrustPolicy.NEVER:
+        return False
+
+    try:
+        context = ProjectContext.from_user_cwd(Path.cwd())
+        project_root = context.project_root or context.user_cwd
+        extensions_dir = project_extensions_dir(project_root)
+        if not extensions_dir.is_dir():
+            return False
+    except OSError:
+        logger.warning("Could not inspect project extensions", exc_info=True)
+        return False
+
+    if (
+        trust_flag
+        or settings.trust is TrustPolicy.ALWAYS
+        or is_project_extensions_trusted(project_root)
+    ):
+        return True
+
+    from rich.markup import escape
+
+    console = Console(stderr=True)
+    console.print()
+    console.print(
+        "[bold yellow]Project extensions run arbitrary Python in this "
+        "session.[/bold yellow]",
+        highlight=False,
+    )
+    console.print(
+        f"Extensions directory: {escape(str(extensions_dir))}", highlight=False
+    )
+    console.print(
+        "Only trust projects you control. Allow once loads these files as they "
+        f'are now; always allow trusts "{escape(str(project_root))}" for future '
+        "sessions and future edits.",
+        style="yellow",
+        highlight=False,
+    )
+    action = _select_trust_action(
+        console,
+        remember_label="Always allow extensions in this project",
+    )
+    if action in {
+        _TrustPromptOutcome.INTERRUPTED,
+        _TrustPromptOutcome.CANCELLED,
+    }:
+        return action
+    if action is _TrustAction.ALLOW_ONCE:
+        console.print(
+            "[dim]Allowing project extensions for this session.[/dim]",
+            highlight=False,
+        )
+        return True
+    if action is _TrustAction.REMEMBER:
+        if not trust_project_extensions(project_root):
+            console.print(
+                "[yellow]Extension trust could not be remembered; allowing "
+                "this session only.[/yellow]",
+                highlight=False,
+            )
+        return True
+    console.print("[dim]Project extensions skipped.[/dim]", highlight=False)
+    return False
+
+
 def _verify_interpreter_or_exit() -> None:
     """Run the interpreter pre-flight check; print and exit on failure.
 
@@ -5054,6 +5277,11 @@ def cli_main() -> None:
 
             sys.exit(run_install_command(args))
 
+        if command == "uninstall":
+            from deepagents_code.client.commands.extras import run_uninstall_command
+
+            sys.exit(run_uninstall_command(args))
+
         # Best-effort, idempotent migration. Placed after parse_args and the
         # bare-help fast path so --help / --version / `deepagents <group>`
         # exit before any I/O. Wrapped broadly so an unexpected non-OSError
@@ -5150,6 +5378,12 @@ def cli_main() -> None:
 
         max_retries = getattr(args, "max_retries", None)
 
+        # Resolved once here rather than per launch mode, so every mode below
+        # receives the same already-resolved spec.
+        resolved_summarization_model = _resolve_summarization_model(
+            getattr(args, "summarization_model", None)
+        )
+
         profile_override: dict[str, Any] | None = None
         raw_profile = getattr(args, "profile_override", None)
         if raw_profile:
@@ -5231,6 +5465,7 @@ def cli_main() -> None:
                     agent_server_cls=AgentServerACP,
                     model_name=getattr(args, "model", None),
                     model_params=model_params,
+                    summarization_model=resolved_summarization_model,
                     cli_max_retries=max_retries,
                     profile_override=profile_override,
                     mcp_config_path=getattr(args, "mcp_config", None),
@@ -5649,6 +5884,11 @@ def cli_main() -> None:
                 )
                 sys.exit(1)
 
+        if args.uninstall is not None:
+            from deepagents_code.client.commands.extras import run_uninstall_request
+
+            sys.exit(run_uninstall_request(name=args.uninstall))
+
         if args.package and not args.install:
             console.print(
                 "[bold red]Error:[/bold red] --package requires "
@@ -5967,6 +6207,7 @@ def cli_main() -> None:
 
             # Non-interactive mode - execute single task and exit
             from deepagents_code.client.non_interactive import run_non_interactive
+            from deepagents_code.config_manifest import load_bool_display_preference
 
             interpreter_ptc = _parse_interpreter_tools_flag(
                 getattr(args, "interpreter_tools", None)
@@ -5993,6 +6234,7 @@ def cli_main() -> None:
                             assistant_id=assistant_id,
                             model_name=getattr(args, "model", None),
                             model_params=model_params,
+                            summarization_model=resolved_summarization_model,
                             cli_max_retries=max_retries,
                             profile_override=profile_override,
                             sandbox_type=args.sandbox,
@@ -6003,12 +6245,19 @@ def cli_main() -> None:
                             startup_cmd=getattr(args, "startup_cmd", None),
                             quiet=args.quiet,
                             stream=not args.no_stream,
+                            show_reasoning=load_bool_display_preference(
+                                "display.show_reasoning", fallback=False
+                            ),
                             mcp_config_path=getattr(args, "mcp_config", None),
                             no_mcp=getattr(args, "no_mcp", False),
                             trust_project_mcp=getattr(args, "trust_project_mcp", False),
                             trust_project_hooks=getattr(
                                 args, "trust_project_hooks", False
                             ),
+                            trust_project_extensions=getattr(
+                                args, "trust_project_extensions", False
+                            ),
+                            extension_paths=tuple(getattr(args, "extension", ())),
                             enable_interpreter=enable_interpreter,
                             interpreter_ptc=interpreter_ptc,
                             allow_fs_tools=allow_fs_tools,
@@ -6124,6 +6373,20 @@ def cli_main() -> None:
                 )
                 return
 
+            extensions_trust = _check_project_extensions_trust(
+                trust_flag=getattr(args, "trust_project_extensions", False),
+            )
+            if extensions_trust is _TrustPromptOutcome.INTERRUPTED:
+                sys.exit(130)
+            if extensions_trust is _TrustPromptOutcome.CANCELLED:
+                from rich.console import Console as _Console
+
+                _Console(stderr=True).print(
+                    "[dim]Aborted; project extensions not loaded.[/dim]",
+                    highlight=False,
+                )
+                return
+
             # Run Textual TUI
             return_code = 0
             request_count = 0
@@ -6167,6 +6430,7 @@ def cli_main() -> None:
                         sandbox_setup=getattr(args, "sandbox_setup", None),
                         model_name=getattr(args, "model", None),
                         model_params=model_params,
+                        summarization_model=resolved_summarization_model,
                         cli_max_retries=max_retries,
                         profile_override=profile_override,
                         thread_id=thread_id,
@@ -6179,6 +6443,8 @@ def cli_main() -> None:
                         no_mcp=getattr(args, "no_mcp", False),
                         trust_project_mcp=mcp_trust_decision,
                         hook_trust=hook_trust,
+                        trust_project_extensions=bool(extensions_trust),
+                        extension_paths=tuple(getattr(args, "extension", ())),
                         enable_interpreter=enable_interpreter,
                         interpreter_arg=args.interpreter,
                         interpreter_ptc=interpreter_ptc,

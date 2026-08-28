@@ -507,6 +507,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         title: str | None = None,
         description: str | Content | None = None,
         default_scope: DefaultModelScope | None,
+        check_provider_requirements: bool = True,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
@@ -537,6 +538,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 Ctrl+S and drop its footer hint — for pickers whose choice has
                 no persistent config key (the `/goal model` and `/rubric model`
                 graders) and for onboarding, which advertises no Ctrl+S.
+            check_provider_requirements: Whether to require local provider packages
+                and credentials before returning a selection.
             result_callback: Optional callback for selector results when the
                 screen is displayed without a `push_screen` result callback.
         """
@@ -554,6 +557,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._title = title
         self._description = description
         self._default_scope = default_scope
+        self._check_provider_requirements = check_provider_requirements
         self._result_callback = result_callback
         # Standard /model defaults to the curated recommended subset so users
         # face less decision fatigue; onboarding (`curated=True`) already
@@ -749,6 +753,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         include_uninstalled: bool = True,
         include_recent: bool = True,
         recommended_models: Mapping[str, str] | None = None,
+        current_spec: str | None = None,
         default_scope: DefaultModelScope | None,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
@@ -772,6 +777,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 "Recent" entry the user never chose.
             recommended_models: Recommendation set whose missing provider models
                 should be surfaced. `None` uses the standard model shortlist.
+            current_spec: Active `provider:model` spec to keep in the list even
+                when discovery and recommendations do not include it.
             default_scope: Preference whose stored spec is read for the
                 `(default)` marker, stripped of surrounding whitespace so it can
                 match a row. `None` yields no marker.
@@ -844,6 +851,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             all_models.extend(installed_recommended)
             all_models.extend(uninstalled_recommended)
 
+        if (
+            current_spec
+            and config.is_model_allowed(current_spec)
+            and all(spec != current_spec for spec, _ in all_models)
+        ):
+            provider = current_spec.split(":", 1)[0]
+            all_models.append((current_spec, provider))
+
         profiles = get_model_profiles(cli_override=cli_override)
         recent_specs = load_recent_models() if include_recent else []
         stored_default = default_scope.load() if default_scope is not None else None
@@ -882,9 +897,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ) -> list[tuple[str, str]]:
         """Apply the active subset filter (onboarding or recommended-only).
 
-        Recently-used specs are unioned in even when the recommended-only
-        toggle is on, so personal usage always wins over curation. Onboarding
-        intentionally keeps a tight curated subset and skips this union.
+        Recently-used and currently active specs are unioned in even when the
+        recommended-only toggle is on, so personal usage always wins over
+        curation. Onboarding intentionally keeps a tight curated subset and
+        skips this union.
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
@@ -906,18 +922,19 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 recommended_models=self._recommended_models,
             )
             curated_specs = {spec for spec, _ in curated}
+            personal_specs = (
+                set(self._recent_specs) if self._include_recent_models else set()
+            )
+            if self._current_spec is not None:
+                personal_specs.add(self._current_spec)
             # Order follows all_models (insertion), not MRU; _update_display
             # rebuilds visual order by iterating self._recent_specs directly.
-            recent_extra = (
-                [
-                    (spec, provider)
-                    for spec, provider in all_models
-                    if spec in self._recent_specs and spec not in curated_specs
-                ]
-                if self._include_recent_models
-                else []
-            )
-            return [*recent_extra, *curated]
+            personal_extra = [
+                (spec, provider)
+                for spec, provider in all_models
+                if spec in personal_specs and spec not in curated_specs
+            ]
+            return [*personal_extra, *curated]
         return list(all_models)
 
     @staticmethod
@@ -973,6 +990,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 include_uninstalled=True,
                 include_recent=self._include_recent_models and not self._curated,
                 recommended_models=self._recommended_models,
+                current_spec=self._current_spec,
                 default_scope=self._default_scope,
             )
         except Exception:
@@ -1249,7 +1267,9 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if not self._filtered_models:
             if not self._loaded:
-                empty_content: Content = Content.styled("Loading models…", "dim")
+                empty_content: Content = Content.styled(
+                    f"Loading models{get_glyphs().ellipsis}", "dim"
+                )
             else:
                 typed = self._filter_text.strip()
                 policy = ModelConfig.load()
@@ -2022,7 +2042,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         on the selector and refresh the credential indicator so the user can
         try again or pick a different provider.
         """
-        if not provider:
+        if not provider or not self._check_provider_requirements:
             self._dismiss_with_result((model_spec, provider))
             return
 

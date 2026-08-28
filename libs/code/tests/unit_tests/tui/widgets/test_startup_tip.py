@@ -86,7 +86,7 @@ class TestStartupTip:
 
         tips = _active_tips(yolo_switcher_enabled=True)
 
-        assert "Press ctrl+x to compose prompts in code" in tips
+        assert "Press ctrl+g to compose prompts in code" in tips
         assert _TIP_EXTERNAL_EDITOR not in tips
 
     def test_active_tips_keeps_generic_editor_fallback(self) -> None:
@@ -141,6 +141,10 @@ class TestStartupTip:
     def test_copy_command_tip_registered(self) -> None:
         """The `/copy` command keeps a discoverability tip."""
         assert any("/copy" in tip for tip in _TIPS)
+
+    def test_show_reasoning_tip_registered(self) -> None:
+        """The reasoning display flag keeps a discoverability tip."""
+        assert any("--show-reasoning" in tip for tip in _TIPS)
 
     def test_prompt_clipboard_tip_registered(self) -> None:
         assert any("Ctrl+R" in tip and "prompts" in tip for tip in _TIPS)

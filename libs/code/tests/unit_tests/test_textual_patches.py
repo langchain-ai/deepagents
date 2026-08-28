@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -37,6 +38,28 @@ def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
 class SelectableTextApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("alpha beta gamma", id="msg")
+
+
+def test_ascii_mode_replaces_every_textual_border_glyph() -> None:
+    code = (
+        "import deepagents_code._textual_patches\n"
+        "from textual._border import BORDER_CHARS, INVISIBLE_EDGE_TYPES\n"
+        "ascii_border = BORDER_CHARS['ascii']\n"
+        "assert all(border == ascii_border for name, border in "
+        "BORDER_CHARS.items() if name not in {*INVISIBLE_EDGE_TYPES, 'blank'})\n"
+        "assert all(not character.strip() for edge in BORDER_CHARS['blank'] "
+        "for character in edge)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        env={**os.environ, "DEEPAGENTS_CODE_UI_CHARSET_MODE": "ascii"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 class SelectableDiffApp(App[None]):

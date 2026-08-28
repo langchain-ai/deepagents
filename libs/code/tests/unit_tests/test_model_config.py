@@ -2056,6 +2056,46 @@ class TestModelConfigLoad:
         assert config.default_model is None
         assert config.providers == {}
 
+    def test_loads_summarization_default_model(self, tmp_path) -> None:
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\ndefault = "anthropic:claude-sonnet-4-5"\n'
+            'summarization_default = "openai:gpt-5.4-mini"\n'
+        )
+
+        config = ModelConfig.load(config_path)
+
+        assert config.default_model == "anthropic:claude-sonnet-4-5"
+        assert config.summarization_default_model == "openai:gpt-5.4-mini"
+
+    def test_bare_summarization_default_warns_but_loads(self, tmp_path, caplog):
+        """A bare name is legitimate -- `create_model` auto-detects the provider.
+
+        So this warns rather than rejecting, matching the sibling
+        `auto_classifier` check. The value must still load: an unresolvable
+        spec is caught later, at the first compaction.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[models]\nsummarization_default = "gpt-5.4-mini"\n')
+
+        with caplog.at_level(logging.WARNING):
+            config = ModelConfig.load(config_path)
+
+        assert config.summarization_default_model == "gpt-5.4-mini"
+        assert "summarization_default_model" in caplog.text
+        assert "provider:model" in caplog.text
+
+    def test_qualified_summarization_default_does_not_warn(self, tmp_path, caplog):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            '[models]\nsummarization_default = "openai:gpt-5.4-mini"\n'
+        )
+
+        with caplog.at_level(logging.WARNING):
+            ModelConfig.load(config_path)
+
+        assert "summarization_default_model" not in caplog.text
+
     def test_returns_empty_config_when_models_section_is_not_a_table(
         self, tmp_path, caplog
     ):
@@ -6308,6 +6348,17 @@ recent = "researcher"
         assert 'recent = "coder"' in content
         assert "researcher" not in content
 
+    def test_save_same_value_preserves_file_identity(self, tmp_path):
+        config_path = tmp_path / "config.toml"
+        content = b'[agents]\nrecent = "coder"\n'
+        config_path.write_bytes(content)
+        inode = config_path.stat().st_ino
+
+        assert save_recent_agent("coder", config_path) is True
+
+        assert config_path.stat().st_ino == inode
+        assert config_path.read_bytes() == content
+
     def test_load_returns_recent(self, tmp_path):
         config_path = tmp_path / "config.toml"
         save_recent_agent("coder", config_path)
@@ -9488,6 +9539,35 @@ class TestWritesReachTheSharedResolver:
         assert save() is True
 
         assert get_config_resolver().get(option).value == expected
+
+    def test_noop_save_refreshes_externally_changed_config(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An equal on-disk value still invalidates stale cached views."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = tmp_path / "config.toml"
+        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
+        config_path.write_text(
+            '[models]\nauto_classifier = "openai:old"\n', encoding="utf-8"
+        )
+        model_config.clear_caches()
+        option = get_option("models.auto_classifier")
+        assert option is not None
+        assert model_config.ModelConfig.load().auto_classifier_model == "openai:old"
+        assert get_config_resolver().get(option).value == "openai:old"
+
+        config_path.write_text(
+            '[models]\nauto_classifier = "openai:new"\n', encoding="utf-8"
+        )
+        inode = config_path.stat().st_ino
+
+        assert model_config.save_auto_classifier_model("openai:new") is True
+
+        assert config_path.stat().st_ino == inode
+        assert model_config.ModelConfig.load().auto_classifier_model == "openai:new"
+        assert get_config_resolver().get(option).value == "openai:new"
 
     def test_cleared_value_is_visible_to_the_next_resolver_read(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

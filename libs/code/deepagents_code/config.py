@@ -35,6 +35,7 @@ from deepagents_code._env_vars import (
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
     READ_PROJECT_DOTENV,
+    UI_CHARSET_MODE,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -44,10 +45,11 @@ from deepagents_code._paths import (
     PATHS,
 )
 from deepagents_code._version import __version__
-from deepagents_code.config_manifest import RECURSION_LIMIT_DEFAULT
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping, Sequence
+
+    from langchain_core.runnables import RunnableConfig
 
     from deepagents_code.config_manifest import ConfigOption
     from deepagents_code.configuration.resolver import (
@@ -294,12 +296,17 @@ def _report_denied_env_key(key: str, dotenv_path: Path, *, is_project: bool) -> 
     logger.warning("%s", message)
 
 
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+"""Upstream recursion default that only trusted user input may override."""
+
+
 _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        _LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV,
         "TERM_PROGRAM",
     }
 )
@@ -323,6 +330,16 @@ a repo-supplied downgrade of a user-level security decision, not a project build
 setting. Choosing a classifier stays available through the trusted surfaces:
 shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
 `~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
+
+`LANGGRAPH_DEFAULT_RECURSION_LIMIT` controls the graph step budget whenever no
+Deep Agents override is configured. A project value would bypass the bounded
+`runtime.recursion_limit` resolver, so only the shell or global `.env` may set
+the upstream default.
+
+Membership is checked against the uppercased key for the same reason as
+`_is_dotenv_denied_env_key`: on Windows, `os.environ` normalizes assigned keys
+to uppercase, so a lowercase `langgraph_default_recursion_limit` would slip
+past an exact-match check yet become the active variable the local API reads.
 
 `AUTO_CLASSIFIER_TIMEOUT` tunes the same control's review deadline, so it is
 denied for the same reason: a cloned repo could otherwise stall every gated
@@ -424,10 +441,13 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
                 continue
             if key in env:
                 continue
-            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+            if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # Mirror `_load_dotenv`: a project `.env` cannot preview-set a
                 # user-level trust decision — MCP trust lists or the Auto
-                # classifier model/deadline (the global `.env`/shell can).
+                # classifier model/deadline (the global `.env`/shell can). The
+                # key is uppercased so a case variant cannot slip past on
+                # Windows, where `os.environ` assignment normalizes it back to
+                # the active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -543,11 +563,14 @@ def _load_dotenv(
                 continue
             if key in os.environ:
                 continue
-            if is_project and key in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+            if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
                 # A committed project `.env` must not set a user-level trust
                 # decision — MCP trust lists or the Auto classifier model and
                 # deadline that authorize this repo's own tool calls; the
-                # global `.env` and shell may (is_project=False).
+                # global `.env` and shell may (is_project=False). The key is
+                # uppercased so a case variant cannot slip past on Windows,
+                # where `os.environ` assignment normalizes it back to the
+                # active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -1519,8 +1542,14 @@ class Glyphs:
     question: str  # ? vs [?]
     hourglass: str  # ⏳ vs [~]
     retry: str  # ↻ vs [R]
+    tool: str  # wrench vs [T]
+    file: str  # memo vs [F]
     arrow_up: str  # up arrow vs ^
     arrow_down: str  # down arrow vs v
+    arrow_right: str  # right arrow vs ->
+    separator: str  # middle dot vs |
+    tree_branch: str  # tree branch vs |-
+    tree_last: str  # final tree branch vs `-
     bullet: str  # bullet vs -
     cursor: str  # cursor vs >
     disclosure_collapsed: str  # ▸ vs >
@@ -1560,8 +1589,14 @@ UNICODE_GLYPHS = Glyphs(
     question="?",
     hourglass="⏳",
     retry="↻",
+    tool="🔧",
+    file="📝",
     arrow_up="↑",
     arrow_down="↓",
+    arrow_right="→",
+    separator="·",
+    tree_branch="├",
+    tree_last="└",
     bullet="•",
     cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
     disclosure_collapsed="▸",
@@ -1595,8 +1630,14 @@ ASCII_GLYPHS = Glyphs(
     question="[?]",
     hourglass="[~]",
     retry="[R]",
+    tool="[T]",
+    file="[F]",
     arrow_up="^",
     arrow_down="v",
+    arrow_right="->",
+    separator="|",
+    tree_branch="|-",
+    tree_last="`-",
     bullet="-",
     cursor=">",
     disclosure_collapsed=">",
@@ -1777,22 +1818,19 @@ def _compute_charset_mode() -> CharsetMode:
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
     """
-    from deepagents_code.model_config import resolve_env_var
-
-    env_mode = (resolve_env_var("UI_CHARSET_MODE") or "auto").lower()
-    if env_mode == "unicode":
+    prefixed = os.environ.get(UI_CHARSET_MODE)
+    mode = prefixed if prefixed is not None else os.environ.get("UI_CHARSET_MODE")
+    mode = (mode or "auto").lower()
+    if mode == "unicode":
         return CharsetMode.UNICODE
-    if env_mode == "ascii":
+    if mode == "ascii":
         return CharsetMode.ASCII
 
-    # Auto: check stdout encoding and LANG
     encoding = getattr(sys.stdout, "encoding", "") or ""
     if "utf" in encoding.lower():
         return CharsetMode.UNICODE
     lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
-    if "utf" in lang.lower():
-        return CharsetMode.UNICODE
-    return CharsetMode.ASCII
+    return CharsetMode.UNICODE if "utf" in lang.lower() else CharsetMode.ASCII
 
 
 def get_glyphs() -> Glyphs:
@@ -1910,20 +1948,6 @@ MAX_ARG_LENGTH = 150
 
 Longer values are truncated with an ellipsis by `truncate_value`
 in `tool_display`.
-"""
-
-config: RunnableConfig = {
-    "recursion_limit": RECURSION_LIMIT_DEFAULT,
-}
-"""Default LangGraph runnable config for the main agent.
-
-Sets `recursion_limit` to `RECURSION_LIMIT_DEFAULT` (2000) to accommodate deeply
-nested agent graphs in long-running sessions without hitting the default
-LangGraph ceiling. The literal lives in `config_manifest` so the default is
-defined in exactly one place. This value is the fallback: `create_cli_agent`
-resolves the effective limit at agent-build time via `resolve_recursion_limit`,
-which honors the `--recursion-limit` CLI flag, the `DEEPAGENTS_CODE_RECURSION_LIMIT`
-env var, and `[runtime].recursion_limit` in `config.toml`.
 """
 
 _git_branch_cache: dict[str, str | None] = {}
@@ -2111,6 +2135,7 @@ def build_stream_config(
     turn_id: str | None = None,
     turn_number: int | None = None,
     auto_approve: bool = False,
+    skill_name: str | None = None,
 ) -> RunnableConfig:
     """Build the LangGraph stream config dict.
 
@@ -2176,9 +2201,11 @@ def build_stream_config(
         turn_number: 1-based per-thread turn index, or `None`.
         auto_approve: Whether auto-approve ("YOLO") mode is active for this turn.
             When `True`, `dcode_auto_approve=True` is recorded in trace metadata.
+        skill_name: Invoked skill name to record in trace metadata, or `None`.
 
     Returns:
-        Config dict with `configurable` and `metadata` keys.
+        Config dict with `configurable` and `metadata` keys, plus
+            `recursion_limit` when one is configured.
     """
     from datetime import UTC, datetime
 
@@ -2208,6 +2235,9 @@ def build_stream_config(
     if auto_approve:
         metadata["dcode_auto_approve"] = True
 
+    if skill_name:
+        metadata["ls_skill_name"] = skill_name
+
     # Record the launch environment so traces are groupable by terminal.
     # Blank is treated as unset, matching the other readers. Not a contract key.
     term_program = os.environ.get("TERM_PROGRAM", "").strip()
@@ -2233,10 +2263,19 @@ def build_stream_config(
             }
         )
 
-    return {
+    config: RunnableConfig = {
         "configurable": {"thread_id": thread_id},
         "metadata": metadata,
     }
+
+    # Send configured limits with each run so the setting takes effect.
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    resolved_recursion_limit = resolve_recursion_limit()
+    if resolved_recursion_limit is not None:
+        config["recursion_limit"] = resolved_recursion_limit
+
+    return config
 
 
 class _ShellAllowAll(list):  # noqa: FURB189  # sentinel type, not a general-purpose list subclass

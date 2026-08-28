@@ -16,6 +16,12 @@ from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
 
 
+@pytest.fixture(autouse=True)
+def _disable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep user extension code out of server graph unit tests."""
+    monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
+
+
 def _import_fresh_server_graph() -> ModuleType:
     """Import `deepagents_code.server_graph` from a clean module state."""
     sys.modules.pop("deepagents_code.server_graph", None)
@@ -301,6 +307,7 @@ class TestServerGraph:
             # in `_make_graphs` left every server-mode run on
             # `DEFAULT_MODEL_RETRIES` with the whole suite still green.
             cli_max_retries=3,
+            summarization_model="openai:summary-model",
         )
         env_overrides = {}
         for suffix, value in config.to_env().items():
@@ -404,6 +411,8 @@ class TestServerGraph:
             rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
             model_retries=5,
             cli_max_retries=3,
+            summarization_model="openai:summary-model",
+            extension_registry=None,
         )
 
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:

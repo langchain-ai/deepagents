@@ -43,7 +43,7 @@ def test_experimental_mode_gates_all_discovery(
         monkeypatch.setattr(f"deepagents_code.extensions.discovery.{name}", fail)
 
     result = discover_extensions(
-        config_files=(Path("configured.py"),),
+        config_paths=(Path("configured.py"),),
         cli_paths=(Path("temporary.py"),),
         project_dir=Path("project"),
     )
@@ -66,7 +66,7 @@ def test_sources_resolve_in_authority_order(
     )
 
     result = discover_extensions(
-        config_files=(configured, user),
+        config_paths=(configured, user),
         cli_paths=(temporary,),
         project_dir=project.parent,
     )
@@ -82,6 +82,32 @@ def test_sources_resolve_in_authority_order(
         SourceScope.USER,
         SourceScope.TEMPORARY,
         SourceScope.PROJECT,
+    ]
+
+
+def test_config_paths_accept_files_and_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Configured files and directories share one ordered path list."""
+    configured_file = _extension(tmp_path / "single", "a.py")
+    configured_dir = tmp_path / "directory"
+    configured_child = _extension(configured_dir, "b.py")
+    monkeypatch.setattr(
+        "deepagents_code.extensions.discovery.user_extensions_dir",
+        lambda: tmp_path / "absent-user-dir",
+    )
+
+    result = discover_extensions(
+        config_paths=(configured_file, configured_dir),
+    )
+
+    assert [source.path for source in result.sources] == [
+        configured_file.resolve(),
+        configured_child.resolve(),
+    ]
+    assert [source.scope for source in result.sources] == [
+        SourceScope.USER,
+        SourceScope.USER,
     ]
 
 

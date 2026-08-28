@@ -56,6 +56,7 @@ def _make_acp_args(**overrides: object) -> argparse.Namespace:
         no_mcp=False,
         trust_project_mcp=False,
         auto_classifier_model=None,
+        summarization_model=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
@@ -156,6 +157,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
     args = _make_acp_args(
         model_params='{"temperature": 0.2}',
         profile_override='{"max_input_tokens": 4096}',
+        summarization_model="openai:summary-model",
         yolo=True,
     )
     model_obj = object()
@@ -281,6 +283,7 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server(
     assert call_kwargs["auto_approve"] is True
     assert call_kwargs["auto_mode_enabled"] is False
     assert call_kwargs["memory_auto_save"] is False
+    assert call_kwargs["summarization_model"] == "openai:summary-model"
     mock_memory_auto_save.assert_called_once_with()
     test_acp_checkpointer.setup.assert_awaited_once_with()
     assert mock_server_cls.call_args.kwargs["models"][0] == {

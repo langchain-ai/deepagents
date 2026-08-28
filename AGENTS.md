@@ -81,7 +81,7 @@ Every feature or bugfix needs unit coverage.
 
 - Put network-free tests in `tests/unit_tests/` and networked tests in `tests/integration_tests/`.
 - Do not add `@pytest.mark.asyncio`; packages use `asyncio_mode = "auto"`.
-- Test behavior rather than duplicating implementation logic. Cover edge cases and keep tests deterministic.
+- Test observable behavior rather than duplicating implementation logic. Do not add change-detector tests that merely restate the current code structure or assert incidental interactions, such as internal call order, without proving meaningful behavior. Refactors that preserve behavior should not require mechanical test updates; rewrite or remove tests that do. Cover edge cases and keep tests deterministic.
 
 #### Warnings are errors
 

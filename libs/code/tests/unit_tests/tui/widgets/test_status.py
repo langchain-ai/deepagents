@@ -13,7 +13,7 @@ from textual.widgets import Static
 
 from deepagents_code import theme
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH
-from deepagents_code.config import reset_glyphs_cache
+from deepagents_code.config import ASCII_GLYPHS, reset_glyphs_cache
 from deepagents_code.tui.widgets.status import (
     _PICKER_ACTIONS,
     _PICKER_STYLES,
@@ -897,6 +897,24 @@ class TestModelLabelPrefixStripping:
             rendered = str(label.render())
             assert rendered == "…k2p6"
             assert "accounts" not in rendered
+
+    async def test_ascii_truncation_uses_ascii_ellipsis(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.status.get_glyphs", lambda: ASCII_GLYPHS
+        )
+        async with StatusBarApp().run_test() as pilot:
+            label = pilot.app.query_one("#model-display", ModelLabel)
+            label.provider = "fireworks"
+            label.model = "accounts/fireworks/models/kimi-k2p6"
+            label.styles.width = 9
+            await pilot.pause()
+
+            rendered = str(label.render())
+            assert rendered.startswith(ASCII_GLYPHS.ellipsis)
+            assert rendered.isascii()
+            assert len(rendered) <= label.content_size.width
 
     async def test_unmatched_prefix_for_registered_provider(self) -> None:
         """Registered provider whose model doesn't match any prefix is unchanged."""

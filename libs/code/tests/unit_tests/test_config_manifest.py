@@ -297,10 +297,12 @@ def test_resolver_reads_emit_ranked_diagnostics() -> None:
     )
 
 
-# Six `app.py` display toggles plus `display.show_usage_stats` in
-# `_session_stats.py`. The `app.py` wrapper forwards variables, not literals,
-# so it is deliberately not counted. Exact, not a floor — see the test.
-_EXPECTED_LITERAL_CALL_SITES = 7
+# Seven `app.py` display toggles, plus `display.show_usage_stats` in
+# `_session_stats.py` and `display.show_reasoning` in `main.py` (the headless
+# path resolves it directly rather than through the app). The `app.py` wrapper
+# forwards variables, not literals, so it is deliberately not counted. Exact,
+# not a floor — see the test.
+_EXPECTED_LITERAL_CALL_SITES = 9
 
 
 def test_bool_display_preference_fallbacks_match_the_manifest() -> None:
@@ -1812,6 +1814,20 @@ def test_onboarding_empty_env_reports_env_opt_out(monkeypatch) -> None:
     assert should_run_onboarding() is False
 
 
+def test_legacy_debug_file_remains_discoverable(monkeypatch) -> None:
+    option = get_option("debug.file")
+    assert option is not None
+    monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG_FILE", "/tmp/legacy.log")
+    assert _resolve_manifest_option(option, toml_data={}) == (
+        "/tmp/legacy.log",
+        "env (DEEPAGENTS_CODE_DEBUG_FILE)",
+    )
+    monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG_FILE")
+    assert _resolve_manifest_option(
+        option, toml_data={"debug": {"file": "/tmp/configured.log"}}
+    ) == ("/tmp/configured.log", "config.toml")
+
+
 def test_fallback_env_vars_yield_to_toml_when_env_unset(monkeypatch) -> None:
     """A synthetic option exercises the empty-fallback → `config.toml` path.
 
@@ -2566,6 +2582,19 @@ def test_display_value_truncates_long_values() -> None:
     assert rendered.endswith("\N{HORIZONTAL ELLIPSIS}")
 
 
+def test_display_value_ascii_truncation_respects_limit(monkeypatch) -> None:
+    from deepagents_code.config import ASCII_GLYPHS
+
+    monkeypatch.setattr("deepagents_code.config.get_glyphs", lambda: ASCII_GLYPHS)
+    opt = ConfigOption(key="x", group="g", summary="s", kind=OptionKind.STR)
+
+    rendered = _display_value(opt, is_set=True, value="a" * 100)
+
+    assert len(rendered) == 60
+    assert rendered.endswith(ASCII_GLYPHS.ellipsis)
+    assert rendered.isascii()
+
+
 def test_config_text_survives_markup_in_value(monkeypatch) -> None:
     """A value containing Rich close-tag markup must not crash text rendering."""
     monkeypatch.setenv(
@@ -2754,6 +2783,53 @@ def test_run_get_exact_key_json_stays_single_object(capsys) -> None:
     data = _get_json_object("interpreter.memory_limit_mb", capsys)
     assert data["key"] == "interpreter.memory_limit_mb"
     assert "group" not in data
+
+
+def test_run_get_recursion_limit_reports_unset_default(monkeypatch, capsys) -> None:
+    """Text and JSON leave the upstream default unspecified."""
+    monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
+
+    data = _get_json_object("runtime.recursion_limit", capsys)
+    assert data["value"] is None
+    assert data["source"] == "default"
+    assert data["set"] is False
+
+    assert run_config_command(_get_args("runtime.recursion_limit")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered == "runtime.recursion_limit = (unset) (default)"
+
+
+def test_run_get_recursion_limit_reports_upstream_env(monkeypatch, capsys) -> None:
+    """A trusted upstream override remains visible with its actual source."""
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+
+    data = _get_json_object("runtime.recursion_limit", capsys)
+    assert data["value"] == 12_000
+    assert data["source"] == "env (LANGGRAPH_DEFAULT_RECURSION_LIMIT)"
+    assert data["set"] is True
+
+
+def test_run_get_recursion_limit_reports_malformed_upstream_env(
+    monkeypatch, capsys
+) -> None:
+    """A non-numeric upstream value surfaces as data, not a traceback.
+
+    The user sets the malformed variable and then runs `dcode config` to find
+    it, so the inspection path must not be the thing that crashes.
+    """
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "not-an-int")
+
+    data = _get_json_object("runtime.recursion_limit", capsys)
+    assert data["value"] == "not-an-int"
+    assert data["source"] == "env (LANGGRAPH_DEFAULT_RECURSION_LIMIT); invalid"
+    assert data["set"] is True
+
+    assert run_config_command(_get_args("runtime.recursion_limit")) == 0
+    rendered = " ".join(capsys.readouterr().out.split())
+    assert rendered == (
+        "runtime.recursion_limit = not-an-int "
+        "(env (LANGGRAPH_DEFAULT_RECURSION_LIMIT); invalid)"
+    )
 
 
 def test_run_get_credentials_section_lists_every_credential(
@@ -3927,17 +4003,27 @@ def test_recursion_limit_option_metadata() -> None:
     assert opt.env_var == _env_vars.RECURSION_LIMIT
     assert opt.toml_keys == ("runtime", "recursion_limit")
     assert opt.cli_flag == "--recursion-limit"
+    assert opt.default is None
     assert "runtime.recursion_limit" in option_keys()
 
 
-def test_resolve_recursion_limit_default() -> None:
-    """With no override, the resolver returns the manifest default."""
-    from deepagents_code.config_manifest import (
-        RECURSION_LIMIT_DEFAULT,
-        resolve_recursion_limit,
-    )
+def test_resolve_recursion_limit_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no override, the resolver leaves the limit to LangGraph."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
 
-    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+    monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
+    assert resolve_recursion_limit(toml_data={}) is None
+
+
+def test_resolve_recursion_limit_inherits_langgraph_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The upstream environment default becomes the effective agent limit."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
+
+    monkeypatch.delenv(_env_vars.RECURSION_LIMIT, raising=False)
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
+    assert resolve_recursion_limit(toml_data={}) == 12_000
 
 
 def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
@@ -3945,6 +4031,7 @@ def test_resolve_recursion_limit_env_wins(monkeypatch) -> None:
     from deepagents_code.config_manifest import resolve_recursion_limit
 
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, "3000")
+    monkeypatch.setenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", "12000")
     assert (
         resolve_recursion_limit(toml_data={"runtime": {"recursion_limit": 1500}})
         == 3000
@@ -3964,14 +4051,12 @@ def test_resolve_recursion_limit_toml_when_env_unset(monkeypatch) -> None:
 
 @pytest.mark.parametrize("raw", ["0", "-5", "10", "999999999", "notanint"])
 def test_resolve_recursion_limit_out_of_range_falls_back(monkeypatch, raw) -> None:
-    """Non-positive, sub-floor, above-ceiling, or malformed values fall back."""
-    from deepagents_code.config_manifest import (
-        RECURSION_LIMIT_DEFAULT,
-        resolve_recursion_limit,
-    )
+    """Invalid values fall through to LangGraph's default."""
+    from deepagents_code.config_manifest import resolve_recursion_limit
 
+    monkeypatch.delenv("LANGGRAPH_DEFAULT_RECURSION_LIMIT", raising=False)
     monkeypatch.setenv(_env_vars.RECURSION_LIMIT, raw)
-    assert resolve_recursion_limit(toml_data={}) == RECURSION_LIMIT_DEFAULT
+    assert resolve_recursion_limit(toml_data={}) is None
 
 
 def test_resolve_recursion_limit_invalid_env_falls_through_to_toml(

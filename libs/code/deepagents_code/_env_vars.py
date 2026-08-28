@@ -180,11 +180,14 @@ unset.
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
-DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+DEBUG_DIRECTORY = "DEEPAGENTS_CODE_DEBUG_DIRECTORY"
+"""Directory for per-thread debug logs (default: `DEFAULT_DEBUG_DIRECTORY`)."""
 
-DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
-"""Default path for the debug log when `DEBUG_FILE` is unset."""
+DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
+"""Deprecated debug file path; its parent is used when `DEBUG_DIRECTORY` is unset."""
+
+DEFAULT_DEBUG_DIRECTORY = "/tmp/deepagents_debug"  # noqa: S108  # opt-in debug logs
+"""Default directory for debug logs when no debug path override is set."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.
@@ -255,6 +258,12 @@ Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
 values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
 """
+
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading installed-plugin and trusted-project Python extensions."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
@@ -487,10 +496,9 @@ repo file, so a project `.env` cannot disable itself.
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
-Parsed as an integer by the config manifest. Values below the LangGraph floor
-(`25`) or above the manifest ceiling are ignored with a logged warning, falling
-back to `config.toml` then the default. See `[runtime].recursion_limit` and the
-`--recursion-limit` CLI flag.
+Parsed as an integer by the config manifest. Values outside the accepted range
+are ignored with a logged warning, falling back to `config.toml`. See
+`[runtime].recursion_limit` and the `--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
@@ -547,6 +555,16 @@ Off by default; use the `/timestamps` slash command or
 value rather than forcing the default). While this env var is set it outranks
 the persisted value, so a `/timestamps` toggle will not appear to "stick"
 across restarts.
+"""
+
+SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
+"""Show provider-visible reasoning in local TUI and headless output.
+
+Off by default; use `[ui].show_reasoning` in config.toml to persist it. Parsed
+by `classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). A recognized value outranks the config value
+but loses to `--show-reasoning`, which is the only way to change the setting for
+a single run.
 """
 
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
@@ -622,6 +640,9 @@ sequence regardless.
 
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
+
+UI_CHARSET_MODE = "DEEPAGENTS_CODE_UI_CHARSET_MODE"
+"""Terminal character-set mode (`auto`, `ascii`, or `unicode`)."""
 
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""

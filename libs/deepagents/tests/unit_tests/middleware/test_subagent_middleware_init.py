@@ -29,6 +29,7 @@ from deepagents.middleware.subagents import (
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
     _build_task_tool,
+    _ParentSystemMessageMiddleware,
     create_sub_agent,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -220,6 +221,38 @@ class TestSubagentMiddlewareInit:
         # fragment that _ForkSystemMessageMiddleware immediately discards.
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
+
+    @pytest.mark.parametrize(
+        ("subagents", "expected"),
+        [
+            (None, False),
+            ([{"name": "w", "description": "Starts fresh.", "system_prompt": "S"}], False),
+            ([{"name": "w", "description": "Continues with context.", "mode": "fork"}], True),
+        ],
+        ids=["no-subagents", "isolated", "declarative-fork"],
+    )
+    def test_parent_system_message_middleware_only_installed_for_declarative_forks(
+        self,
+        subagents: list[dict[str, Any]] | None,
+        expected: bool,  # noqa: FBT001
+    ) -> None:
+        """Capturing the parent's system message costs a state write per model call."""
+        captured: dict[str, Any] = {}
+
+        def fake_create_agent(model: object, **kwargs: Any) -> object:
+            del model
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("deepagents.graph.create_agent", fake_create_agent):
+            create_deep_agent(
+                model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+                system_prompt="PARENT_PROMPT",
+                subagents=subagents,
+            )
+
+        installed = any(isinstance(middleware, _ParentSystemMessageMiddleware) for middleware in captured["middleware"])
+        assert installed is expected
 
     def test_isolated_subagent_keeps_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []

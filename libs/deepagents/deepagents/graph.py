@@ -57,6 +57,7 @@ from deepagents.middleware.subagents import (
     ForkedSubAgent,
     SubAgent,
     SubAgentMiddleware,
+    _is_forked_subagent,
     _ParentSystemMessageMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
@@ -916,7 +917,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    if sub_agent_middleware is not None:
+    # Only a declarative fork consumes the captured message; compiled forks keep their own prompt.
+    if sub_agent_middleware is not None and any(_is_forked_subagent(spec) and "runnable" not in spec for spec in inline_subagents):
         deepagent_middleware.append(_ParentSystemMessageMiddleware())
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)

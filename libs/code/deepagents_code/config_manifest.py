@@ -3050,6 +3050,8 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
 NON_OPTION_ENV_VARS: frozenset[str] = frozenset(
     {
         _env_vars.SERVER_ENV_PREFIX,
+        # Prefixed alias for the existing `display.charset` option.
+        _env_vars.UI_CHARSET_MODE,
         # Set then popped during the self-update restart handshake (main.py);
         # never user-configured.
         _env_vars.RESTARTED_AFTER_UPDATE,

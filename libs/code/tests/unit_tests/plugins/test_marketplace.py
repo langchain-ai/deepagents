@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 import os
 import subprocess
 import urllib.request
@@ -19,6 +20,7 @@ from deepagents_code.plugins.marketplace import (
     _run_git,
     materialize_plugin_source,
     parse_marketplace_source,
+    unresolved_source_message,
 )
 from deepagents_code.plugins.models import (
     GitSubdirectoryPluginSource,
@@ -26,6 +28,7 @@ from deepagents_code.plugins.models import (
     MarketplacePluginEntry,
     PluginMarketplace,
     UrlMarketplaceSource,
+    UrlPluginSource,
 )
 
 if TYPE_CHECKING:
@@ -301,3 +304,71 @@ def test_materialize_git_subdir_source_rejects_escaping_path(
     )
 
     assert materialize_plugin_source(_marketplace(tmp_path, entry), entry) is None
+
+
+def test_unresolved_source_message_names_the_rejected_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    monkeypatch.setattr(
+        "deepagents_code.plugins.marketplace._materialize_plugin_repository",
+        lambda *_args, **_kwargs: clone,
+    )
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url="https://github.com/acme-corp/monorepo.git",
+            path="../outside",
+        ),
+    )
+    rejections: list[str] = []
+
+    materialize_plugin_source(
+        _marketplace(tmp_path, entry), entry, rejections=rejections
+    )
+
+    message = unresolved_source_message("my-plugin@my-plugins", entry, rejections)
+    assert "unsupported source" not in message
+    assert "plugins.my-plugin.source.path: path must not contain '..'" in message
+
+
+def test_unresolved_source_message_reports_unsupported_sources(tmp_path: Path) -> None:
+    """A source that resolves to no repository is still reported as unsupported.
+
+    A marketplace JSON URL is not a plugin repository, so nothing is cloned and
+    no path is rejected.
+    """
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=UrlPluginSource(
+            source_type="url", url="https://user:hunter2@example.com/plugins.json"
+        ),
+    )
+    rejections: list[str] = []
+
+    resolved = materialize_plugin_source(
+        _marketplace(tmp_path, entry), entry, rejections=rejections
+    )
+
+    assert resolved is None
+    message = unresolved_source_message("my-plugin@my-plugins", entry, rejections)
+    assert "unsupported source" in message
+    assert "hunter2" not in message
+
+
+def test_materialize_plugin_source_logs_rejected_paths(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=LocalPluginSource(source_type="local", path="../outside"),
+    )
+
+    with caplog.at_level(logging.WARNING):
+        materialize_plugin_source(_marketplace(tmp_path, entry), entry)
+
+    assert (
+        "ignoring plugins.my-plugin.source: path must not contain '..'" in caplog.text
+    )

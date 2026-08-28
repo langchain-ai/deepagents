@@ -1092,9 +1092,14 @@ class AgentServerACP(ACPAgent):
                             )
                         else:
                             formatted_content = str(content)
+                        tool_status = (
+                            "failed"
+                            if getattr(message_chunk, "status", None) == "error"
+                            else "completed"
+                        )
                         update = update_tool_call(
                             tool_call_id=tool_call_id,
-                            status="completed",
+                            status=tool_status,
                             content=[tool_content(text_block(formatted_content))],
                         )
                         await self._conn.session_update(

@@ -856,6 +856,127 @@ async def test_acp_agent_tool_result_completes_tool_call() -> None:
     assert tool_call_events
 
 
+def _tool_result_status_events(client: FakeACPClient, tool_call_id: str) -> list[Any]:
+    """Collect session_update events carrying a given tool's status."""
+    out: list[Any] = []
+    for e in client.events:
+        if e["type"] != "session_update":
+            continue
+        update = e["update"]
+        if getattr(update, "tool_call_id", None) != tool_call_id:
+            continue
+        status = getattr(update, "status", None)
+        if status is not None:
+            out.append((status, e))
+    return out
+
+
+async def test_acp_agent_tool_result_error_reports_failed_status() -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
+    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    tool_start = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "id": "call_err",
+                "name": "execute",
+                "args": '{"command": "false"}',
+                "index": 0,
+            }
+        ],
+    )
+    tool_result = ToolMessage(
+        content="Command failed with exit code 1",
+        tool_call_id="call_err",
+        status="error",
+    )
+
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            yield ((), "messages", (tool_start, {}))
+            yield ((), "messages", (tool_result, {}))
+
+        async def aget_state(self, config: Any) -> Any:
+            class S:
+                next = ()
+                interrupts: list[Any] = []
+
+            return S()
+
+    agent._agent = Graph()  # type: ignore[assignment]
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    tool_statuses = _tool_result_status_events(client, "call_err")
+    assert tool_statuses, "expected a status update for the failed tool call"
+    statuses = [status for status, _ in tool_statuses]
+    assert "failed" in statuses, f"expected 'failed' status, got {statuses}"
+
+
+async def test_acp_agent_tool_result_success_reports_completed_status() -> None:
+    model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
+    graph = create_deep_agent(model=model, checkpointer=MemorySaver())
+
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    tool_start = AIMessageChunk(
+        content="",
+        tool_call_chunks=[
+            {
+                "id": "call_ok",
+                "name": "execute",
+                "args": '{"command": "echo hi"}',
+                "index": 0,
+            }
+        ],
+    )
+    tool_result = ToolMessage(
+        content="hi\n[Command succeeded with exit code 0]",
+        tool_call_id="call_ok",
+        status="success",
+    )
+
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            yield ((), "messages", (tool_start, {}))
+            yield ((), "messages", (tool_result, {}))
+
+        async def aget_state(self, config: Any) -> Any:
+            class S:
+                next = ()
+                interrupts: list[Any] = []
+
+            return S()
+
+    agent._agent = Graph()  # type: ignore[assignment]
+
+    resp = await agent.prompt(
+        [TextContentBlock(type="text", text="hi")], session_id=session.session_id
+    )
+    assert resp.stop_reason == "end_turn"
+
+    tool_statuses = _tool_result_status_events(client, "call_ok")
+    assert tool_statuses, "expected a status update for the successful tool call"
+    statuses = [status for status, _ in tool_statuses]
+    assert "completed" in statuses, f"expected 'completed' status, got {statuses}"
+
+
 async def test_acp_agent_multimodal_prompt_blocks_do_not_error() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]), stream_delimiter=None)
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())

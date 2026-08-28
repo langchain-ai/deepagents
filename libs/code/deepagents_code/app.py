@@ -3085,13 +3085,11 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding("ctrl+d", "quit_app", "Quit", show=False, priority=True),
-        Binding("ctrl+t", "toggle_auto_approve", "Toggle Approval Mode", show=False),
-        Binding("ctrl+g", "toggle_subagent_panel", "Toggle Subagents", show=False),
+        Binding("ctrl+t", "toggle_subagent_panel", "Toggle Subagents", show=False),
         # `check_action` steps this binding aside (returns `False`) while a
         # `DebugConsoleScreen` is active so the console's own `shift+tab`
         # reverse-focus traversal runs instead; keep the action name in sync
-        # there. That branch keys on the `toggle_auto_approve` action, so it also
-        # steps aside the `ctrl+t` binding above while the console is open.
+        # there.
         Binding(
             "shift+tab",
             "toggle_auto_approve",
@@ -3107,7 +3105,7 @@ class DeepAgentsApp(App):
             priority=True,
         ),
         Binding(
-            "ctrl+x",
+            "ctrl+g",
             "open_editor",
             "Open Editor",
             show=False,
@@ -12870,6 +12868,79 @@ class DeepAgentsApp(App):
             AppMessage(render_context_doctor_report(report), markdown=False)
         )
 
+    async def _handle_extensions_command(self, command: str) -> None:
+        await self._mount_message(UserMessage(command))
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            await self._mount_message(
+                AppMessage(
+                    "Python extensions require `DEEPAGENTS_CODE_EXPERIMENTAL=1` "
+                    "before starting dcode."
+                )
+            )
+            return
+        if self._server_proc is None:
+            await self._mount_message(
+                AppMessage("Extension provenance is unavailable for this agent.")
+            )
+            return
+        try:
+            import httpx
+
+            async with httpx.AsyncClient(timeout=2.0) as client:
+                response = await client.get(f"{self._server_proc.url}/extensions")
+                response.raise_for_status()
+                payload = response.json()
+        except Exception:
+            logger.exception("Failed to query extension provenance")
+            await self._mount_message(
+                AppMessage("Could not retrieve extension provenance from the server.")
+            )
+            return
+        await self._mount_message(
+            AppMessage(self._render_extensions(payload), markdown=True)
+        )
+
+    @staticmethod
+    def _render_extensions(payload: object) -> str:
+        """Render untrusted endpoint data as escaped markdown.
+
+        Returns:
+            A markdown provenance table or validation error.
+        """
+        if not isinstance(payload, dict):
+            return "The server returned invalid extension metadata."
+        raw = payload.get("registrations")
+        rows: list[list[str]] = []
+        if isinstance(raw, list):
+            for item in raw:
+                if not isinstance(item, dict):
+                    continue
+                source = item.get("source")
+                if not isinstance(source, dict):
+                    continue
+                rows.append(
+                    [
+                        str(item.get("kind", "")),
+                        str(item.get("name", "")),
+                        str(source.get("scope", "")),
+                        str(source.get("path", "")),
+                    ]
+                )
+        body = (
+            _markdown_table(("Kind", "Name", "Scope", "Source"), rows)
+            if rows
+            else "No extensions are loaded."
+        )
+        errors = payload.get("errors")
+        if isinstance(errors, list) and errors:
+            details = "\n".join(f"- {_escape_markdown(str(error))}" for error in errors)
+            body = f"{body}\n\nLoad failures:\n{details}"
+        if payload.get("restart_required") is True:
+            body = f"{body}\n\nRun `/restart` to apply graph-bound extension changes."
+        return body
+
     def _mcp_server_info_for_tools(self) -> list[MCPServerInfo]:
         """Return MCP metadata matching the tools bound to the running agent.
 
@@ -15718,10 +15789,11 @@ class DeepAgentsApp(App):
                 "Interactive Features:\n"
                 "  Enter           Submit your message\n"
                 f"  {newline_shortcut():<15} Insert newline\n"
-                f"  Ctrl+X          {editor_help}\n"
+                f"  Ctrl+G          {editor_help}\n"
                 "  Ctrl+R          Search and reuse submitted prompts\n"
                 "                  (press again for the full-screen view)\n"
                 "  Ctrl+N          Review pending notifications\n"
+                "  Ctrl+T          Toggle the subagent panel\n"
                 "  Ctrl+\\          Toggle the debug console\n"
                 "  Shift+Tab       Toggle auto-approve mode\n"
                 "  @filename       Auto-complete files and inject content\n"
@@ -15997,6 +16069,8 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage(self._format_cost_summary()))
         elif cmd == "/tools":
             await self._handle_tools_command(command)
+        elif cmd == "/extensions":
+            await self._handle_extensions_command(command)
         elif cmd == "/remember" or cmd.startswith("/remember "):
             # Convenience alias for /skill:remember — shorter and discoverable
             # before skill loading completes.
@@ -16259,6 +16333,7 @@ class DeepAgentsApp(App):
         await self._send_to_agent(
             envelope.prompt,
             message_kwargs=envelope.message_kwargs,
+            skill_name=envelope.skill_name,
         )
 
     async def _prompt_skill_trust_and_retry(
@@ -17223,6 +17298,7 @@ class DeepAgentsApp(App):
         message: str,
         *,
         message_kwargs: dict[str, Any] | None = None,
+        skill_name: str | None = None,
     ) -> None:
         """Send a message to the agent and start execution.
 
@@ -17234,6 +17310,7 @@ class DeepAgentsApp(App):
             message: The prompt to send to the agent.
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
+            skill_name: Invoked skill name for trace attribution, or `None`.
         """
         # Anchor to bottom so streaming response stays visible
         with suppress(NoMatches, ScreenStackError):
@@ -17298,6 +17375,7 @@ class DeepAgentsApp(App):
                     self._run_agent_task,
                     message,
                     message_kwargs=message_kwargs,
+                    skill_name=skill_name,
                     goal_notice_current=resuming_blocked,
                 )
                 # Cast because Textual's `WorkType` alias admits both a
@@ -17698,6 +17776,7 @@ class DeepAgentsApp(App):
         message: str,
         *,
         message_kwargs: dict[str, Any] | None = None,
+        skill_name: str | None = None,
         graph_input: dict[str, Any] | None = None,
         goal_notice_current: bool = False,
     ) -> None:
@@ -17709,6 +17788,7 @@ class DeepAgentsApp(App):
             message: The prompt to send to the agent.
             message_kwargs: Extra fields merged into the stream input message
                 dict (e.g., `additional_kwargs` for skill metadata).
+            skill_name: Invoked skill name for trace attribution, or `None`.
             graph_input: Prepared non-conversation input for a server operation.
             goal_notice_current: Whether the caller just persisted the current notice.
         """
@@ -17782,7 +17862,7 @@ class DeepAgentsApp(App):
             if self._approval_mode_blocked:
                 await self._mount_message(
                     ErrorMessage(
-                        "Manual approval mode has not been persisted. Press Ctrl+T "
+                        "Manual approval mode has not been persisted. Press Shift+Tab "
                         "to retry before starting another run."
                     )
                 )
@@ -17890,6 +17970,7 @@ class DeepAgentsApp(App):
                 image_tracker=self._image_tracker,
                 sandbox_type=self._sandbox_type,
                 message_kwargs=message_kwargs,
+                skill_name=skill_name,
                 graph_input=graph_input,
                 rubric=rubric,
                 goal_active=goal_backed_grading,
@@ -22184,7 +22265,7 @@ class DeepAgentsApp(App):
         focused = self.focused
         # Ancestor (not identity) check: unlike goal-review's single `_edit_input`,
         # a menu owns two possible inputs (free-text vs "Other"), and this also
-        # rejects a stale menu's still-focused field from hijacking Ctrl+X.
+        # rejects a stale menu's still-focused field from hijacking Ctrl+G.
         if (
             not isinstance(focused, AskUserTextArea)
             or menu not in focused.ancestors
@@ -23903,9 +23984,7 @@ class DeepAgentsApp(App):
             cursor-style modals via `_SupportsReverseNav` and otherwise no-ops
             under a `ModalScreen` that lacks dedicated `shift+tab` handling
             (as `DebugConsoleScreen` does), so the key would be silently
-            swallowed. Note this keys on the action, and `toggle_auto_approve`
-            is also bound to `ctrl+t`, so that binding is stepped aside under
-            the console for either chord.
+            swallowed.
         - `quit_or_interrupt` (`ctrl+c`): the prompt clipboard owns this chord for
             copying the selected prompt rather than the focused search text.
         - `interrupt` (`escape`): while the prompt-search query has focus,

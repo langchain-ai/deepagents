@@ -41,6 +41,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
+
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
     """Return a callable that lazily imports and invokes a `ui` help function."""
@@ -220,6 +222,18 @@ def _load_stored_credentials() -> _StoredCredentialView:
     return _StoredCredentialView(keys=keys)
 
 
+def _langgraph_default_recursion_limit() -> tuple[bool, str, object]:
+    """Return the configured LangGraph recursion default, if any."""
+    raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
+    if raw is None:
+        return False, "default", None
+    source = f"env ({_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV})"
+    try:
+        return True, source, int(raw)
+    except ValueError:
+        return True, f"{source}; invalid", raw
+
+
 def _resolve(
     option: ConfigOption[object],
     toml_data: dict[str, Any],
@@ -334,6 +348,8 @@ def _resolve(
     ).get(option)
     _emit_ranked_diagnostics(option, resolved)
     source = _ranked_source(resolved)
+    if option.key == "runtime.recursion_limit" and source == "default":
+        return _langgraph_default_recursion_limit()
     return source != "default", source, resolved.value
 
 

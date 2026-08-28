@@ -48,7 +48,7 @@ def _editor_hint() -> str:
     """Return the current editor shortcut hint."""
     editor = editor_display_name()
     return (
-        f"Ctrl+X edit in {editor}" if editor is not None else "Ctrl+X external editor"
+        f"Ctrl+G edit in {editor}" if editor is not None else "Ctrl+G external editor"
     )
 
 
@@ -404,7 +404,7 @@ class GoalReviewMenu(Container):
             return
         glyphs = get_glyphs()
         self._help_widget.update(
-            f"{error} {glyphs.bullet} Ctrl+X external editor {glyphs.bullet} Esc back"
+            f"{error} {glyphs.bullet} Ctrl+G external editor {glyphs.bullet} Esc back"
         )
 
     def _submit(self, result: GoalReviewResult) -> None:

@@ -94,6 +94,7 @@ from deepagents_code._ask_user_types import (
 )
 from deepagents_code._cli_context import CLIContext
 from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._tool_stream import (
     UNRENDERABLE_TOOL_OUTPUT,
     ToolCallBuffer,
@@ -115,13 +116,25 @@ from deepagents_code.hooks import (
 )
 from deepagents_code.hooks.manager import PromptOutcome
 from deepagents_code.hooks.permissions import merge_permission_decisions
+from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 from deepagents_code.input import MediaTracker, parse_file_mentions
 from deepagents_code.media_utils import create_multimodal_content
+from deepagents_code.model_retry import (
+    INTERRUPTED_TOOL_OUTPUT,
+    RETRY_MARKER_FALLBACK,
+    TERMINAL_ATTEMPT_MARKER,
+    legacy_retry_index,
+    model_attempt_from_event,
+    model_retry_from_event,
+    retry_marker_from_event,
+    retry_status_from_event,
+)
 from deepagents_code.tool_display import format_tool_message_content
 from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -442,6 +455,107 @@ def _reject_tracked_rows(
             tool_msg.set_rejected(reason=reason)
             adapter._sync_tool_widget(tool_msg)
     return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
+
+
+class _ModelAttemptScope(NamedTuple):
+    """Active model-attempt correlation, per stream namespace.
+
+    `attempt` is the zero-based value the lifecycle events carry; it is passed
+    straight into the transcript recorder, which treats it as an opaque
+    per-`call_id` index. The same triple doubles as the usage-accounting
+    `attempt_scope`, so a retried attempt's replayed token chunks never
+    double-count under the provider's reused message id.
+    """
+
+    namespace: tuple[str, ...]
+    call_id: str
+    attempt: int
+
+
+async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
+    adapter: TextualUIAdapter,
+    *,
+    preserve_partial: bool,
+    pending_text_by_namespace: dict[tuple, str],
+    assistant_message_by_namespace: dict[tuple, Any],
+    completed_tool_result_ids: set[str],
+    displayed_tool_ids: set[str],
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer],
+) -> None:
+    """Finalize visible root output from a superseded attempt.
+
+    The retried attempt may have streamed text and tool calls before the
+    connection dropped. Its tool rows are given a terminal error state and
+    settled with terminal hooks, and its tool buffers are dropped.
+
+    Args:
+        adapter: Adapter owning the tracked rows and stream widgets.
+        preserve_partial: Whether output escaped to the user. When true the
+            partial reply is detached from the stream and finalized in place, and
+            the per-turn parse maps are cleared so the replay starts a fresh
+            `AssistantMessage` -- the caller then marks the seam. When false
+            nothing escaped, so the replay keeps streaming into the same bubble
+            and only the tool state is settled.
+        pending_text_by_namespace: Per-namespace streamed-text accumulator.
+        assistant_message_by_namespace: Per-namespace live reply widget.
+        completed_tool_result_ids: Ids whose terminal hooks have fired, so a
+            middleware synthetic `ToolMessage` cannot re-dispatch them.
+        displayed_tool_ids: Monotonic mounted-row ids, from which the settled
+            ids are retired. Everywhere else this set is append-only, and
+            deliberately so: a provider redelivering a *completed* call's chunks
+            must not mount a second row. An attempt boundary inverts that -- the
+            replay is a genuinely new call, and a provider that reuses the
+            tool-call id would otherwise have its row suppressed while the tool
+            really runs, so the real `ToolMessage` would be swallowed as an
+            already-settled id and the successful tool would be recorded to
+            hooks as interrupted.
+        tool_call_buffers: Per-turn tool-argument fragment buffers.
+    """
+    root_ns: tuple = ()
+    current_msg = (
+        assistant_message_by_namespace.pop(root_ns, None) if preserve_partial else None
+    )
+    if current_msg is not None:
+        try:
+            await current_msg.stop_stream()
+        except Exception:
+            logger.warning(
+                "Failed to stop interrupted assistant stream on retry",
+                exc_info=True,
+            )
+        else:
+            if adapter._sync_message_content and current_msg.id:
+                adapter._sync_message_content(current_msg.id, current_msg._content)
+    if preserve_partial:
+        pending_text_by_namespace.pop(root_ns, None)
+        # Clears the per-turn refs only; the widget itself stays mounted and now
+        # belongs to the message store, so the replay mounts its own bubble.
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
+    # Rows awaiting a deferred result are left tracked: an answered `ask_user`
+    # made the turn resume, so it still expects its authoritative `ToolMessage`
+    # — consuming it here would strand that hook and trip the contradiction
+    # check in the `ToolMessage` handler. Same rule as `_reject_tracked_rows`.
+    settled = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
+    if settled:
+        completed_tool_result_ids.update(
+            _dispatch_terminal_tool_result_hooks(settled, INTERRUPTED_TOOL_OUTPUT)
+        )
+        for tool_msg in settled.values():
+            try:
+                tool_msg.set_error(INTERRUPTED_TOOL_OUTPUT)
+            except Exception:
+                logger.exception(
+                    "Failed to mark interrupted %s row as an error",
+                    tool_msg.tool_name,
+                )
+            adapter._sync_tool_widget(tool_msg)
+        displayed_tool_ids.difference_update(settled)
+    # Buffers hold unparsed fragments of the interrupted attempt's tool calls;
+    # they never mounted and never fired `tool.use`, so they are dropped
+    # outright rather than counted by the end-of-stream diagnostic.
+    tool_call_buffers.clear()
 
 
 def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
@@ -1361,7 +1475,9 @@ def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  
 
 async def _finalize_usage_round(
     stream: AsyncIterator[Any],
-    recorded_requests: dict[str, _session_stats.RecordedRequest],
+    recorded_requests: dict[
+        _session_stats.UsageLedgerKey, _session_stats.RecordedRequest
+    ],
 ) -> AsyncIterator[Any]:
     """Close streamed usage records when one graph stream pass ends.
 
@@ -1436,6 +1552,7 @@ async def execute_task_textual(
     image_tracker: MediaTracker | None = None,
     context: CLIContext | None = None,
     *,
+    show_reasoning: bool = False,
     sandbox_type: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
     skill_name: str | None = None,
@@ -1457,6 +1574,7 @@ async def execute_task_textual(
         session_state: Session state with a typed approval mode.
         adapter: The TextualUIAdapter for UI operations.
         backend: Optional backend for file operations.
+        show_reasoning: Show provider-visible reasoning in the transcript.
         image_tracker: Optional tracker for images.
         context: Optional `CLIContext` with model override and params. The current
             mode is persisted and copied into runtime context before every stream
@@ -1579,7 +1697,9 @@ async def execute_task_textual(
 
     captured_input_tokens = 0
     captured_output_tokens = 0
-    recorded_usage_requests: dict[str, _session_stats.RecordedRequest] = {}
+    recorded_usage_requests: dict[
+        _session_stats.UsageLedgerKey, _session_stats.RecordedRequest
+    ] = {}
     if turn_stats is None:
         turn_stats = _session_stats.SessionStats()
     start_time = time.monotonic()
@@ -1661,6 +1781,24 @@ async def execute_task_textual(
     # when multiple subagents stream in parallel
     pending_text_by_namespace: dict[tuple, str] = {}
     assistant_message_by_namespace: dict[tuple, Any] = {}
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] = {}
+    # Active model-attempt scope per stream namespace, opened/closed by the
+    # `model_attempt` lifecycle events on the custom stream. It scopes usage
+    # accounting so a retried attempt's replayed chunks don't double-count, and
+    # a valid `model_retry` matches its failed attempt against the root scope.
+    active_attempt_by_namespace: dict[tuple, _ModelAttemptScope] = {}
+    # Attempts already reconciled as superseded, by `(call_id, failed_attempt)`.
+    # Reconciliation runs even when no scope matches, because a lifecycle event
+    # lost to a writer fault must not leave half the state rolled back — which
+    # makes a *repeated* `model_retry` indistinguishable from a first one by
+    # scope alone. Identity is tracked here so a duplicate is a no-op instead of
+    # a second marker row and a second settle of the same tool rows.
+    settled_attempts: set[tuple[str, int]] = set()
+    transcript_agent_by_namespace: dict[tuple[str, ...], str] = {}
+    # A legacy producer emits no lifecycle events, so a namespace with no entry
+    # in `active_attempt_by_namespace` falls back to provider message-id
+    # dedupe with a `None` usage scope.
+
     hooks = session_state.hooks
     transcript = hooks.recorder(thread_id)
 
@@ -1735,6 +1873,7 @@ async def execute_task_textual(
                 outcome.stop_reason or "Compact session start stopped by hook"
             )
 
+    stream_completed = False
     try:
         while True:
             interrupt_occurred = False
@@ -1839,8 +1978,10 @@ async def execute_task_textual(
 
                 namespace, current_stream_mode, data = chunk
 
-                # Convert namespace to hashable tuple for dict keys
-                ns_key = tuple(namespace) if namespace else ()
+                # LangGraph always supplies a `tuple[str, ...]` namespace, so a
+                # cast gives the type checker what it needs without rebuilding
+                # the tuple on every chunk of this hot loop.
+                ns_key = cast("tuple[str, ...]", namespace) if namespace else ()
 
                 # Filter out subagent outputs - only show main agent (empty
                 # namespace). Subagents run via Task tool and should only
@@ -1869,6 +2010,7 @@ async def execute_task_textual(
                                 fallback_model=runtime_state.model_name or "",
                                 fallback_provider=runtime_state.model_provider or "",
                                 recorded_requests=recorded_usage_requests,
+                                attempt_scope=active_attempt_by_namespace.get(ns_key),
                             )
                         except Exception:
                             logger.warning(
@@ -1900,13 +2042,203 @@ async def execute_task_textual(
                                 )
                         continue
 
-                    if isinstance(data, dict) and data.get("type") == "model_retry":
-                        if is_main_agent and adapter._set_spinner is not None:
-                            from deepagents_code.model_retry import (
-                                retry_status_from_event,
+                    if isinstance(data, dict) and data.get("type") == "model_attempt":
+                        attempt_event = model_attempt_from_event(data)
+                        if attempt_event is not None:
+                            attempt_scope = _ModelAttemptScope(
+                                ns_key,
+                                cast("str", attempt_event["call_id"]),
+                                cast("int", attempt_event["attempt"]),
                             )
+                            transcript_agent_id = (
+                                None
+                                if is_main_agent
+                                else transcript_agent_by_namespace.get(ns_key)
+                            )
+                            if attempt_event["phase"] == "start":
+                                # A duplicate start for the same scope is
+                                # idempotent. A different attempt for the same
+                                # call means `model_retry` was lost; a different
+                                # call means the prior completion event was lost.
+                                existing_scope = active_attempt_by_namespace.get(ns_key)
+                                stale = (
+                                    existing_scope is not None
+                                    and existing_scope != attempt_scope
+                                    and (
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                    )
+                                    not in settled_attempts
+                                )
+                                if (
+                                    stale
+                                    and existing_scope is not None
+                                    and existing_scope.call_id != attempt_scope.call_id
+                                ):
+                                    logger.warning(
+                                        "Model attempt %s/%d did not receive a "
+                                        "completion event; committing before "
+                                        "model call %s",
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                        attempt_scope.call_id,
+                                    )
+                                    if is_main_agent or transcript_agent_id is not None:
+                                        transcript.complete_attempt(
+                                            agent_id=transcript_agent_id,
+                                            call_id=existing_scope.call_id,
+                                            attempt=existing_scope.attempt,
+                                        )
+                                elif stale and existing_scope is not None:
+                                    settled_attempts.add(
+                                        (existing_scope.call_id, existing_scope.attempt)
+                                    )
+                                    logger.warning(
+                                        "Model attempt %s/%d superseded without "
+                                        "a model_retry event; reconciling as a "
+                                        "lost retry",
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                    )
+                                    if is_main_agent or transcript_agent_id is not None:
+                                        transcript.discard_attempt(
+                                            agent_id=transcript_agent_id,
+                                            call_id=existing_scope.call_id,
+                                            attempt=existing_scope.attempt,
+                                        )
+                                    if is_main_agent:
+                                        # Whether output escaped is unknowable
+                                        # here, so assume it did: a redundant
+                                        # seam beats an unmarked one.
+                                        await _settle_attempt_for_retry(
+                                            adapter,
+                                            preserve_partial=True,
+                                            pending_text_by_namespace=pending_text_by_namespace,
+                                            assistant_message_by_namespace=assistant_message_by_namespace,
+                                            completed_tool_result_ids=completed_tool_result_ids,
+                                            displayed_tool_ids=displayed_tool_ids,
+                                            tool_call_buffers=tool_call_buffers,
+                                        )
+                                        with contextlib.suppress(Exception):
+                                            await adapter._mount_message(
+                                                AppMessage(RETRY_MARKER_FALLBACK)
+                                            )
+                                active_attempt_by_namespace[ns_key] = attempt_scope
+                                if (
+                                    is_main_agent or transcript_agent_id is not None
+                                ) and existing_scope != attempt_scope:
+                                    transcript.start_attempt(
+                                        agent_id=transcript_agent_id,
+                                        call_id=attempt_scope.call_id,
+                                        attempt=attempt_scope.attempt,
+                                    )
+                            else:
+                                if active_attempt_by_namespace.get(ns_key) == (
+                                    attempt_scope
+                                ):
+                                    del active_attempt_by_namespace[ns_key]
+                                if is_main_agent or transcript_agent_id is not None:
+                                    transcript.complete_attempt(
+                                        agent_id=transcript_agent_id,
+                                        call_id=attempt_scope.call_id,
+                                        attempt=attempt_scope.attempt,
+                                    )
+                        continue
 
+                    if isinstance(data, dict) and data.get("type") == "model_retry":
+                        retry_correlation = model_retry_from_event(data)
+                        if is_main_agent and adapter._set_spinner is not None:
+                            # Runs for valid, malformed, and legacy (uncorrelated)
+                            # retries alike: the spinner status predates attempt
+                            # reconciliation and stays the fallback surface.
                             await adapter._set_spinner(retry_status_from_event(data))
+                        retry_scope = (
+                            _ModelAttemptScope(
+                                ns_key,
+                                cast("str", retry_correlation["call_id"]),
+                                cast("int", retry_correlation["failed_attempt"]),
+                            )
+                            if retry_correlation is not None
+                            else None
+                        )
+                        scope_matches = (
+                            retry_scope is not None
+                            and active_attempt_by_namespace.get(ns_key) == retry_scope
+                        )
+                        if scope_matches and retry_scope is not None:
+                            # Discard whatever the superseded attempt staged. A
+                            # duplicate retry or a scope the recorder never opened
+                            # is ignored idempotently.
+                            transcript_agent_id = (
+                                None
+                                if is_main_agent
+                                else transcript_agent_by_namespace.get(ns_key)
+                            )
+                            if is_main_agent or transcript_agent_id is not None:
+                                transcript.discard_attempt(
+                                    agent_id=transcript_agent_id,
+                                    call_id=retry_scope.call_id,
+                                    attempt=retry_scope.attempt,
+                                )
+                            del active_attempt_by_namespace[ns_key]
+                        retry_attempt_id = (
+                            (
+                                cast("str", retry_correlation["call_id"]),
+                                cast("int", retry_correlation["failed_attempt"]),
+                            )
+                            if retry_correlation is not None
+                            # A legacy payload names no attempt, so identity
+                            # falls back to the retry counter it does carry.
+                            else ("", legacy_retry_index(data))
+                        )
+                        first_settle = retry_attempt_id not in settled_attempts
+                        if is_main_agent and first_settle:
+                            settled_attempts.add(retry_attempt_id)
+                            # Deliberately not gated on `scope_matches`.
+                            # `_emit_stream_event` logs and swallows writer
+                            # faults, so a `model_attempt` start can be lost in
+                            # flight; reconciling only on a match would then let
+                            # the replay stream into the same bubble with stale
+                            # tool rows and no seam — exactly the corruption
+                            # this path exists to prevent. Tool presentation and
+                            # hooks are attempt-local even when no text escaped,
+                            # so a pre-output retry still drops incomplete
+                            # arguments and closes any fired use.
+                            if retry_correlation is not None and not scope_matches:
+                                logger.warning(
+                                    "Model retry names attempt %s/%s which is "
+                                    "not the open root scope; reconciling "
+                                    "without it",
+                                    retry_correlation["call_id"],
+                                    retry_correlation["failed_attempt"],
+                                )
+                            output_may_have_started = bool(
+                                retry_correlation
+                                and retry_correlation["output_may_have_started"]
+                            )
+                            await _settle_attempt_for_retry(
+                                adapter,
+                                preserve_partial=output_may_have_started,
+                                pending_text_by_namespace=pending_text_by_namespace,
+                                assistant_message_by_namespace=assistant_message_by_namespace,
+                                completed_tool_result_ids=completed_tool_result_ids,
+                                displayed_tool_ids=displayed_tool_ids,
+                                tool_call_buffers=tool_call_buffers,
+                            )
+                            if output_may_have_started:
+                                # The partial reply is already detached and
+                                # finalized, so the marker is the only thing
+                                # left that can say it was cut off. Falling back
+                                # to the spinner keeps that visible when the
+                                # mount fails.
+                                marker = retry_marker_from_event(data)
+                                try:
+                                    await adapter._mount_message(AppMessage(marker))
+                                except Exception:
+                                    logger.exception("Failed to mount retry marker")
+                                    if adapter._set_spinner is not None:
+                                        with contextlib.suppress(Exception):
+                                            await adapter._set_spinner(marker)
                         continue
 
                     auto_review_event = _parse_auto_mode_review_event(
@@ -2142,6 +2474,28 @@ async def execute_task_textual(
                         continue
 
                     message, metadata = data
+                    if (
+                        not is_main_agent
+                        and ns_key not in transcript_agent_by_namespace
+                        and isinstance(metadata, dict)
+                    ):
+                        # Only the first message of a namespace can teach us its
+                        # transcript identity; later chunks would re-resolve the
+                        # same id and re-open the same staging scope.
+                        transcript_agent_id = metadata.get(
+                            SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
+                        )
+                        if isinstance(transcript_agent_id, str) and transcript_agent_id:
+                            known_agent_id = transcript_agent_by_namespace.setdefault(
+                                ns_key, transcript_agent_id
+                            )
+                            active_scope = active_attempt_by_namespace.get(ns_key)
+                            if active_scope is not None:
+                                transcript.start_attempt(
+                                    agent_id=known_agent_id,
+                                    call_id=active_scope.call_id,
+                                    attempt=active_scope.attempt,
+                                )
                     if transcript is not None:
                         transcript.record(
                             message,
@@ -2177,6 +2531,7 @@ async def execute_task_textual(
                                 ),
                             ),
                             recorded_requests=recorded_usage_requests,
+                            attempt_scope=active_attempt_by_namespace.get(ns_key),
                         )
                     _apply_recorded_usage(adapter, recorded_usage)
 
@@ -2599,6 +2954,10 @@ async def execute_task_textual(
                         if block_type == "text":
                             text = block.get("text", "")
                             if text:
+                                if reasoning_message_by_namespace:
+                                    await _flush_reasoning_ns(
+                                        adapter, ns_key, reasoning_message_by_namespace
+                                    )
                                 # Track accumulated text for reference
                                 pending_text = pending_text_by_namespace.get(ns_key, "")
                                 pending_text += text
@@ -2638,7 +2997,39 @@ async def execute_task_textual(
                                 await current_msg.append_content(text)
                                 _notify_user_visible_output_started()
 
+                        elif block_type == "reasoning" and show_reasoning:
+                            reasoning = reasoning_text(block)
+                            if reasoning is not None:
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                if pending_text:
+                                    await _flush_assistant_text_ns(
+                                        adapter,
+                                        pending_text,
+                                        ns_key,
+                                        assistant_message_by_namespace,
+                                    )
+                                    pending_text_by_namespace[ns_key] = ""
+                                    assistant_message_by_namespace.pop(ns_key, None)
+                                current_reasoning = reasoning_message_by_namespace.get(
+                                    ns_key
+                                )
+                                if current_reasoning is None:
+                                    msg_id = f"reason-{uuid.uuid4().hex}"
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_reasoning = ReasoningMessage(id=msg_id)
+                                    await adapter._mount_message(current_reasoning)
+                                    reasoning_message_by_namespace[ns_key] = (
+                                        current_reasoning
+                                    )
+                                await current_reasoning.append_content(reasoning)
+                                _notify_user_visible_output_started()
+
                         elif block_type in {"tool_call_chunk", "tool_call"}:
+                            if reasoning_message_by_namespace:
+                                await _flush_reasoning_ns(
+                                    adapter, ns_key, reasoning_message_by_namespace
+                                )
                             chunk_name = block.get("name")
                             chunk_args = block.get("args")
                             chunk_id = block.get("id")
@@ -2789,6 +3180,7 @@ async def execute_task_textual(
                     )
             pending_text_by_namespace.clear()
             assistant_message_by_namespace.clear()
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
 
             # Handle HITL after stream completes
             if interrupt_occurred:
@@ -3265,7 +3657,7 @@ async def execute_task_textual(
                             elif decision_type == "switch_manual":
                                 if adapter._on_switch_to_manual is None:
                                     msg = "Manual mode callback is unavailable"
-                                    raise RuntimeError(msg)
+                                    raise RuntimeError(msg)  # noqa: TRY301  # shared turn error rendering owns this failure
                                 callback_result = adapter._on_switch_to_manual()
                                 switched = (
                                     await callback_result
@@ -3274,7 +3666,7 @@ async def execute_task_textual(
                                 )
                                 if not switched:
                                     msg = "Manual mode could not be persisted"
-                                    raise RuntimeError(msg)
+                                    raise RuntimeError(msg)  # noqa: TRY301  # shared turn error rendering owns this failure
                                 decisions = [
                                     cast("HITLDecision", {"type": "switch_manual"})
                                     for _ in action_requests
@@ -3558,6 +3950,7 @@ async def execute_task_textual(
                     )
                 if not hooks.has_handlers(HookEvent.NOTIFICATION):
                     await dispatch_hook("task.complete", {"thread_id": thread_id})
+                stream_completed = True
                 break
 
     except ClientHookStopError:
@@ -3570,6 +3963,7 @@ async def execute_task_textual(
             config=config,
             pending_text_by_namespace=pending_text_by_namespace,
             assistant_message_by_namespace=assistant_message_by_namespace,
+            reasoning_message_by_namespace=reasoning_message_by_namespace,
             captured_input_tokens=captured_input_tokens,
             captured_output_tokens=captured_output_tokens,
             turn_stats=turn_stats,
@@ -3577,7 +3971,55 @@ async def execute_task_textual(
             recover_interrupted_turn=recover_interrupted_turn,
         )
         return turn_stats
+    except Exception:
+        # No retry event follows an exhausted final attempt. Reconcile its root
+        # presentation now, before the generic teardown finalizes the live reply
+        # and makes a partial generation look complete.
+        root_ns: tuple = ()
+        if active_attempt_by_namespace.pop(root_ns, None) is not None:
+            preserve_partial = root_ns in assistant_message_by_namespace
+            try:
+                await _settle_attempt_for_retry(
+                    adapter,
+                    preserve_partial=preserve_partial,
+                    pending_text_by_namespace=pending_text_by_namespace,
+                    assistant_message_by_namespace=assistant_message_by_namespace,
+                    completed_tool_result_ids=completed_tool_result_ids,
+                    displayed_tool_ids=displayed_tool_ids,
+                    tool_call_buffers=tool_call_buffers,
+                )
+                if preserve_partial:
+                    await adapter._mount_message(AppMessage(TERMINAL_ATTEMPT_MARKER))
+            except Exception:
+                logger.warning(
+                    "Failed to reconcile the terminal model attempt", exc_info=True
+                )
+        raise
     finally:
+        # A clean stream can leave its successful final attempt open when the
+        # best-effort completion event was lost. Commit those scopes; only an
+        # aborted stream owns incomplete records that must be discarded.
+        try:
+            if stream_completed:
+                for scope_ns, scope in active_attempt_by_namespace.items():
+                    agent_id = (
+                        None
+                        if not scope_ns
+                        else transcript_agent_by_namespace.get(scope_ns)
+                    )
+                    if not scope_ns or agent_id is not None:
+                        transcript.complete_attempt(
+                            agent_id=agent_id,
+                            call_id=scope.call_id,
+                            attempt=scope.attempt,
+                        )
+            else:
+                transcript.drop_uncommitted()
+        except Exception:
+            logger.warning(
+                "Failed to finalize uncommitted transcript attempts", exc_info=True
+            )
+
         # Streamed text is coalesced in each AssistantMessage's `_pending_append`
         # buffer and flushed on a throttled timer, so up to one flush interval of
         # tokens can be in flight at any moment. Normal completion (the flush loop
@@ -3589,6 +4031,15 @@ async def execute_task_textual(
             await _stop_assistant_streams(adapter, assistant_message_by_namespace)
         except Exception:  # drain must not mask the original error
             logger.exception("Failed to drain assistant streams on exit")
+
+        # Reasoning needs the same drain for the same reason, plus one of its
+        # own: the store recorded this widget at mount time with empty content,
+        # so without the `_sync_message_content` inside the flush a re-hydrated
+        # row would come back blank and lose text the user had already read.
+        try:
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
+        except Exception:  # drain must not mask the original error
+            logger.exception("Failed to drain reasoning streams on exit")
 
         # Self-contained backstop for the "every `tool.use` is terminated" hook
         # guarantee. The clean-end branch, HITL-reject branches, and interrupt
@@ -3695,6 +4146,7 @@ async def _handle_interrupt_cleanup(
     config: RunnableConfig,
     pending_text_by_namespace: dict[tuple, str],
     assistant_message_by_namespace: dict[tuple, Any] | None = None,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None = None,
     captured_input_tokens: int,
     captured_output_tokens: int,
     turn_stats: _session_stats.SessionStats,
@@ -3709,6 +4161,7 @@ async def _handle_interrupt_cleanup(
         config: Runnable config with `thread_id`.
         pending_text_by_namespace: Accumulated text per namespace.
         assistant_message_by_namespace: Active assistant message widgets per namespace.
+        reasoning_message_by_namespace: Active reasoning widgets per namespace.
         captured_input_tokens: Input tokens captured before interrupt.
         captured_output_tokens: Output tokens captured before interrupt.
         turn_stats: Stats for the current turn.
@@ -3735,6 +4188,7 @@ async def _handle_interrupt_cleanup(
         await adapter._set_spinner(None)
 
     await _stop_assistant_streams(adapter, assistant_message_by_namespace)
+    await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
 
     if recover_interrupted_turn:
         glyphs = get_glyphs()
@@ -3903,6 +4357,47 @@ def _report_tokens(
             adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
     elif adapter._on_tokens_show:
         adapter._on_tokens_show(approximate=approximate)
+
+
+async def _flush_reasoning_ns(
+    adapter: TextualUIAdapter,
+    ns_key: tuple,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage],
+) -> None:
+    """Finalize and collapse reasoning for one namespace.
+
+    Syncs the accumulated text back to the store for the same re-hydration
+    reason as `_flush_assistant_text_ns`, then clears the adapter's active
+    message -- which is a single global slot, not per-namespace.
+    """
+    message = reasoning_message_by_namespace.pop(ns_key, None)
+    if message is None:
+        return
+    await message.stop_stream()
+    if adapter._sync_message_content and message.id:
+        adapter._sync_message_content(message.id, message._content)
+    if adapter._set_active_message:
+        adapter._set_active_message(None)
+
+
+async def _stop_reasoning_streams(
+    adapter: TextualUIAdapter,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None,
+) -> None:
+    """Finalize every active reasoning stream, isolating each widget.
+
+    One failing widget must not abort the rest of the drain, so each flush is
+    guarded the way `_stop_assistant_streams` guards its own. `_flush_reasoning_ns`
+    pops before it awaits, so a raising widget is already out of the dict.
+    """
+    if not reasoning_message_by_namespace:
+        return
+
+    for ns_key in list(reasoning_message_by_namespace):
+        try:
+            await _flush_reasoning_ns(adapter, ns_key, reasoning_message_by_namespace)
+        except Exception:
+            logger.warning("Failed to stop reasoning stream", exc_info=True)
 
 
 async def _flush_assistant_text_ns(

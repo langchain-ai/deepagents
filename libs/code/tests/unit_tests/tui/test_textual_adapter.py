@@ -82,6 +82,7 @@ from deepagents_code.tui.widgets.messages import (
     AppMessage,
     AssistantMessage,
     DiffMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -2817,6 +2818,749 @@ class TestExecuteTaskTextualStreamCompletion:
         callback.assert_not_called()
 
 
+def _collect_mounts() -> tuple[Callable[[object], Awaitable[bool]], list[object]]:
+    """Capture-mounted widget helper for retry-lifecycle tests."""
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        await asyncio.sleep(0)
+        mounted.append(widget)
+        return True
+
+    return mount_message, mounted
+
+
+def _retry_lifecycle_session_state(tmp_path: Path, thread_id: str) -> tuple[Any, Any]:
+    """Session state whose hooks record into a real transcript store."""
+    from deepagents_code.hooks.manager import HooksManager
+    from deepagents_code.hooks.runtime import HooksRuntime
+
+    session_state = _session_state(auto_approve=False, thread_id=thread_id)
+    runtime = HooksRuntime.create(
+        cwd=tmp_path,
+        config_dir=tmp_path / "config",
+        transcript_root=tmp_path / "transcripts",
+    )
+    hooks = HooksManager.adopting(None, identity=session_state.hook_identity)
+    hooks._runtime = runtime
+    session_state.hooks = hooks
+    return session_state, runtime
+
+
+def _attempt_start(call_id: str, attempt: int) -> tuple[tuple, str, dict[str, Any]]:
+    return (
+        (),
+        "custom",
+        {
+            "type": "model_attempt",
+            "phase": "start",
+            "call_id": call_id,
+            "attempt": attempt,
+        },
+    )
+
+
+def _attempt_complete(call_id: str, attempt: int) -> tuple[tuple, str, dict[str, Any]]:
+    return (
+        (),
+        "custom",
+        {
+            "type": "model_attempt",
+            "phase": "complete",
+            "call_id": call_id,
+            "attempt": attempt,
+        },
+    )
+
+
+class TestModelRetryLifecycleReconciliation:
+    """Streamed model-attempt lifecycle and retry reconciliation in the TUI."""
+
+    async def test_post_output_retry_splits_widget_and_mounts_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """A retried attempt keeps its partial reply and starts a fresh bubble."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-retry"
+        )
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "message": "ignored [markup]",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            ((), "custom", retry_event),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        assert "partial" in str(assistant_widgets[0]._content)
+        assert "final" in str(assistant_widgets[1]._content)
+        assert "partial" not in str(assistant_widgets[1]._content)
+
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "Connection dropped; the partial response above is incomplete. "
+            "Retrying 1/3."
+        )
+        # The marker sits between the finalized partial reply and the replay.
+        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
+        assert mounted.index(markers[0]) < mounted.index(assistant_widgets[1])
+        assert any("Retrying model request 1/3" in s for s in statuses if s)
+
+        main = runtime.transcripts.materialize("thread-retry").path.read_text()
+        assert "partial" not in main
+        assert '"content":"final"' in main
+
+    async def test_nested_retry_never_mutates_root_chat_or_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """Nested lifecycle events reconcile only usage scope, never the chat."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-nested"
+        )
+        nested_ns = ("tools:task",)
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 2,
+            "max_retries": 3,
+            "message": "nested retry",
+            "call_id": "call-n",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            (
+                nested_ns,
+                "custom",
+                {
+                    "type": "model_attempt",
+                    "phase": "start",
+                    "call_id": "call-n",
+                    "attempt": 0,
+                },
+            ),
+            (
+                nested_ns,
+                "messages",
+                (AIMessageChunk(content="sub text", id="sub-1"), {}),
+            ),
+            (nested_ns, "custom", retry_event),
+            (
+                (),
+                "messages",
+                (
+                    AIMessageChunk(
+                        content="root reply", id="m-1", chunk_position="last"
+                    ),
+                    {},
+                ),
+            ),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        assert "root reply" in str(assistant_widgets[0]._content)
+        assert all("Retrying" not in (s or "") for s in statuses)
+        main = runtime.transcripts.materialize("thread-nested").path.read_text()
+        assert '"content":"root reply"' in main
+
+    async def test_malformed_retry_keeps_legacy_spinner_only_behavior(
+        self, tmp_path: Path
+    ) -> None:
+        """A malformed correlation falls back to status text, nothing else."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        statuses: list[str | None] = []
+
+        async def set_spinner(status: str | None) -> None:
+            await asyncio.sleep(0)
+            statuses.append(status)
+
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            set_spinner=set_spinner,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-malformed"
+        )
+        malformed_retry = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 5,
+            "message": "boom",
+            # Missing call_id while correlation fields are present: invalid.
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
+            ),
+            ((), "custom", malformed_retry),
+            _attempt_complete("call-1", 0),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        # Prior spinner behavior retained, but no marker and no widget split.
+        assert any("Retrying model request 1/5" in s for s in statuses if s)
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        # The malformed retry must not discard the attempt's staged records.
+        main = runtime.transcripts.materialize("thread-malformed").path.read_text()
+        assert '"content":"kept"' in main
+
+    async def test_pre_output_retry_discards_staging_without_marker(
+        self, tmp_path: Path
+    ) -> None:
+        """A retry before visible output skips the marker and widget split."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-pre-output"
+        )
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 2,
+            "message": "n/a",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": False,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "custom", retry_event),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="clean", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        main = runtime.transcripts.materialize("thread-pre-output").path.read_text()
+        assert '"content":"clean"' in main
+
+    async def test_retry_settles_tool_rows_idempotently(self, tmp_path: Path) -> None:
+        """Retried attempt's parsed tool rows settle once, hooks and maps alike."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        synced_tool_states: list[tuple[str, str]] = []
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+            sync_tool_message=lambda widget: synced_tool_states.append(
+                (widget._status, widget._output)
+            ),
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-tools"
+        )
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "message": "n/a",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        tool_chunk = AIMessageChunk(
+            content="",
+            id="m-1",
+            tool_call_chunks=[
+                {
+                    "name": "read_file",
+                    "args": '{"path": "a.py"}',
+                    "id": "tc-1",
+                    "index": 0,
+                }
+            ],
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (tool_chunk, {})),
+            ((), "custom", retry_event),
+            # A duplicate retry for the already-settled attempt is a no-op.
+            ((), "custom", dict(retry_event)),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="done", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        tool_results: list[tuple[str, str]] = []
+        with patch(
+            "deepagents_code.tui.textual_adapter._dispatch_tool_result_hook",
+            side_effect=lambda name, _id, _args, status, _output: tool_results.append(
+                (name, status)
+            ),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        # Exactly one terminal settle for the interrupted tool call, despite
+        # the duplicate retry event and the end-of-stream orphan sweep.
+        assert tool_results == [("read_file", "error")]
+        assert not adapter._current_tool_messages
+        tool_widgets = [w for w in mounted if isinstance(w, ToolCallMessage)]
+        assert len(tool_widgets) == 1
+        assert tool_widgets[0]._status == "error"
+        assert tool_widgets[0]._output == (
+            "Model response interrupted before tool execution"
+        )
+        assert synced_tool_states[-1] == (
+            "error",
+            "Model response interrupted before tool execution",
+        )
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+
+    async def test_lost_retry_event_still_reconciles_the_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """A start for a new attempt with no retry event in between.
+
+        `_emit_stream_event` logs and swallows writer faults, so the retry event
+        can be lost. Reconciling only on a scope match would then let the replay
+        stream into the same bubble with no seam.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(tmp_path, "thread-lost")
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            # No `model_retry` — attempt 1 simply starts.
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        assert "partial" not in str(assistant_widgets[1]._content)
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        main = runtime.transcripts.materialize("thread-lost").path.read_text()
+        assert "partial" not in main
+
+    async def test_new_call_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A different call preserves the reply when only completion was lost."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-lost-complete"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="first", id="m-1", chunk_position="last"), {}),
+            ),
+            # No completion for call-1; call-2 is a new model step, not a retry.
+            _attempt_start("call-2", 0),
+            (
+                (),
+                "messages",
+                (
+                    AIMessageChunk(content="second", id="m-2", chunk_position="last"),
+                    {},
+                ),
+            ),
+            _attempt_complete("call-2", 0),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        assert not [w for w in mounted if isinstance(w, AppMessage)]
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 2
+        main = runtime.transcripts.materialize("thread-lost-complete").path.read_text()
+        assert '"content":"first"' in main
+        assert '"content":"second"' in main
+
+    async def test_unusable_retry_counts_still_mark_the_partial_reply(
+        self, tmp_path: Path
+    ) -> None:
+        """A marker with no counts beats no marker at all.
+
+        By the time the marker is mounted the partial reply is already detached
+        and finalized, so returning nothing would leave a truncated answer in the
+        chat that reads as a complete one.
+        """
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-nocounts"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="partial", id="m-1"), {})),
+            (
+                (),
+                "custom",
+                {
+                    "type": "model_retry",
+                    # Structurally valid correlation, unusable counters.
+                    "attempt": 0,
+                    "max_retries": 0,
+                    "call_id": "call-1",
+                    "failed_attempt": 0,
+                    "output_may_have_started": True,
+                },
+            ),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="final", id="m-2", chunk_position="last"), {}),
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "Connection dropped; the partial response above is incomplete. Retrying."
+        )
+
+    async def test_retry_spares_a_row_awaiting_a_deferred_result(self) -> None:
+        """An answered `ask_user` still expects its authoritative ToolMessage.
+
+        The turn resumed, so consuming the row here would strand its deferred
+        hook and mark the id as already-settled — which then swallows the real
+        result and trips the contradiction check in the ToolMessage handler.
+        Every other sweep spares these rows for the same reason.
+        """
+        from deepagents_code.tui.textual_adapter import _settle_attempt_for_retry
+        from deepagents_code.tui.widgets.messages import ToolCallMessage
+
+        adapter = TextualUIAdapter(
+            mount_message=_collect_mounts()[0],
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        deferred = ToolCallMessage("ask_user", {"question": "which?"})
+        deferred.defer_success("User answered")
+        plain = ToolCallMessage("read_file", {"file_path": "a.py"})
+        adapter._current_tool_messages = {
+            "call-ask": deferred,
+            "call-read": plain,
+        }
+
+        completed: set[str] = set()
+        displayed = {"call-ask", "call-read"}
+        with (
+            patch("deepagents_code.tui.textual_adapter._dispatch_tool_result_hook"),
+            patch("deepagents_code.tui.textual_adapter._dispatch_tool_error_hook"),
+        ):
+            await _settle_attempt_for_retry(
+                adapter,
+                preserve_partial=True,
+                pending_text_by_namespace={},
+                assistant_message_by_namespace={},
+                completed_tool_result_ids=completed,
+                displayed_tool_ids=displayed,
+                tool_call_buffers={},
+            )
+
+        # The deferred row survives; only the ordinary row is settled.
+        assert list(adapter._current_tool_messages) == ["call-ask"]
+        assert "call-ask" not in completed
+        assert displayed == {"call-ask"}
+
+    async def test_teardown_drops_uncommitted_attempt(self, tmp_path: Path) -> None:
+        """A stream error mid-attempt stages nothing into the transcript."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-error"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            ((), "messages", (AIMessageChunk(content="lost", id="m-1"), {})),
+        ]
+
+        with pytest.raises(RuntimeError, match="stream blew up"):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_RaisingAgent(chunks, RuntimeError("stream blew up")),
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+            )
+
+        assistant_widgets = [w for w in mounted if isinstance(w, AssistantMessage)]
+        assert len(assistant_widgets) == 1
+        assert "lost" in str(assistant_widgets[0]._content)
+        markers = [w for w in mounted if isinstance(w, AppMessage)]
+        assert len(markers) == 1
+        assert str(markers[0]._content) == (
+            "The model request failed; the partial response above is incomplete."
+        )
+        assert mounted.index(markers[0]) > mounted.index(assistant_widgets[0])
+        main = runtime.transcripts.materialize("thread-error").path.read_text()
+        assert "lost" not in main
+
+    async def test_clean_teardown_commits_attempt_with_lost_completion(
+        self, tmp_path: Path
+    ) -> None:
+        """A successful stream preserves output when its completion event is lost."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, _mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-clean"
+        )
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="kept", id="m-1", chunk_position="last"), {}),
+            ),
+        ]
+
+        await execute_task_textual(
+            user_input="hello",
+            agent=_FakeAgent(chunks),
+            assistant_id="assistant",
+            session_state=session_state,
+            adapter=adapter,
+        )
+
+        main = runtime.transcripts.materialize("thread-clean").path.read_text()
+        assert '"content":"kept"' in main
+
+    async def test_retry_usage_scope_separates_replayed_message_ids(
+        self, tmp_path: Path
+    ) -> None:
+        """Replayed chunks under a retried attempt are billed per attempt."""
+        from langchain_core.messages import AIMessageChunk
+
+        mount_message, _mounted = _collect_mounts()
+        adapter = TextualUIAdapter(
+            mount_message=mount_message,
+            update_status=_noop_status,
+            request_approval=_mock_approval,
+        )
+        session_state, _runtime = _retry_lifecycle_session_state(
+            tmp_path, "thread-usage"
+        )
+        usage = {
+            "input_tokens": 10,
+            "output_tokens": 5,
+            "total_tokens": 15,
+        }
+        # Same provider message id on both attempts: without an attempt scope
+        # the replay would dedupe to a single billed request.
+        retry_event = {
+            "type": "model_retry",
+            "attempt": 1,
+            "max_retries": 3,
+            "message": "n/a",
+            "call_id": "call-1",
+            "failed_attempt": 0,
+            "output_may_have_started": True,
+        }
+        chunks = [
+            _attempt_start("call-1", 0),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="x", id="m-1", usage_metadata=usage), {}),  # ty: ignore[invalid-argument-type]
+            ),
+            ((), "custom", retry_event),
+            _attempt_start("call-1", 1),
+            (
+                (),
+                "messages",
+                (AIMessageChunk(content="y", id="m-1", usage_metadata=usage), {}),  # ty: ignore[invalid-argument-type]
+            ),
+            _attempt_complete("call-1", 1),
+        ]
+        turn_stats = SessionStats()
+
+        with (
+            patch.object(config_module.runtime_state, "model_name", "gpt-5.5"),
+            patch.object(config_module.runtime_state, "model_provider", "openai"),
+            patch("deepagents_code.cost_tracking.estimate_cost", return_value=0.01),
+        ):
+            await execute_task_textual(
+                user_input="hello",
+                agent=_FakeAgent(chunks),
+                assistant_id="assistant",
+                session_state=session_state,
+                adapter=adapter,
+                turn_stats=turn_stats,
+            )
+
+        assert turn_stats.per_kind["assistant"].request_count == 2
+
+
 class TestExecuteTaskTextualTurnMarkers:
     """End-to-end: turn markers advance and reach the stream config metadata."""
 
@@ -5120,6 +5864,167 @@ def _tool_call_message(
 def _text_message(text: str) -> SimpleNamespace:
     """Build a message-like object with content_blocks containing one text block."""
     return SimpleNamespace(content_blocks=[{"type": "text", "text": text}])
+
+
+async def test_reasoning_streams_separately_and_collapses_before_answer() -> None:
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "[bold]plain"},
+                        {"type": "reasoning", "reasoning": " "},
+                        {"type": "reasoning", "reasoning": "text[/bold]"},
+                        {"type": "reasoning", "reasoning": "\n"},
+                        {"type": "reasoning", "reasoning": "next line"},
+                        {"type": "text", "text": "answer"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=True,
+    )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    answer = next(widget for widget in mounted if isinstance(widget, AssistantMessage))
+    assert reasoning._content == "[bold]plain text[/bold]\nnext line"
+    assert reasoning._expanded is False
+    assert reasoning._streaming is False
+    assert answer._content == "answer"
+
+
+async def test_reasoning_is_drained_when_the_stream_errors_mid_turn() -> None:
+    """A mid-stream error must not lose reasoning the user already read.
+
+    The store records the widget at mount time with empty content, so the
+    `_sync_message_content` inside the drain is the only thing that ever writes
+    the accumulated text back. Skip it and the row survives on screen but comes
+    back blank the first time the transcript virtualizes.
+    """
+    mounted: list[object] = []
+    sync_message_content = MagicMock()
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            (),
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[{"type": "reasoning", "reasoning": "half a "}]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+        sync_message_content=sync_message_content,
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await execute_task_textual(
+            user_input="hi",
+            agent=_RaisingAgent(chunks, RuntimeError("boom")),
+            assistant_id="assistant",
+            session_state=_session_state(auto_approve=True),
+            adapter=adapter,
+            show_reasoning=True,
+        )
+
+    reasoning = next(
+        widget for widget in mounted if isinstance(widget, ReasoningMessage)
+    )
+    assert reasoning._streaming is False
+    sync_message_content.assert_any_call(reasoning.id, "half a ")
+
+
+@pytest.mark.parametrize(
+    ("show_reasoning", "namespace"),
+    [
+        pytest.param(False, (), id="preference-off"),
+        pytest.param(True, ("tools:task",), id="subagent-namespace"),
+    ],
+)
+async def test_reasoning_is_not_rendered(
+    show_reasoning: bool, namespace: tuple[str, ...]
+) -> None:
+    """Reasoning stays hidden when opted out, and for subagents either way.
+
+    The subagent case is carried by the pre-existing `is_main_agent` gate, which
+    drops every nested content block long before the reasoning branch. It is
+    pinned here so a future reasoning path that runs ahead of that gate cannot
+    start leaking subagent thoughts into the main transcript unnoticed.
+    """
+    mounted: list[object] = []
+
+    async def mount_message(widget: object) -> bool:
+        mounted.append(widget)
+        await asyncio.sleep(0)
+        return True
+
+    chunks = [
+        (
+            namespace,
+            "messages",
+            (
+                SimpleNamespace(
+                    content_blocks=[
+                        {"type": "reasoning", "reasoning": "hidden"},
+                        {"type": "non_standard", "reasoning": "opaque"},
+                    ]
+                ),
+                {},
+            ),
+        )
+    ]
+    adapter = TextualUIAdapter(
+        mount_message=mount_message,
+        update_status=_noop_status,
+        request_approval=_mock_approval,
+    )
+
+    await execute_task_textual(
+        user_input="hi",
+        agent=_FakeAgent(chunks),
+        assistant_id="assistant",
+        session_state=_session_state(auto_approve=True),
+        adapter=adapter,
+        show_reasoning=show_reasoning,
+    )
+
+    assert not any(isinstance(widget, ReasoningMessage) for widget in mounted)
 
 
 class TestExecuteTaskTextualUserVisibleOutputStarted:

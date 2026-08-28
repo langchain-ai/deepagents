@@ -85,4 +85,6 @@ The main cost is the client/server boundary. When debugging, first decide which 
 - For cost estimates and local pricing overrides (`prices.json`), see
   [`PRICING.md`](./PRICING.md).
 - For security boundaries, see [`THREAT_MODEL.md`](./THREAT_MODEL.md).
+- For how a transient model failure is retried after output has already streamed,
+  see [`STREAMING_RETRY_DESIGN.md`](./STREAMING_RETRY_DESIGN.md).
 - For package-specific coding conventions, see [`AGENTS.md`](./AGENTS.md).

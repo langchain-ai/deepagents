@@ -138,6 +138,7 @@ from deepagents_code.tui.widgets.messages import (
     ErrorMessage,
     LazyToolGroupSummary,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SummarizationMessage,
     ToolCallMessage,
@@ -145,6 +146,7 @@ from deepagents_code.tui.widgets.messages import (
 )
 from deepagents_code.tui.widgets.startup_tip import StartupTip
 from deepagents_code.tui.widgets.status import _PICKER_ACTIONS
+from deepagents_code.update_check import ExtraInstallOutcome
 
 
 def _pop_goal_state_notice(update: dict[str, Any]) -> HumanMessage:
@@ -8341,6 +8343,101 @@ class TestClearCommand:
             )
             schedule.assert_not_called()
 
+    async def test_clear_carries_the_grader_selection_into_the_new_thread(
+        self,
+    ) -> None:
+        """The grader reads its model from thread state, which `/clear` replaces.
+
+        Without the carry-over the fresh thread has no selection, so grading
+        silently reverts while `/rubric show` still names the chosen model.
+        """
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+            app._rubric_model = "openai:gpt-5.5"
+            app._rubric_model_recorded = True
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as persist,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            persist.assert_awaited_once_with()
+            assert app._lc_thread_id == "new-thread"
+            assert app._rubric_model == "openai:gpt-5.5"
+            assert app._rubric_model_recorded is True
+
+    async def test_clear_drops_the_grader_selection_it_could_not_carry_over(
+        self,
+    ) -> None:
+        """A failed carry-over must leave the display matching what grading uses."""
+        app = DeepAgentsApp(
+            thread_id="old-thread",
+            server_kwargs={"rubric_model": "startup:model"},
+            defer_server_start=True,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+            app._rubric_model = "openai:gpt-5.5"
+            app._rubric_model_recorded = True
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ),
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            assert app._rubric_model == "startup:model"
+            assert app._rubric_model_recorded is False
+
+    async def test_clear_skips_the_carry_over_without_a_selection(self) -> None:
+        """An unrecorded thread has nothing to carry, so `/clear` writes nothing."""
+        app = DeepAgentsApp(thread_id="old-thread")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._session_state = TextualSessionState(thread_id="old-thread")
+            app._lc_thread_id = "old-thread"
+
+            with (
+                patch("deepagents_code.app._new_thread_id", return_value="new-thread"),
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    app, "_persist_goal_rubric_state", new_callable=AsyncMock
+                ) as persist,
+            ):
+                await app._handle_command("/clear")
+                await pilot.pause()
+
+            persist.assert_not_awaited()
+
     async def test_clear_omits_previous_thread_without_checkpoint(self) -> None:
         """/clear should not advertise a thread that cannot be resumed."""
         app = DeepAgentsApp(thread_id="old-thread")
@@ -8641,6 +8738,49 @@ class TestRunAgentTaskMediaTracker:
             assert mock_execute.await_args.kwargs["image_tracker"] is app._image_tracker
             assert mock_execute.await_args.kwargs["sandbox_type"] is app._sandbox_type
 
+    async def test_run_agent_task_forwards_the_reasoning_preference(self) -> None:
+        """`_run_agent_task` must forward the resolved reasoning preference.
+
+        The preference resolving correctly proves nothing on its own: dropping
+        this kwarg leaves the flag, the env var, and `config.toml` all working
+        and the TUI silently never rendering reasoning.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._show_reasoning = True
+
+            with patch(
+                "deepagents_code.tui.textual_adapter.execute_task_textual",
+                new_callable=AsyncMock,
+            ) as mock_execute:
+                await app._run_agent_task("hello")
+
+            assert mock_execute.await_args is not None
+            assert mock_execute.await_args.kwargs["show_reasoning"] is True
+
+    async def test_reasoning_expansion_syncs_to_message_store(self) -> None:
+        """Collapsing reasoning must survive transcript virtualization.
+
+        `update_message` rejects any field missing from `_UPDATABLE_FIELDS`, so
+        this also pins the registration the handler depends on.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            widget = ReasoningMessage("thinking", id="reason-1")
+            await app._mount_message(widget)
+            await pilot.pause()
+            assert app._message_store.get_message("reason-1") is not None
+
+            widget.toggle_expanded()
+            await pilot.pause()
+
+            stored = app._message_store.get_message("reason-1")
+            assert stored is not None
+            assert stored.reasoning_expanded is False
+
     async def test_run_agent_task_finalizes_pending_tools_on_error(self) -> None:
         """Unexpected agent errors should stop/clear in-flight tool widgets."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -8889,6 +9029,104 @@ class TestWarnDiscardedGoalChannels:
         assert payload.pending_goal_rubric is None
         assert payload.pending_goal_kind is None
         assert payload.pending_goal_request_id is None
+
+    async def test_rubric_model_payload_restores_recorded_selection(self) -> None:
+        """Checkpointed grader selection restores independently of startup config."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_rubric_model_spec": "openai:gpt-5.5"},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model == "openai:gpt-5.5"
+        assert app._rubric_model_recorded is True
+
+    async def test_legacy_state_restores_startup_rubric_model(self) -> None:
+        """A missing grader channel keeps the construction-time fallback."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {}, messages=[], context_tokens=0, model_spec=""
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model == "startup:model"
+        assert app._rubric_model_recorded is False
+
+    async def test_rubric_model_payload_restores_explicit_inheritance(self) -> None:
+        """The sentinel overrides a startup dedicated grader model."""
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_rubric_model_spec": INHERIT_RUBRIC_MODEL},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model is None
+        assert app._rubric_model_recorded is True
+
+    @pytest.mark.parametrize("malformed", [None, 1, "", "  "])
+    async def test_malformed_rubric_model_restores_startup_fallback(
+        self, malformed: object
+    ) -> None:
+        """Malformed grader state must not override startup configuration."""
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            {"_rubric_model_spec": malformed},
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+        )
+        app = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+
+        await app._restore_goal_rubric_state(payload)
+
+        assert app._rubric_model == "startup:model"
+        assert app._rubric_model_recorded is False
+
+    @pytest.mark.parametrize(
+        ("model", "recorded", "expected_model", "expected_recorded"),
+        [
+            ("openai:gpt-5.5", True, "openai:gpt-5.5", True),
+            (None, True, None, True),
+            (None, False, "startup:model", False),
+        ],
+    )
+    async def test_rubric_model_survives_a_write_then_read_round_trip(
+        self,
+        model: str | None,
+        recorded: bool,
+        expected_model: str | None,
+        expected_recorded: bool,
+    ) -> None:
+        """The writer and the reader must agree on the channel and its encoding.
+
+        Every other test in this area hand-builds the state dict, so a rename
+        or an encoding change on one side alone would leave them all green.
+        """
+        writer = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+        writer._rubric_model = model
+        writer._rubric_model_recorded = recorded
+
+        state_update = writer._goal_state_update()
+        assert ("_rubric_model_spec" in state_update) is recorded
+
+        payload = DeepAgentsApp._goal_rubric_payload_from_state(
+            state_update, messages=[], context_tokens=0, model_spec=""
+        )
+        reader = DeepAgentsApp(server_kwargs={"rubric_model": "startup:model"})
+        await reader._restore_goal_rubric_state(payload)
+
+        assert reader._rubric_model == expected_model
+        assert reader._rubric_model_recorded is expected_recorded
 
     async def test_legacy_pending_proposal_without_metadata_is_preserved(
         self,
@@ -10629,9 +10867,26 @@ class TestGoalCommand:
             screen = push_screen.call_args.args[0]
             assert screen._title == "Choose grader model for goal"
             assert "/goal model clear" in screen._description
-            assert "startup chat model (openai:gpt-5.5)" in screen._description
+            assert "follow the active model" in screen._description
             assert "rubric" not in screen._title.lower()
             assert "/rubric" not in screen._description
+
+    async def test_grader_model_selector_uses_effective_model_when_inheriting(
+        self,
+    ) -> None:
+        """An inherited grader picker should follow a live `/model` override."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._model_override = "anthropic:claude-sonnet-4-6"
+            app._rubric_model = None
+            with patch.object(app, "push_screen") as push_screen:
+                await app._show_rubric_model_selector()
+                await pilot.pause()
+
+            screen = push_screen.call_args.args[0]
+            assert screen._current_provider == "anthropic"
+            assert screen._current_model == "claude-sonnet-4-6"
 
     async def test_grader_model_selector_disables_ctrl_s(self) -> None:
         """Ctrl+S must not persist the agent's model from a grader picker.
@@ -10695,8 +10950,8 @@ class TestGoalCommand:
 
                 screen = push_screen.call_args.args[0]
                 assert clear_cmd in screen._description
-                assert "reuse the startup chat model." in screen._description
-                assert "startup chat model (" not in screen._description
+                assert "follow the active model." in screen._description
+                assert "startup chat model" not in screen._description
 
     async def test_goal_model_selector_cancel_reports_unchanged(self) -> None:
         """Escaping the goal grader picker should leave a short chat note."""
@@ -10721,8 +10976,8 @@ class TestGoalCommand:
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert "Model not changed." in rendered
 
-    async def test_goal_model_clear_already_default_short_circuits(self) -> None:
-        """`/goal model clear` should no-op when already on the startup chat model."""
+    async def test_goal_model_clear_already_inheriting_short_circuits(self) -> None:
+        """`/goal model clear` no-ops when inheritance is already recorded."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             server_kwargs={"model_name": "openai:gpt-5.5"},
@@ -10731,6 +10986,7 @@ class TestGoalCommand:
         async with app.run_test() as pilot:
             await pilot.pause()
             app._rubric_model = None
+            app._rubric_model_recorded = True
             app._server_kwargs = {"model_name": "openai:gpt-5.5"}
             app._server_proc = MagicMock()
 
@@ -10745,10 +11001,7 @@ class TestGoalCommand:
             respawn.assert_not_awaited()
             app._server_proc.update_env.assert_not_called()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Goal grader model already uses the startup chat model "
-                "(openai:gpt-5.5)." in rendered
-            )
+            assert "Goal grader model already follows the active model." in rendered
 
     async def test_goal_model_clear_already_default_uses_bare_label(self) -> None:
         """The already-default no-op omits the suffix when no startup model is known."""
@@ -10757,6 +11010,7 @@ class TestGoalCommand:
             await pilot.pause()
             assert app._rubric_default_model is None
             app._rubric_model = None
+            app._rubric_model_recorded = True
             app._server_kwargs = {}
             app._server_proc = MagicMock()
 
@@ -10770,8 +11024,7 @@ class TestGoalCommand:
 
             respawn.assert_not_awaited()
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Goal grader model already uses the startup chat model." in rendered
-            assert "startup chat model (" not in rendered
+            assert "Goal grader model already follows the active model." in rendered
 
     async def test_goal_model_clear_uses_goal_copy(self) -> None:
         """A successful `/goal model clear` should use goal-branded confirmation."""
@@ -10782,6 +11035,7 @@ class TestGoalCommand:
         )
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._lc_thread_id = "t-1"
             app._rubric_model = "openai:gpt-5.1"
             app._server_kwargs = {
                 "model_name": "openai:gpt-5.5",
@@ -10791,18 +11045,15 @@ class TestGoalCommand:
 
             with patch.object(
                 app,
-                "_respawn_server",
+                "_persist_goal_rubric_state",
                 new_callable=AsyncMock,
-                return_value=_ServerRespawnResult(restarted=True),
+                return_value=True,
             ):
                 await app._handle_command("/goal model clear")
                 await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Goal grader model cleared; using the startup chat model "
-                "(openai:gpt-5.5)." in rendered
-            )
+            assert "Goal grader model cleared; following the active model." in rendered
             assert "Rubric grader model" not in rendered
 
     async def test_goal_max_iterations_alias_dispatches_to_setter(self) -> None:
@@ -10866,12 +11117,11 @@ class TestGoalCommand:
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
             assert (
-                "Grader: startup chat model (openai:gpt-5.5) · "
-                "max iterations: 3 (SDK default)" in rendered
+                "Grader: openai:gpt-5.5 · max iterations: 3 (SDK default)" in rendered
             )
 
-    def test_grader_display_ignores_per_turn_model_override(self) -> None:
-        """A `/model` override should not be reported as the grader model."""
+    def test_grader_display_follows_per_turn_model_override(self) -> None:
+        """An inherited grader should report the active `/model` override."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             server_kwargs={"model_name": "anthropic:claude-sonnet-4-5"},
@@ -10880,29 +11130,19 @@ class TestGoalCommand:
 
         model, _ = app._grader_display_values()
 
-        assert model == "startup chat model (anthropic:claude-sonnet-4-5)"
+        assert model == "openai:gpt-5.5"
 
-    def test_grader_display_reports_bare_default_without_startup_model(self) -> None:
-        """With no startup model captured, the grader line omits the spec.
-
-        This is the state a fresh, unconfigured user sees on `/goal show` or
-        `/rubric show`, so guard against a regression rendering a stray
-        "startup chat model (None)".
-        """
+    def test_grader_display_reports_active_model_without_override(self) -> None:
+        """A fresh, unconfigured session reports active-model inheritance."""
         app = DeepAgentsApp(agent=MagicMock())
         assert app._rubric_default_model is None
 
         model, _ = app._grader_display_values()
 
-        assert model == "startup chat model"
+        assert model == "active model"
 
-    def test_grader_display_falls_back_to_model_kwargs_spec(self) -> None:
-        """Without `server_kwargs`, the startup model comes from `model_kwargs`.
-
-        Guards the second arm of the `_rubric_default_model` `or` fallback,
-        which is the source when server startup was deferred with only a
-        `model_spec` supplied.
-        """
+    def test_grader_display_falls_back_to_construction_model(self) -> None:
+        """Without an active override, show the construction-time main model."""
         app = DeepAgentsApp(
             agent=MagicMock(),
             model_kwargs={"model_spec": "openai:gpt-5.5"},
@@ -10910,7 +11150,7 @@ class TestGoalCommand:
 
         model, _ = app._grader_display_values()
 
-        assert model == "startup chat model (openai:gpt-5.5)"
+        assert model == "openai:gpt-5.5"
 
     @pytest.mark.parametrize("command", ["/goal", "/goal show"])
     async def test_goal_state_omits_redundant_commands(self, command: str) -> None:
@@ -13476,6 +13716,22 @@ class TestRubricCommand:
             assert "/rubric set <criteria>" in rendered
             assert "Rubric grader model:" not in rendered
 
+    async def test_rubric_show_surfaces_recorded_model_inheritance(self) -> None:
+        """An explicit grader clear remains visible after checkpoint restore."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = None
+            app._rubric_model_recorded = True
+            app._model_override = "openai:gpt-5.5"
+
+            await app._handle_command("/rubric show")
+            await pilot.pause()
+
+            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
+            assert "No rubric set." in rendered
+            assert "Rubric grader model: openai:gpt-5.5" in rendered
+
     async def test_rubric_set_without_criteria_shows_usage_tip(self) -> None:
         """Bare `/rubric set` should include a short example tip."""
         app = DeepAgentsApp(agent=MagicMock())
@@ -14494,9 +14750,7 @@ class TestRubricCommand:
             await pilot.pause()
 
             rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Rubric grader model: startup chat model (openai:gpt-5.5)" in rendered
-            )
+            assert "Rubric grader model: openai:gpt-5.5" in rendered
             assert "Rubric max iterations: 3 (SDK default)" in rendered
 
     async def test_set_rubric_max_iterations_rejects_without_owned_server(self) -> None:
@@ -14587,11 +14841,12 @@ class TestRubricCommand:
             rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
             assert "Missing credentials" in rendered
 
-    async def test_set_rubric_model_restarts_owned_server(self) -> None:
-        """Changing the grader model should update server env and respawn the graph."""
+    async def test_set_rubric_model_persists_without_restarting_server(self) -> None:
+        """Changing the grader model writes thread state without a server restart."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
+            app._lc_thread_id = "t-1"
             app._server_kwargs = {}
             app._server_proc = MagicMock()
 
@@ -14603,48 +14858,32 @@ class TestRubricCommand:
                 ),
                 patch.object(
                     app,
-                    "_respawn_server",
+                    "_persist_goal_rubric_state",
                     new_callable=AsyncMock,
-                    return_value=_ServerRespawnResult(restarted=True),
-                ) as respawn,
+                    return_value=True,
+                ) as persist,
+                patch.object(app, "_respawn_server", new_callable=AsyncMock) as respawn,
             ):
-                # Attach the env-staging calls and the respawn to a shared
-                # manager so their relative order can be asserted below.
-                manager = MagicMock()
-                manager.attach_mock(app._server_proc.update_env, "update_env")
-                manager.attach_mock(app._server_proc.persist_env, "persist_env")
-                manager.attach_mock(respawn, "respawn")
                 await app._set_rubric_model("openai:gpt-5.1")
             await pilot.pause()
 
             assert app._rubric_model == "openai:gpt-5.1"
-            assert app._server_kwargs["rubric_model"] == "openai:gpt-5.1"
-            app._server_proc.update_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="openai:gpt-5.1",
-            )
-            app._server_proc.persist_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="openai:gpt-5.1",
-            )
-            assert respawn.await_count == 1
-            # The persisted override must be written only after a successful
-            # respawn, never before the restart is confirmed healthy.
-            ordered = [
-                c[0]
-                for c in manager.mock_calls
-                if c[0] in {"update_env", "respawn", "persist_env"}
-            ]
-            assert ordered == ["update_env", "respawn", "persist_env"]
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model set to openai:gpt-5.1" in rendered
+            assert app._rubric_model_recorded is True
+            assert "rubric_model" not in app._server_kwargs
+            persist.assert_awaited_once_with()
+            respawn.assert_not_awaited()
+            app._server_proc.update_env.assert_not_called()
 
-    async def test_set_rubric_model_rolls_back_on_failed_respawn(self) -> None:
-        """A failed server respawn rolls the grader model back to the previous one."""
-        app = DeepAgentsApp(agent=MagicMock())
+    async def test_set_rubric_model_records_explicit_startup_model(self) -> None:
+        """Selecting the startup model explicitly must pin it to the thread."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            server_kwargs={"rubric_model": "openai:gpt-5.1"},
+            defer_server_start=True,
+        )
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._rubric_model = "anthropic:claude-sonnet-4-6"
-            app._server_kwargs = {"rubric_model": "anthropic:claude-sonnet-4-6"}
-            app._server_proc = MagicMock()
+            app._lc_thread_id = "t-1"
 
             with (
                 patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
@@ -14654,64 +14893,27 @@ class TestRubricCommand:
                 ),
                 patch.object(
                     app,
-                    "_respawn_server",
+                    "_persist_goal_rubric_state",
                     new_callable=AsyncMock,
-                    return_value=_ServerRespawnResult(restarted=False),
-                ),
+                    return_value=True,
+                ) as persist,
             ):
                 await app._set_rubric_model("openai:gpt-5.1")
+            await pilot.pause()
 
-            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
-            assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
-            app._server_proc.persist_env.assert_not_called()
-            # The failed forward staging must be re-staged back to the previous
-            # model so a later restart cannot resurrect the rolled-back value.
-            assert app._server_proc.update_env.call_count == 2
-            assert app._server_proc.update_env.call_args_list[-1].kwargs == {
-                "DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL": "anthropic:claude-sonnet-4-6",
-            }
+            assert app._rubric_model == "openai:gpt-5.1"
+            assert app._rubric_model_recorded is True
+            persist.assert_awaited_once_with()
+            assert app._goal_state_update()["_rubric_model_spec"] == "openai:gpt-5.1"
 
-    async def test_set_rubric_model_clears_owned_server(self) -> None:
-        """Clearing the grader model persists an empty override and respawns."""
+    async def test_set_rubric_model_rolls_back_on_failed_state_write(self) -> None:
+        """A failed checkpoint write restores the previous grader selection."""
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._rubric_model = "openai:gpt-5.1"
-            app._server_kwargs = {"rubric_model": "openai:gpt-5.1"}
-            app._server_proc = MagicMock()
-
-            with patch.object(
-                app,
-                "_respawn_server",
-                new_callable=AsyncMock,
-                return_value=_ServerRespawnResult(restarted=True),
-            ) as respawn:
-                await app._set_rubric_model(None)
-            await pilot.pause()
-
-            assert app._rubric_model is None
-            assert app._server_kwargs["rubric_model"] is None
-            # Clearing must persist an empty override so a previously persisted
-            # model cannot resurrect on a later restart.
-            app._server_proc.update_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="",
-            )
-            app._server_proc.persist_env.assert_called_once_with(
-                DEEPAGENTS_CODE_SERVER_RUBRIC_MODEL="",
-            )
-            assert respawn.await_count == 1
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert (
-                "Rubric grader model cleared; using the startup chat model." in rendered
-            )
-
-    async def test_set_rubric_model_sets_before_owned_server_starts(self) -> None:
-        """With owned server config, the grader model is staged and confirmed."""
-        app = DeepAgentsApp(agent=MagicMock())
-        async with app.run_test() as pilot:
-            await pilot.pause()
-            app._server_proc = None
-            app._server_kwargs = {}
+            app._lc_thread_id = "t-1"
+            app._rubric_model = "anthropic:claude-sonnet-4-6"
+            app._rubric_model_recorded = True
 
             with (
                 patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
@@ -14719,35 +14921,122 @@ class TestRubricCommand:
                     "deepagents_code.model_config.get_provider_auth_status",
                     return_value=None,
                 ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ),
             ):
-                await app._set_rubric_model("anthropic:claude-sonnet-4-6")
-            await pilot.pause()
+                await app._set_rubric_model("openai:gpt-5.1")
 
             assert app._rubric_model == "anthropic:claude-sonnet-4-6"
-            assert app._server_kwargs["rubric_model"] == "anthropic:claude-sonnet-4-6"
-            rendered = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Rubric grader model set to" in rendered
+            assert app._rubric_model_recorded is True
+            rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
+            assert "was reverted" in rendered
+            assert "anthropic:claude-sonnet-4-6" in rendered
 
-    async def test_set_rubric_model_rejects_without_owned_server(self) -> None:
-        """External graph sessions cannot switch the fixed rubric middleware model."""
+    async def test_set_rubric_model_clear_persists_inheritance_sentinel(self) -> None:
+        """Clearing writes the explicit active-model inheritance sentinel."""
+        from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
+
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._rubric_model = "anthropic:claude-sonnet-4-6"
+            app._lc_thread_id = "t-1"
+            app._rubric_model = "openai:gpt-5.1"
+            app._rubric_model_recorded = True
+            persist = AsyncMock(return_value=True)
+
+            with patch.object(app, "_persist_goal_rubric_state", persist):
+                await app._set_rubric_model(None)
+            await pilot.pause()
+
+            assert app._rubric_model is None
+            assert app._rubric_model_recorded is True
+            persist.assert_awaited_once_with()
+            assert (
+                app._goal_state_update()["_rubric_model_spec"] == INHERIT_RUBRIC_MODEL
+            )
+
+    async def test_set_rubric_model_supports_external_graph(self) -> None:
+        """External graphs validate grader models with their own environment."""
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        app = DeepAgentsApp()
+        app._agent = RemoteAgent("http://test:0")
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = "t-1"
             app._server_proc = None
             app._server_kwargs = None
 
-            with patch(
-                "deepagents_code.app._create_model_with_deepagents_import_lock"
-            ) as create_model:
+            with (
+                patch(
+                    "deepagents_code.app._create_model_with_deepagents_import_lock"
+                ) as create_model,
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                ) as get_auth_status,
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=True,
+                ) as persist,
+            ):
                 await app._set_rubric_model("openai:gpt-5.1")
             await pilot.pause()
 
+            assert app._rubric_model == "openai:gpt-5.1"
+            assert app._rubric_model_recorded is True
+            persist.assert_awaited_once_with()
+            get_auth_status.assert_not_called()
             create_model.assert_not_called()
-            assert app._rubric_model == "anthropic:claude-sonnet-4-6"
-            assert app._server_kwargs is None
+
+    async def test_set_rubric_model_refuses_without_a_thread(self) -> None:
+        """A selection is only effective once it reaches thread state.
+
+        `_persist_goal_rubric_state` reports success when there is no thread to
+        write to, so confirming here would promise a change that the next
+        restore discards.
+        """
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._lc_thread_id = None
+
+            with (
+                patch("deepagents_code.app._create_model_with_deepagents_import_lock"),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=None,
+                ),
+                patch.object(
+                    app, "_persist_goal_rubric_state", new_callable=AsyncMock
+                ) as persist,
+            ):
+                await app._set_rubric_model("openai:gpt-5.1")
+            await pilot.pause()
+
+            persist.assert_not_awaited()
+            assert app._rubric_model is None
+            assert app._rubric_model_recorded is False
             rendered = "\n".join(str(w._content) for w in app.query(ErrorMessage))
-            assert "does not own a restartable server" in rendered
+            assert "connected to a thread" in rendered
+
+    async def test_grader_display_prefers_the_active_model_over_startup(self) -> None:
+        """Inheriting follows the live `/model` override, not the startup model."""
+        app = DeepAgentsApp(agent=MagicMock())
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._rubric_model = None
+            app._rubric_default_model = "startup:model"
+            app._model_override = "openai:gpt-5.9"
+
+            model, _iterations = app._grader_display_values()
+
+            assert model == "openai:gpt-5.9"
 
     async def test_rubric_set_clears_stale_goal_tracking(self) -> None:
         """`/rubric set` must drop a stale status note and one-shot rubric."""
@@ -21395,6 +21684,32 @@ class TestToolsSlashCommand:
 class TestFetchThreadHistoryData:
     """Verify _fetch_thread_history_data handles server-mode resume scenarios."""
 
+    def test_whitespace_only_blocks_preserve_separators(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        messages = [
+            AIMessage(
+                content=[
+                    {"type": "text", "text": "Hello"},
+                    {"type": "text", "text": " "},
+                    {"type": "text", "text": "world"},
+                    {"type": "reasoning", "reasoning": "Think"},
+                    {"type": "reasoning", "reasoning": "\n"},
+                    {"type": "reasoning", "reasoning": "again"},
+                ]
+            ),
+            AIMessage(content=[{"type": "text", "text": " "}]),
+        ]
+
+        result = DeepAgentsApp._convert_messages_to_data(messages, show_reasoning=True)
+
+        assert [(message.type, message.content) for message in result] == [
+            (MessageType.ASSISTANT, "Hello world"),
+            (MessageType.REASONING, "Think\nagain"),
+        ]
+
     async def test_event_loop_progresses_during_message_preparation(self) -> None:
         """The loop keeps running while a long history is prepared.
 
@@ -21416,10 +21731,12 @@ class TestFetchThreadHistoryData:
         # Bind before patching, or the call below re-enters this stub.
         real_prepare = DeepAgentsApp._prepare_thread_history_messages
 
-        def blocking_prepare(messages: list[Any]) -> object:
+        def blocking_prepare(
+            messages: list[Any], *, show_reasoning: bool = False
+        ) -> object:
             entered.set()
             release.wait(timeout=5)
-            return real_prepare(messages)
+            return real_prepare(messages, show_reasoning=show_reasoning)
 
         async def tick() -> None:
             nonlocal ticks
@@ -21470,9 +21787,11 @@ class TestFetchThreadHistoryData:
         prepare_threads: list[int] = []
         original_prepare = app._prepare_thread_history_messages
 
-        def capture_prepare(messages: list[Any]) -> object:
+        def capture_prepare(
+            messages: list[Any], *, show_reasoning: bool = False
+        ) -> object:
             prepare_threads.append(threading.get_ident())
-            return original_prepare(messages)
+            return original_prepare(messages, show_reasoning=show_reasoning)
 
         with patch.object(
             DeepAgentsApp,
@@ -21490,6 +21809,52 @@ class TestFetchThreadHistoryData:
         assert isinstance(payload.messages[1], MessageData)
         assert payload.messages[1].type == MessageType.ASSISTANT
         assert payload.messages[1].content == "Hi there!"
+
+    async def test_reasoning_preference_applies_to_restored_messages(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from deepagents_code.tui.widgets.message_store import MessageType
+
+        state = MagicMock()
+        state.values = {
+            "messages": [
+                AIMessage(
+                    content=[
+                        {"type": "text", "text": "Before "},
+                        {
+                            "type": "thinking",
+                            "thinking": "Thinking",
+                            "signature": "signed",
+                        },
+                        {"type": "text", "text": "after"},
+                    ],
+                    response_metadata={"model_provider": "anthropic"},
+                ),
+                AIMessage(
+                    content=" Answer ",
+                    additional_kwargs={"reasoning_content": "Checking"},
+                ),
+            ]
+        }
+        mock_agent = AsyncMock()
+        mock_agent.aget_state.return_value = state
+        app = DeepAgentsApp(agent=mock_agent, thread_id="t-1")
+
+        hidden = await app._fetch_thread_history_data("t-1")
+        app._show_reasoning = True
+        visible = await app._fetch_thread_history_data("t-1")
+
+        assert [(message.type, message.content) for message in hidden.messages] == [
+            (MessageType.ASSISTANT, "Before after"),
+            (MessageType.ASSISTANT, "Answer"),
+        ]
+        assert [(message.type, message.content) for message in visible.messages] == [
+            (MessageType.ASSISTANT, "Before "),
+            (MessageType.REASONING, "Thinking"),
+            (MessageType.ASSISTANT, "after"),
+            (MessageType.REASONING, "Checking"),
+            (MessageType.ASSISTANT, "Answer"),
+        ]
 
     async def test_server_mode_ensures_thread_before_fetching_state(self) -> None:
         """Server-mode history reads should fetch state through the remote server."""
@@ -23928,7 +24293,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -23975,7 +24340,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24022,7 +24387,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24067,7 +24432,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24103,7 +24468,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(True, "")),
+            AsyncMock(return_value=ExtraInstallOutcome(True, "")),
         )
 
         app = DeepAgentsApp()
@@ -24209,7 +24574,7 @@ class TestInstallExtraModelSwitch:
         monkeypatch.setattr(
             update_check,
             "perform_install_extra",
-            AsyncMock(return_value=(False, "resolver: conflict")),
+            AsyncMock(return_value=ExtraInstallOutcome(False, "resolver: conflict")),
         )
 
         app = DeepAgentsApp()
@@ -24982,19 +25347,23 @@ class TestDeferredActions:
         """
         import logging
 
-        from deepagents_code._debug import configure_debug_logging
-        from deepagents_code._env_vars import DEBUG, DEBUG_FILE
+        from deepagents_code._debug import (
+            bind_debug_logging_to_thread,
+            configure_debug_logging,
+        )
+        from deepagents_code._env_vars import DEBUG, DEBUG_DIRECTORY
         from deepagents_code.tui.widgets.messages import ErrorMessage
 
         package_logger = logging.getLogger("deepagents_code")
-        log_path = tmp_path / "custom_debug.log"
+        log_directory = tmp_path / "debug"
         pre_existing = list(package_logger.handlers)
         with patch.dict(
             os.environ,
-            {DEBUG: "1", DEBUG_FILE: str(log_path)},
+            {DEBUG: "1", DEBUG_DIRECTORY: str(log_directory)},
             clear=False,
         ):
             configure_debug_logging(package_logger)
+            bind_debug_logging_to_thread("startup")
         added = [h for h in package_logger.handlers if h not in pre_existing]
         try:
             app = DeepAgentsApp()
@@ -25012,7 +25381,7 @@ class TestDeferredActions:
                 assert isinstance(widget, ErrorMessage)
                 rendered = str(widget._content)
                 assert "error truncated" in rendered
-                assert str(log_path) in rendered
+                assert str(log_directory / "startup.log") in rendered
         finally:
             for h in added:
                 h.close()
@@ -25099,23 +25468,31 @@ class TestDeferredActions:
     async def test_server_failure_truncated_headline_uses_default_debug_path(
         self,
     ) -> None:
-        """With `DEBUG_FILE` unset, a handler at the default path is named.
+        """With `DEBUG_DIRECTORY` unset, a handler at the default path is named.
 
-        Guards the `DEFAULT_DEBUG_FILE` fallback — a regression in the default
+        Guards the `DEFAULT_DEBUG_DIRECTORY` fallback — a regression in the default
         resolution would otherwise go uncaught. The handler is installed at the
         default path so `installed_debug_log_path` reports it.
         """
         import logging
 
-        from deepagents_code._debug import configure_debug_logging
-        from deepagents_code._env_vars import DEBUG, DEBUG_FILE, DEFAULT_DEBUG_FILE
+        from deepagents_code._debug import (
+            bind_debug_logging_to_thread,
+            configure_debug_logging,
+        )
+        from deepagents_code._env_vars import (
+            DEBUG,
+            DEBUG_DIRECTORY,
+            DEFAULT_DEBUG_DIRECTORY,
+        )
         from deepagents_code.tui.widgets.messages import ErrorMessage
 
         package_logger = logging.getLogger("deepagents_code")
         pre_existing = list(package_logger.handlers)
         with patch.dict(os.environ, {DEBUG: "1"}, clear=False):
-            os.environ.pop(DEBUG_FILE, None)
+            os.environ.pop(DEBUG_DIRECTORY, None)
             configure_debug_logging(package_logger)
+            bind_debug_logging_to_thread("default")
         added = [h for h in package_logger.handlers if h not in pre_existing]
         try:
             app = DeepAgentsApp()
@@ -25131,7 +25508,7 @@ class TestDeferredActions:
 
                 widget = app._startup_failure_widget
                 assert isinstance(widget, ErrorMessage)
-                assert DEFAULT_DEBUG_FILE in str(widget._content)
+                assert DEFAULT_DEBUG_DIRECTORY in str(widget._content)
         finally:
             for h in added:
                 h.close()
@@ -26766,6 +27143,59 @@ class TestRestartServerForAgentSwap:
             plain = [str(getattr(m, "_content", m)) for m in mounted]
             assert any("Switched to researcher" in s for s in plain)
             assert any("dcode -r old-thread" in s and "to resume" in s for s in plain)
+
+    async def test_fresh_swap_carries_the_grader_selection(self) -> None:
+        """A new agent thread checkpoints the grader model shown by the UI."""
+        app, _server_proc = self._make_app()
+        app._rubric_model = "openai:gpt-5.5"
+        app._rubric_model_recorded = True
+        persist = AsyncMock(return_value=True)
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(app, "_persist_goal_rubric_state", persist),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        persist.assert_awaited_once_with()
+        assert app._lc_thread_id != "old-thread"
+        assert app._rubric_model == "openai:gpt-5.5"
+        assert app._rubric_model_recorded is True
+
+    async def test_fresh_swap_drops_a_grader_selection_it_cannot_carry(
+        self,
+    ) -> None:
+        """A failed checkpoint write restores the grader model actually in use."""
+        app, _server_proc = self._make_app()
+        app._rubric_startup_model = "startup:model"
+        app._rubric_model = "openai:gpt-5.5"
+        app._rubric_model_recorded = True
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            with (
+                patch(
+                    "deepagents_code.model_config.save_recent_agent",
+                    return_value=True,
+                ),
+                patch.object(
+                    app,
+                    "_persist_goal_rubric_state",
+                    new_callable=AsyncMock,
+                    return_value=False,
+                ),
+                patch.object(app, "run_worker", side_effect=_closing_run_worker_mock),
+            ):
+                await app._restart_server_for_agent_swap("researcher")
+
+        assert app._rubric_model == "startup:model"
+        assert app._rubric_model_recorded is False
 
     async def test_cross_agent_resume_targets_thread_without_persisting_agent(
         self,

@@ -201,6 +201,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.IMMEDIATE_UI,
     ),
     SlashCommand(
+        name="/summarization-model",
+        description="Set the model used for context-compaction summaries",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="compact summary summarize",
+        argument_hint="[<spec>|clear]",
+    ),
+    SlashCommand(
         name="/notifications",
         description="Review notifications and configure warning settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
@@ -314,6 +321,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="extra extras add provider sandbox dependency",
         argument_hint="<extra> [--force]",
+    ),
+    SlashCommand(
+        name="/uninstall",
+        description="Remove an installed optional extra",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="extra extras remove delete provider sandbox dependency",
+        argument_hint="<extra>",
     ),
     SlashCommand(
         name="/auto-update",

@@ -37,6 +37,7 @@ from deepagents_code.tui.widgets.messages import (
     DiffMessage,
     ErrorMessage,
     QueuedUserMessage,
+    ReasoningMessage,
     RubricResultMessage,
     SkillMessage,
     SummarizationMessage,
@@ -7213,6 +7214,128 @@ class TestUserMessageTruncation:
             UserMessage("/" + "x" * 10_000, detect_mode=False).has_expandable_body
             is True
         )
+
+
+class _ReasoningApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield ReasoningMessage(id="reasoning")
+
+
+async def test_reasoning_message_renders_provider_text_as_plain_content() -> None:
+    app = _ReasoningApp()
+
+    async with app.run_test() as pilot:
+        message = app.query_one("#reasoning", ReasoningMessage)
+        await message.append_content("[bold]not markup[/bold]")
+        await pilot.pause()
+
+        assert str(message.query_one("#reasoning-body", Static).content) == (
+            "[bold]not markup[/bold]"
+        )
+        assert message._expanded is True
+
+        await message.stop_stream()
+        await pilot.pause()
+        assert message._expanded is False
+        assert message.query_one("#reasoning-body", Static).display is False
+
+
+async def test_reasoning_message_coalesces_streamed_renders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(ReasoningMessage, "_STREAM_FLUSH_INTERVAL", 60)
+    app = _ReasoningApp()
+
+    async with app.run_test():
+        message = app.query_one("#reasoning", ReasoningMessage)
+        render = MagicMock(wraps=message._render_reasoning)
+        monkeypatch.setattr(message, "_render_reasoning", render)
+
+        await message.append_content("one")
+        await message.append_content(" ")
+        await message.append_content("two")
+
+        assert message._content == "one two"
+        assert render.call_count == 1
+
+        await message.stop_stream()
+
+        assert render.call_count == 2
+        assert message._flush_timer is None
+        assert str(message.query_one("#reasoning-body", Static).content) == "one two"
+
+
+class _RecordingReasoningApp(App[None]):
+    """Records `ExpansionChanged` messages posted by mounted reasoning rows."""
+
+    def __init__(self, *, deferred_expanded: bool = True, content: str = "t") -> None:
+        super().__init__()
+        self.expansions: list[bool] = []
+        self._deferred = deferred_expanded
+        self._initial = content
+
+    def compose(self) -> ComposeResult:
+        widget = ReasoningMessage(self._initial, id="reasoning-events")
+        widget._deferred_expanded = self._deferred
+        yield widget
+
+    def on_reasoning_message_expansion_changed(
+        self,
+        event: ReasoningMessage.ExpansionChanged,
+    ) -> None:
+        self.expansions.append(event.expanded)
+
+
+@pytest.mark.parametrize("deferred_expanded", [True, False])
+async def test_reasoning_mount_publishes_no_expansion_event(
+    deferred_expanded: bool,
+) -> None:
+    """Mounting must not echo state the store already holds.
+
+    The reactive's initialization watcher and the deferred restore both assign
+    `_expanded`. Without seeding `_published_expanded` they publish anyway, so
+    every restored row costs a redundant store write and a height re-measure.
+    """
+    app = _RecordingReasoningApp(deferred_expanded=deferred_expanded)
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        message = app.query_one("#reasoning-events", ReasoningMessage)
+        assert message._expanded is deferred_expanded
+        assert app.expansions == []
+
+        message.toggle_expanded()
+        await pilot.pause()
+
+        assert app.expansions == [not deferred_expanded]
+
+
+async def test_empty_reasoning_hides_its_hint_and_refuses_to_toggle() -> None:
+    """A contentless row must not claim the expand affordance.
+
+    It can reach the transcript when a stream dies before its first delta, and
+    an unguarded row would advertise a toggle over nothing and swallow Ctrl+O
+    for every older row behind it.
+    """
+    app = _RecordingReasoningApp(content="")
+
+    async with app.run_test() as pilot:
+        await pilot.pause()
+        message = app.query_one("#reasoning-events", ReasoningMessage)
+        assert message.has_content is False
+        assert message.query_one("#reasoning-hint", Static).display is False
+
+        message.toggle_expanded()
+        await pilot.pause()
+
+        assert message._expanded is True
+        assert app.expansions == []
+
+        await message.append_content("now there is text")
+        await pilot.pause()
+
+        assert message.has_content is True
+        assert message.query_one("#reasoning-hint", Static).display is True
 
 
 class _RubricResultApp(App[None]):

@@ -50,8 +50,11 @@ from deepagents_code.model_retry import (
     CodeModelRetryMiddleware,
     _is_retryable_model_error,
     _retry_after_seconds,
+    build_attempt_event,
     build_retry_event,
     format_retry_status,
+    model_attempt_from_event,
+    model_retry_from_event,
     retry_model_call,
     retry_status_from_event,
 )
@@ -82,6 +85,19 @@ class APIConnectionError(Exception):
     pass
 
 
+# Classification is keyed by `(root package, class name)`, so a fixture standing
+# in for a provider SDK error has to claim that package.
+APIConnectionError.__module__ = "openai"
+
+
+class _UnrelatedAPIConnectionError(Exception):
+    """Same class name, different package: must not be classified transient."""
+
+
+_UnrelatedAPIConnectionError.__name__ = "APIConnectionError"
+_UnrelatedAPIConnectionError.__module__ = "some_unrelated_lib.errors"
+
+
 class AuthenticationError(Exception):
     def __init__(self) -> None:
         super().__init__("auth")
@@ -107,6 +123,9 @@ _GoogleAPICoreError.__module__ = "google.api_core.exceptions"
 
 class ResourceExhausted(Exception):  # noqa: N818  # mirrors the Google SDK name
     pass
+
+
+ResourceExhausted.__module__ = "google.api_core.exceptions"
 
 
 class _RetryingStreamingModel(BaseChatModel):
@@ -268,6 +287,10 @@ def test_predicate_retryable(exc: Exception) -> None:
 @pytest.mark.parametrize(
     "exc",
     [
+        pytest.param(
+            _typed_error("botocore.exceptions", "ConnectionClosedError"),
+            id="botocore-connection-closed",
+        ),
         pytest.param(_typed_error("httpcore", "ReadError"), id="httpcore-read"),
         pytest.param(
             _typed_error("httpcore._exceptions", "RemoteProtocolError"),
@@ -318,6 +341,16 @@ def test_predicate_retries_google_api_core_status_codes(code: int) -> None:
 
 def test_predicate_retries_google_api_core_transient_class_without_code() -> None:
     assert _is_retryable_model_error(ResourceExhausted("quota unavailable")) is True
+
+
+def test_predicate_ignores_a_transient_class_name_from_another_package() -> None:
+    """`Aborted`, `APIConnectionError` and friends are generic words.
+
+    Matching a bare class name would classify any dependency's identically named
+    error as a transient provider failure, burning the whole retry budget on a
+    permanent fault.
+    """
+    assert _is_retryable_model_error(_UnrelatedAPIConnectionError("x")) is False
 
 
 def test_predicate_rejects_google_api_core_permanent_status_code() -> None:
@@ -381,8 +414,16 @@ def test_retry_then_success(monkeypatch: pytest.MonkeyPatch) -> None:
     mw = CodeModelRetryMiddleware(max_retries=5)
     assert mw.wrap_model_call(_req(events), _handler(handler)) == "OK"
     assert calls["n"] == 3
-    assert [e["type"] for e in events] == ["model_retry", "model_retry"]
-    assert events[0]["message"] == "Retrying model request 1/5"
+    assert [(e["type"], e.get("phase"), e["attempt"]) for e in events] == [
+        ("model_attempt", "start", 0),
+        ("model_retry", None, 1),
+        ("model_attempt", "start", 1),
+        ("model_retry", None, 2),
+        ("model_attempt", "start", 2),
+        ("model_attempt", "complete", 2),
+    ]
+    retry_events = [e for e in events if e["type"] == "model_retry"]
+    assert retry_events[0]["message"] == "Retrying model request 1/5"
 
 
 def test_auxiliary_call_uses_model_retry_budget(
@@ -509,9 +550,9 @@ def test_writer_graph_bubble_up_propagates() -> None:
     mw = CodeModelRetryMiddleware(max_retries=5)
     with pytest.raises(GraphBubbleUp):
         mw.wrap_model_call(_req_with_writer(writer), _handler(handler))
-    # The interrupt must surface on the first failed attempt, not after the
-    # budget is spent.
-    assert calls["n"] == 1
+    # The interrupt surfaces from the first lifecycle event, before the
+    # handler or the retry budget is touched.
+    assert calls["n"] == 0
 
 
 def test_writer_failure_is_logged_and_retry_proceeds(
@@ -800,7 +841,8 @@ def test_zero_startup_budget_still_retries_runtime_model(
     mw = CodeModelRetryMiddleware(max_retries=0)
     assert mw.wrap_model_call(_req(events, model_retries=3), _handler(handler)) == "OK"
     assert calls["n"] == 3
-    assert events[0]["message"] == "Retrying model request 1/3"
+    retry_events = [e for e in events if e["type"] == "model_retry"]
+    assert retry_events[0]["message"] == "Retrying model request 1/3"
 
 
 def test_model_budget_zero_disables_retries(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -920,9 +962,10 @@ async def test_successful_stream_chunks_are_delivered_live() -> None:
     assert message_text == "firstsecond"
 
 
-async def test_failed_attempt_is_not_retried_after_streaming(
+async def test_failed_attempt_is_retried_after_streaming(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A mid-stream transient drop must recover while retry budget remains."""
     monkeypatch.setattr(asyncio, "sleep", _no_sleep)
     model = _RetryingStreamingModel()
     agent = create_agent(
@@ -930,15 +973,14 @@ async def test_failed_attempt_is_not_retried_after_streaming(
         middleware=[CodeModelRetryMiddleware(max_retries=1)],
     )
 
-    stream = agent.astream(
-        {"messages": [HumanMessage("hi")]},
-        stream_mode=["messages"],
-        subgraphs=True,
-    )
-    first = await anext(stream)
-    with pytest.raises(httpx.ReadError):
-        await anext(stream)
-    chunks = [first]
+    chunks = [
+        chunk
+        async for chunk in agent.astream(
+            {"messages": [HumanMessage("hi")]},
+            stream_mode=["messages", "custom"],
+            subgraphs=True,
+        )
+    ]
     message_text = "".join(
         message.text
         for _namespace, mode, data in chunks
@@ -946,9 +988,26 @@ async def test_failed_attempt_is_not_retried_after_streaming(
         for message in [data[0]]
         if isinstance(message, AIMessageChunk)
     )
+    events = [
+        cast("dict[str, Any]", data)
+        for _namespace, mode, data in chunks
+        if mode == "custom"
+    ]
 
-    assert model.attempts == 1
-    assert message_text == "orphaned"
+    assert model.attempts == 2
+    assert message_text == "orphanedfinal"
+    call_ids = {event["call_id"] for event in events}
+    assert len(call_ids) == 1
+    assert [
+        (event["type"], event.get("phase"), event["attempt"]) for event in events
+    ] == [
+        ("model_attempt", "start", 0),
+        ("model_retry", None, 1),
+        ("model_attempt", "start", 1),
+        ("model_attempt", "complete", 1),
+    ]
+    assert events[1]["failed_attempt"] == 0
+    assert events[1]["output_may_have_started"] is True
 
 
 def test_status_helpers() -> None:
@@ -1036,6 +1095,252 @@ def test_valid_retry_event_renders_the_shared_status() -> None:
     assert retry_status_from_event(event) == format_retry_status(2, 5)
 
 
+def test_retry_event_correlation_fields_round_trip() -> None:
+    event = build_retry_event(
+        2, 5, call_id="abc123", failed_attempt=1, output_may_have_started=True
+    )
+    assert event["call_id"] == "abc123"
+    assert event["failed_attempt"] == 1
+    assert event["output_may_have_started"] is True
+    assert retry_status_from_event(event) == format_retry_status(2, 5)
+
+
+def test_retry_correlation_parser_accepts_valid_event() -> None:
+    event = build_retry_event(
+        2, 5, call_id="abc123", failed_attempt=1, output_may_have_started=True
+    )
+    assert model_retry_from_event(event) == {
+        "call_id": "abc123",
+        "failed_attempt": 1,
+        "output_may_have_started": True,
+    }
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param({}, id="legacy"),
+        pytest.param(
+            {
+                "call_id": "bad id",
+                "failed_attempt": 0,
+                "output_may_have_started": True,
+            },
+            id="invalid-call-id",
+        ),
+        pytest.param(
+            {"call_id": "abc", "failed_attempt": True, "output_may_have_started": True},
+            id="bool-attempt",
+        ),
+        pytest.param(
+            {"call_id": "abc", "failed_attempt": 0, "output_may_have_started": 1},
+            id="non-bool-visible",
+        ),
+    ],
+)
+def test_retry_correlation_parser_rejects_untrusted_fields(
+    event: dict[str, object],
+) -> None:
+    assert model_retry_from_event(event) is None
+
+
+def test_retry_event_without_correlation_keeps_legacy_shape() -> None:
+    """Producers without lifecycle support must emit the original payload."""
+    event = build_retry_event(1, 3)
+    assert "call_id" not in event
+    assert "failed_attempt" not in event
+    assert "output_may_have_started" not in event
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        pytest.param(
+            {"call_id": "abc"}, "provided together", id="call-id-without-attempt"
+        ),
+        pytest.param(
+            {"failed_attempt": 0}, "provided together", id="attempt-without-call-id"
+        ),
+    ],
+)
+def test_retry_event_rejects_partial_correlation(
+    kwargs: dict[str, object], message: str
+) -> None:
+    with pytest.raises(ValueError, match=message):
+        build_retry_event(1, 3, **cast("Any", kwargs))
+
+
+def test_build_attempt_event() -> None:
+    assert build_attempt_event("call-1", 2, phase="start") == {
+        "type": "model_attempt",
+        "phase": "start",
+        "call_id": "call-1",
+        "attempt": 2,
+    }
+    assert build_attempt_event("call-1", 2, phase="complete")["phase"] == "complete"
+
+
+def test_build_attempt_event_rejects_unknown_phase() -> None:
+    with pytest.raises(ValueError, match="phase must be one of"):
+        build_attempt_event("call-1", 0, phase="explode")
+
+
+def test_attempt_parser_accepts_valid_events() -> None:
+    for phase in ("start", "complete"):
+        event = {"phase": phase, "call_id": "x" * 64, "attempt": 0, "extra": 1}
+        parsed = model_attempt_from_event(event)
+        assert parsed == {
+            "type": "model_attempt",
+            "phase": phase,
+            "call_id": "x" * 64,
+            "attempt": 0,
+        }
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        pytest.param(
+            {"phase": "explode", "call_id": "abc", "attempt": 0},
+            id="unknown-phase",
+        ),
+        pytest.param(
+            {"phase": ["start"], "call_id": "abc", "attempt": 0},
+            id="list-phase",
+        ),
+        pytest.param(
+            {"phase": {"value": "start"}, "call_id": "abc", "attempt": 0},
+            id="object-phase",
+        ),
+        pytest.param({"phase": "start", "attempt": 0}, id="missing-call-id"),
+        pytest.param(
+            {"phase": "start", "call_id": 123, "attempt": 0}, id="non-string-call-id"
+        ),
+        pytest.param(
+            {"phase": "start", "call_id": "", "attempt": 0}, id="empty-call-id"
+        ),
+        pytest.param(
+            {"phase": "start", "call_id": "x" * 65, "attempt": 0},
+            id="overlong-call-id",
+        ),
+        pytest.param(
+            {"phase": "start", "call_id": "a b\tc", "attempt": 0},
+            id="control-chars-in-call-id",
+        ),
+        pytest.param(
+            {"phase": "start", "call_id": "abc", "attempt": True}, id="bool-attempt"
+        ),
+        pytest.param(
+            {"phase": "start", "call_id": "abc", "attempt": "0"},
+            id="string-attempt",
+        ),
+        pytest.param(
+            {"phase": "start", "call_id": "abc", "attempt": -1},
+            id="negative-attempt",
+        ),
+        pytest.param({}, id="empty"),
+    ],
+)
+def test_malformed_attempt_event_is_rejected_and_logged(
+    event: dict[str, object], caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger="deepagents_code.model_retry"):
+        assert model_attempt_from_event(event) is None
+    assert "malformed model_attempt lifecycle fields" in caplog.text
+
+
+def test_middleware_call_id_is_stable_per_invocation_and_unique_across_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    middleware = CodeModelRetryMiddleware(max_retries=1)
+    invocation_ids: list[set[object]] = []
+
+    def run_once() -> None:
+        events: list[dict[str, object]] = []
+        calls = {"n": 0}
+
+        def handler(_req_arg: object) -> str:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise _READ_ERROR
+            return "OK"
+
+        assert middleware.wrap_model_call(_req(events), _handler(handler)) == "OK"
+        invocation_ids.append({e["call_id"] for e in events})
+
+    run_once()
+    run_once()
+
+    assert all(len(ids) == 1 for ids in invocation_ids)
+    assert invocation_ids[0] != invocation_ids[1]
+
+
+def test_lifecycle_events_stop_at_permanent_error_and_exhaustion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only a decided retry emits `model_retry`; failures end after `start`."""
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    middleware = CodeModelRetryMiddleware(max_retries=1)
+
+    permanent_events: list[dict[str, object]] = []
+
+    def permanent_handler(_req_arg: object) -> str:
+        raise _VALUE_ERROR
+
+    with pytest.raises(ValueError, match="bad request"):
+        middleware.wrap_model_call(_req(permanent_events), _handler(permanent_handler))
+    assert [(e["type"], e.get("phase")) for e in permanent_events] == [
+        ("model_attempt", "start")
+    ]
+
+    exhausted_events: list[dict[str, object]] = []
+
+    def transient_handler(_req_arg: object) -> str:
+        raise _READ_ERROR
+
+    with pytest.raises(httpx.ReadError):
+        middleware.wrap_model_call(_req(exhausted_events), _handler(transient_handler))
+    assert [(e["type"], e.get("phase")) for e in exhausted_events] == [
+        ("model_attempt", "start"),
+        ("model_retry", None),
+        ("model_attempt", "start"),
+    ]
+
+
+def test_hidden_model_call_marks_retry_output_as_not_visible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Filtered nested streams retry without claiming visible supersession."""
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    events: list[dict[str, object]] = []
+    calls = 0
+
+    @contextmanager
+    def _already_streamed(
+        tracker: model_retry._MessageStreamTracker,
+    ) -> Iterator[None]:
+        tracker.has_streamed = True
+        yield
+
+    def _handler(_request: ModelRequest) -> ModelResponse:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise httpx.ReadError(_DROPPED)
+        return cast("ModelResponse", "verdict")
+
+    middleware = CodeModelRetryMiddleware(
+        max_retries=1,
+        stream_output_is_visible=False,
+    )
+    with patch.object(model_retry, "_track_message_streams", _already_streamed):
+        assert middleware.wrap_model_call(_req(events), _handler) == "verdict"
+
+    retry_events = [e for e in events if e["type"] == "model_retry"]
+    assert retry_events[0]["output_may_have_started"] is False
+
+
 @pytest.mark.parametrize(
     "handler_name", ["StreamMessagesHandler", "StreamMessagesHandlerV2"]
 )
@@ -1064,13 +1369,16 @@ def test_tracked_dedup_ids_reach_the_original_handler(handler_name: str) -> None
 class APIConnectionError(Exception):
     """Name-matched transient SDK error that also carries a status code.
 
-    Named to collide with `_TRANSIENT_SDK_EXC_NAMES` on purpose: the status
-    check must win over the name heuristic.
+    Named and packaged to collide with `_TRANSIENT_SDK_EXC_NAMES` on purpose:
+    the status check must win over the name heuristic.
     """
 
     def __init__(self, status_code: int) -> None:
         super().__init__(f"status {status_code}")
         self.status_code = status_code
+
+
+APIConnectionError.__module__ = "openai"
 
 
 @pytest.mark.parametrize(
@@ -1228,9 +1536,10 @@ def test_streaming_flag_is_set_before_the_chunk_is_forwarded() -> None:
     """A writer that raises mid-chunk has still shown output to the user.
 
     Setting the flag afterwards leaves it `False` on a broken pipe, and since
-    `ConnectionError` classifies retryable the loop would replay a response
-    whose first chunk already rendered -- the exact duplicate this guard
-    exists to prevent.
+    `ConnectionError` classifies retryable the retried call would wrongly
+    report `output_may_have_started=False` for a response whose first chunk
+    already rendered -- leaving the client to append the replay after text it
+    cannot correlate.
     """
     from langchain_core.callbacks import BaseCallbackManager as _Manager
     from langgraph.pregel import _messages as _lg_messages
@@ -1259,14 +1568,17 @@ def test_streaming_flag_is_set_before_the_chunk_is_forwarded() -> None:
     assert tracker.has_streamed is True
 
 
-def test_sync_model_call_is_not_retried_after_streaming() -> None:
-    """The sync loop must honour the streamed-output guard too.
+def test_sync_model_call_is_retried_after_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sync loop must retry after streamed output, like the async one.
 
-    `test_failed_attempt_is_not_retried_after_streaming` drives `astream`, so
-    it only covers `awrap_model_call`. The sync path is a verbatim duplicate
-    and deleting its guard leaves the suite green -- while replaying a
-    response whose first chunk already reached the user.
+    `test_failed_attempt_is_retried_after_streaming` drives `astream`, so it
+    only covers `awrap_model_call`. The sync path is a verbatim duplicate and
+    an async-only fix leaves it still ending the turn on a mid-stream drop.
     """
+    monkeypatch.setattr("deepagents_code.model_retry.time.sleep", lambda *_: None)
+    events: list[dict[str, object]] = []
     calls = 0
 
     @contextmanager
@@ -1279,18 +1591,18 @@ def test_sync_model_call_is_not_retried_after_streaming() -> None:
     def _handler(_request: ModelRequest) -> ModelResponse:
         nonlocal calls
         calls += 1
-        raise httpx.ReadError(_DROPPED)
+        if calls == 1:
+            raise httpx.ReadError(_DROPPED)
+        return cast("ModelResponse", "recovered")
 
     middleware = CodeModelRetryMiddleware(max_retries=3)
-    with (
-        patch.object(model_retry, "_track_message_streams", _already_streamed),
-        pytest.raises(httpx.ReadError),
-    ):
-        middleware.wrap_model_call(
-            cast("ModelRequest", SimpleNamespace(model=None)), _handler
-        )
+    with patch.object(model_retry, "_track_message_streams", _already_streamed):
+        result = middleware.wrap_model_call(_req(events), _handler)
 
-    assert calls == 1, "a retryable error after visible output must not replay"
+    assert result == "recovered"
+    assert calls == 2
+    retry_events = [e for e in events if e["type"] == "model_retry"]
+    assert retry_events[0]["output_may_have_started"] is True
 
 
 async def test_hidden_model_call_is_retried_after_streaming(

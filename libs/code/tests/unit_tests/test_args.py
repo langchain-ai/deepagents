@@ -104,6 +104,28 @@ class TestInitialSkillArg:
         assert args.initial_prompt == "review this patch"
 
 
+class TestSummarizationModelArg:
+    def test_flag_sets_model_independently(self) -> None:
+        with patch.object(
+            sys,
+            "argv",
+            [
+                "deepagents",
+                "--model",
+                "anthropic:claude-sonnet-4-5",
+                "--summarization-model",
+                "openai:gpt-5.4-mini",
+            ],
+        ):
+            args = parse_args()
+        assert args.model == "anthropic:claude-sonnet-4-5"
+        assert args.summarization_model == "openai:gpt-5.4-mini"
+
+    def test_flag_defaults_to_none(self) -> None:
+        with patch.object(sys, "argv", ["deepagents"]):
+            assert parse_args().summarization_model is None
+
+
 class TestMaxRetriesArg:
     """Tests for `--max-retries` argument."""
 

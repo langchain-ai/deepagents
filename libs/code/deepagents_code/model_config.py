@@ -3160,6 +3160,16 @@ class ModelConfig:
     differ from the classifier Auto actually reviews with.
     """
 
+    summarization_default_model: str | None = None
+    """The default summary model from `[models].summarization_default`.
+
+    Not the resolution path -- `--summarization-model` outranks this value at
+    launch, so it may differ from the model summaries are actually generated
+    with. Stored unvalidated: `_validate` only warns when the spec omits a
+    `provider:` prefix, because `create_model`'s provider auto-detection makes
+    a bare name legitimate.
+    """
+
     allowed_models: tuple[str, ...] | None = None
     """Ordered model specs and provider wildcards the policy permits.
 
@@ -3341,6 +3351,7 @@ class ModelConfig:
             option_keys = (
                 "models.default",
                 "models.recent",
+                "models.summarization_default",
                 "models.auto_classifier",
                 "models.providers",
             )
@@ -3388,6 +3399,12 @@ class ModelConfig:
                     path=config_path,
                     source_label=source_label,
                 ),
+                summarization_default_model=_toml_model_spec(
+                    resolved["models.summarization_default"],
+                    key="summarization_default",
+                    path=config_path,
+                    source_label=source_label,
+                ),
                 auto_classifier_model=(
                     resolved["models.auto_classifier"]
                     if isinstance(resolved["models.auto_classifier"], str)
@@ -3430,29 +3447,29 @@ class ModelConfig:
         Issues warnings for invalid configurations but does not raise exceptions,
         allowing the app to continue with potentially degraded functionality.
         """
-        # Warn if default_model is set but doesn't use provider:model format
-        if self.default_model and ":" not in self.default_model:
-            logger.warning(
-                "default_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.default_model,
-            )
-
-        # Warn if recent_model is set but doesn't use provider:model format
-        if self.recent_model and ":" not in self.recent_model:
-            logger.warning(
-                "recent_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.recent_model,
-            )
-
-        # Warn if auto_classifier_model is set but doesn't use provider:model format
-        if self.auto_classifier_model and ":" not in self.auto_classifier_model:
-            logger.warning(
-                "auto_classifier_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
+        # Warn if a model field is set but doesn't use provider:model format
+        model_fields = (
+            ("default_model", self.default_model, "anthropic:claude-sonnet-4-5"),
+            ("recent_model", self.recent_model, "anthropic:claude-sonnet-4-5"),
+            (
+                "summarization_default_model",
+                self.summarization_default_model,
+                "openai:gpt-5.4-mini",
+            ),
+            (
+                "auto_classifier_model",
                 self.auto_classifier_model,
-            )
+                "anthropic:claude-sonnet-4-5",
+            ),
+        )
+        for field_name, spec, example in model_fields:
+            if spec and ":" not in spec:
+                logger.warning(
+                    "%s '%s' should use provider:model format (e.g., '%s')",
+                    field_name,
+                    spec,
+                    example,
+                )
 
         # Validate enabled field type and class_path format / params references
         for name, provider in self.providers.items():

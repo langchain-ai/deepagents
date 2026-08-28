@@ -31,11 +31,21 @@ Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring i
 
 - `pr_labeler.yml` — unified PR labeler: size, file, title, external/internal, contributor tier.
 - `pr_labeler_backfill.yml` — manual backfill of those labels on open PRs.
-- `markdown_file_check.yml` — blocks non-`docs` PRs that add Markdown files until `markdown-added: acknowledged` is applied.
 - `auto-label-by-package.yml` — labels issues by the package they name.
 - `tag-external-issues.yml` — classifies issues as external or internal and applies the contributor tier.
 
 The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because the release guardrails section lists every check a PR may hit; the labelers' output does not drive release gating. The two issue labelers are not release-gated either.
+
+### PR gate workflows
+
+Blocking pre-merge checks that read PR metadata and fail until it is fixed or a
+bypass label is applied. They consume labels rather than apply them.
+
+- `pr_scope_file_check.yml` — fails when the PR title's package scope does not cover the package dirs it changes; bypass with `allow-scope-mismatch`.
+- `markdown_file_check.yml` — fails non-`docs` PRs that add Markdown files; bypass with `markdown-added: acknowledged`.
+
+Neither gates merges on its own — each must be added to the branch's required
+status checks.
 
 ## Local composite actions (`actions/`)
 

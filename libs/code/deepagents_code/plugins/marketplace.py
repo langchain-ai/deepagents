@@ -582,14 +582,22 @@ def materialize_plugin_source(
         metadata_root = marketplace.metadata.get("pluginRoot")
         warnings: list[str] = []
         base = marketplace.root
-        if isinstance(metadata_root, str) and raw.startswith("./"):
+        if isinstance(metadata_root, str):
             base_path = _resolve_component_path(
-                metadata_root, marketplace.root, "metadata.pluginRoot", warnings
+                metadata_root,
+                marketplace.root,
+                "metadata.pluginRoot",
+                warnings,
+                require_dot_prefix=False,
             )
             if base_path is not None:
                 base = base_path
         resolved = _resolve_component_path(
-            raw, base, f"plugins.{plugin.name}.source", warnings
+            raw,
+            base,
+            f"plugins.{plugin.name}.source",
+            warnings,
+            require_dot_prefix=False,
         )
         for warning in warnings:
             logger.warning("Marketplace %s: %s", marketplace.name, warning)
@@ -608,7 +616,11 @@ def materialize_plugin_source(
         return root
     warnings = []
     resolved = _resolve_component_path(
-        subpath, root, f"plugins.{plugin.name}.source.path", warnings
+        subpath,
+        root,
+        f"plugins.{plugin.name}.source.path",
+        warnings,
+        require_dot_prefix=False,
     )
     for warning in warnings:
         logger.warning("Marketplace %s: %s", marketplace.name, warning)

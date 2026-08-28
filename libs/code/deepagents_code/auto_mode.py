@@ -851,7 +851,9 @@ class ApprovalModeResolution(TypedDict):
     """Server-resolved approval mode and trace-safe diagnostics."""
 
     mode: ApprovalMode
+    """Effective mode resolved by the server for this turn."""
     fallback_reason: Literal["approval_mode_unavailable"] | None
+    """Fixed reason when Store state is unavailable or cannot be trusted."""
 
 
 async def _live_mode(runtime: object) -> ApprovalModeResolution:

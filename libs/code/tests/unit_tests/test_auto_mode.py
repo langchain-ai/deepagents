@@ -13,6 +13,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal, cast, get_type_hints
 from unittest.mock import patch
+from uuid import uuid4
 
 import pytest
 from langchain.agents.middleware.types import (
@@ -78,6 +79,7 @@ from deepagents_code.auto_mode import (
     _default_counters,
     _fixed_repo_command_allowed,
     _merge_temp_artifacts,
+    _routine_write_allowed,
     classifier_unavailable_reason,
     gated_mcp_tool_names,
     mcp_tool_is_coherently_read_only,
@@ -1302,6 +1304,76 @@ def test_fixed_repo_commands_allow_only_read_only_git_operations(
     assert not _fixed_repo_command_allowed("git diff ../other", tmp_path)
     assert not _fixed_repo_command_allowed("git status && rm -rf .", tmp_path)
     assert not _fixed_repo_command_allowed("git status & rm -rf .", tmp_path)
+
+
+def _unresolvable_home_prefix() -> str:
+    """Return a `~name` prefix that names no account on this host.
+
+    Generated instead of hardcoded so the test cannot pass by accident on a
+    host that has an account with the chosen name.
+    """
+    name = f"dcode-absent-{uuid4().hex}"
+    prefix = f"~{name}"
+    if not os.path.expanduser(prefix).startswith("~"):  # noqa: PTH111
+        pytest.skip(f"host unexpectedly resolves {prefix}")
+    return prefix
+
+
+def test_unresolvable_home_path_is_reviewed_not_raised(tmp_path: Path) -> None:
+    """An unknown `~name` denies the shortcut instead of failing the gate.
+
+    `Path.expanduser` raises `RuntimeError` for a home directory it cannot
+    determine. The path arguments here are model output, so that raise must not
+    escape: it would abort the model node and end the turn.
+    """
+    prefix = _unresolvable_home_prefix()
+
+    assert not _fixed_repo_command_allowed(f"git diff -- {prefix}/f.txt", tmp_path)
+    assert not _routine_write_allowed(
+        tmp_path,
+        {
+            "name": "write_file",
+            "args": {"file_path": f"{prefix}/f.txt"},
+            "id": "call-1",
+            "type": "tool_call",
+        },
+    )
+
+
+async def test_unresolvable_home_write_passes_the_managed_temp_guard(
+    tmp_path: Path,
+) -> None:
+    """The artifact guard also expands an untrusted path, so it needs the guard.
+
+    An unresolvable path names no managed artifact. The write tool runs and
+    reports its own error, which lets the model correct the path and retry.
+    """
+    prefix = _unresolvable_home_prefix()
+    middleware = _middleware(tmp_path)
+    executed = False
+    request = ToolCallRequest(
+        tool_call={
+            "name": "write_file",
+            "args": {"file_path": f"{prefix}/f.txt", "content": "x"},
+            "id": "write-call",
+            "type": "tool_call",
+        },
+        tool=_tool("write_file"),
+        state={"messages": []},
+        runtime=cast("Any", SimpleNamespace()),
+    )
+
+    async def handler(_request: ToolCallRequest) -> ToolMessage:
+        nonlocal executed
+        await asyncio.sleep(0)
+        executed = True
+        return ToolMessage(content="ran", tool_call_id="write-call")
+
+    result = await middleware.awrap_tool_call(request, handler)
+
+    assert executed
+    assert isinstance(result, ToolMessage)
+    assert result.status != "error"
 
 
 def test_classifier_schema_requires_every_object_property() -> None:

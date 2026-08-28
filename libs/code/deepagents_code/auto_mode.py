@@ -1667,14 +1667,25 @@ def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
 
 
 def _resolve_path(root: Path, raw: object) -> Path | None:
+    """Return the absolute path a model-authored path argument names.
+
+    The argument is untrusted model output, so expansion is part of what can
+    fail: `Path.expanduser` raises `RuntimeError` for a `~name` prefix that
+    names no account on this host. Expansion runs inside the guard for that
+    reason, and every failure yields `None`.
+
+    Callers treat `None` as "not deterministically safe" and route the call to
+    model review, so an unresolvable path costs one review instead of raising
+    through the approval gate.
+    """
     if not isinstance(raw, str) or not raw:
         return None
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
     try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
 
 
@@ -2240,10 +2251,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         raw_path = request.tool_call.get("args", {}).get("file_path")
         if not isinstance(raw_path, str):
             return None
-        candidate = Path(raw_path).expanduser()
-        if not candidate.is_absolute():
-            candidate = self._worktree_root / candidate
-        normalized_path = os.path.normcase(str(candidate.absolute()))
+        try:
+            candidate = Path(raw_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = self._worktree_root / candidate
+            normalized_path = os.path.normcase(str(candidate.absolute()))
+        except (OSError, RuntimeError, ValueError):
+            # An unresolvable path names no managed artifact, so there is
+            # nothing to protect here. The write tool reports its own error.
+            return None
         artifacts = _active_temp_artifacts(cast("Mapping[str, object]", request.state))
         protected_paths = {
             os.path.normcase(str(Path(artifact["file_path"]).absolute()))

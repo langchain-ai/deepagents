@@ -86,6 +86,46 @@ def _is_windows_absolute(path: str) -> bool:
     return bool(PureWindowsPath(path).drive or PureWindowsPath(path).root)
 
 
+def resolve_relative_path(
+    declaration: str,
+    plugin_root: Path,
+    *,
+    require_dot_prefix: bool = True,
+) -> tuple[Path | None, str | None]:
+    """Resolve one path declared relative to `plugin_root`.
+
+    Plugin manifest component fields must start with `./`. Marketplace source
+    paths must not, because the marketplace format also accepts a bare relative
+    path such as `tools/my-plugin`; those callers pass
+    `require_dot_prefix=False`. Both forms stay inside `plugin_root`.
+
+    Returns:
+        `(path, None)` when the declaration resolves, or `(None, reason)`
+        naming why it was rejected.
+    """
+    if declaration.startswith("./"):
+        relative = declaration[2:]
+    elif require_dot_prefix:
+        return None, "path must start with './' relative to plugin root"
+    else:
+        relative = declaration
+    if not relative:
+        return None, "path must not be empty"
+    path = Path(relative)
+    if any(part == ".." for part in path.parts):
+        return None, "path must not contain '..'"
+    if path.is_absolute() or _is_windows_absolute(relative):
+        return None, "path must stay within the plugin root"
+    try:
+        root_resolved = plugin_root.resolve()
+        resolved = (plugin_root / path).resolve()
+    except (OSError, RuntimeError) as exc:
+        return None, f"could not resolve {declaration!r}: {exc}"
+    if not resolved.is_relative_to(root_resolved):
+        return None, "path escapes plugin root"
+    return resolved, None
+
+
 def _resolve_component_path(
     declaration: str,
     plugin_root: Path,
@@ -94,46 +134,16 @@ def _resolve_component_path(
     *,
     require_dot_prefix: bool = True,
 ) -> Path | None:
-    """Resolve one plugin-relative path, or `None` if it is not usable.
-
-    Plugin manifest component fields must start with `./`. Marketplace source
-    paths must not, because the marketplace format also accepts a bare relative
-    path such as `tools/my-plugin`; those callers pass
-    `require_dot_prefix=False`. Both forms stay inside `plugin_root`.
+    """Resolve one plugin-relative path, warning when it is not usable.
 
     Returns:
         The resolved path, or `None` when the declaration is rejected.
     """
-    if declaration.startswith("./"):
-        relative = declaration[2:]
-    elif require_dot_prefix:
-        warnings.append(
-            f"ignoring {field_name}: path must start with './' relative to plugin root"
-        )
-        return None
-    else:
-        relative = declaration
-    if not relative:
-        warnings.append(f"ignoring {field_name}: path must not be empty")
-        return None
-    path = Path(relative)
-    if any(part == ".." for part in path.parts):
-        warnings.append(f"ignoring {field_name}: path must not contain '..'")
-        return None
-    if path.is_absolute() or _is_windows_absolute(relative):
-        warnings.append(f"ignoring {field_name}: path must stay within the plugin root")
-        return None
-    try:
-        root_resolved = plugin_root.resolve()
-        resolved = (plugin_root / path).resolve()
-    except (OSError, RuntimeError) as exc:
-        warnings.append(
-            f"ignoring {field_name}: could not resolve {declaration!r}: {exc}"
-        )
-        return None
-    if not resolved.is_relative_to(root_resolved):
-        warnings.append(f"ignoring {field_name}: path escapes plugin root")
-        return None
+    resolved, reason = resolve_relative_path(
+        declaration, plugin_root, require_dot_prefix=require_dot_prefix
+    )
+    if reason is not None:
+        warnings.append(f"ignoring {field_name}: {reason}")
     return resolved
 
 

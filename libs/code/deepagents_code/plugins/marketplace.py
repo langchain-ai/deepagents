@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qsl, unquote, urlencode, urlparse, urlunparse
 
 from deepagents_code.plugins._json import json_object
-from deepagents_code.plugins.manifest import _resolve_component_path, _validate_name
+from deepagents_code.plugins.manifest import _validate_name, resolve_relative_path
 from deepagents_code.plugins.models import (
     ExternalPluginRepositorySourceType,
     GithubPluginSource,
@@ -39,7 +39,7 @@ from deepagents_code.plugins.store import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
     from http.client import HTTPMessage
     from typing import IO
 
@@ -565,43 +565,66 @@ def _plugin_repository_source(
     return parsed, git_url, subpath_value
 
 
+def _resolve_source_path(
+    marketplace: PluginMarketplace,
+    declaration: str,
+    root: Path,
+    field_name: str,
+    rejections: list[str] | None,
+) -> Path | None:
+    """Resolve a marketplace source path, recording why it was rejected.
+
+    Returns:
+        The resolved path, or `None` when the declaration is rejected.
+    """
+    resolved, reason = resolve_relative_path(
+        declaration, root, require_dot_prefix=False
+    )
+    if reason is not None:
+        logger.warning(
+            "Marketplace %s: ignoring %s: %s", marketplace.name, field_name, reason
+        )
+        if rejections is not None:
+            rejections.append(f"{field_name}: {reason}")
+    return resolved
+
+
 def materialize_plugin_source(
-    marketplace: PluginMarketplace, plugin: MarketplacePluginEntry
+    marketplace: PluginMarketplace,
+    plugin: MarketplacePluginEntry,
+    *,
+    rejections: list[str] | None = None,
 ) -> Path | None:
     """Resolve or materialize a marketplace plugin entry to a plugin root.
 
     Args:
         marketplace: Marketplace containing the plugin.
         plugin: Plugin entry.
+        rejections: Collects the reason for each source path this call
+            rejected. An empty list after a `None` result means the source
+            itself is unsupported rather than a path being unusable; see
+            `unresolved_source_message`.
 
     Returns:
-        Resolved plugin root, or `None` for unsupported sources.
+        Resolved plugin root, or `None` for unsupported or unusable sources.
     """
     raw = _source_path(plugin.source)
     if raw is not None:
         metadata_root = marketplace.metadata.get("pluginRoot")
-        warnings: list[str] = []
         base = marketplace.root
         if isinstance(metadata_root, str):
-            base_path = _resolve_component_path(
+            base_path = _resolve_source_path(
+                marketplace,
                 metadata_root,
                 marketplace.root,
                 "metadata.pluginRoot",
-                warnings,
-                require_dot_prefix=False,
+                rejections,
             )
             if base_path is not None:
                 base = base_path
-        resolved = _resolve_component_path(
-            raw,
-            base,
-            f"plugins.{plugin.name}.source",
-            warnings,
-            require_dot_prefix=False,
+        return _resolve_source_path(
+            marketplace, raw, base, f"plugins.{plugin.name}.source", rejections
         )
-        for warning in warnings:
-            logger.warning("Marketplace %s: %s", marketplace.name, warning)
-        return resolved
 
     repository = _plugin_repository_source(plugin)
     if repository is None:
@@ -614,17 +637,32 @@ def materialize_plugin_source(
     )
     if subpath is None:
         return root
-    warnings = []
-    resolved = _resolve_component_path(
-        subpath,
-        root,
-        f"plugins.{plugin.name}.source.path",
-        warnings,
-        require_dot_prefix=False,
+    return _resolve_source_path(
+        marketplace, subpath, root, f"plugins.{plugin.name}.source.path", rejections
     )
-    for warning in warnings:
-        logger.warning("Marketplace %s: %s", marketplace.name, warning)
-    return resolved
+
+
+def unresolved_source_message(
+    plugin_id: str, plugin: MarketplacePluginEntry, rejections: Sequence[str]
+) -> str:
+    """Explain why `materialize_plugin_source` produced no plugin root.
+
+    A rejected path and an unsupported source type both yield `None`, and
+    saying "unsupported source" for the first sends readers looking for a
+    missing feature instead of at their `path`.
+
+    Returns:
+        A message naming the rejected paths, or the unsupported source.
+    """
+    if rejections:
+        return (
+            f"Plugin {plugin_id} has an unusable source path ({'; '.join(rejections)})"
+        )
+    return (
+        f"Plugin {plugin_id} has unsupported source "
+        f"{redact_urls_in_text(repr(plugin.source))}; "
+        "use a local path, GitHub repository, or Git repository source"
+    )
 
 
 def _optional_source_string(

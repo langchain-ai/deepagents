@@ -3,22 +3,16 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
-from deepagents_code._env_vars import ONBOARDING
 from deepagents_code.onboarding import (
-    GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME,
     ONBOARDING_MARKER_FILENAME,
     ONBOARDING_NAME_MEMORY_END,
     ONBOARDING_NAME_MEMORY_START,
     extract_onboarding_name_block,
-    goal_auto_accept_prompt_marker_path,
     has_completed_onboarding,
-    has_shown_goal_auto_accept_prompt,
     mark_goal_auto_accept_prompt_shown,
     mark_onboarding_complete,
     onboarding_marker_path,
-    should_run_onboarding,
     write_onboarding_name_memory,
 )
 

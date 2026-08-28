@@ -10,7 +10,7 @@ import re
 import threading
 import time
 from pathlib import Path
-from typing import Any, Literal, cast
+from typing import Any, Literal
 from unittest.mock import patch
 
 import anyio

@@ -1,7 +1,6 @@
 """Tests for the large-context model-switch warning modal."""
 
 from textual.app import App
-from textual.widgets import Static
 
 from deepagents_code.tui.modals.model_switch import ModelSwitchWarningScreen
 

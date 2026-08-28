@@ -2,21 +2,14 @@
 
 from __future__ import annotations
 
-import re
-from pathlib import Path
-
 from deepagents_code.command_registry import (
-    ALL_CLASSIFIED,
     ALWAYS_IMMEDIATE,
-    BYPASS_WHEN_CONNECTING,
     COMMANDS,
     HIDDEN_COMMANDS,
     IMMEDIATE_UI,
     IMMEDIATE_UI_ARG_FORMS,
     QUEUE_BOUND,
-    SIDE_EFFECT_FREE,
     STARTUP_RECOVERY_COMMANDS,
-    CommandEntry,
     get_slash_commands,
 )
 

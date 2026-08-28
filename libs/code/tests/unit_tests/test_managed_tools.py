@@ -8,9 +8,7 @@ import io
 import logging
 import os
 import subprocess
-import sys
 import tarfile
-import zipfile
 from email.message import Message
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -21,11 +19,7 @@ import pytest
 
 from deepagents_code import _paths, managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
-from deepagents_code._paths import PATHS
-from deepagents_code.managed_tools import (
-    ChecksumMismatchError,
-    ManagedToolUnavailableError,
-)
+from deepagents_code.managed_tools import ManagedToolUnavailableError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -318,16 +312,6 @@ def _make_fake_tarball(
         info.size = len(rg_bytes)
         info.mode = 0o755
         tf.addfile(info, io.BytesIO(rg_bytes))
-    return buf.getvalue()
-
-
-def _make_fake_zip(
-    rg_bytes: bytes, *, member_name: str = "ripgrep-14.1.1/rg.exe"
-) -> bytes:
-    """Build an in-memory zip containing a single `rg.exe` member."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        zf.writestr(member_name, rg_bytes)
     return buf.getvalue()
 
 

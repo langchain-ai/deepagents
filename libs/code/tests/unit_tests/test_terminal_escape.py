@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import logging
 import pathlib
 from typing import TYPE_CHECKING
 
@@ -15,7 +14,6 @@ if TYPE_CHECKING:
 from deepagents_code import terminal_escape
 from deepagents_code.terminal_escape import (
     TerminalProgressState,
-    _validate_progress,
     clear_terminal_progress,
     reset_terminal_background,
     set_terminal_background,

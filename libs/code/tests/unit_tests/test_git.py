@@ -8,24 +8,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deepagents_code._git import (
-    RepositoryMetadata,
-    _abbreviate_git_ref,
     _git_dir_cache,
-    _normalize_lookup_path,
     _parse_git_dir_pointer,
     find_git_common_dir,
-    find_git_dir,
-    find_git_root,
     parse_repository_metadata,
     read_git_branch_from_filesystem,
-    read_git_branch_via_subprocess,
-    read_git_commit_sha_from_filesystem,
-    read_git_commit_sha_via_subprocess,
     read_git_remote_url_from_filesystem,
-    read_git_remote_url_via_subprocess,
-    resolve_git_branch,
-    resolve_git_commit_sha,
-    resolve_git_remote_url,
 )
 
 _FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"

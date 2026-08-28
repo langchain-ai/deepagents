@@ -10,17 +10,14 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from langchain_core.messages import AIMessageChunk, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessageChunk, ToolMessage
 
 from deepagents_code._env_vars import LANGSMITH_REPLICA_PROJECTS
 from deepagents_code.client.remote_client import (
     RemoteAgent,
     _cancelled_tool_messages,
-    _convert_ai_message,
-    _convert_human_message,
     _convert_interrupts,
     _convert_message_data,
-    _convert_tool_message,
     _prepare_config,
     agent_error_type,
     format_agent_exception,

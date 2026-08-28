@@ -34,7 +34,6 @@ from deepagents_code.goal_state_notice import (
     notice_text_sections,
     project_goal_state,
     serialize_goal_state,
-    summarization_cutoff,
     superseded_goal_state_placeholder,
 )
 

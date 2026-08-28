@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NotRequired
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
@@ -30,7 +27,6 @@ from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code.agent import _should_interrupt_tool_call, create_cli_agent
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.client import fulfill_hook_invocation
-from deepagents_code.hooks.context import apply_hooks_context
 from deepagents_code.hooks.interrupt import (
     HOOK_INVOCATION_INTERRUPT_TYPE,
     build_hook_interrupt_payload,
@@ -39,10 +35,7 @@ from deepagents_code.hooks.interrupt import (
     parse_hook_interrupt_payload,
     parse_hook_resume_value,
 )
-from deepagents_code.hooks.models.adapters import HOOKS_CONFIG_ADAPTER
-from deepagents_code.hooks.models.config import HooksConfig
 from deepagents_code.hooks.models.domain import (
-    CompactTrigger,
     HookContext,
     HookDecision,
     HookEvent,
@@ -52,40 +45,27 @@ from deepagents_code.hooks.models.domain import (
     PostToolUseEvent,
     PostToolUseFailureDecision,
     PostToolUseFailureEvent,
-    PreCompactDecision,
-    PreCompactEvent,
     PreToolUseDecision,
     PreToolUseEvent,
-    StopDecision,
-    SubagentStopDecision,
     ToolCallData,
 )
 from deepagents_code.hooks.models.transport import (
     HookInvocationRequest,
     HookInvocationResponse,
 )
-from deepagents_code.hooks.presenter import HookPresenter
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.server_middleware import (
     HookTransportInterruptError,
     ServerHooksMiddleware,
     ServerHooksState,
-    _append_message_text,
-    _append_tool_result_text,
-    _apply_post_tool_use,
-    _apply_subagent_stop,
     _ask_permission_via_hitl,
     _denied_tool_message,
     _invocation_id,
     _invoke_hook,
-    _merge_tool_message_content,
     _session_gate,
     _tool_result_error,
-    _tool_result_text,
     operation_hook_responses,
 )
-from deepagents_code.hooks.snapshot import HooksSnapshot
-from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -93,8 +73,6 @@ if TYPE_CHECKING:
     from langchain_core.language_models import LanguageModelInput
     from langchain_core.runnables import Runnable, RunnableConfig
     from langchain_core.tools import BaseTool
-
-    from deepagents_code._cli_context import CLIContext
 
 
 class _ReplayState(BaseModel):
@@ -991,29 +969,6 @@ def test_pre_tool_deny_skips_hitl_and_execution(
     assert "blocked" in str(result.content)
     ask.assert_not_called()
     handler.assert_not_called()
-
-
-def _compact_setup(
-    *, args: dict[str, object] | None = None, events: list[str] | None = None
-) -> tuple[MagicMock, ServerHooksState, dict[str, Any]]:
-    runtime = MagicMock()
-    runtime.context = {
-        "hooks_snapshot_id": "snap",
-        "hooks_server_events": events or ["PreCompact", "PreToolUse"],
-        "thread_id": "t1",
-        "approval_mode": "manual",
-    }
-    tool_call = {
-        "name": "compact_conversation",
-        "args": args or {},
-        "id": "compact-call",
-        "type": "tool_call",
-    }
-    return (
-        runtime,
-        {"messages": [AIMessage(content="", tool_calls=[tool_call])]},
-        tool_call,
-    )
 
 
 def test_ask_permission_via_hitl_approve(monkeypatch: pytest.MonkeyPatch) -> None:

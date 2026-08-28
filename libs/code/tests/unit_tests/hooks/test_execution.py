@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import os
 from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks import runner
 from deepagents_code.hooks.capabilities import (
     ExitCodePolicy,
     PlainOutputPolicy,
@@ -35,7 +33,6 @@ from deepagents_code.hooks.tools import format_mcp_wire_name, to_wire_call
 from deepagents_code.hooks.validate_terminal_sequence import validate_terminal_sequence
 
 if TYPE_CHECKING:
-    import ctypes
     from pathlib import Path
 
     from deepagents_code.hooks.snapshot import HookHandler

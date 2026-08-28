@@ -4,21 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents.middleware.memory import MEMORY_SYSTEM_PROMPT
-
-from deepagents_code.agent import _MEMORY_READONLY_SYSTEM_PROMPT, get_skill_sources
 from deepagents_code.config import ASCII_GLYPHS
 from deepagents_code.context_doctor import (
     _bounded,
     build_context_doctor_report,
-    estimate_text_tokens,
     format_memory_prompt,
-    format_skills_locations,
-    format_skills_prompt,
     render_context_doctor_report,
 )
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
-from deepagents_code.skills.load import ExtendedSkillMetadata
 from deepagents_code.tool_catalog import ToolEntry
 
 if TYPE_CHECKING:

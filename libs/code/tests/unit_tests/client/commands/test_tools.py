@@ -8,12 +8,11 @@ import json
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
-import pytest
 from rich.console import Console
 
 from deepagents_code import managed_tools
 from deepagents_code._env_vars import OFFLINE, RIPGREP_INSTALLER
-from deepagents_code.client.commands.tools import _truncate, run_tools_command
+from deepagents_code.client.commands.tools import run_tools_command
 from deepagents_code.tool_catalog import (
     ToolCatalog,
     ToolEntry,

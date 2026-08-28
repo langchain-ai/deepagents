@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from typing import Any
 
-import pytest
-from textual.app import App, ComposeResult, ScreenStackError
+from textual.app import App, ComposeResult
 from textual.containers import Container, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.widgets import Input, OptionList, Static
+from textual.widgets import Static
 
-from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.extras_info import (
     MODEL_PROVIDER_EXTRAS,
@@ -23,7 +20,6 @@ from deepagents_code.tui.widgets.launch_init import (
     LaunchDependenciesScreen,
     LaunchGoalCriteriaPreferenceScreen,
     LaunchNameScreen,
-    _normalize_name,
 )
 
 

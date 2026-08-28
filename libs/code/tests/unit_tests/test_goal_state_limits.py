@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, get_args
-
 import pytest
 
 from deepagents_code.goal_state_limits import (
@@ -11,19 +9,12 @@ from deepagents_code.goal_state_limits import (
     GOAL_NOTICE_TEXT_CHAR_LIMIT,
     GOAL_OBJECTIVE_CHAR_LIMIT,
     GOAL_STATUS_NOTE_CHAR_LIMIT,
-    RUBRIC_CHAR_LIMIT,
     GoalStateSizeError,
     validate_goal_application,
     validate_goal_application_rendered_total,
     validate_goal_notice_text,
-    validate_goal_objective,
     validate_goal_objective_rendered,
-    validate_goal_status_note,
-    validate_rubric,
 )
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 
 def test_goal_application_accepts_max_raw_pair_with_escape_headroom() -> None:

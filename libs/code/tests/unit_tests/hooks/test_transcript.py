@@ -5,26 +5,13 @@ from __future__ import annotations
 import json
 import os
 import stat
-import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
-from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage
 
 from deepagents_code._constants import LOCAL_CONTEXT_MESSAGE_SOURCE
-from deepagents_code.approval_mode import ApprovalMode
-from deepagents_code.hooks.models.domain import (
-    AgentIdentity,
-    HookContext,
-    HookEvent,
-    HookInvocation,
-    SessionStartCause,
-    SessionStartDecision,
-    SessionStartEvent,
-    SubagentStopEvent,
-)
 from deepagents_code.hooks.runtime import HooksRuntime
 from deepagents_code.hooks.transcript import (
     SUBAGENT_TRANSCRIPT_ID_METADATA_KEY,

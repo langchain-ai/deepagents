@@ -10,21 +10,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from deepagents_code.plugins._json import json_object, json_value
 from deepagents_code.plugins.marketplace import (
     MarketplaceError,
     _download_marketplace,
     _HttpsOnlyRedirectHandler,
     _redact_url_credentials,
-    _root_for_marketplace_file,
     _run_git,
     parse_marketplace_source,
 )
-from deepagents_code.plugins.models import (
-    LocalMarketplaceSource,
-    RepositoryMarketplaceSource,
-    UrlMarketplaceSource,
-)
+from deepagents_code.plugins.models import UrlMarketplaceSource
 
 if TYPE_CHECKING:
     from pathlib import Path

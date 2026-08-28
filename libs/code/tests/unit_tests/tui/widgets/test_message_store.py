@@ -1,42 +1,20 @@
 """Tests for message store and serialization."""
 
-import logging
-
 import pytest
-from textual.app import App, ComposeResult
 from textual.content import Content
-from textual.widget import Widget
-from textual.widgets import Static
 
-from deepagents_code.diff_utils import DiffStats
-from deepagents_code.tui.widgets import diff as diff_module
 from deepagents_code.tui.widgets.message_store import (
     DEFAULT_HEIGHT_HINT,
     MIN_HEIGHT_HINT,
     MessageData,
     MessageStore,
     MessageType,
-    ToolStatus,
 )
 from deepagents_code.tui.widgets.messages import (
-    AppMessage,
     AssistantMessage,
-    DiffMessage,
     ErrorMessage,
-    LazyToolGroupSummary,
-    ReasoningMessage,
-    RubricResultMessage,
-    SkillMessage,
-    SummarizationMessage,
-    ToolCallMessage,
     UserMessage,
 )
-
-
-def _rendered_text(widget: Widget) -> str:
-    """Return a composed child's plain text, ignoring styles."""
-    rendered = widget.render()
-    return rendered.plain if isinstance(rendered, Content) else str(rendered)
 
 
 class TestMessageData:
@@ -50,7 +28,6 @@ class TestMessageData:
 
     def test_error_message_content_body_roundtrip(self):
         """`Content` bodies serialize as plain text; link spans drop on resume."""
-        from textual.content import Content
         from textual.style import Style as TStyle
 
         url = "https://example.com/docs"

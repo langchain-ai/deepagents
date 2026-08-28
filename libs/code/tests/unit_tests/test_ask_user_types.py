@@ -11,21 +11,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import pytest
-from pydantic import TypeAdapter, ValidationError
+from pydantic import TypeAdapter
 
 from deepagents_code._ask_user_types import (
-    ASK_USER_ANSWERED_SUMMARY,
-    ASK_USER_ERROR_ANSWER_PREFIX,
-    ASK_USER_FAILED_SUMMARY,
-    ASK_USER_NO_ANSWER,
-    ASK_USER_NOTHING_SELECTED,
     AskUserRequest,
-    AskUserRowSummary,
-    ask_user_answer_is_empty,
     decode_multi_select_answer,
     encode_multi_select_answer,
-    format_ask_user_error_answer,
     format_ask_user_transcript,
     render_ask_user_transcript_for_display,
 )

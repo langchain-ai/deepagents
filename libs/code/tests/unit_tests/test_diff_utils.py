@@ -2,26 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-import pytest
-
-from deepagents_code.diff_utils import (
-    DIFF_TRUNCATION_MARKER,
-    DiffStats,
-    count_diff_change_lines,
-    file_header_indexes,
-    is_truncation_marker,
-    split_diff_lines,
-)
+from deepagents_code.diff_utils import file_header_indexes
 
 
 def _diff(*lines: str) -> str:
     return "\n".join(lines)
-
-
-def _count(diff: str) -> DiffStats:
-    return count_diff_change_lines(split_diff_lines(diff))
 
 
 class TestSplitDiffLines:

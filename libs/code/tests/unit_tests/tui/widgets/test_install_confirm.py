@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-from unittest.mock import patch
-
 from textual.app import App, ComposeResult
 from textual.content import Content
 from textual.style import Style as TStyle
@@ -15,40 +12,10 @@ from deepagents_code.tui.widgets.install_confirm import (
     InstallProviderConfirmScreen,
 )
 
-if TYPE_CHECKING:
-    from textual.screen import Screen
-
 
 class _InstallConfirmTestApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("base")
-
-
-def _body_of(screen: Screen[bool]) -> Static:
-    """Return the body widget of an install confirmation screen."""
-    return screen.query_one(".install-confirm-body", Static)
-
-
-def _rendered(widget: Static) -> Content:
-    """Return a widget's rendered `Content`."""
-    content = widget.render()
-    assert isinstance(content, Content)
-    return content
-
-
-def _link_cells(widget: Static) -> list[tuple[int, int]]:
-    """Return every widget-relative cell whose rendered style carries a link.
-
-    Driving hover and click from real cell offsets (rather than synthetic
-    events carrying a URL of the test's own choosing) means these tests fail
-    if the link is dropped, mis-spanned, or never reaches the rendered output.
-    """
-    return [
-        (x, y)
-        for y in range(widget.region.height)
-        for x in range(widget.region.width)
-        if getattr(widget.get_style_at(x, y), "link", None)
-    ]
 
 
 def _assert_pypi_link(content: Content, package: str) -> None:
@@ -59,16 +26,6 @@ def _assert_pypi_link(content: Content, package: str) -> None:
         if isinstance(span.style, TStyle) and span.style.link
     ]
     assert links == [(package, f"https://pypi.org/project/{package}/")]
-
-
-def _link_span_reverses(content: Content) -> list[bool]:
-    """Return the `reverse` flag of every link-styled span in `content`."""
-    reverses: list[bool] = []
-    for span in content.spans:
-        style = span.style
-        if isinstance(style, TStyle) and style.link:
-            reverses.append(bool(style.reverse))
-    return reverses
 
 
 class TestInstallPackageConfirmScreen:

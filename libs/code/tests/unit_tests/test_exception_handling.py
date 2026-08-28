@@ -8,18 +8,9 @@ These tests verify that:
 """
 
 import logging
-import subprocess
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
-from tavily import BadRequestError, InvalidAPIKeyError, UsageLimitExceededError
-from tavily.errors import TimeoutError as TavilyTimeoutError
-
-from deepagents_code.file_ops import FileOpTracker, _safe_read
-from deepagents_code.media_utils import (
-    _get_clipboard_via_osascript,
-    _get_macos_clipboard_image,
-)
+from deepagents_code.file_ops import FileOpTracker
 from deepagents_code.tools import web_search
 
 

@@ -11,20 +11,14 @@ from deepagents_code.notifications import (
     MissingDepPayload,
     NotificationAction,
     PendingNotification,
-    UpdateAvailablePayload,
 )
 from deepagents_code.tui.widgets import notification_center
 from deepagents_code.tui.widgets.notification_center import (
     NotificationActionRequested,
     NotificationActionResult,
     NotificationCenterScreen,
-    NotificationSuppressRequested,
-    _NotificationRow,
-    _NotificationSettingsRow,
 )
 from deepagents_code.tui.widgets.notification_detail import NotificationDetailScreen
-from deepagents_code.tui.widgets.notification_settings import WARNING_TOGGLES
-from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen
 
 
 def _dep_entry(key: str = "dep:ripgrep") -> PendingNotification:
@@ -55,22 +49,6 @@ def _service_entry(key: str = "dep:tavily") -> PendingNotification:
             NotificationAction(ActionId.SUPPRESS, "Don't show notification again"),
         ),
         payload=MissingDepPayload(tool="tavily", url="https://tavily.com"),
-    )
-
-
-def _update_entry() -> PendingNotification:
-    return PendingNotification(
-        key="update:available",
-        title="Update available",
-        body="v2.0.0 is available.\nCurrently installed: 1.0.0.",
-        actions=(
-            NotificationAction(ActionId.INSTALL, "Install now", primary=True),
-            NotificationAction(ActionId.SKIP_ONCE, "Remind me next launch"),
-            NotificationAction(ActionId.SKIP_VERSION, "Skip this version"),
-        ),
-        payload=UpdateAvailablePayload(
-            latest="2.0.0", upgrade_cmd="uv tool upgrade deepagents-code"
-        ),
     )
 
 

@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from deepagents_code.tui.widgets.auto_mode_notice import build_auto_mode_notice_body
 
 

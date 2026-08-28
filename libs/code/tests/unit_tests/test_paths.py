@@ -20,10 +20,7 @@ from deepagents_code._paths import (
     PathState,
     _capture_paths,
     classify_path,
-    get_deepagents_home,
-    harden_state_dir,
     probe_writable,
-    project_paths,
 )
 
 

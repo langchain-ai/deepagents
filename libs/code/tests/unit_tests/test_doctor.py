@@ -20,7 +20,6 @@ from deepagents_code.doctor import (
     collect_sections,
     run_doctor_command,
 )
-from deepagents_code.main import parse_args
 
 
 class TestDoctorArgs:

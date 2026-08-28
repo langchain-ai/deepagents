@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Literal
-from uuid import uuid4
 
 import pytest
 
@@ -18,7 +17,6 @@ from deepagents_code.hooks.client_lifecycle import (
 from deepagents_code.hooks.models.domain import (
     DcodeNotificationKind,
     HookDecision,
-    HookDiagnostic,
     HookEvent,
     HookInvocation,
     NotificationDecision,
@@ -30,7 +28,7 @@ from deepagents_code.hooks.models.domain import (
     SessionStartDecision,
 )
 from deepagents_code.hooks.permissions import permission_hook_outcome
-from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
+from deepagents_code.hooks.presenter import HookPresenter
 
 if TYPE_CHECKING:
     from pathlib import Path

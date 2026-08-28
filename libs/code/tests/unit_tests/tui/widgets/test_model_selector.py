@@ -1,21 +1,18 @@
 """Tests for ModelSelectorScreen."""
 
-import asyncio
 import tomllib
-from collections.abc import Callable, Iterator, Mapping
+from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
 from textual.containers import Container, Vertical, VerticalScroll
-from textual.geometry import Offset
 from textual.screen import ModalScreen
-from textual.widgets import Input, Static
+from textual.widgets import Static
 
-from deepagents_code import clipboard as clipboard_module
 from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.model_config import (
@@ -1308,22 +1305,6 @@ class TestFormatAuthIndicator:
 
 class TestGetModelStatus:
     """Tests for _get_model_status profile lookup."""
-
-
-def _bare_selector() -> ModelSelectorScreen:
-    """Build an uninitialized selector with just the display-name dependencies.
-
-    `_get_model_display_name` is a pure lookup over `_profiles` and
-    `_recommended_models`, so these tests skip `__init__` (which needs a running
-    app). Both attributes are set explicitly: the screen must not carry a
-    fallback to the *main-model* recommendation set, since the classifier
-    selector passes its own and would otherwise be labelled from the wrong one.
-    """
-    from deepagents_code.tui.widgets import model_selector
-
-    screen = ModelSelectorScreen.__new__(ModelSelectorScreen)
-    screen._recommended_models = model_selector._RECOMMENDED_MODELS
-    return screen
 
 
 class TestModelDetailFooter:

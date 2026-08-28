@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import logging
-import subprocess
 from typing import TYPE_CHECKING, Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 

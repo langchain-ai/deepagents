@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, Mock, patch
+from typing import Any, cast
+from unittest.mock import Mock, patch
 
 import pytest
 from langchain.tools import ToolRuntime
@@ -19,12 +19,9 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from deepagents_code._ask_user_types import (
     ASK_USER_AUTHORIZATION_METADATA_KEY,
-    CHOICE_QUESTION_TYPES,
     MAX_ASK_USER_AUTHORIZATION_ANSWER_CHARS,
-    QUESTION_TYPES,
     Question,
     ValidatedQuestion,
-    _requires_choices,
     decode_multi_select_answer,
     encode_multi_select_answer,
 )

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import threading
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -19,8 +18,6 @@ from deepagents_code.onboarding import (
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-    from langgraph.types import Command
 
 
 def _managed_file(path: Path, name: str = "Ada", *, extra: str = "") -> None:

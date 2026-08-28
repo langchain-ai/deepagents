@@ -8,25 +8,21 @@ assertions are deterministic regardless of terminal configuration.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
 import pytest
-from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 
-from deepagents_code.config import ASCII_GLYPHS, MAX_ARG_LENGTH
+from deepagents_code.config import ASCII_GLYPHS
 from deepagents_code.tool_display import (
     _HIDDEN_CHAR_MARKER,
-    _coerce_timeout_seconds,
     _format_content_block,
-    _format_timeout,
     _sanitize_display_value,
     format_tool_display,
     format_tool_message_content,
-    truncate_value,
 )
 
 _PREFIX = ASCII_GLYPHS.tool_prefix

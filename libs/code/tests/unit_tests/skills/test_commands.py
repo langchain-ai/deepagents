@@ -9,7 +9,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from deepagents.middleware.skills import SkillMetadata, _parse_skill_metadata
+from deepagents.middleware.skills import SkillMetadata
 from rich.console import Console
 
 from deepagents_code.main import parse_args
@@ -21,7 +21,6 @@ from deepagents_code.skills.commands import (
     _list,
     _validate_name,
     _validate_skill_path,
-    execute_skills_command,
 )
 
 

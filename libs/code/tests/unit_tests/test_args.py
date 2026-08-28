@@ -2,22 +2,15 @@
 
 import argparse
 import io
-import re
 import sys
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console
 
 from deepagents_code._constants import DEFAULT_AGENT_NAME
-from deepagents_code._paths import PATHS
-from deepagents_code.main import (
-    _recent_agent_is_valid,
-    _resolve_agent_arg,
-    parse_args,
-)
-from deepagents_code.ui import show_help, show_threads_list_help
+from deepagents_code.main import _resolve_agent_arg, parse_args
 
 
 class TestInitialPromptArg:

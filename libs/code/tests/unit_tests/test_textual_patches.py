@@ -5,25 +5,19 @@ See `_textual_patches.py` and Textualize/textual#6378.
 
 from __future__ import annotations
 
-import ast
-import importlib.util
 import os
 import subprocess
 import sys
-from pathlib import Path
 
 import pytest
 from textual import events
-from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
 from textual.containers import Vertical, VerticalScroll
 from textual.content import Content
 from textual.geometry import Offset
-from textual.selection import Selection
 from textual.widgets import Markdown, Static
 
-from deepagents_code import _textual_patches  # triggers patch
 from deepagents_code.tui.widgets.diff import _DiffRowStatic
 
 

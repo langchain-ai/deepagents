@@ -11,7 +11,6 @@ import pytest
 from deepagents_code._env_vars import DEBUG, INVOKED_AS
 from deepagents_code._invocation import (
     DEFAULT_INVOKED_NAME,
-    STANDARD_INVOKED_NAMES,
     invoked_name,
     log_nonstandard_invoked_name,
 )

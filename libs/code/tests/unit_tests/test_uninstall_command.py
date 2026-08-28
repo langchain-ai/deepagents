@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from contextlib import contextmanager, nullcontext
+from contextlib import nullcontext
 from io import StringIO
 from pathlib import Path
 from typing import TYPE_CHECKING

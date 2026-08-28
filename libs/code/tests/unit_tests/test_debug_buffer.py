@@ -3,20 +3,14 @@
 from __future__ import annotations
 
 import logging
-import os
 import sys
 import threading
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
 import pytest
 
 import deepagents_code._debug_buffer as debug_buffer
-from deepagents_code._debug_buffer import (
-    InMemoryLogBuffer,
-    get_log_buffer,
-    install_log_buffer,
-)
+from deepagents_code._debug_buffer import InMemoryLogBuffer
 
 if TYPE_CHECKING:
     from collections.abc import Generator
@@ -32,12 +26,6 @@ def _record(name: str, message: str, level: int = logging.INFO) -> logging.LogRe
         args=(),
         exc_info=None,
     )
-
-
-def _lines(buffer: InMemoryLogBuffer, index: int) -> list[str]:
-    """Return the retained plain-text lines from *index* onward."""
-    records, _total = buffer.snapshot_records_since(index)
-    return [record.plain_line for record in records]
 
 
 @pytest.fixture

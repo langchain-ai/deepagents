@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
@@ -10,47 +9,7 @@ from unittest.mock import AsyncMock, patch
 from deepagents_code.mcp_tools import DiscoveredMCPConfig, MCPConfigScope
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import pytest
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    from deepagents_code.client.commands.mcp import setup_mcp_parsers
-
-    def _make_help_action(help_fn: Callable[[], None]) -> type[argparse.Action]:
-        class _ShowHelp(argparse.Action):
-            def __init__(
-                self,
-                option_strings: list[str],
-                dest: str = argparse.SUPPRESS,
-                default: str = argparse.SUPPRESS,
-                **kwargs: Any,
-            ) -> None:
-                super().__init__(
-                    option_strings=option_strings,
-                    dest=dest,
-                    default=default,
-                    nargs=0,
-                    **kwargs,
-                )
-
-            def __call__(  # ty: ignore
-                self,
-                parser: argparse.ArgumentParser,
-                _namespace: argparse.Namespace,
-                _values: object,
-                _option_string: str | None = None,
-            ) -> None:
-                help_fn()
-                parser.exit()
-
-        return _ShowHelp
-
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    setup_mcp_parsers(subparsers, make_help_action=_make_help_action)
-    return parser
 
 
 class TestSetupMCPParsers:

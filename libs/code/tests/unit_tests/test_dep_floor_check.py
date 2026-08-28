@@ -23,7 +23,6 @@ from deepagents_code._dep_floor_check import (
     _load_cli_requirements,
     _mismatch_fingerprint,
     _quote_arg,
-    format_dep_floor_warning,
     is_dep_floor_mismatch_muted,
     mute_dep_floor_mismatch,
     prompt_if_editable_deps_stale,

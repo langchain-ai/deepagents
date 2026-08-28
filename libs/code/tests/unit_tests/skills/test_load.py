@@ -3,8 +3,6 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from deepagents_code._paths import get_built_in_skills_dir
-from deepagents_code._version import __version__ as _cli_version
 from deepagents_code.skills.load import list_skills
 
 

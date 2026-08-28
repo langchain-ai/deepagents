@@ -1,19 +1,15 @@
 """Tests for ThreadSelectorScreen."""
 
 import asyncio
-import sqlite3
 from collections.abc import Coroutine
 from contextlib import AbstractContextManager
-from pathlib import Path
 from typing import Any, ClassVar, cast
-from unittest.mock import ANY, AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from rich.cells import cell_len
-from rich.style import Style
 from textual.app import App, ComposeResult
 from textual.binding import Binding, BindingType
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Container
 from textual.css.query import NoMatches
 from textual.screen import ModalScreen
 from textual.widget import MountError
@@ -23,7 +19,6 @@ from textual.widgets._select import SelectCurrent
 from deepagents_code.app import DeepAgentsApp, _ThreadHistoryPayload
 from deepagents_code.hooks.manager import HooksManager
 from deepagents_code.sessions import ThreadInfo
-from deepagents_code.tui.widgets.cwd_switch import CwdSwitchAbortMode
 from deepagents_code.tui.widgets.message_store import MessageData
 from deepagents_code.tui.widgets.thread_selector import (
     ContainedSelect,
@@ -137,20 +132,6 @@ def _isolate_available_agents() -> Any:  # noqa: ANN401
     """
     with _patch_available_agents():
         yield
-
-
-def _style_scalar_value(value: object) -> int:
-    """Return the integer value from a Textual style scalar.
-
-    Args:
-        value: Style value that may be a scalar-like object.
-
-    Returns:
-        Integer scalar value.
-    """
-    scalar = getattr(value, "value", None)
-    assert isinstance(scalar, float)
-    return int(scalar)
 
 
 class ThreadSelectorTestApp(App):

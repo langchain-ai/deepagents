@@ -1,7 +1,6 @@
 """Unit tests for style-link click handling."""
 
 import os
-import webbrowser
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast

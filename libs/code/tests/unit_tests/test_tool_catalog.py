@@ -10,19 +10,11 @@ from unittest.mock import AsyncMock, PropertyMock, patch
 from deepagents_code.config import Credentials
 from deepagents_code.mcp_tools import MCPServerInfo, MCPToolInfo
 from deepagents_code.tool_catalog import (
-    BUILT_IN_GROUP,
     ToolEntry,
-    ToolGroup,
     UnavailableServer,
-    _CatalogModel,
-    _first_line,
     _load_mcp_server_info,
-    build_catalog_from_server_info,
     collect_built_in_tools,
-    collect_catalog,
     collect_mcp_catalog,
-    collect_tools_from_agent,
-    split_mcp_server_info,
 )
 
 if TYPE_CHECKING:

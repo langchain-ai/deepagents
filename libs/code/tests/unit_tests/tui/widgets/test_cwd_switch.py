@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from typing import get_args
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult

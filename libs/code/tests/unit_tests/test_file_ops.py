@@ -1,6 +1,5 @@
 import logging
 import shutil
-import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -9,16 +8,11 @@ from unittest import mock
 import pytest
 from langchain_core.messages import ToolMessage
 
-from deepagents_code.diff_utils import (
-    DiffStats,
-    count_diff_change_lines,
-    split_diff_lines,
-)
+from deepagents_code.diff_utils import DiffStats
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
 
-    from deepagents_code.file_ops import DiffOutcome
 
 from deepagents_code.file_ops import (
     FileOperationRecord,

@@ -11,11 +11,7 @@ from textual.app import App, ComposeResult
 from deepagents_code import model_config
 from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
 from deepagents_code._paths import PATHS
-from deepagents_code.app import (
-    DeepAgentsApp,
-    _extract_model_params_flag,
-    _format_model_params,
-)
+from deepagents_code.app import DeepAgentsApp, _extract_model_params_flag
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.config import runtime_state
 from deepagents_code.model_config import (

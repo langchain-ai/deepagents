@@ -10,7 +10,6 @@ import pytest
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
-from deepagents_code.mcp_oauth_ui import OAuthInteraction
 from deepagents_code.tui.widgets.mcp_login import MCPLoginCancelledError, MCPLoginScreen
 
 

@@ -20,27 +20,17 @@ if TYPE_CHECKING:
 from typing import cast
 
 from rich.style import Style
-from rich.text import Text
 
-from deepagents_code._tool_stream import (
-    TOOL_OUTPUT_TRUNCATION_MARKER,
-    UNRENDERABLE_TOOL_OUTPUT,
-    ToolCallBuffer,
-)
+from deepagents_code._tool_stream import ToolCallBuffer
 from deepagents_code._tracing import RESUME_TRACE_TAG
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.client.non_interactive import (
-    _MAX_HITL_ITERATIONS,
     RETRY_BOUNDARY_LINE,
     HITLIterationLimitError,
-    InFlightToolCall,
     StreamState,
     ThreadUrlLookupState,
     _build_non_interactive_header,
-    _collect_action_request_warnings,
-    _compaction_result_id,
     _ConsoleSpinner,
-    _dispatch_orphaned_tool_result_hooks,
     _end_headless_session,
     _make_hitl_decision,
     _make_stdio_encoding_safe,
@@ -54,7 +44,6 @@ from deepagents_code.client.non_interactive import (
     _run_startup_command,
     _start_langsmith_thread_url_lookup,
     _stream_agent,
-    _summarization_stream_status,
     run_non_interactive,
 )
 from deepagents_code.config import (

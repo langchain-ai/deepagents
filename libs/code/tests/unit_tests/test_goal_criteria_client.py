@@ -2,19 +2,13 @@
 
 from __future__ import annotations
 
-import asyncio
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.goal_state_limits import GoalStateSizeError
-from deepagents_code.tui.widgets.messages import ErrorMessage
-
-if TYPE_CHECKING:
-    from deepagents_code.goal_rubric import GoalCriteriaRequest
 
 
 def _app(*, supports_goal_criteria: bool = True) -> DeepAgentsApp:

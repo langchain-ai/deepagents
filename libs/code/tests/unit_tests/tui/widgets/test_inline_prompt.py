@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,11 +17,9 @@ from deepagents_code.tui.widgets import (
 )
 from deepagents_code.tui.widgets._inline_prompt import (
     MEDIA_UNSUPPORTED_TOAST_PREFIX,
-    InlinePromptCompletion,
     InlinePromptTextArea,
     _media_unsupported_toast,
 )
-from deepagents_code.tui.widgets._paste_textarea import PasteBurstTextArea
 
 if TYPE_CHECKING:
     from textual.app import ComposeResult

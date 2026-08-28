@@ -254,6 +254,73 @@ class TestSubagentMiddlewareInit:
         installed = any(isinstance(middleware, _ParentSystemMessageMiddleware) for middleware in captured["middleware"])
         assert installed is expected
 
+    def test_forked_subagent_tool_order_matches_parent(self) -> None:
+        """A fork's tools block must serialize identically to the parent's to reuse its cache."""
+
+        @tool
+        def lookup_ticket(ticket_id: str) -> str:
+            """Look up a support ticket by id."""
+            return f"ticket {ticket_id}"
+
+        class _ExtraToolMiddleware(AgentMiddleware):
+            name = "_ExtraToolMiddleware"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.tools = [lookup_ticket]
+
+        captured: dict[str, list[str]] = {}
+
+        class _RecordTools(AgentMiddleware):
+            name = "_RecordTools"
+
+            def __init__(self, label: str) -> None:
+                super().__init__()
+                self.label = label
+
+            def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+                captured.setdefault(self.label, [t.name for t in request.tools])
+                return handler(request)
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            middleware=[_ExtraToolMiddleware(), _RecordTools("parent")],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "mode": "fork",
+                    "middleware": [_ExtraToolMiddleware(), _RecordTools("fork")],
+                }
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="start")]})
+
+        assert captured["fork"] == captured["parent"]
+        assert captured["parent"][-2:] == ["task", "lookup_ticket"]
+
     def test_isolated_subagent_keeps_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
         runnable = self._make_echo_graph()

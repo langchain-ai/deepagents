@@ -32,7 +32,7 @@ from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.summarization import SummarizationEvent, _apply_summarization_event
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
@@ -657,11 +657,15 @@ def _build_task_tool(  # noqa: C901, PLR0915
             infer_schema=False,
             args_schema=TaskToolSchema,
         )
-        resolved["middleware"] = [
-            *spec.get("middleware", []),
-            _ForkSystemMessageMiddleware(),
-            _ForkTaskToolMiddleware(fork_task_tool),
-        ]
+        fork_middleware = list(spec.get("middleware", []))
+        # The parent's `task` sits right after its filesystem tools; matching that
+        # position keeps both tools blocks in the same order. Tests assert that tool
+        # order matches.
+        fs_index = next((i for i, m in enumerate(fork_middleware) if isinstance(m, FilesystemMiddleware)), -1)
+        fork_middleware.insert(fs_index + 1, _ForkTaskToolMiddleware(fork_task_tool))
+        # Last so the inherited system message wins over the fork's own prompt middleware.
+        fork_middleware.append(_ForkSystemMessageMiddleware())
+        resolved["middleware"] = fork_middleware
         return cast("SubAgent", resolved)
 
     def _compile_spec(

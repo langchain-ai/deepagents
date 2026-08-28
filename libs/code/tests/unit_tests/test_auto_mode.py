@@ -4572,11 +4572,7 @@ def _review_span(client: _RecordingTracingClient) -> dict[str, Any]:
 
 
 def _review_span_inputs(client: _RecordingTracingClient) -> dict[str, Any]:
-    """Return the opening payload of the review run.
-
-    Inputs travel on the create, not the close: `patch` drops them unless
-    `LANGSMITH_EXCLUDE_INPUTS_ON_PATCH` is off.
-    """
+    """Return the review run's inputs, which travel on the create, not the close."""
     opens = [
         run for run in client.created if run.get("name") == "auto_classifier_review"
     ]
@@ -4585,12 +4581,7 @@ def _review_span_inputs(client: _RecordingTracingClient) -> dict[str, Any]:
 
 
 async def test_classifier_timeout_closes_review_span_with_error(tmp_path: Path) -> None:
-    """A deadline reaches tracing as a failed span, not one that never ended.
-
-    `asyncio.timeout` cancels the classifier call, and `CancelledError` bypasses
-    the LangChain callback that would close the inner run. Without a span of our
-    own, a 20s denial left no error for an alert or error rate to see.
-    """
+    """A deadline reaches tracing as a failed span, not one that never ended."""
 
     class _SlowModel(_StructuredModel):
         async def ainvoke(self, messages: list[object], **kwargs: object) -> object:

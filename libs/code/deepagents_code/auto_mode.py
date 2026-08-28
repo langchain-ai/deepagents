@@ -2528,21 +2528,15 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
-        """Review one batch inside a span that outlives the review failing.
+        """Review one batch inside a span that survives the review failing.
 
-        The inner `ainvoke` run is opened by LangChain callbacks and closed by
-        `on_llm_end` or `on_llm_error`. A deadline does not raise into that call
-        — `asyncio.timeout` *cancels* it, and `CancelledError` derives from
-        `BaseException`, which the callback error path does not catch. So a
-        timed-out review left its run with a null `end_time`, no outputs, and no
-        error: not a failure in tracing, just a run that never finished. Denials
-        that cost a full budget were invisible to any error rate or alert built
-        on the project.
-
-        Owning an outer span fixes that without touching the deadline: it is
-        closed on the way out, so both deadlines and construction faults are
-        recorded as real errors. The inner run stays orphaned, because nothing
-        here can close a run that was cancelled rather than failed.
+        A deadline *cancels* the inner `ainvoke` rather than raising into it, and
+        LangChain closes its run from `on_llm_error`, which never sees a
+        `CancelledError`. Timed-out reviews therefore left a run with a null
+        `end_time` and no error — invisible to any error rate built on the
+        project. This span is closed on the way out, so deadlines and
+        construction faults land as real errors. The inner run stays orphaned:
+        nothing here can close a run that was cancelled rather than failed.
 
         Args:
             request: Resolved primary-model request for the current batch.
@@ -2556,8 +2550,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         """
         from langsmith import trace
 
-        # Names only. Arguments can carry file contents and secrets, and the
-        # inner run already records the prompt when tracing is on.
+        # Names only: arguments can carry file contents and secrets.
         async with trace(
             name="auto_classifier_review",
             run_type="chain",
@@ -2600,8 +2593,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 be built within its budget.
             _ClassifierDeadlineExceededError: If the classifier did not answer
                 within its budget.
-            TimeoutError: If the provider raised its own timeout rather than one
-                of our wait budgets expiring.
+            TimeoutError: If the provider raised a timeout of its own.
         """
         # Construction and inference get separate budgets: a cold provider
         # import must not eat the time reserved for the verdict, and the two

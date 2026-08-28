@@ -76,7 +76,7 @@ When adding or updating model names in docs, examples, or defaults, verify the l
 
 ### Testing
 
-Every feature or bugfix needs unit coverage.
+Add unit coverage when it meaningfully protects changed observable behavior; do not add tests solely to accompany every change.
 
 - Put network-free tests in `tests/unit_tests/` and networked tests in `tests/integration_tests/`.
 - Do not add `@pytest.mark.asyncio`; packages use `asyncio_mode = "auto"`.

@@ -933,7 +933,8 @@ class UserMessage(Static):
         else:
             amount = f"+{collapsed.hidden_chars:,} characters"
         return Content.styled(
-            f"{ellipsis} {amount} · click or Ctrl+O to show full message",
+            f"{ellipsis} {amount} {get_glyphs().separator} "
+            "click or Ctrl+O to show full message",
             cls._hint_style(),
         )
 
@@ -5946,7 +5947,9 @@ class SummarizationMessage(AppMessage):
         self._raw_message = message
         # Pass the default text to AppMessage for _content serialization;
         # render() supplies theme-aware styling at display time.
-        super().__init__(message or "✓ Conversation offloaded", **kwargs)
+        super().__init__(
+            message or f"{get_glyphs().checkmark} Conversation offloaded", **kwargs
+        )
 
     def render(self) -> Content:
         """Render with theme-aware colors.
@@ -5956,7 +5959,10 @@ class SummarizationMessage(AppMessage):
         """
         colors = theme.get_theme_colors(self)
         if self._raw_message is None:
-            return Content.styled("✓ Conversation offloaded", f"bold {colors.primary}")
+            return Content.styled(
+                f"{get_glyphs().checkmark} Conversation offloaded",
+                f"bold {colors.primary}",
+            )
         if isinstance(self._raw_message, Content):
             return self._raw_message
         return Content.styled(self._raw_message, f"bold {colors.primary}")

@@ -8,6 +8,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.thread_agent_switch import (
     ThreadAgentSwitchChoice,
     ThreadAgentSwitchPromptScreen,
@@ -144,7 +145,7 @@ class TestThreadAgentSwitchPromptScreen:
             )
 
             assert help_widget.size.width < len(
-                "Enter: switch and resume · Esc: cancel"
+                f"Enter: switch and resume {get_glyphs().separator} Esc: cancel"
             )
             assert needed > 1, "expected the help line to wrap at this width"
             assert help_widget.size.height >= needed

@@ -90,7 +90,14 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.hunk_break) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
-        """Test that ASCII_GLYPHS contains only ASCII characters."""
+        """Test that every ASCII glyph field contains only ASCII characters."""
+        for field in fields(Glyphs):
+            value = getattr(ASCII_GLYPHS, field.name)
+            values = value if isinstance(value, tuple) else (value,)
+            assert all(text.isascii() for text in values)
+
+    def test_legacy_ascii_glyphs_are_ascii(self) -> None:
+        """Keep explicit coverage of the established ASCII glyph values."""
         for char in ASCII_GLYPHS.tool_prefix:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.ellipsis:

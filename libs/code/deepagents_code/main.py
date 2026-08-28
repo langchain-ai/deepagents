@@ -1360,8 +1360,10 @@ def _prompt_yolo_acknowledgement(console: "Console") -> bool:
                 (
                     "class:prompt.help",
                     (
-                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                        "Enter select · Esc Manual · Ctrl+C quit\n"
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
+                        f"{glyphs.separator} "
+                        f"Enter select {glyphs.separator} Esc Manual "
+                        f"{glyphs.separator} Ctrl+C quit\n"
                     ),
                 )
             ]
@@ -3956,8 +3958,9 @@ def _run_trust_action_picker(
             (
                 "class:prompt.help",
                 (
-                    f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                    "Enter select · Esc/Ctrl+D abort\n"
+                    f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
+                    f"{glyphs.separator} "
+                    f"Enter select {glyphs.separator} Esc/Ctrl+D abort\n"
                 ),
             ),
         ]
@@ -4123,6 +4126,9 @@ def _select_trust_action(
         Ctrl+D (or denies with `abort_on_deny`), or `INTERRUPTED` when the
         user presses Ctrl+C.
     """
+    from deepagents_code.config import get_glyphs
+
+    separator = f" {get_glyphs().separator} "
     selected = _run_trust_action_picker(
         console,
         remember_label=remember_label,
@@ -4143,21 +4149,31 @@ def _select_trust_action(
     # instead would split it onto stdout, so `dcode 2>log` would show a bare
     # question with all of its context redirected away.
     if refresh_label is None:
-        choices = f"{allow_label} [y] · {remember_label} [r] · {deny_label} [N]"
+        choices = separator.join(
+            (f"{allow_label} [y]", f"{remember_label} [r]", f"{deny_label} [N]")
+        )
         prompt = "Choose [y/r/N]: "
     elif deny_first:
         # Deny keeps its leading position, but the refresh — not the deny —
         # is the default: the uppercase [U] mirrors the picker's initial
         # highlight so a bare Enter repairs the environment.
-        choices = (
-            f"{deny_label} [n] · {refresh_label} [U] · "
-            f"{allow_label} [y] · {remember_label} [r]"
+        choices = separator.join(
+            (
+                f"{deny_label} [n]",
+                f"{refresh_label} [U]",
+                f"{allow_label} [y]",
+                f"{remember_label} [r]",
+            )
         )
         prompt = "Choose [n/U/y/r]: "
     else:
-        choices = (
-            f"{allow_label} [y] · {remember_label} [r] · "
-            f"{refresh_label} [u] · {deny_label} [N]"
+        choices = separator.join(
+            (
+                f"{allow_label} [y]",
+                f"{remember_label} [r]",
+                f"{refresh_label} [u]",
+                f"{deny_label} [N]",
+            )
         )
         prompt = "Choose [y/r/u/N]: "
     console.print(f"[dim]{choices}[/dim]", highlight=False)
@@ -4235,10 +4251,13 @@ def _run_project_mcp_server_checkbox_picker(
                     (
                         "Remembered servers are trusted only for this project while "
                         "their definitions stay unchanged.\n"
-                        f"{selected_index + 1} of {len(names)} · "
+                        f"{selected_index + 1} of {len(names)} {glyphs.separator} "
                         f"{len(selected_names)} selected\n"
-                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move · "
-                        "Space toggle · a select all · c clear · Enter confirm · "
+                        f"{glyphs.arrow_up}/{glyphs.arrow_down}/Tab move "
+                        f"{glyphs.separator} "
+                        f"Space toggle {glyphs.separator} a select all "
+                        f"{glyphs.separator} c clear {glyphs.separator} "
+                        f"Enter confirm {glyphs.separator} "
                         "Esc abort\n"
                     ),
                 ),

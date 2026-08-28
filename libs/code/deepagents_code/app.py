@@ -887,6 +887,9 @@ def _format_mcp_server_changes(
     Returns:
         A user-facing MCP server change summary.
     """
+    from deepagents_code.config import get_glyphs
+
+    glyphs = get_glyphs()
     if current is None:
         detail = f" ({error})" if error else ""
         return f"MCP server changes couldn't be determined{detail}; use /mcp to check."
@@ -1028,7 +1031,8 @@ def _format_mcp_server_changes(
         lines.append(f"  - Recovered: {', '.join(recovered)}")
     if status_changed:
         transitions = ", ".join(
-            f"{name} ({before[name].status} → {servers[name].status})"
+            f"{name} ({before[name].status} {glyphs.arrow_right} "
+            f"{servers[name].status})"
             for name in status_changed
         )
         lines.append(f"  - Status changed: {transitions}")
@@ -1037,9 +1041,14 @@ def _format_mcp_server_changes(
         for name in reconfigured:
             was, now = before[name], servers[name]
             if was.transport != now.transport:
-                edits.append(f"{name} ({was.transport} → {now.transport})")
+                edits.append(
+                    f"{name} ({was.transport} {glyphs.arrow_right} {now.transport})"
+                )
             else:
-                edits.append(f"{name} ({len(was.tools)} → {len(now.tools)} tools)")
+                edits.append(
+                    f"{name} ({len(was.tools)} {glyphs.arrow_right} "
+                    f"{len(now.tools)} tools)"
+                )
         lines.append(f"  - Reconfigured: {', '.join(edits)}")
     if new_config_errors:
         lines.append(f"  - Config errors: {', '.join(new_config_errors)}")
@@ -2377,10 +2386,13 @@ def _action_label(entry: PendingNotification, action_id: ActionId) -> str:
 
 def _truncate(text: str, *, limit: int) -> str:
     """Return *text* truncated to *limit* characters with an ellipsis suffix."""
+    from deepagents_code.config import get_glyphs
+
     text = text.strip()
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "…"
+    ellipsis = get_glyphs().ellipsis
+    return text[: limit - len(ellipsis)].rstrip() + ellipsis
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -9392,9 +9404,7 @@ class DeepAgentsApp(App):
         Returns:
             A Future that resolves to the user's decision.
         """
-        from deepagents_code.config import (
-            is_shell_command_allowed,
-        )
+        from deepagents_code.config import get_glyphs, is_shell_command_allowed
 
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
@@ -9431,7 +9441,8 @@ class DeepAgentsApp(App):
                     messages = self.query_one("#messages", Container)
                     for command in approved_commands:
                         auto_msg = AppMessage(
-                            f"✓ Auto-approved shell command (allow-list): {command}",
+                            f"{get_glyphs().checkmark} Auto-approved shell command "
+                            f"(allow-list): {command}",
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     with suppress(NoMatches, ScreenStackError):
@@ -14326,6 +14337,8 @@ class DeepAgentsApp(App):
             empty_message: Optional override for the no-goal message. Bare
                 `/goal` passes full usage tips; `/goal show` keeps a short nudge.
         """
+        from deepagents_code.config import get_glyphs
+
         lines: list[str] = []
         if self._active_goal:
             status = self._goal_status or "active"
@@ -14353,7 +14366,8 @@ class DeepAgentsApp(App):
         if lines:
             grader_model, grader_iterations = self._grader_display_values()
             lines.append(
-                f"Grader: {grader_model} · max iterations: {grader_iterations}"
+                f"Grader: {grader_model} {get_glyphs().separator} "
+                f"max iterations: {grader_iterations}"
             )
             if self._active_goal and self._goal_status == "active":
                 lines.append(
@@ -15746,7 +15760,7 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
-        from deepagents_code.config import newline_shortcut, runtime_state
+        from deepagents_code.config import get_glyphs, newline_shortcut, runtime_state
 
         cmd = command.lower().strip()
 
@@ -16023,7 +16037,11 @@ class DeepAgentsApp(App):
                 else:
                     usage = f"{formatted} tokens used"
 
-                msg = f"{usage} \u00b7 {model_name}" if model_name else usage
+                msg = (
+                    f"{usage} {get_glyphs().separator} {model_name}"
+                    if model_name
+                    else usage
+                )
 
                 conv_tokens = await self._get_conversation_token_count()
                 if conv_tokens is not None:
@@ -16035,8 +16053,10 @@ class DeepAgentsApp(App):
                     conv_unit = " tokens" if conv_tokens < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
 
                     msg += (
-                        f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
-                        f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
+                        f"\n{get_glyphs().tree_branch} System prompt + tools: "
+                        f"~{overhead_str}{overhead_unit} (fixed)"
+                        f"\n{get_glyphs().tree_last} Conversation: "
+                        f"~{conv_str}{conv_unit}"
                     )
 
                 if self._displayed_cost_usd > 0:
@@ -16589,6 +16609,8 @@ class DeepAgentsApp(App):
 
     async def _run_reload_unlocked(self) -> None:
         """Run `/reload` while the environment mutation lock is held."""
+        from deepagents_code.config import get_glyphs
+
         try:
             # Snapshot pre-reload state so the report can show diffs.
             old_skill_names = {s["name"] for s in self._discovered_skills}
@@ -16728,13 +16750,14 @@ class DeepAgentsApp(App):
                 )
                 plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
                 hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
+                separator = f" {get_glyphs().separator} "
                 report += (
                     f"\nPlugins: {plugin_count} plugin"
-                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{'s' if plugin_count != 1 else ''}{separator}"
                     f"{plugin_skill_count} skill"
-                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{'s' if plugin_skill_count != 1 else ''}{separator}"
                     f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''} · "
+                    f"{'s' if mcp_count != 1 else ''}{separator}"
                     f"{hook_count} hook{'s' if hook_count != 1 else ''}"
                 )
                 if old_plugin_fingerprints is not None:
@@ -16972,7 +16995,7 @@ class DeepAgentsApp(App):
         try:
             await self._set_spinner("Offloading")
             from deepagents_code._cli_context import CLIContext
-            from deepagents_code.config import runtime_state
+            from deepagents_code.config import get_glyphs, runtime_state
 
             context = CLIContext(
                 model=self._effective_model_spec(),
@@ -17073,12 +17096,14 @@ class DeepAgentsApp(App):
             )
             if tokens_after <= tokens_before:
                 stats_line = (
-                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{usage_label}: {before} {get_glyphs().arrow_right} {after} "
+                    f"tokens ({pct}% decrease), "
                     f"{result['messages_kept']} {kept_message_label} kept."
                 )
             else:
                 stats_line = (
-                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{usage_label}: {before} {get_glyphs().arrow_right} {after} "
+                    "tokens (increase), "
                     f"{result['messages_kept']} {kept_message_label} kept."
                 )
             offloaded_message_label = (
@@ -29051,7 +29076,7 @@ class DeepAgentsApp(App):
                 model name for auto-detection).
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from deepagents_code.config import detect_provider
+        from deepagents_code.config import detect_provider, get_glyphs
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
         if self._server_kwargs is None:
@@ -29110,7 +29135,9 @@ class DeepAgentsApp(App):
         except (NoMatches, ScreenStackError):
             messages = None
         if messages is not None and messages.is_attached:
-            new_widget = AppMessage(f"Retrying startup with {display}…")
+            new_widget = AppMessage(
+                f"Retrying startup with {display}{get_glyphs().ellipsis}"
+            )
             # Mount before storing the reference so `on_deep_agents_app_server_ready`
             # cannot observe a half-mounted widget if it races during this await.
             await self._mount_before_queued(messages, new_widget)

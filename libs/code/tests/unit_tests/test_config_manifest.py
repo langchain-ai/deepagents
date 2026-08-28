@@ -2566,6 +2566,19 @@ def test_display_value_truncates_long_values() -> None:
     assert rendered.endswith("\N{HORIZONTAL ELLIPSIS}")
 
 
+def test_display_value_ascii_truncation_respects_limit(monkeypatch) -> None:
+    from deepagents_code.config import ASCII_GLYPHS
+
+    monkeypatch.setattr("deepagents_code.config.get_glyphs", lambda: ASCII_GLYPHS)
+    opt = ConfigOption(key="x", group="g", summary="s", kind=OptionKind.STR)
+
+    rendered = _display_value(opt, is_set=True, value="a" * 100)
+
+    assert len(rendered) == 60
+    assert rendered.endswith(ASCII_GLYPHS.ellipsis)
+    assert rendered.isascii()
+
+
 def test_config_text_survives_markup_in_value(monkeypatch) -> None:
     """A value containing Rich close-tag markup must not crash text rendering."""
     monkeypatch.setenv(

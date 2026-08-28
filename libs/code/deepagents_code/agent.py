@@ -3312,8 +3312,11 @@ def create_cli_agent(
         fs_tools=fs_tools,
     )
     from deepagents_code.goal_rubric import (
+        RubricGraderState,
         _ContextToolCallBudgetMiddleware,
         _CriteriaContextBudgetMiddleware,
+        _rubric_grader_messages,
+        _rubric_grader_state,
         _rubric_interrupt_on,
         _WebSearchBudgetMiddleware,
     )
@@ -3390,6 +3393,9 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            "grader_state_schema": RubricGraderState,
+            "prepare_messages_for_grader": _rubric_grader_messages,
+            "build_grader_state": _rubric_grader_state,
             # The bootstrap only scaffolds the runtime grader's graph;
             # `ConfigurableModelMiddleware` swaps in the thread-selected model
             # before any call. Pass the main model through even as an

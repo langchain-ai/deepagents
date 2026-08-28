@@ -18,10 +18,15 @@ from deepagents_code.plugins.marketplace import (
     _redact_url_credentials,
     _root_for_marketplace_file,
     _run_git,
+    materialize_plugin_source,
     parse_marketplace_source,
 )
 from deepagents_code.plugins.models import (
+    GitSubdirectoryPluginSource,
     LocalMarketplaceSource,
+    LocalPluginSource,
+    MarketplacePluginEntry,
+    PluginMarketplace,
     RepositoryMarketplaceSource,
     UrlMarketplaceSource,
 )
@@ -349,3 +354,104 @@ def test_json_normalization_is_recursive_and_precisely_typed() -> None:
     assert json_value(value) == {"valid": [1, None, {"nested": True}]}
     assert json_object(value) == {"valid": [1, None, {"nested": True}]}
     assert json_object(["not", "an", "object"]) == {}
+
+
+def _marketplace(
+    root: Path, entry: MarketplacePluginEntry, **metadata: str
+) -> PluginMarketplace:
+    return PluginMarketplace(
+        name="my-plugins",
+        root=root,
+        manifest_path=root / ".claude-plugin" / "marketplace.json",
+        metadata=json_object(metadata),
+        plugins=(entry,),
+    )
+
+
+@pytest.mark.parametrize("declared", ["plugins/my-plugin", "./plugins/my-plugin"])
+def test_materialize_local_source_accepts_bare_and_dotted_paths(
+    declared: str, tmp_path: Path
+) -> None:
+    (tmp_path / "plugins" / "my-plugin").mkdir(parents=True)
+    entry = MarketplacePluginEntry(
+        name="my-plugin", source=LocalPluginSource(source_type="local", path=declared)
+    )
+
+    resolved = materialize_plugin_source(_marketplace(tmp_path, entry), entry)
+
+    assert resolved == tmp_path / "plugins" / "my-plugin"
+
+
+@pytest.mark.parametrize("plugin_root", ["nested", "./nested"])
+def test_materialize_local_source_applies_plugin_root(
+    plugin_root: str, tmp_path: Path
+) -> None:
+    (tmp_path / "nested" / "my-plugin").mkdir(parents=True)
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=LocalPluginSource(source_type="local", path="my-plugin"),
+    )
+
+    resolved = materialize_plugin_source(
+        _marketplace(tmp_path, entry, pluginRoot=plugin_root), entry
+    )
+
+    assert resolved == tmp_path / "nested" / "my-plugin"
+
+
+@pytest.mark.parametrize(
+    "declared", ["../escape", "./../escape", "/etc", "", "./", "plugins/../../escape"]
+)
+def test_materialize_local_source_rejects_paths_outside_the_marketplace(
+    declared: str, tmp_path: Path
+) -> None:
+    entry = MarketplacePluginEntry(
+        name="my-plugin", source=LocalPluginSource(source_type="local", path=declared)
+    )
+
+    assert materialize_plugin_source(_marketplace(tmp_path, entry), entry) is None
+
+
+@pytest.mark.parametrize("declared", ["skills", "./skills"])
+def test_materialize_git_subdir_source_accepts_bare_and_dotted_paths(
+    declared: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    (clone / "skills").mkdir(parents=True)
+    monkeypatch.setattr(
+        "deepagents_code.plugins.marketplace._materialize_plugin_repository",
+        lambda *_args, **_kwargs: clone,
+    )
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url="https://github.com/acme-corp/monorepo.git",
+            path=declared,
+        ),
+    )
+
+    resolved = materialize_plugin_source(_marketplace(tmp_path, entry), entry)
+
+    assert resolved == clone / "skills"
+
+
+def test_materialize_git_subdir_source_rejects_escaping_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    monkeypatch.setattr(
+        "deepagents_code.plugins.marketplace._materialize_plugin_repository",
+        lambda *_args, **_kwargs: clone,
+    )
+    entry = MarketplacePluginEntry(
+        name="my-plugin",
+        source=GitSubdirectoryPluginSource(
+            source_type="git-subdir",
+            url="https://github.com/acme-corp/monorepo.git",
+            path="../outside",
+        ),
+    )
+
+    assert materialize_plugin_source(_marketplace(tmp_path, entry), entry) is None

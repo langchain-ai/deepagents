@@ -91,15 +91,30 @@ def _resolve_component_path(
     plugin_root: Path,
     field_name: str,
     warnings: list[str],
+    *,
+    require_dot_prefix: bool = True,
 ) -> Path | None:
-    if not declaration.startswith("./"):
+    """Resolve one plugin-relative path, or `None` if it is not usable.
+
+    Plugin manifest component fields must start with `./`. Marketplace source
+    paths must not, because the marketplace format also accepts a bare relative
+    path such as `tools/my-plugin`; those callers pass
+    `require_dot_prefix=False`. Both forms stay inside `plugin_root`.
+
+    Returns:
+        The resolved path, or `None` when the declaration is rejected.
+    """
+    if declaration.startswith("./"):
+        relative = declaration[2:]
+    elif require_dot_prefix:
         warnings.append(
             f"ignoring {field_name}: path must start with './' relative to plugin root"
         )
         return None
-    relative = declaration[2:]
+    else:
+        relative = declaration
     if not relative:
-        warnings.append(f"ignoring {field_name}: path must not be './'")
+        warnings.append(f"ignoring {field_name}: path must not be empty")
         return None
     path = Path(relative)
     if any(part == ".." for part in path.parts):

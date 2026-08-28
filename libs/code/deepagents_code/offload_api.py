@@ -33,6 +33,11 @@ from deepagents_code.offload_middleware import (
     unchanged_offload_result,
 )
 from deepagents_code.server_graph import get_server_runtime
+from deepagents_code.workspace import (
+    WorkspaceConflictError,
+    bind_thread_workspace,
+    require_thread_workspace,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -163,6 +168,52 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
             await _flush_traces()
 
 
+async def workspace(request: Request) -> JSONResponse:
+    """Create or verify the durable workspace assigned to a thread.
+
+    Returns:
+        A validated workspace descriptor or an error response.
+    """
+    thread_id = request.path_params["thread_id"]
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"detail": "request body must be an object"}, status_code=422
+        )
+    try:
+        binding = await bind_thread_workspace(
+            thread_id,
+            body.get("cwd"),
+            body.get("workspace_config"),
+        )
+    except ValueError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    client = _thread_client()
+    metadata = {
+        "cwd": binding.cwd,
+        "dcode_workspace_id": binding.workspace_id,
+        "dcode_workspace_generation": binding.generation,
+    }
+    try:
+        await client.threads.create(
+            thread_id=thread_id,
+            if_exists="do_nothing",
+            metadata=metadata,
+            graph_id="agent",
+        )
+        await client.threads.update(thread_id, metadata=metadata)
+    except Exception:
+        logger.exception("Failed to mirror workspace metadata for thread %s", thread_id)
+        return JSONResponse(
+            {"detail": "Workspace was bound but thread metadata could not be updated."},
+            status_code=503,
+        )
+    return JSONResponse({"workspace": binding.to_payload()})
+
+
 def _extensions(request: Request) -> JSONResponse:
     """Return extension provenance only to a loopback client."""
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
@@ -284,7 +335,12 @@ _CONTEXT_STR_OR_NONE_FIELDS = (
     "hooks_snapshot_id",
     "prompt_id",
 )
-_CONTEXT_DICT_FIELDS = ("model_params", "profile_overrides")
+_CONTEXT_DICT_FIELDS = (
+    "model_params",
+    "profile_overrides",
+    "workspace",
+    "workspace_config",
+)
 
 _TRANSPORT_MODEL_PARAM_KEYS = frozenset(
     {
@@ -823,6 +879,12 @@ async def _execute_offload(
         checkpoint_id = _checkpoint_id(before)
         context = _checkpoint_model_context(context, state)
         context["thread_id"] = thread_id
+        if context.get("workspace"):
+            await require_thread_workspace(
+                thread_id,
+                context.get("workspace"),
+                context.get("workspace_config"),
+            )
         namespace = f"dcode_offload:{operation_id}"
         info = ExecutionInfo(
             checkpoint_id=checkpoint_id,
@@ -832,7 +894,16 @@ async def _execute_offload(
             run_id=operation_id,
         )
         try:
-            server = await get_server_runtime()
+            schema = CLIContextSchema.from_payload(context)
+            if schema is None:
+                msg = "Offload requires workspace runtime context."
+                raise _OffloadConflictError(msg)
+            if schema.workspace:
+                from deepagents_code.server_graph import _workspace_runtime
+
+                server = await _workspace_runtime(schema)
+            else:
+                server = await get_server_runtime()
         except SystemExit as exc:
             msg = (
                 "The server could not build its agent runtime, so /offload is "
@@ -1042,6 +1113,11 @@ async def cancel_offload(request: Request) -> JSONResponse:
 app = Starlette(
     lifespan=_lifespan,
     routes=[
+        Route(
+            "/dcode/threads/{thread_id:str}/workspace",
+            workspace,
+            methods=["POST"],
+        ),
         Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,

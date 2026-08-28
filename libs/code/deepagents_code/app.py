@@ -5959,6 +5959,9 @@ class DeepAgentsApp(App):
             start_server_and_get_agent,
         )
 
+        if self._server_kwargs is None:
+            return
+        self._server_kwargs["cwd"] = self._cwd
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
 
         if self._mcp_preload_kwargs is not None:
@@ -28496,7 +28499,10 @@ class DeepAgentsApp(App):
             self._preserve_launch_relative_server_paths(previous_cwd)
             await self._switch_process_cwd(cwd)
 
-            coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]
+            self._server_kwargs["cwd"] = self._cwd
+            coros: list[Any] = [
+                start_server_and_get_agent(**self._server_kwargs)  # ty: ignore[invalid-argument-type]
+            ]
             if self._mcp_preload_kwargs is not None:
                 coros.append(
                     _preload_session_mcp_server_info(**self._mcp_preload_kwargs)

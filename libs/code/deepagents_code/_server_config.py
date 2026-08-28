@@ -422,6 +422,45 @@ class ServerConfig:
     extension_paths: tuple[str, ...] = ()
     """Absolute one-run extension files or directories from repeatable CLI flags."""
 
+    def to_workspace_payload(self) -> dict[str, Any]:
+        """Return the workspace-dependent configuration sent with each run."""
+        return {
+            "model": self.model,
+            "summarization_model": self.summarization_model,
+            "model_params": self.model_params or {},
+            "cli_max_retries": self.cli_max_retries,
+            "profile_overrides": self.profile_overrides or {},
+            "assistant_id": self.assistant_id,
+            "system_prompt": self.system_prompt,
+            "auto_approve": self.auto_approve,
+            "interrupt_shell_only": self.interrupt_shell_only,
+            "shell_allow_list": self.shell_allow_list,
+            "interactive": self.interactive,
+            "enable_shell": self.enable_shell,
+            "enable_ask_user": self.enable_ask_user,
+            "enable_memory": self.enable_memory,
+            "enable_skills": self.enable_skills,
+            "enable_interpreter": self.enable_interpreter,
+            "interpreter_ptc": self.interpreter_ptc,
+            "interpreter_ptc_acknowledge_unsafe": (
+                self.interpreter_ptc_acknowledge_unsafe
+            ),
+            "allow_fs_tools": self.allow_fs_tools,
+            "rubric_model": self.rubric_model,
+            "rubric_max_iterations": self.rubric_max_iterations,
+            "auto_classifier_model": self.auto_classifier_model,
+            "recursion_limit": self.recursion_limit,
+            "sandbox_type": self.sandbox_type,
+            "sandbox_id": self.sandbox_id,
+            "sandbox_snapshot_name": self.sandbox_snapshot_name,
+            "sandbox_setup": self.sandbox_setup,
+            "mcp_config_path": self.mcp_config_path,
+            "no_mcp": self.no_mcp,
+            "trust_project_mcp": self.trust_project_mcp,
+            "trust_project_extensions": self.trust_project_extensions,
+            "extension_paths": list(self.extension_paths),
+        }
+
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
 

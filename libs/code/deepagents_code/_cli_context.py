@@ -87,6 +87,10 @@ class CLIContextSchema:
 
     prompt_id: str | None = None
 
+    workspace: dict[str, Any] = field(default_factory=dict)
+
+    workspace_config: dict[str, Any] = field(default_factory=dict)
+
     @classmethod
     def from_payload(cls, payload: object) -> CLIContextSchema | None:
         """Coerce a run's `context=` payload into this schema.
@@ -159,6 +163,8 @@ class CLIContextSchema:
             hooks_snapshot_id=_str("hooks_snapshot_id"),
             hooks_server_events=events,
             prompt_id=_str("prompt_id"),
+            workspace=_mapping("workspace"),
+            workspace_config=_mapping("workspace_config"),
         )
 
 
@@ -249,3 +255,9 @@ class CLIContext(TypedDict, total=False):
 
     prompt_id: str | None
     """Optional per-turn prompt id projected into hook context."""
+
+    workspace: dict[str, Any]
+    """Server-validated workspace binding for the active thread."""
+
+    workspace_config: dict[str, Any]
+    """Workspace-dependent server configuration used to build its runtime."""

@@ -309,6 +309,7 @@ def _make_agent(
 
     mock_graph.astream = fake_astream
     agent._graph = mock_graph
+    agent._workspaces[_TEST_THREAD_ID] = {"workspace_id": "test-workspace"}
     return agent
 
 
@@ -332,6 +333,7 @@ def _make_capturing_agent() -> tuple[RemoteAgent, dict[str, Any]]:
 
     mock_graph.astream = fake_astream
     agent._graph = mock_graph
+    agent._workspaces[_TEST_THREAD_ID] = {"workspace_id": "test-workspace"}
     return agent, captured
 
 
@@ -1303,8 +1305,56 @@ def _offload_graph(http: SimpleNamespace) -> SimpleNamespace:
     )
 
 
+class TestRemoteAgentWorkspace:
+    """Workspace bindings stay thread-scoped and require explicit launch state."""
+
+    async def test_bindings_are_cached_per_thread(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+        post = AsyncMock(
+            side_effect=[
+                {"workspace": {"workspace_id": "first"}},
+                {"workspace": {"workspace_id": "second"}},
+            ]
+        )
+        graph = SimpleNamespace(client=SimpleNamespace(http=SimpleNamespace(post=post)))
+        agent.set_workspace("/workspace/project", {"enable_shell": True})
+
+        with patch.object(agent, "_get_graph", return_value=graph):
+            first = await agent._workspace_for_thread(
+                {"configurable": {"thread_id": "thread-1"}}
+            )
+            repeated = await agent._workspace_for_thread(
+                {"configurable": {"thread_id": "thread-1"}}
+            )
+            second = await agent._workspace_for_thread(
+                {"configurable": {"thread_id": "thread-2"}}
+            )
+
+        assert first == repeated == {"workspace_id": "first"}
+        assert second == {"workspace_id": "second"}
+        assert post.await_count == 2
+
+    async def test_binding_requires_explicit_workspace(self) -> None:
+        agent = RemoteAgent("http://localhost:1234")
+
+        with pytest.raises(RuntimeError, match="not configured"):
+            await agent._workspace_for_thread(
+                {"configurable": {"thread_id": "thread-1"}}
+            )
+
+
 class TestServerOffload:
     """The remote client transports operation data without graph state."""
+
+    @pytest.fixture(autouse=True)
+    def _bound_workspace(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        async def workspace_for_thread(  # noqa: RUF029
+            _agent: RemoteAgent,
+            _config: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {"workspace_id": "test-workspace"}
+
+        monkeypatch.setattr(RemoteAgent, "_workspace_for_thread", workspace_for_thread)
 
     async def test_cancellation_waits_for_server_acknowledgement(self) -> None:
         """Esc must not release the caller while server offload is still live."""
@@ -1429,7 +1479,11 @@ class TestServerOffload:
         assert http.post.await_count == 2
         first = http.post.await_args_list[0].kwargs["json"]
         second = http.post.await_args_list[1].kwargs["json"]
-        assert first["context"] == {"model": "test:model"}
+        assert first["context"] == {
+            "model": "test:model",
+            "workspace": {"workspace_id": "test-workspace"},
+            "workspace_config": {},
+        }
         assert "messages" not in first
         assert first["operation_id"] == second["operation_id"]
         assert second["hook_responses"] == {"hook-1": {"decision": "allow"}}

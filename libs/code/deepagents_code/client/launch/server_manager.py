@@ -325,6 +325,7 @@ async def start_server_and_get_agent(
     interactive: bool = True,
     host: str = "127.0.0.1",
     port: int = _EPHEMERAL_PORT,
+    cwd: str | None = None,
 ) -> tuple[RemoteAgent, ServerProcess, MCPSessionManager | None]:
     """Start a LangGraph server and return a connected remote agent client.
 
@@ -369,6 +370,7 @@ async def start_server_and_get_agent(
         port: Server port. Defaults to `_EPHEMERAL_PORT` (0), letting the server
             pick a free ephemeral port instead of the well-known `langgraph dev`
             port 2024.
+        cwd: Explicit project workspace to bind to new threads.
 
     Returns:
         Tuple of `(remote_agent, server_process, mcp_session_manager)`.
@@ -442,6 +444,8 @@ async def start_server_and_get_agent(
             url=server.url,
             graph_name="agent",
         )
+        if cwd is not None:
+            agent.set_workspace(cwd, config.to_workspace_payload())
         started = True
         return agent, server, None
     finally:

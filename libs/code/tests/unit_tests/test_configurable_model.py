@@ -715,6 +715,8 @@ class TestModelSwap:
             "hooks_snapshot_id": "snap-1",
             "hooks_server_events": ["PreToolUse"],
             "prompt_id": "prompt-1",
+            "workspace": {"workspace_id": "workspace-1"},
+            "workspace_config": {"enable_shell": True},
         }
         assert set(payload) == {spec.name for spec in fields(CLIContextSchema)}
 

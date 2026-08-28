@@ -2,6 +2,13 @@
 
 # Deep Agents Changelog
 
+## [0.7.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.10...deepagents==0.7.11) (2026-08-28)
+
+
+### Features
+
+* **sdk:** add rubric grader integration hooks ([#5874](https://github.com/langchain-ai/deepagents/issues/5874)) ([07c0340](https://github.com/langchain-ai/deepagents/commit/07c0340bc41e3717f1cd73705b71f1f6a87d753f))
+
 ## [0.7.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.9...deepagents==0.7.10) (2026-08-28)
 
 ### Bug Fixes

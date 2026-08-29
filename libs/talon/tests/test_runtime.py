@@ -794,7 +794,34 @@ async def test_runtime_recursion_limit_defaults_when_env_unset(
 
     result = await runtime.invoke(AgentRequest(conversation_id="chat", text="hi"))
     assert graph.calls[0][1]["recursion_limit"] == 500
+    assert "callbacks" not in graph.calls[0][1]
     assert result.text == "seen:1"
+
+
+async def test_runtime_adds_activity_callback_when_enabled(
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    graph = RecordingGraph()
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", lambda **_kwargs: graph)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+        env={"DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING": "true"},
+    )
+    await runtime.start()
+
+    with caplog.at_level(logging.INFO, logger="deepagents_talon.runtime"):
+        result = await runtime.invoke(AgentRequest(conversation_id="private-chat", text="hi"))
+
+    callbacks = cast("list[object]", graph.calls[0][1]["callbacks"])
+    assert len(callbacks) == 1
+    assert result.text == "seen:1"
+    assert "agent.run.started" in caplog.text
+    assert "agent.run.completed" in caplog.text
+    assert "private-chat" not in caplog.text
 
 
 async def test_runtime_recursion_limit_reads_env_var(monkeypatch: pytest.MonkeyPatch) -> None:

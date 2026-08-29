@@ -1,6 +1,7 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
 import json
+import warnings
 from collections.abc import Callable
 from typing import Any, get_type_hints
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
+from langchain_core._api.beta_decorator import LangChainBetaWarning
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatResult
@@ -253,6 +255,22 @@ class TestSubagentMiddlewareInit:
 
         installed = any(isinstance(middleware, _ParentSystemMessageMiddleware) for middleware in captured["middleware"])
         assert installed is expected
+
+    @pytest.mark.parametrize(("mode", "expected"), [(None, 0), ("fork", 1)], ids=["isolated", "fork"])
+    def test_forked_subagent_warns_beta(self, mode: str | None, expected: int) -> None:
+        """Configuring a fork warns that the spec is beta; isolated subagents don't."""
+        spec: dict[str, Any] = {"name": "worker", "description": "Does work.", "runnable": self._make_echo_graph()}
+        if mode is not None:
+            spec["mode"] = mode
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SubAgentMiddleware(backend=StateBackend(), subagents=[spec])
+
+        beta_warnings = [w for w in caught if isinstance(w.message, LangChainBetaWarning)]
+        assert len(beta_warnings) == expected
+        if expected:
+            assert "`ForkedSubAgent` is in beta" in str(beta_warnings[0].message)
 
     def test_forked_subagent_tool_order_matches_parent(self) -> None:
         """A fork's tools block must serialize identically to the parent's to reuse its cache."""

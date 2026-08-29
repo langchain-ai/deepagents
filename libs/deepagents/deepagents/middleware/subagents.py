@@ -21,6 +21,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
+from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
@@ -948,6 +949,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._task_description = task_description
         self._state_schema = state_schema
         self._parent_system_prompt = parent_system_prompt
+        if any(_is_forked_subagent(spec) for spec in subagents):
+            warn_beta(name="ForkedSubAgent", obj_type="subagent spec")
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""

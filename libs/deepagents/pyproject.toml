@@ -139,6 +139,7 @@ filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
     "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
+    "ignore:The subagent spec `ForkedSubAgent` is in beta:langchain_core._api.LangChainBetaWarning",
     # `langsmith.sandbox` is alpha upstream; the FutureWarning fires on import.
     "ignore:langsmith.sandbox is in alpha:FutureWarning",
     # pytest-cov complains when invoked with `--no-cov` (used for fast runs).

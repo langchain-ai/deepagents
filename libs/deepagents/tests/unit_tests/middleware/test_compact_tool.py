@@ -470,6 +470,30 @@ class TestMalformedEvent:
         assert result[0] is summary_msg
 
 
+class TestCompactBackendUsage:
+    """Test backend use for compact offloading."""
+
+    def test_compact_writes_history_to_configured_backend(self) -> None:
+        """Compacted history is written through the configured backend."""
+        backend = _make_mock_backend()
+        summarization = SummarizationMiddleware(
+            model=_make_mock_model(),
+            backend=backend,
+            trigger=("fraction", 0.85),
+            keep=("messages", 2),
+        )
+        middleware = SummarizationToolMiddleware(summarization)
+        messages = [HumanMessage(content=f"Message {index}") for index in range(9)]
+        messages.append(_ai_message_with_usage(120_000))
+        result = middleware._run_compact(_make_runtime(messages))
+
+        event = result.update["_summarization_event"]
+        backend.write.assert_called_once()
+        path, content = backend.write.call_args.args
+        assert path == event["file_path"]
+        assert "Message 0" in content
+
+
 class TestComputeStateCutoff:
     """Tests for _compute_state_cutoff arithmetic."""
 

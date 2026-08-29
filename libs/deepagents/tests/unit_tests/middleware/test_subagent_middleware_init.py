@@ -866,6 +866,58 @@ class TestSubagentMiddlewareInit:
         assert "_summarization_event" not in captured
         assert captured[_FORKED_CONTEXT_KEY] is True
 
+    @pytest.mark.parametrize("declarative", [True, False], ids=["declarative", "compiled"])
+    def test_fork_state_inheritance_depends_on_spec_kind(self, declarative: bool) -> None:  # noqa: FBT001
+        """Only a declarative fork inherits private channels; both drop summarization state."""
+        captured: dict[str, object] = {}
+
+        class _Runnable:
+            def with_config(self, config: dict[str, object]) -> "_Runnable":
+                del config
+                return self
+
+            def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
+                del config
+                captured.update(state)
+                return {"messages": [AIMessage(content="done")]}
+
+        def fake_create_sub_agent(spec: dict[str, Any], **kwargs: Any) -> object:
+            del spec, kwargs
+            return _Runnable()
+
+        spec: dict[str, Any] = {"name": "worker", "description": "Continues with context.", "mode": "fork"}
+        if declarative:
+            spec |= {"model": GenericFakeChatModel(messages=iter([AIMessage(content="x")])), "tools": []}
+        else:
+            spec["runnable"] = _Runnable()
+
+        with patch("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent):
+            middleware = SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[spec],
+                private_state_keys=frozenset({"memory_contents", "_summarization_event", "_summarization_session_id"}),
+            )
+        task_tool = middleware.tools[0]
+        runtime = ToolRuntime(
+            state={
+                "messages": [HumanMessage(content="parent history")],
+                "memory_contents": {"/m.md": "PARENT MEMORY"},
+                "_summarization_session_id": "session_parent",
+            },
+            context={},
+            config={"configurable": {}},
+            stream_writer=lambda _chunk: None,
+            tools=[task_tool],
+            tool_call_id="call_worker",
+            store=None,
+        )
+        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+
+        # Reusing the parent's session id would append the fork's evicted
+        # history into the parent's offload file.
+        assert "_summarization_session_id" not in captured
+        assert ("memory_contents" in captured) is declarative
+
     def test_rejects_duplicate_subagent_names(self) -> None:
         class _Runnable:
             def with_config(self, config: dict[str, object]) -> "_Runnable":

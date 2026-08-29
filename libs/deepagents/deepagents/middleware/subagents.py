@@ -33,13 +33,22 @@ from typing_extensions import TypeIs
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
-from deepagents.middleware.summarization import SummarizationEvent, _DeepAgentsSummarizationMiddleware
+from deepagents.middleware.summarization import (
+    SUMMARIZATION_EVENT_KEY,
+    SUMMARIZATION_SESSION_ID_KEY,
+    SummarizationEvent,
+    _DeepAgentsSummarizationMiddleware,
+)
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_SUMMARIZATION_EVENT_KEY = "_summarization_event"
-"""Summarization state key, owned by `summarization.py`."""
+_FORK_EXCLUDED_STATE_KEYS = frozenset({SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY})
+"""Summarization state a fork must not resume.
+
+The event is folded into the fork's messages instead. Dropping the session ID lets the
+subagent generate its own.
+"""
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
 """Set on a forked subagent's own initial state; never on the parent's.
@@ -206,6 +215,10 @@ class ForkedSubAgent(_SubAgentBase):
 
     `tools` isn't restricted the same way -- a forked subagent's own tools
     work normally. The tradeoff is cache misses.
+
+    Full state inheritance is specific to this declarative form. A
+    [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent] with
+    `mode="fork"` inherits the conversation only.
     """
 
     mode: Literal["fork"]
@@ -292,7 +305,11 @@ class CompiledSubAgent(TypedDict):
     """
 
     mode: NotRequired[Literal["handoff", "fork"]]
-    """Use `fork` to inherit parent history without changing the runnable prompt."""
+    """Use `fork` to inherit the parent's conversation without changing the runnable prompt.
+
+    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent] inherits the
+    full state, including private keys.
+    """
 
 
 _SubAgentSpec = SubAgent | ForkedSubAgent | CompiledSubAgent
@@ -744,13 +761,22 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_runnable = _select_subagent(subagent_type, runtime)
 
         if _is_forked_subagent(subagent) or _is_forked_compiled_subagent(subagent):
-            # The event is folded into the message list above to suport compiled subagents
+            # The event is folded into the message list above to support compiled subagents
+            if _is_forked_subagent(subagent):
+                # A declarative fork runs the same graph shape as its parent, so
+                # private channels carry over and its own middleware can rebuild
+                # what the parent built from them.
+                inherited = {key: value for key, value in runtime.state.items() if key not in _FORK_EXCLUDED_STATE_KEYS}
+            else:
+                # A compiled runnable is opaque -- it may not declare these
+                # channels, and internal state isn't ours to hand it.
+                inherited = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
             subagent_state = {
-                **{key: value for key, value in runtime.state.items() if key != _SUMMARIZATION_EVENT_KEY},
+                **inherited,
                 _FORKED_CONTEXT_KEY: True,
                 "messages": _fork_messages(
                     runtime.state.get("messages", []),
-                    runtime.state.get(_SUMMARIZATION_EVENT_KEY),
+                    runtime.state.get(SUMMARIZATION_EVENT_KEY),
                     description,
                 ),
             }

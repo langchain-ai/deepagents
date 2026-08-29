@@ -20,6 +20,7 @@ from langchain.agents.middleware.types import (
 )
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
+from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
@@ -31,7 +32,7 @@ from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.filesystem import FilesystemPermission
+from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
@@ -611,10 +612,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
             infer_schema=False,
             args_schema=TaskToolSchema,
         )
-        resolved["middleware"] = [
-            *spec.get("middleware", []),
-            _ForkTaskToolMiddleware(fork_task_tool),
-        ]
+        fork_middleware = list(spec.get("middleware", []))
+        # The parent's `task` sits right after its filesystem tools; matching that
+        # position keeps both tools blocks in the same order. Tests assert that tool
+        # order matches.
+        fs_index = next((i for i, m in enumerate(fork_middleware) if isinstance(m, FilesystemMiddleware)), -1)
+        fork_middleware.insert(fs_index + 1, _ForkTaskToolMiddleware(fork_task_tool))
+        resolved["middleware"] = fork_middleware
         return cast("SubAgent", resolved)
 
     def _compile_spec(
@@ -893,6 +897,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._task_description = task_description
         self._state_schema = state_schema
         self._parent_system_prompt = parent_system_prompt
+        if any(_is_forked_subagent(spec) or _is_forked_compiled_subagent(spec) for spec in subagents):
+            warn_beta(name="ForkedSubAgent", obj_type="subagent spec")
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""

@@ -1,6 +1,7 @@
 """Unit tests for SubAgentMiddleware initialization and configuration."""
 
 import json
+import warnings
 from collections.abc import Callable
 from typing import Any, get_type_hints
 from unittest.mock import MagicMock, patch
@@ -10,6 +11,7 @@ from langchain.agents import create_agent
 from langchain.agents.middleware.types import AgentMiddleware, ModelRequest, ModelResponse
 from langchain.agents.structured_output import AutoStrategy
 from langchain.tools import ToolRuntime
+from langchain_core._api.beta_decorator import LangChainBetaWarning
 from langchain_core.callbacks import CallbackManagerForLLMRun
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.outputs import ChatResult
@@ -218,6 +220,89 @@ class TestSubagentMiddlewareInit:
         # subagents instead receive a copy of the parent state at invocation.
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
+
+    @pytest.mark.parametrize(("mode", "expected"), [(None, 0), ("fork", 1)], ids=["isolated", "fork"])
+    def test_forked_subagent_warns_beta(self, mode: str | None, expected: int) -> None:
+        """Configuring a fork warns that the spec is beta; isolated subagents don't."""
+        spec: dict[str, Any] = {"name": "worker", "description": "Does work.", "runnable": self._make_echo_graph()}
+        if mode is not None:
+            spec["mode"] = mode
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            SubAgentMiddleware(backend=StateBackend(), subagents=[spec])
+
+        beta_warnings = [w for w in caught if isinstance(w.message, LangChainBetaWarning)]
+        assert len(beta_warnings) == expected
+        if expected:
+            assert "`ForkedSubAgent` is in beta" in str(beta_warnings[0].message)
+
+    def test_forked_subagent_tool_order_matches_parent(self) -> None:
+        """A fork's tools block must serialize identically to the parent's to reuse its cache."""
+
+        @tool
+        def lookup_ticket(ticket_id: str) -> str:
+            """Look up a support ticket by id."""
+            return f"ticket {ticket_id}"
+
+        class _ExtraToolMiddleware(AgentMiddleware):
+            name = "_ExtraToolMiddleware"
+
+            def __init__(self) -> None:
+                super().__init__()
+                self.tools = [lookup_ticket]
+
+        captured: dict[str, list[str]] = {}
+
+        class _RecordTools(AgentMiddleware):
+            name = "_RecordTools"
+
+            def __init__(self, label: str) -> None:
+                super().__init__()
+                self.label = label
+
+            def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
+                captured.setdefault(self.label, [t.name for t in request.tools])
+                return handler(request)
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            middleware=[_ExtraToolMiddleware(), _RecordTools("parent")],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "mode": "fork",
+                    "middleware": [_ExtraToolMiddleware(), _RecordTools("fork")],
+                }
+            ],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="start")]})
+
+        assert captured["fork"] == captured["parent"]
+        assert captured["parent"][-2:] == ["task", "lookup_ticket"]
 
     def test_isolated_subagent_keeps_its_own_skills_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []

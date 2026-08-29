@@ -3,7 +3,7 @@
 import contextlib
 import dataclasses
 import json
-from collections.abc import Awaitable, Callable, Generator, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Generator, Sequence
 from typing import Annotated, Any, Literal, NotRequired, TypedDict, cast
 
 from langchain.agents import create_agent
@@ -11,7 +11,6 @@ from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnCon
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     ContextT,
-    ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
     OmitFromSchema,
@@ -22,7 +21,7 @@ from langchain.agents.middleware.types import (
 from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -33,12 +32,9 @@ from typing_extensions import TypeIs
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemPermission
-from deepagents.middleware.summarization import SummarizationEvent, _apply_summarization_event
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
-
-_PARENT_SYSTEM_MESSAGE_KEY = "_deepagents_parent_system_message"
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
 """Set on a forked subagent's own initial state; never on the parent's.
@@ -50,12 +46,6 @@ omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 _FORK_RECURSION_REFUSAL = (
     "You are a subagent and cannot delegate to another subagent. Complete this task yourself instead of calling this tool again."
 )
-
-
-class _ParentSystemMessageState(TypedDict):
-    """Private state used to carry the parent's effective system message."""
-
-    _deepagents_parent_system_message: NotRequired[Annotated[SystemMessage | None, OmitFromSchema(input=False, output=True)]]
 
 
 class _SubAgentBase(TypedDict):
@@ -205,9 +195,9 @@ class ForkedSubAgent(_SubAgentBase):
 
         Forked subagents are experimental and may change in a future release.
 
-    A forked subagent receives the parent's effective conversation history and
-    exact system prompt. It cannot define a separate `system_prompt` or
-    `skills`, since either would diverge from the parent's exact message.
+    A forked subagent receives a copy of the parent's state and configured
+    system prompt. It cannot define a separate `system_prompt` or `skills`,
+    since either would diverge from the parent's configured prompt.
 
     `tools` isn't restricted the same way -- a forked subagent's own tools
     work normally. The tradeoff is cache misses.
@@ -310,7 +300,7 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
         msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'handoff' or 'fork'"
         raise ValueError(msg)
     if mode == "fork" and spec.get("system_prompt") is not None:
-        msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it always inherits the parent's."
+        msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it inherits the parent's configured prompt."
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):
         msg = f"ForkedSubAgent '{spec['name']}' cannot set skills; the parent's system message would discard it."
@@ -333,9 +323,28 @@ def _validate_unique_subagent_names(subagents: Sequence[_SubAgentSpec]) -> None:
         seen.add(name)
 
 
+def _is_subagent(spec: _SubAgentSpec) -> TypeIs[SubAgent]:
+    """Return whether a spec is an isolated declarative subagent.
+
+    Compiled specs provide a `runnable`; forked declarative specs use
+    `mode="fork"`. All remaining specs are regular `SubAgent` definitions.
+    """
+    return "runnable" not in spec and spec.get("mode") != "fork"
+
+
 def _is_forked_subagent(spec: _SubAgentSpec) -> TypeIs[ForkedSubAgent]:
-    """Return whether a subagent inherits parent conversation history."""
-    return spec.get("mode") == "fork"
+    """Return whether a declarative subagent inherits its parent's state."""
+    return "runnable" not in spec and spec.get("mode") == "fork"
+
+
+def _is_compiled_subagent(spec: _SubAgentSpec) -> TypeIs[CompiledSubAgent]:
+    """Return whether a spec provides an already-compiled runnable."""
+    return "runnable" in spec
+
+
+def _is_forked_compiled_subagent(spec: _SubAgentSpec) -> TypeIs[CompiledSubAgent]:
+    """Return whether a compiled subagent inherits its parent's state."""
+    return "runnable" in spec and spec.get("mode") == "fork"
 
 
 # A forked subagent replays the parent's exact history, including the human
@@ -356,16 +365,6 @@ _FORK_TASK_PREAMBLE = (
 )
 
 
-def _fork_messages(state: Mapping[str, object], description: str) -> list[AnyMessage]:
-    """Build fork input without replaying the in-flight tool-call message."""
-    messages = list(cast("Sequence[AnyMessage]", state.get("messages", [])))
-    if messages and isinstance(messages[-1], AIMessage) and messages[-1].tool_calls:
-        messages.pop()
-    event = cast("SummarizationEvent | None", state.get("_summarization_event"))
-    effective_messages = _apply_summarization_event(messages, event)
-    return [*effective_messages, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
-
-
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
 
 The calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final
@@ -375,7 +374,6 @@ _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
-    _PARENT_SYSTEM_MESSAGE_KEY,
     _FORKED_CONTEXT_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
@@ -399,7 +397,9 @@ class TaskToolSchema(BaseModel):
     description: str = Field(
         description=(
             "A detailed description of the task for the subagent to perform autonomously. "
-            "Include all necessary context and specify the expected output format."
+            "State the expected output and any constraints not already present in the "
+            "selected agent's context. An agent marked as inheriting the conversation "
+            "already receives that context; do not redundantly restate it."
         )
     )
 
@@ -413,19 +413,16 @@ Available agent types and the tools they have access to:
 
 Specify subagent_type to select the agent. Usage notes:
 - Launch multiple agents concurrently when their tasks are independent, using a single message with multiple tool calls.
-- Each invocation is stateless by default: the agent sees only the prompt you give it and returns a single final report. Put full detail in the prompt and state exactly what it should return — unless an agent type below says it inherits your conversation instead.
+- Agents are isolated by default: they see only the task prompt and return a single final report. Put the necessary context and expected output in their task. An agent explicitly marked as inheriting your conversation is a fork: it receives a snapshot of the prior conversation and configured system prompt, so give it the outcome and only the constraints not already in that context.
 - The agent's report is not shown to the user; relay a summary yourself.
-- Tell the agent whether to create content, analyze, or only research, since it can't necessarily see the user's intent unless it inherits your conversation, as noted per agent type below.
+- Tell an isolated agent whether to create content, analyze, or only research. A forked agent can use the inherited user intent, but the delegated outcome should still be clear.
 - If an agent's description says to use it proactively, do so without waiting to be asked.
 - When only general-purpose is available, use it for any complex, context-heavy task; it has the same capabilities as the main agent."""  # noqa: E501
 
-_FORKED_SUBAGENT_TOOL_NOTE = " (inherits your full conversation and system prompt — no need to restate context here)"
-"""Appended to a forked subagent's line in the task tool's listing.
-
-Load-bearing: without it, the "Each invocation is stateless" line above is
-the model's only signal, and it can refuse to delegate to a forked subagent
-even when told the subagent inherits the conversation.
-"""
+_FORKED_SUBAGENT_TOOL_NOTE = (
+    " (forked: inherits a snapshot of your conversation and configured system prompt — give the outcome without restating inherited context)"
+)
+"""Appended to a forked subagent's line in the task tool's listing."""
 
 
 def _describe_subagent_for_tool(name: str, description: str, *, forked: bool) -> str:
@@ -444,62 +441,12 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
 
 
-class _ParentSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
-    state_schema = _ParentSystemMessageState
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ExtendedModelResponse[ResponseT]:
-        response = handler(request)
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
-        )
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ExtendedModelResponse[ResponseT]:
-        response = await handler(request)
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
-        )
-
-
-class _ForkSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
-    state_schema = _ParentSystemMessageState
-
-    def wrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ModelResponse[ResponseT]:
-        parent_message = request.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
-        if parent_message is not None:
-            request = request.override(system_message=parent_message)
-        return handler(request)
-
-    async def awrap_model_call(
-        self,
-        request: ModelRequest[ContextT],
-        handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ModelResponse[ResponseT]:
-        parent_message = request.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
-        if parent_message is not None:
-            request = request.override(system_message=parent_message)
-        return await handler(request)
-
-
 class _ForkedContextState(TypedDict):
     """Private state marking a graph as running as a forked subagent.
 
-    Needs a declared schema, like `_ParentSystemMessageState` above -- an
-    undeclared key on a subagent's initial state isn't tracked as a real
-    channel, so `task()` would never see it via `runtime.state.get(...)`.
+    The key needs a declared schema: an undeclared key on a subagent's initial
+    state is not tracked as a real channel, so `task()` would never see it via
+    `runtime.state.get(...)`.
     """
 
     _deepagents_forked_context: NotRequired[Annotated[bool, OmitFromSchema(input=False, output=True)]]
@@ -635,7 +582,14 @@ def _build_task_tool(  # noqa: C901, PLR0915
 
     # Computed early (from raw specs) so the mirrored `task` tool below has
     # this exact string for cache hits.
-    subagent_description_str = "\n".join(_describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents)
+    subagent_description_str = "\n".join(
+        _describe_subagent_for_tool(
+            s["name"],
+            s["description"],
+            forked=_is_forked_subagent(s) or _is_forked_compiled_subagent(s),
+        )
+        for s in subagents
+    )
     if task_description is None:
         description = TASK_TOOL_DESCRIPTION.format(available_agents=subagent_description_str)
     elif "{available_agents}" in task_description:
@@ -659,7 +613,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
         )
         resolved["middleware"] = [
             *spec.get("middleware", []),
-            _ForkSystemMessageMiddleware(),
             _ForkTaskToolMiddleware(fork_task_tool),
         ]
         return cast("SubAgent", resolved)
@@ -760,21 +713,24 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_type: str,
         description: str,
         runtime: ToolRuntime,
-        effective_system_message: SystemMessage | None,
     ) -> tuple[Runnable, dict]:
         """Prepare state for invocation."""
-        subagent = _select_subagent(subagent_type, runtime)
-        forked = subagent_type in fork_mode_names
-        subagent_state = {k: v for k, v in runtime.state.items() if k not in _EXCLUDED_STATE_KEYS}
-        subagent_state = {k: v for k, v in subagent_state.items() if k not in private_state_keys}
-        if forked and "runnable" not in subagents_by_name[subagent_type] and effective_system_message is not None:
-            subagent_state[_PARENT_SYSTEM_MESSAGE_KEY] = effective_system_message
-        if forked:
-            subagent_state[_FORKED_CONTEXT_KEY] = True
-            subagent_state["messages"] = _fork_messages(runtime.state, description)
+        subagent = subagents_by_name[subagent_type]
+        subagent_runnable = _select_subagent(subagent_type, runtime)
+
+        if _is_forked_subagent(subagent) or _is_forked_compiled_subagent(subagent):
+            subagent_state = {
+                **runtime.state,
+                _FORKED_CONTEXT_KEY: True,
+                "messages": [
+                    *runtime.state.get("messages", []),
+                    HumanMessage(content=_FORK_TASK_PREAMBLE + description),
+                ],
+            }
         else:
+            subagent_state = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
             subagent_state["messages"] = [HumanMessage(content=description)]
-        return subagent, subagent_state
+        return subagent_runnable, subagent_state
 
     def task(
         description: str,
@@ -789,12 +745,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        effective_system_message = runtime.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
             description,
             runtime,
-            effective_system_message,
         )
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
@@ -821,12 +775,10 @@ def _build_task_tool(  # noqa: C901, PLR0915
         if not runtime.tool_call_id:
             value_error_msg = "Tool call ID is required for subagent invocation"
             raise ValueError(value_error_msg)
-        effective_system_message = runtime.state.get(_PARENT_SYSTEM_MESSAGE_KEY)
         subagent, subagent_state = _validate_and_prepare_state(
             subagent_type,
             description,
             runtime,
-            effective_system_message,
         )
         # The parent's callbacks, tags and configurable reach the subagent
         # automatically: langgraph's `ensure_config` seeds each run from the
@@ -842,7 +794,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
 
     compiled_subagents = [_compile_spec(spec) for spec in subagents]
     subagents_by_name = {spec["name"]: spec for spec in subagents}
-    fork_mode_names = {name for name, spec in subagents_by_name.items() if _is_forked_subagent(spec)}
 
     # Build the graphs dict from the unified spec list
     subagent_graphs: dict[str, Runnable] = {spec["name"]: spec["runnable"] for spec in compiled_subagents}
@@ -919,8 +870,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
     trace_policy = TracePolicy(process_inputs=omit_payload)
     """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
-    state_schema = _ParentSystemMessageState
-
     def __init__(
         self,
         *,
@@ -958,7 +907,14 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
 
         # Build system prompt with available agents
         if system_prompt and subagents:
-            agents_desc = "\n".join(_describe_subagent_for_tool(s["name"], s["description"], forked=_is_forked_subagent(s)) for s in subagents)
+            agents_desc = "\n".join(
+                _describe_subagent_for_tool(
+                    s["name"],
+                    s["description"],
+                    forked=_is_forked_subagent(s) or _is_forked_compiled_subagent(s),
+                )
+                for s in subagents
+            )
             self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n\n" + agents_desc
         else:
             self.system_prompt = system_prompt

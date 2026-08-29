@@ -57,8 +57,8 @@ from deepagents.middleware.subagents import (
     ForkedSubAgent,
     SubAgent,
     SubAgentMiddleware,
+    _is_compiled_subagent,
     _is_forked_subagent,
-    _ParentSystemMessageMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles.harness.harness_profiles import (
@@ -667,12 +667,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Then spec is an AsyncSubAgent
             async_subagents.append(cast("AsyncSubAgent", spec))
             continue
-        if "runnable" in spec:
+        if _is_compiled_subagent(spec):
             # CompiledSubAgent - use as-is
             inline_subagents.append(spec)
         else:
             # Declarative subagent - fill in defaults and prepend base middleware
-            is_forked = spec.get("mode") == "fork"
+            is_forked = _is_forked_subagent(spec)
             raw_subagent_model = spec.get("model", model)
             subagent_model = resolve_model(raw_subagent_model)
 
@@ -917,9 +917,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Only a declarative fork consumes the captured message; compiled forks keep their own prompt.
-    if sub_agent_middleware is not None and any(_is_forked_subagent(spec) and "runnable" not in spec for spec in inline_subagents):
-        deepagent_middleware.append(_ParentSystemMessageMiddleware())
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)

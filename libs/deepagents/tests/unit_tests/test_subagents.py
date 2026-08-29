@@ -1885,6 +1885,51 @@ class TestSubAgents:
         assert saw_parent_model_update, "Should have seen the parent final model update in the stream"
         assert seen_agent_names == {"supervisor", "worker"}
 
+    def test_subagent_checkpoint_history_is_readable(self) -> None:
+        """A task subagent checkpoint namespace can be resolved back to its transcript."""
+        subagent_content = "SUBAGENT_RESPONSE"
+        parent_model = _ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "Do task", "subagent_type": "worker"},
+                            "id": "call_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        subagent_model = _ScriptedChatModel(responses=[AIMessage(content=subagent_content)])
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=checkpointer,
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="Does work.",
+                    runnable=create_agent(model=subagent_model, name="worker"),
+                )
+            ],
+        )
+        config = {"configurable": {"thread_id": "subagent-history"}}
+
+        agent.invoke({"messages": [HumanMessage(content="Do something")]}, config)
+
+        subagent_namespace = next(
+            checkpoint.config["configurable"]["checkpoint_ns"]
+            for checkpoint in checkpointer.list(config)
+            if checkpoint.config["configurable"]["checkpoint_ns"].startswith("tools:")
+        )
+        history = list(agent.get_state_history({"configurable": {"thread_id": "subagent-history", "checkpoint_ns": subagent_namespace}}))
+
+        assert any(any(message.content == subagent_content for message in snapshot.values.get("messages", [])) for snapshot in history)
+
     def test_compiled_subagent_lc_agent_name_in_stream_metadata(self) -> None:
         """lc_agent_name in streamed chunks must reflect the CompiledSubAgent's declared name.
 

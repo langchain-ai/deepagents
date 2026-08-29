@@ -145,32 +145,6 @@ class SummarizationEvent(TypedDict):
     """Path where the conversation history was offloaded, or `None` if offload failed."""
 
 
-def _apply_summarization_event(
-    messages: list[AnyMessage],
-    event: SummarizationEvent | None,
-) -> list[AnyMessage]:
-    """Reconstruct the effective conversation represented by a summary event."""
-    if event is None:
-        return list(messages)
-
-    try:
-        summary_message = event["summary_message"]
-        cutoff_index = event["cutoff_index"]
-    except (KeyError, TypeError) as exc:
-        logger.warning("Malformed _summarization_event (missing keys): %s", exc)
-        return list(messages)
-
-    if cutoff_index > len(messages):
-        logger.warning(
-            "Summarization cutoff_index %d exceeds message count %d; remaining slice will be empty",
-            cutoff_index,
-            len(messages),
-        )
-        return [summary_message]
-
-    return [summary_message, *messages[cutoff_index:]]
-
-
 class TriggerClause(TypedDict, total=False):
     """Dictionary-based summarization trigger with AND semantics."""
 
@@ -804,8 +778,39 @@ A condensed summary follows:
         messages: list[AnyMessage],
         event: SummarizationEvent | None,
     ) -> list[AnyMessage]:
-        """Reconstruct effective messages from raw state and a summary event."""
-        return _apply_summarization_event(messages, event)
+        """Reconstruct effective messages from raw state messages and a summarization event.
+
+        When a prior summarization event exists, the effective conversation is
+        the summary message followed by all messages from `cutoff_index` onward.
+
+        Args:
+            messages: Full message list from state.
+            event: The `_summarization_event` dict, or `None`.
+
+        Returns:
+            The effective message list the model would see.
+        """
+        if event is None:
+            return list(messages)
+
+        try:
+            summary_msg = event["summary_message"]
+            cutoff_idx = event["cutoff_index"]
+        except (KeyError, TypeError) as exc:
+            logger.warning("Malformed _summarization_event (missing keys): %s", exc)
+            return list(messages)
+
+        if cutoff_idx > len(messages):
+            logger.warning(
+                "Summarization cutoff_index %d exceeds message count %d; remaining slice will be empty",
+                cutoff_idx,
+                len(messages),
+            )
+            return [summary_msg]
+
+        result: list[AnyMessage] = [summary_msg]
+        result.extend(messages[cutoff_idx:])
+        return result
 
     @staticmethod
     def _compute_state_cutoff(

@@ -856,17 +856,14 @@ class TestSubagentMiddlewareInit:
 
         task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
 
-        # `in_flight` holds the unresolved `task` call that spawned this fork.
+        # `in_flight` holds the unresolved `task` call that spawned this fork, and
+        # the summary replaces everything before the parent's cutoff.
         assert captured["messages"] == [
-            HumanMessage(content="old"),
+            summary,
             after_cutoff,
             HumanMessage(content=_FORK_TASK_PREAMBLE + "new task"),
         ]
-        assert captured["_summarization_event"] == {
-            "cutoff_index": 1,
-            "summary_message": summary,
-            "file_path": None,
-        }
+        assert "_summarization_event" not in captured
         assert captured[_FORKED_CONTEXT_KEY] is True
 
     def test_rejects_duplicate_subagent_names(self) -> None:

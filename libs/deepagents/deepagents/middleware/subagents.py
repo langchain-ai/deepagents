@@ -33,9 +33,13 @@ from typing_extensions import TypeIs
 from deepagents.backends.protocol import BackendProtocol
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
+from deepagents.middleware.summarization import SummarizationEvent, _DeepAgentsSummarizationMiddleware
 
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
+
+_SUMMARIZATION_EVENT_KEY = "_summarization_event"
+"""Summarization state key, owned by `summarization.py`."""
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"
 """Set on a forked subagent's own initial state; never on the parent's.
@@ -366,17 +370,21 @@ _FORK_TASK_PREAMBLE = (
 )
 
 
-def _fork_messages(messages: Sequence[AnyMessage], description: str) -> list[AnyMessage]:
-    """Build a fork's history, dropping the parent's in-flight tool-call message.
+def _fork_messages(
+    messages: Sequence[AnyMessage],
+    event: SummarizationEvent | None,
+    description: str,
+) -> list[AnyMessage]:
+    """Build a fork's history: the parent's effective conversation, then the task.
 
-    The parent calls `task` from its latest message, so replaying it would hand
-    the fork a tool call with no result -- rejected outright by some providers,
-    and patched into a misleading "was cancelled" result by others.
+    Applies summarization event so that a compiled subagent sees the
+    compacted conversation instead of replaying what the parent already evicted.
     """
     history = list(messages)
     if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
         history.pop()
-    return [*history, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
+    effective = _DeepAgentsSummarizationMiddleware._apply_event_to_messages(history, event)
+    return [*effective, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -736,10 +744,15 @@ def _build_task_tool(  # noqa: C901, PLR0915
         subagent_runnable = _select_subagent(subagent_type, runtime)
 
         if _is_forked_subagent(subagent) or _is_forked_compiled_subagent(subagent):
+            # The event is folded into the message list above to suport compiled subagents
             subagent_state = {
-                **runtime.state,
+                **{key: value for key, value in runtime.state.items() if key != _SUMMARIZATION_EVENT_KEY},
                 _FORKED_CONTEXT_KEY: True,
-                "messages": _fork_messages(runtime.state.get("messages", []), description),
+                "messages": _fork_messages(
+                    runtime.state.get("messages", []),
+                    runtime.state.get(_SUMMARIZATION_EVENT_KEY),
+                    description,
+                ),
             }
         else:
             subagent_state = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}

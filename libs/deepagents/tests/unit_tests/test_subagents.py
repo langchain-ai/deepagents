@@ -1886,7 +1886,13 @@ class TestSubAgents:
         assert seen_agent_names == {"supervisor", "worker"}
 
     def test_subagent_checkpoint_history_is_readable(self) -> None:
-        """A task subagent checkpoint namespace can be resolved back to its transcript."""
+        """A task subagent's transcript is recoverable from the parent's checkpointer.
+
+        Read through the checkpointer rather than `agent.get_state_history`, which
+        resolves a `checkpoint_ns` by walking registered subgraphs: `task` invokes
+        subagents directly rather than as graph nodes, so the namespace has no
+        subgraph to resolve to.
+        """
         subagent_content = "SUBAGENT_RESPONSE"
         parent_model = _ScriptedChatModel(
             responses=[
@@ -1926,9 +1932,13 @@ class TestSubAgents:
             for checkpoint in checkpointer.list(config)
             if checkpoint.config["configurable"]["checkpoint_ns"].startswith("tools:")
         )
-        history = list(agent.get_state_history({"configurable": {"thread_id": "subagent-history", "checkpoint_ns": subagent_namespace}}))
+        history = [checkpoint for checkpoint in checkpointer.list(config) if checkpoint.config["configurable"]["checkpoint_ns"] == subagent_namespace]
 
-        assert any(any(message.content == subagent_content for message in snapshot.values.get("messages", [])) for snapshot in history)
+        assert history
+        assert any(
+            any(message.content == subagent_content for message in checkpoint.checkpoint["channel_values"].get("messages", []))
+            for checkpoint in history
+        )
 
     def test_compiled_subagent_lc_agent_name_in_stream_metadata(self) -> None:
         """lc_agent_name in streamed chunks must reflect the CompiledSubAgent's declared name.

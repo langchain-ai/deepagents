@@ -173,7 +173,7 @@ class TestSubagentMiddlewareInit:
         with pytest.raises(ValueError, match="cannot set skills"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
 
-    def test_forked_subagent_inherits_prompt_and_skips_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_forked_subagent_mirrors_parent_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
         runnable = self._make_echo_graph()
 
@@ -216,9 +216,9 @@ class TestSubagentMiddlewareInit:
         forked = next(spec for spec in captured if spec["name"] == "forked-worker")
         isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
         assert forked["system_prompt"] == "PARENT_PROMPT"
-        # Child stacks do not mirror the parent's MemoryMiddleware. Forked
-        # subagents instead receive a copy of the parent state at invocation.
-        assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
+        # A fork mirrors the parent's MemoryMiddleware so its own stack rebuilds
+        # the parent's memory block; an isolated subagent starts without one.
+        assert any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
 
     @pytest.mark.parametrize(("mode", "expected"), [(None, 0), ("fork", 1)], ids=["isolated", "fork"])
@@ -375,7 +375,7 @@ class TestSubagentMiddlewareInit:
         isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
         assert any(isinstance(middleware, SkillsMiddleware) for middleware in isolated["middleware"])
 
-    def test_forked_subagent_inherits_configured_parent_prompt(self) -> None:
+    def test_forked_subagent_inherits_dynamic_parent_prompt(self) -> None:
         class _AppendPromptMiddleware(AgentMiddleware):
             def wrap_model_call(self, request: ModelRequest, handler: Callable[[ModelRequest], ModelResponse]) -> ModelResponse:
                 message = request.system_message
@@ -417,8 +417,10 @@ class TestSubagentMiddlewareInit:
 
         agent.invoke({"messages": [HumanMessage(content="start")]})
 
+        # The parent's prompt middleware is inherited, so the fork rebuilds the
+        # same composed message rather than seeing only the configured prompt.
         worker_system_message = worker_model.call_history[0]["messages"][0]
-        assert worker_system_message.text == "PARENT_PROMPT"
+        assert worker_system_message.text == "PARENT_PROMPT\n\nDYNAMIC_PROMPT"
 
     def test_forked_subagent_replaces_repeated_prompt_updates(self) -> None:
         class _AppendPromptMiddleware(AgentMiddleware):

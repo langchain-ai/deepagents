@@ -22,7 +22,7 @@ from langchain.agents.structured_output import ResponseFormat
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api.beta_decorator import warn_beta
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.runnables import Runnable, RunnableConfig
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
@@ -364,6 +364,19 @@ _FORK_TASK_PREAMBLE = (
     "generically when exact details are already available above. Your "
     "actual task is below.]\n\n"
 )
+
+
+def _fork_messages(messages: Sequence[AnyMessage], description: str) -> list[AnyMessage]:
+    """Build a fork's history, dropping the parent's in-flight tool-call message.
+
+    The parent calls `task` from its latest message, so replaying it would hand
+    the fork a tool call with no result -- rejected outright by some providers,
+    and patched into a misleading "was cancelled" result by others.
+    """
+    history = list(messages)
+    if history and isinstance(history[-1], AIMessage) and history[-1].tool_calls:
+        history.pop()
+    return [*history, HumanMessage(content=_FORK_TASK_PREAMBLE + description)]
 
 
 DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user asks of you, you have access to a number of standard tools.
@@ -726,10 +739,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             subagent_state = {
                 **runtime.state,
                 _FORKED_CONTEXT_KEY: True,
-                "messages": [
-                    *runtime.state.get("messages", []),
-                    HumanMessage(content=_FORK_TASK_PREAMBLE + description),
-                ],
+                "messages": _fork_messages(runtime.state.get("messages", []), description),
             }
         else:
             subagent_state = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}

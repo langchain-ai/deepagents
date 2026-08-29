@@ -237,6 +237,41 @@ class TestSubagentMiddlewareInit:
         if expected:
             assert "`ForkedSubAgent` is in beta" in str(beta_warnings[0].message)
 
+    def test_forked_subagent_history_has_no_dangling_task_call(self) -> None:
+        """The spawning `task` call is dropped, so nothing patches a bogus result over it."""
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            },
+                            {"name": "ls", "args": {"path": "/"}, "id": "call_ls", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            subagents=[{"name": "worker", "description": "Continues with context.", "model": worker_model, "mode": "fork"}],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="start")]}, {"recursion_limit": 25})
+
+        inherited = worker_model.call_history[0]["messages"]
+        assert not any(isinstance(m, AIMessage) and any(c["name"] == "task" for c in m.tool_calls) for m in inherited)
+        assert not any(isinstance(m, ToolMessage) and "was cancelled" in str(m.content) for m in inherited)
+        assert inherited[-1].text.startswith(_FORK_TASK_PREAMBLE)
+
     def test_forked_subagent_tool_order_matches_parent(self) -> None:
         """A fork's tools block must serialize identically to the parent's to reuse its cache."""
 
@@ -821,10 +856,10 @@ class TestSubagentMiddlewareInit:
 
         task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
 
+        # `in_flight` holds the unresolved `task` call that spawned this fork.
         assert captured["messages"] == [
             HumanMessage(content="old"),
             after_cutoff,
-            in_flight,
             HumanMessage(content=_FORK_TASK_PREAMBLE + "new task"),
         ]
         assert captured["_summarization_event"] == {

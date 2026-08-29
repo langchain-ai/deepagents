@@ -6,11 +6,25 @@ from unittest.mock import patch
 
 import pytest
 
-from deepagents.backends.local_shell import LocalShellBackend
+from deepagents.backends.local_shell import DEFAULT_EXECUTE_TIMEOUT, LocalShellBackend
+
+
+class TestDefaultTimeoutConstant:
+    """Tests for the named default timeout constant."""
+
+    def test_default_timeout_uses_constant(self) -> None:
+        """Backend created without explicit timeout should use the default constant."""
+        backend = LocalShellBackend()
+        assert backend._default_timeout == DEFAULT_EXECUTE_TIMEOUT
 
 
 class TestInitTimeoutValidation:
     """Tests for timeout validation in __init__."""
+
+    def test_custom_timeout_accepted(self) -> None:
+        """Custom positive timeout should be stored."""
+        backend = LocalShellBackend(timeout=300)
+        assert backend._default_timeout == 300
 
     def test_zero_timeout_raises(self) -> None:
         """Zero timeout should raise ValueError."""

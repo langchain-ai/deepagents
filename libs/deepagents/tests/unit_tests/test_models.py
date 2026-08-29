@@ -34,6 +34,7 @@ from deepagents.profiles.harness.harness_profiles import (
 from deepagents.profiles.provider._nvidia import (
     _NVIDIA_APP_ORIGIN,
     _NVIDIA_BILLING_ORIGIN_HEADER,
+    _nvidia_attribution_kwargs,
 )
 from deepagents.profiles.provider._openrouter import (
     _OPENROUTER_ALLOW_AZURE_ENV,
@@ -1164,6 +1165,10 @@ class TestBuiltInProfiles:
         profile = get_provider_profile("openrouter:anthropic/claude-sonnet-4-6")
         assert profile.pre_init is not None
         assert profile.init_kwargs_factory is not None
+
+    def test_nvidia_provider_profile_has_attribution_factory(self) -> None:
+        profile = get_provider_profile("nvidia:nvidia/nemotron-3-super-120b-a12b")
+        assert profile.init_kwargs_factory is _nvidia_attribution_kwargs
 
     def test_openai_has_no_built_in_harness_profile(self) -> None:
         assert _get_harness_profile("openai:gpt-5") is None

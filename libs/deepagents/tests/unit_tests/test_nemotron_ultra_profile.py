@@ -13,6 +13,7 @@ from deepagents.backends.utils import format_content_with_line_numbers
 from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     _DEFAULT_READ_LIMIT,
     _EMPTY_TOOL_PLACEHOLDER,
+    _HARNESS_PROFILE_SUFFIX_MARKER,
     ChatNVIDIAMessageCompatibilityMiddleware,
     EntityResolutionGuardMiddleware,
     FinalAnswerGuardMiddleware,
@@ -26,7 +27,9 @@ from deepagents.profiles.harness._nvidia_nemotron_3_ultra import (
     ReadFileContinuationNoticeMiddleware,
     _tool_name_is_domain,
     _tool_name_is_mutation,
+    register,
 )
+from deepagents.profiles.harness.harness_profiles import _HARNESS_PROFILES
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -930,3 +933,29 @@ def test_entity_resolution_guard_keeps_current_entity_branch_bound() -> None:
     assert update["nemotron_entity_guard_fired"] is True
     assert update["jump_to"] == "model"
     assert "service_id 8514" in update["messages"][0].content
+
+
+def test_register_adds_ultra3_profiles_for_supported_providers() -> None:
+    """Every supported Nemotron Ultra spec should receive profile data."""
+    original = dict(_HARNESS_PROFILES)
+    try:
+        _HARNESS_PROFILES.clear()
+        register()
+
+        for spec in _EXPECTED_NEMOTRON_ULTRA_MODEL_SPECS:
+            profile = _HARNESS_PROFILES[spec]
+            middleware = profile.materialize_extra_middleware()
+
+            assert _HARNESS_PROFILE_SUFFIX_MARKER in (profile.system_prompt_suffix or "")
+            assert "whole/full file" in profile.tool_description_overrides["read_file"]
+            assert {entry.name for entry in middleware} >= {
+                "NemotronToolCallShim",
+                "ReadFileContinuationNoticeMiddleware",
+                "ChatNVIDIAMessageCompatibilityMiddleware",
+                "NemotronTextToolCallParser",
+                "EntityResolutionGuardMiddleware",
+                "FinalAnswerGuardMiddleware",
+            }
+    finally:
+        _HARNESS_PROFILES.clear()
+        _HARNESS_PROFILES.update(original)

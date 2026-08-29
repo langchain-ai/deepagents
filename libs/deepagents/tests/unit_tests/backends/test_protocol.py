@@ -13,6 +13,7 @@ import pytest
 from deepagents.backends.filesystem import _map_exception_to_standard_error
 from deepagents.backends.protocol import (
     ASYNC_GREP_TIMEOUT,
+    DEFAULT_GREP_TIMEOUT,
     BackendProtocol,
     DeleteResult,
     GrepResult,
@@ -153,6 +154,10 @@ class TestAdditionalAsyncWrappersPropagateNotImplemented:
 
 class TestAgrepTimeout:
     """Tests for `agrep` async timeout safety net."""
+
+    def test_agrep_timeout_exceeds_two_sync_grep_phases(self) -> None:
+        """`agrep` gives `FilesystemBackend` headroom for `rg` timeout plus fallback timeout."""
+        assert ASYNC_GREP_TIMEOUT > (2 * DEFAULT_GREP_TIMEOUT)
 
     async def test_agrep_returns_error_on_timeout(self, backend: BareBackend) -> None:
         """`agrep` catches `TimeoutError` and returns `GrepResult` with error."""

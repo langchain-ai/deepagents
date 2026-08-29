@@ -19,7 +19,7 @@ from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
 from deepagents.backends.utils import format_grep_matches
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
 
 
 def require_ripgrep() -> None:
@@ -1156,6 +1156,11 @@ def test_glob_mid_iteration_oserror_is_error_not_truncated(tmp_path: Path, monke
     assert result.error is not None
     assert "aborted partway" in result.error
     assert result.truncated is False
+
+
+def test_glob_backend_budget_below_middleware_deadline() -> None:
+    """The backend glob budget must stay below the middleware's outer deadline so partial results win first."""
+    assert fs_module._DEFAULT_GLOB_TIMEOUT < GLOB_TIMEOUT
 
 
 def test_glob_supports_brace_expansion(tmp_path: Path) -> None:

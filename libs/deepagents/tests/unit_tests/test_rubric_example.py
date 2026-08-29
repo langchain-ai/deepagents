@@ -6,8 +6,12 @@ import importlib.util
 import sys
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING, cast
 
 import pytest
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 class _DotenvModule(ModuleType):
@@ -32,3 +36,20 @@ def _load_example(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_project_is_resolved_after_dotenv_load(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_example(monkeypatch)
+
+    def load_dotenv(_dotenv_path: str) -> bool:
+        monkeypatch.setenv("LANGSMITH_PROJECT", "project-from-dotenv")
+        return True
+
+    monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
+    monkeypatch.setattr(module, "load_dotenv", load_dotenv)
+    load_environment = cast(
+        "Callable[[str | None], str]",
+        module._load_environment,
+    )
+
+    assert load_environment("settings") == "project-from-dotenv"

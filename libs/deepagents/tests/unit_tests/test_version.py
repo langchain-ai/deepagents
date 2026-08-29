@@ -496,3 +496,10 @@ class TestLcVersion:
     def test_editable_install_gets_local_segment(self) -> None:
         with patch("deepagents._version._is_editable_install", return_value=True):
             assert _lc_version() == f"{__version__}+editable"
+
+    def test_caches_editable_install_lookup(self) -> None:
+        with patch("deepagents._version._is_editable_install", return_value=False) as is_editable_install:
+            assert _lc_version() == __version__
+            assert _lc_version() == __version__
+
+        is_editable_install.assert_called_once_with()

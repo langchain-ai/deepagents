@@ -616,6 +616,35 @@ async def test_agent_with_memory_middleware_async(tmp_path: Path) -> None:
     assert "Test async loading" in content
 
 
+def test_memory_middleware_with_state_backend() -> None:
+    """Test that MemoryMiddleware can be initialized with StateBackend instance."""
+    sources: list[str] = ["/memory/AGENTS.md"]
+    middleware = MemoryMiddleware(
+        backend=StateBackend(),
+        sources=sources,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert isinstance(middleware._backend, StateBackend)
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0] == "/memory/AGENTS.md"
+
+
+def test_memory_middleware_with_store_backend_instance() -> None:
+    """Test that MemoryMiddleware can be initialized with StoreBackend instance."""
+    store = InMemoryStore()
+    sources: list[str] = ["/memory/AGENTS.md"]
+    middleware = MemoryMiddleware(
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
+        sources=sources,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert isinstance(middleware._backend, StoreBackend)
+
+
 def test_memory_middleware_with_store_backend_assistant_id() -> None:
     """Test namespace isolation: each assistant_id gets its own memory namespace."""
     # Setup

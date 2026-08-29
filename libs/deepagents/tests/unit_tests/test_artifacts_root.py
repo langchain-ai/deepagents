@@ -7,6 +7,8 @@ from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.state import StateBackend
 from deepagents.backends.store import StoreBackend
 from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.middleware.summarization import create_summarization_middleware
+from tests.unit_tests.chat_model import GenericFakeChatModel as FakeChatModel
 
 
 def _make_store_backend():
@@ -33,6 +35,12 @@ class TestCompositeBackendArtifactsRoot:
 
 
 class TestFilesystemMiddlewareArtifactsRoot:
+    def test_trailing_slash_normalized(self) -> None:
+        backend = _make_composite_backend(artifacts_root="/workspace/")
+        mw = FilesystemMiddleware(backend=backend)
+        assert mw._large_tool_results_prefix == "/workspace/large_tool_results"
+        assert mw._conversation_history_prefix == "/workspace/conversation_history"
+
     def test_large_tool_result_eviction_uses_artifacts_root(self) -> None:
         backend = _make_composite_backend(artifacts_root="/workspace")
         mw = FilesystemMiddleware(backend=backend, tool_token_limit_before_evict=100)
@@ -62,6 +70,26 @@ class TestFilesystemMiddlewareArtifactsRoot:
         assert resp.error is None
         assert resp.content is not None
         assert resp.content == b"x" * 5000
+
+
+class TestCreateSummarizationMiddlewareArtifactsRoot:
+    def test_default_history_path_prefix(self) -> None:
+        backend = _make_store_backend()
+        model = FakeChatModel(messages=iter([]))
+        mw = create_summarization_middleware(model, backend)
+        assert mw._history_path_prefix == "/conversation_history"
+
+    def test_trailing_slash_normalized(self) -> None:
+        backend = _make_composite_backend(artifacts_root="/workspace/")
+        model = FakeChatModel(messages=iter([]))
+        mw = create_summarization_middleware(model, backend)
+        assert mw._history_path_prefix == "/workspace/conversation_history"
+
+    def test_root_slash_no_double_slash(self) -> None:
+        backend = _make_store_backend()
+        model = FakeChatModel(messages=iter([]))
+        mw = create_summarization_middleware(model, backend)
+        assert mw._history_path_prefix == "/conversation_history"
 
 
 class TestCompositeBackendEvictionArtifactsRoot:

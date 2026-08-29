@@ -1601,6 +1601,37 @@ def test_agent_with_skills_middleware_system_prompt(tmp_path: Path) -> None:
     assert "test-skill" in content, "System prompt should mention the skill name"
 
 
+def test_skills_middleware_with_state_backend() -> None:
+    """Test that SkillsMiddleware can be initialized with StateBackend instance."""
+    sources = ["/skills/user"]
+    middleware = SkillsMiddleware(
+        backend=StateBackend(),
+        sources=sources,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert isinstance(middleware._backend, StateBackend)
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0] == "/skills/user"
+
+
+def test_skills_middleware_with_store_backend_instance() -> None:
+    """Test that SkillsMiddleware can be initialized with StoreBackend instance."""
+    store = InMemoryStore()
+    sources = ["/skills/user"]
+    middleware = SkillsMiddleware(
+        backend=StoreBackend(store=store, namespace=_assistant_id_namespace),
+        sources=sources,
+    )
+
+    # Verify the middleware was created successfully
+    assert middleware is not None
+    assert isinstance(middleware._backend, StoreBackend)
+    assert len(middleware.sources) == 1
+    assert middleware.sources[0] == "/skills/user"
+
+
 async def test_agent_with_skills_middleware_async(tmp_path: Path) -> None:
     """Test that skills middleware works with async agent invocation."""
     backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)

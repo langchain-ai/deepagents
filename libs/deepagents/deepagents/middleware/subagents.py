@@ -446,29 +446,63 @@ GENERAL_PURPOSE_SUBAGENT: SubAgent = {
 
 
 class _ParentSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
+    """Records the composed system message on turns that delegate to a fork.
+
+    Installed innermost, so `request.system_message` is the message the model
+    actually saw.
+    """
+
     state_schema = _ParentSystemMessageState
+
+    def __init__(self, fork_names: frozenset[str]) -> None:
+        """Initialize with the declarative fork names worth capturing for."""
+        super().__init__()
+        if not fork_names:
+            msg = "_ParentSystemMessageMiddleware requires at least one forked subagent name"
+            raise ValueError(msg)
+        self._fork_names = fork_names
+
+    def _delegates_to_fork(self, response: ModelResponse[ResponseT]) -> bool:
+        """Return whether the model asked to delegate to one of the forks."""
+        for message in response.result:
+            if not isinstance(message, AIMessage):
+                continue
+            for call in message.tool_calls:
+                if call.get("name") != "task":
+                    continue
+                args = call.get("args")
+                # Malformed args still capture; a missed write would silently
+                # leave the fork on the static prompt.
+                if not isinstance(args, dict) or args.get("subagent_type") in self._fork_names:
+                    return True
+        return False
+
+    def _capture(
+        self,
+        request: ModelRequest[ContextT],
+        response: ModelResponse[ResponseT],
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        """Attach the system-message write when this turn delegates to a fork."""
+        if not self._delegates_to_fork(response):
+            return response
+        return ExtendedModelResponse(
+            model_response=response,
+            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
+        )
 
     def wrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], ModelResponse[ResponseT]],
-    ) -> ExtendedModelResponse[ResponseT]:
-        response = handler(request)
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
-        )
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        return self._capture(request, handler(request))
 
     async def awrap_model_call(
         self,
         request: ModelRequest[ContextT],
         handler: Callable[[ModelRequest[ContextT]], Awaitable[ModelResponse[ResponseT]]],
-    ) -> ExtendedModelResponse[ResponseT]:
-        response = await handler(request)
-        return ExtendedModelResponse(
-            model_response=response,
-            command=Command(update={_PARENT_SYSTEM_MESSAGE_KEY: request.system_message}),
-        )
+    ) -> ModelResponse[ResponseT] | ExtendedModelResponse[ResponseT]:
+        return self._capture(request, await handler(request))
 
 
 class _ForkSystemMessageMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):

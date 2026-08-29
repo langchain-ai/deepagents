@@ -109,8 +109,29 @@ def log_event(logger: logging.Logger, event: str, **fields: Any) -> None:
         event: Stable event name.
         fields: JSON-serializable event fields.
     """
+    _emit_event(logger, logging.INFO, event, fields)
+
+
+def log_debug_event(logger: logging.Logger, event: str, **fields: Any) -> None:
+    """Emit one structured JSON event when debug logging is enabled.
+
+    Args:
+        logger: Logger used by the emitting subsystem.
+        event: Stable event name.
+        fields: JSON-serializable event fields.
+    """
+    if logger.isEnabledFor(logging.DEBUG):
+        _emit_event(logger, logging.DEBUG, event, fields)
+
+
+def _emit_event(
+    logger: logging.Logger,
+    level: int,
+    event: str,
+    fields: Mapping[str, object],
+) -> None:
     payload = {"event": event, **_redact_mapping(fields)}
-    logger.info("talon_event %s", json.dumps(payload, sort_keys=True, default=str))
+    logger.log(level, "talon_event %s", json.dumps(payload, sort_keys=True, default=str))
 
 
 def redact_for_logging(value: object) -> object:

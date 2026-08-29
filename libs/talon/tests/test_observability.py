@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, AgentResult, ChannelMessage, ChannelStatus
-from deepagents_talon.observability import langsmith_tracing_enabled, log_event
+from deepagents_talon.observability import langsmith_tracing_enabled, log_debug_event, log_event
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -115,6 +115,26 @@ def test_log_event_emits_json_payload(caplog) -> None:
 
     payload = caplog.messages[0].removeprefix("talon_event ")
     assert json.loads(payload) == {"event": "cron.tick", "due_count": 2}
+
+
+def test_log_debug_event_requires_debug_level_and_redacts_fields(caplog) -> None:
+    logger = logging.getLogger("deepagents_talon.tests.debug")
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        log_debug_event(logger, "channel.hidden", conversation_id="private-chat")
+
+    assert caplog.messages == []
+
+    with caplog.at_level(logging.DEBUG, logger=logger.name):
+        log_debug_event(logger, "channel.visible", conversation_id="private-chat", count=2)
+
+    payload = json.loads(caplog.messages[0].removeprefix("talon_event "))
+    assert payload == {
+        "conversation_id": "[redacted]",
+        "count": 2,
+        "event": "channel.visible",
+    }
+    assert "private-chat" not in caplog.text
 
 
 def test_log_event_redacts_secrets_and_url_credentials(caplog) -> None:

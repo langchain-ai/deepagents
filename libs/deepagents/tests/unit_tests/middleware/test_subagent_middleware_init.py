@@ -692,9 +692,9 @@ class TestSubagentMiddlewareInit:
 
         task_description = middleware.tools[0].description or ""
 
-        assert "Agents are isolated by default" in task_description
-        assert "forked: inherits a snapshot of your conversation and configured system prompt" in task_description
-        assert "outcome without restating inherited context" in task_description
+        assert "Each invocation is stateless by default" in task_description
+        assert "inherits your full conversation and system prompt" in task_description
+        assert "no need to restate context here" in task_description
 
     def test_task_tool_marks_compiled_forks_as_context_aware(self) -> None:
         middleware = SubAgentMiddleware(
@@ -711,7 +711,7 @@ class TestSubagentMiddlewareInit:
 
         task_description = middleware.tools[0].description or ""
 
-        assert "forked: inherits a snapshot of your conversation and configured system prompt" in task_description
+        assert "inherits your full conversation and system prompt" in task_description
 
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""

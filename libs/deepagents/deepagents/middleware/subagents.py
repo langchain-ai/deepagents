@@ -209,9 +209,10 @@ class ForkedSubAgent(_SubAgentBase):
 
         Forked subagents are experimental and may change in a future release.
 
-    A forked subagent receives a copy of the parent's state and configured
+    A forked subagent receives the parent's effective conversation history and
+    mirrors the parent's prompt-producing middleware, so it rebuilds the same
     system prompt. It cannot define a separate `system_prompt` or `skills`,
-    since either would diverge from the parent's configured prompt.
+    since either would diverge from the parent's.
 
     `tools` isn't restricted the same way -- a forked subagent's own tools
     work normally. The tradeoff is cache misses.
@@ -322,7 +323,7 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
         msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'handoff' or 'fork'"
         raise ValueError(msg)
     if mode == "fork" and spec.get("system_prompt") is not None:
-        msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it inherits the parent's configured prompt."
+        msg = f"ForkedSubAgent '{spec['name']}' cannot set system_prompt; it always inherits the parent's."
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):
         msg = f"ForkedSubAgent '{spec['name']}' cannot set skills; the parent's system message would discard it."
@@ -436,9 +437,7 @@ class TaskToolSchema(BaseModel):
     description: str = Field(
         description=(
             "A detailed description of the task for the subagent to perform autonomously. "
-            "State the expected output and any constraints not already present in the "
-            "selected agent's context. An agent marked as inheriting the conversation "
-            "already receives that context; do not redundantly restate it."
+            "Include all necessary context and specify the expected output format."
         )
     )
 
@@ -452,16 +451,19 @@ Available agent types and the tools they have access to:
 
 Specify subagent_type to select the agent. Usage notes:
 - Launch multiple agents concurrently when their tasks are independent, using a single message with multiple tool calls.
-- Agents are isolated by default: they see only the task prompt and return a single final report. Put the necessary context and expected output in their task. An agent explicitly marked as inheriting your conversation is a fork: it receives a snapshot of the prior conversation and configured system prompt, so give it the outcome and only the constraints not already in that context.
+- Each invocation is stateless by default: the agent sees only the prompt you give it and returns a single final report. Put full detail in the prompt and state exactly what it should return — unless an agent type below says it inherits your conversation instead.
 - The agent's report is not shown to the user; relay a summary yourself.
-- Tell an isolated agent whether to create content, analyze, or only research. A forked agent can use the inherited user intent, but the delegated outcome should still be clear.
+- Tell the agent whether to create content, analyze, or only research, since it can't necessarily see the user's intent unless it inherits your conversation, as noted per agent type below.
 - If an agent's description says to use it proactively, do so without waiting to be asked.
 - When only general-purpose is available, use it for any complex, context-heavy task; it has the same capabilities as the main agent."""  # noqa: E501
 
-_FORKED_SUBAGENT_TOOL_NOTE = (
-    " (forked: inherits a snapshot of your conversation and configured system prompt — give the outcome without restating inherited context)"
-)
-"""Appended to a forked subagent's line in the task tool's listing."""
+_FORKED_SUBAGENT_TOOL_NOTE = " (inherits your full conversation and system prompt — no need to restate context here)"
+"""Appended to a forked subagent's line in the task tool's listing.
+
+Load-bearing: without it, the "Each invocation is stateless" line above is
+the model's only signal, and it can refuse to delegate to a forked subagent
+even when told the subagent inherits the conversation.
+"""
 
 
 def _describe_subagent_for_tool(name: str, description: str, *, forked: bool) -> str:

@@ -23,16 +23,28 @@ class TestSkillsListJson:
         ]
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=tmp_path / "skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=tmp_path / "agent-skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
             patch("deepagents_code.skills.load.list_skills", return_value=fake_skills),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
-            settings.get_user_skills_dir.return_value = tmp_path / "skills"
-            settings.get_project_skills_dir.return_value = None
-            settings.get_user_agent_skills_dir.return_value = tmp_path / "agent-skills"
-            settings.get_project_agent_skills_dir.return_value = None
-            settings.get_built_in_skills_dir.return_value = tmp_path / "built-in"
+            settings.project_root = None
             _list(agent="agent", output_format="json")
 
         result = json.loads(buf.getvalue())
@@ -44,16 +56,28 @@ class TestSkillsListJson:
         """JSON mode returns empty array when no skills found."""
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=tmp_path / "skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=tmp_path / "agent-skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
             patch("deepagents_code.skills.load.list_skills", return_value=[]),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
-            settings.get_user_skills_dir.return_value = tmp_path / "skills"
-            settings.get_project_skills_dir.return_value = None
-            settings.get_user_agent_skills_dir.return_value = tmp_path / "agent-skills"
-            settings.get_project_agent_skills_dir.return_value = None
-            settings.get_built_in_skills_dir.return_value = tmp_path / "built-in"
+            settings.project_root = None
             _list(agent="agent", output_format="json")
 
         result = json.loads(buf.getvalue())
@@ -75,16 +99,28 @@ class TestSkillsInfoJson:
         ]
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=tmp_path / "skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=tmp_path / "agent-skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
             patch("deepagents_code.skills.load.list_skills", return_value=fake_skills),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
-            settings.get_user_skills_dir.return_value = tmp_path / "skills"
-            settings.get_project_skills_dir.return_value = None
-            settings.get_user_agent_skills_dir.return_value = tmp_path / "agent-skills"
-            settings.get_project_agent_skills_dir.return_value = None
-            settings.get_built_in_skills_dir.return_value = tmp_path / "built-in"
+            settings.project_root = None
             _info("my-skill", agent="agent", output_format="json")
 
         result = json.loads(buf.getvalue())
@@ -102,7 +138,11 @@ class TestSkillsCreateJson:
 
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            patch(
+                "deepagents_code.skills.commands.ensure_user_skills_dir",
+                return_value=skills_dir,
+            ),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
@@ -137,15 +177,28 @@ class TestSkillsDeleteJson:
         ]
         buf = StringIO()
         with (
-            patch("deepagents_code.config.Settings") as mock_settings_cls,
+            patch("deepagents_code.config.Credentials") as mock_settings_cls,
+            patch(
+                "deepagents_code.skills.commands.get_user_skills_dir",
+                return_value=skills_dir,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_skills_dir",
+                return_value=None,
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_user_agent_skills_dir",
+                return_value=tmp_path / "agent-skills",
+            ),
+            patch(
+                "deepagents_code.skills.commands.get_project_agent_skills_dir",
+                return_value=None,
+            ),
             patch("deepagents_code.skills.load.list_skills", return_value=fake_skills),
             patch("sys.stdout", buf),
         ):
             settings = mock_settings_cls.from_environment.return_value
-            settings.get_user_skills_dir.return_value = skills_dir
-            settings.get_project_skills_dir.return_value = None
-            settings.get_user_agent_skills_dir.return_value = tmp_path / "agent-skills"
-            settings.get_project_agent_skills_dir.return_value = None
+            settings.project_root = None
             _delete("old-skill", agent="agent", force=True, output_format="json")
 
         result = json.loads(buf.getvalue())

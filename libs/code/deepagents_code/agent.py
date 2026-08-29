@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from langgraph.store.base import BaseStore
     from langgraph.types import Command
 
+    from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.mcp_tools import MCPServerInfo
     from deepagents_code.output import OutputFormat
     from deepagents_code.plugins.adapters.skills import CodeSkillSource
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
 from langchain.agents.middleware import (
     HumanInTheLoopMiddleware,
     InterruptOnConfig,
+    ToolErrorMiddleware,
 )
 from langchain.agents.middleware.types import (
     AgentMiddleware,
@@ -67,7 +69,22 @@ from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
 )
-from deepagents_code._paths import PATHS
+from deepagents_code._paths import (
+    PATHS,
+    ensure_agent_dir,
+    ensure_user_skills_dir,
+    get_built_in_skills_dir,
+    get_project_agent_md_path,
+    get_project_agent_skills_dir,
+    get_project_agents_dir,
+    get_project_claude_skills_dir,
+    get_project_skills_dir,
+    get_user_agent_md_path,
+    get_user_agent_skills_dir,
+    get_user_agents_dir,
+    get_user_claude_skills_dir,
+    user_deepagents_dir,
+)
 from deepagents_code._repository_bounds import (
     REPOSITORY_GREP_MATCH_LIMIT,
     REPOSITORY_TOOL_CALL_LIMIT,
@@ -85,16 +102,17 @@ from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
-    config,
     console,
+    credentials,
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
     restore_user_tracing_api_keys,
     restore_user_tracing_env,
-    settings,
+    runtime_state,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
+from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.integrations.sandbox_factory import get_default_working_dir
 from deepagents_code.local_context import (
     LocalContextMiddleware,
@@ -121,11 +139,23 @@ from deepagents_code.unicode_security import (
     detect_dangerous_unicode,
     format_warning_detail,
     render_with_unicode_markers,
+    sanitize_control_chars,
     strip_dangerous_unicode,
     summarize_issues,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _format_task_error(error: Exception, request: ToolCallRequest) -> str | None:
+    from langgraph.errors import NodeCancelledError
+
+    if isinstance(error, NodeCancelledError):
+        return None
+    subagent_type = request.tool_call.get("args", {}).get("subagent_type")
+    subagent_name = subagent_type if isinstance(subagent_type, str) else "unknown"
+    logger.debug("Subagent %r failed", subagent_name, exc_info=error)
+    return f"Subagent {subagent_name!r} failed. You may retry this task."
 
 
 _MEMORY_READONLY_SYSTEM_PROMPT = (
@@ -936,8 +966,8 @@ def _resolve_ptc_option(
         tools: Tools passed to `create_cli_agent`. Used only to enumerate
             `"all"`, which is therefore limited to these explicitly-passed
             tools (the SDK runtime built-ins cannot be enumerated here).
-        acknowledge_unsafe: Mirrors `settings.interpreter_ptc_acknowledge_unsafe`;
-            required when `ptc="all"` and `auto_approve` is `False`.
+        acknowledge_unsafe: Explicit acknowledgement required when `ptc="all"`
+            and `auto_approve` is `False`.
         auto_approve: Whether HITL approval is globally disabled. When `True`,
             `"all"` does not require `acknowledge_unsafe` because every host
             tool already runs without prompting.
@@ -1052,6 +1082,27 @@ def _resolve_ptc_option(
         f"got {type(ptc).__name__}."
     )
     raise ValueError(msg)
+
+
+def _resolve_shell_allow_list() -> list[str] | None:
+    """Resolve the shell allow-list for a direct agent-construction caller.
+
+    Returns:
+        The configured allow-list, or `None` when shell access is disabled.
+
+    Raises:
+        RuntimeError: If the option is absent from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option("shell.allow_list")
+    if option is None:
+        msg = "shell.allow_list is missing from the configuration manifest"
+        raise RuntimeError(msg)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return cast("list[str] | None", resolved.value)
 
 
 def load_async_subagents(config_path: Path | None = None) -> list[AsyncSubAgent]:
@@ -1193,7 +1244,7 @@ def get_available_agent_names() -> list[str]:
         Sorted list of agent names. Empty when no agents exist yet or the
             directory is unreadable (see log for the underlying cause).
     """
-    agents_dir = settings.user_deepagents_dir
+    agents_dir = user_deepagents_dir()
     try:
         entries = list(agents_dir.iterdir())
     except FileNotFoundError:
@@ -1223,7 +1274,7 @@ def list_agents(*, output_format: OutputFormat = "text") -> None:
     Args:
         output_format: Output format — `'text'` (Rich) or `'json'`.
     """
-    agents_dir = settings.user_deepagents_dir
+    agents_dir = user_deepagents_dir()
     names = get_available_agent_names()
 
     if not names:
@@ -1303,7 +1354,7 @@ def reset_agent(
     Raises:
         SystemExit: If the source agent is not found.
     """
-    agents_dir = settings.user_deepagents_dir
+    agents_dir = user_deepagents_dir()
     agent_dir = agents_dir / agent_name
 
     if source_agent:
@@ -1546,13 +1597,15 @@ def get_system_prompt(
         )
 
     model_identity_section = build_model_identity_section(
-        settings.model_name,
-        provider=settings.model_provider,
-        context_limit=settings.model_context_limit,
-        unsupported_modalities=settings.model_unsupported_modalities,
+        runtime_state.model_name,
+        provider=runtime_state.model_provider,
+        context_limit=runtime_state.model_context_limit,
+        unsupported_modalities=runtime_state.model_unsupported_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
-    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if settings.has_tavily else ""
+    web_search_tool_guidance = (
+        _WEB_SEARCH_TOOL_GUIDANCE if credentials.has_tavily else ""
+    )
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1744,9 +1797,15 @@ def _format_task_description(
 
 
 def _format_execute_description(
-    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+    tool_call: ToolCall, _state: AgentState[Any], runtime: Runtime[Any]
 ) -> str:
     """Format execute tool call for approval prompt.
+
+    The working directory comes from the run's bound workspace, which
+    `require_thread_workspace` validates against the durable binding before
+    the run starts. A run with no workspace falls back to the process-global
+    server project context and then the process CWD; both can name a
+    directory the command will not run in, so the fallback warns.
 
     Returns:
         Formatted description string for the execute tool call.
@@ -1754,13 +1813,25 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    project_context = get_server_project_context()
-    effective_cwd = (
-        str(project_context.user_cwd)
-        if project_context is not None
-        else str(Path.cwd())
-    )
-    lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
+    context = CLIContextSchema.from_payload(runtime.context)
+    workspace = context.workspace if context is not None else {}
+    effective_cwd = workspace.get("cwd") if isinstance(workspace, dict) else None
+    # An empty or non-str `cwd` would render a blank directory line, which
+    # reads as "no directory" rather than as missing data. Fall through.
+    if not isinstance(effective_cwd, str) or not effective_cwd:
+        logger.warning(
+            "Shell approval prompt has no bound workspace cwd; the directory "
+            "shown may not be where this command runs (workspace=%r)",
+            workspace,
+        )
+        project_context = get_server_project_context()
+        effective_cwd = (
+            str(project_context.user_cwd)
+            if project_context is not None
+            else str(Path.cwd())
+        )
+    display_cwd = sanitize_control_chars(effective_cwd, collapse_whitespace=False)
+    lines = [f"Execute Command: {command}", f"Working Directory: {display_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)
     if issues:
@@ -2269,20 +2340,20 @@ def get_skill_sources(
     Returns:
         Ordered list of CodeSkillSource entries.
     """
-    skills_dir = settings.ensure_user_skills_dir(assistant_id)
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
+    skills_dir = ensure_user_skills_dir(assistant_id)
+    user_agent_skills_dir = get_user_agent_skills_dir()
     project_skills_dir = (
         project_context.project_skills_dir()
         if project_context is not None
-        else settings.get_project_skills_dir()
+        else get_project_skills_dir(credentials.project_root)
     )
     project_agent_skills_dir = (
         project_context.project_agent_skills_dir()
         if project_context is not None
-        else settings.get_project_agent_skills_dir()
+        else get_project_agent_skills_dir(credentials.project_root)
     )
     sources: list[CodeSkillSource] = [
-        (str(settings.get_built_in_skills_dir()), "Built-in"),
+        (str(get_built_in_skills_dir()), "Built-in"),
     ]
     try:
         from deepagents_code.plugins import discover_plugins
@@ -2303,10 +2374,10 @@ def get_skill_sources(
         sources.append((str(project_agent_skills_dir), "Project Agents"))
 
     # Experimental: Claude Code skill directories
-    user_claude_skills_dir = settings.get_user_claude_skills_dir()
+    user_claude_skills_dir = get_user_claude_skills_dir()
     if user_claude_skills_dir is not None and user_claude_skills_dir.exists():
         sources.append((str(user_claude_skills_dir), "User Claude"))
-    project_claude_skills_dir = settings.get_project_claude_skills_dir()
+    project_claude_skills_dir = get_project_claude_skills_dir(credentials.project_root)
     if project_claude_skills_dir:
         sources.append((str(project_claude_skills_dir), "Project Claude"))
 
@@ -2334,6 +2405,7 @@ def create_cli_agent(
     enable_skills: bool = True,
     enable_shell: bool = True,
     enable_interpreter: bool = False,
+    interpreter_config: InterpreterConfig | None = None,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
     auto_classifier_model: str | BaseChatModel | None = None,
@@ -2348,7 +2420,9 @@ def create_cli_agent(
     rubric_grader_tools: Sequence[BaseTool | Callable[..., Any]] | None = None,
     model_retries: int = DEFAULT_MODEL_RETRIES,
     cli_max_retries: int | None = None,
+    summarization_model: str | None = None,
     enforce_model_policy: bool = True,
+    extension_registry: ExtensionRegistry | None = None,
 ) -> tuple[Pregel[Any, Any, Any, Any], CompositeBackend]:
     """Create a CLI-configured agent with flexible options.
 
@@ -2408,8 +2482,8 @@ def create_cli_agent(
             disabled) or when `shell_allow_list` is `SHELL_ALLOW_ALL`.
         shell_allow_list: Explicit restrictive shell allow-list forwarded from
             the CLI process. When provided (and `interrupt_shell_only` is
-            `True`), used directly instead of reading `settings.shell_allow_list`
-            (which may not be set in the server subprocess environment).
+            `True`), used directly instead of resolving `shell.allow_list`
+            again in the server subprocess.
         fs_tools: Allowlist of filesystem tools to expose to the agent, from
             `--allow-fs-tools`. `None` (default; also what `--allow-fs-tools
             all` parses to) leaves `FilesystemMiddleware` at its SDK default
@@ -2446,7 +2520,7 @@ def create_cli_agent(
             receive the interpreter in v1.
 
             PTC (`tools.*` host bridge) calls bypass `interrupt_on`/HITL
-            approval, so `settings.interpreter_ptc` is the only effective
+            approval, so `InterpreterConfig.ptc` is the only effective
             control over which host tools can be invoked from inside the
             REPL. `js_eval` itself is intentionally not gated by HITL —
             per-call approval would be unusably noisy and would not block
@@ -2458,7 +2532,14 @@ def create_cli_agent(
             `interpreter_ptc_acknowledge_unsafe=True`.
 
             Requires the core `langchain-quickjs` dependency.
-        rubric_model: Grader model for `RubricMiddleware`.
+        interpreter_config: Resolver-backed interpreter settings snapshot.
+
+            Direct callers may omit this to resolve one for the current
+            process. The server supplies a snapshot that incorporates its
+            invocation-scoped PTC overrides.
+        rubric_model: Default grader model. `None` makes the grader follow
+            the active main model. Either way a thread's recorded
+            `_rubric_model_spec` selection takes precedence.
 
             A `'provider:model'` string or `BaseChatModel`.
 
@@ -2477,9 +2558,8 @@ def create_cli_agent(
             consult the env var or `config.toml`. Only meaningful when
             `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
-            for the main agent. When `None`, it is resolved from the
-            `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
-            in `config.toml`, then the default via `resolve_recursion_limit`.
+            for the main agent. When `None`, it is resolved from runtime
+            configuration. If unset, no `recursion_limit` is bound.
         checkpointer: Optional checkpointer for session persistence.
             When `None`, the graph is compiled without a checkpointer.
         store: Optional LangGraph Store for runtime approval state.
@@ -2503,11 +2583,16 @@ def create_cli_agent(
             Forwarded to subagent, Auto classifier, and runtime offload models
             so each one resolves its own provider's configured budget unless the
             user overrode it globally.
+        summarization_model: Model spec used only for context-compaction summaries.
+
+            The model is resolved lazily when compaction first runs. `None`
+            reuses the effective main model.
         enforce_model_policy: Check every model string against `models.allowed`.
             Pass `False` **only** from callers that compile a graph they never
             invoke (tool enumeration), so a blocked subagent model degrades the
             listing rather than raising. Any caller that can run the graph must
             leave this `True`.
+        extension_registry: Server-owned Python extension registrations.
 
     Returns:
         2-tuple of `(agent_graph, backend)`
@@ -2518,7 +2603,7 @@ def create_cli_agent(
 
     Raises:
         ValueError: When `enable_interpreter=True` is paired with a
-            non-`None` `sandbox`, when `settings.interpreter_ptc` contains
+            non-`None` `sandbox`, when `InterpreterConfig.ptc` contains
             unknown tool names, or when `interpreter_ptc="all"` is used
             without `auto_approve` or `interpreter_ptc_acknowledge_unsafe`.
         ModelNotAllowedError: When `model`, `auto_classifier_model`,
@@ -2527,7 +2612,12 @@ def create_cli_agent(
             checked before dcode resolves them with provider retries disabled;
             a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
-    tools = tools or []
+    tools = list(tools or [])
+    if extension_registry is not None:
+        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+        if not is_env_truthy(EXPERIMENTAL):
+            extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
         logger.warning(
@@ -2542,7 +2632,7 @@ def create_cli_agent(
 
     # Setup agent directory for persistent memory (if enabled)
     if enable_memory or enable_skills:
-        agent_dir = settings.ensure_agent_dir(assistant_id)
+        agent_dir = ensure_agent_dir(assistant_id)
         agent_md = agent_dir / "AGENTS.md"
         if not agent_md.exists():
             # Create empty file for user customizations
@@ -2551,18 +2641,19 @@ def create_cli_agent(
 
     # Load custom subagents from filesystem
     custom_subagents: list[SubAgent | CompiledSubAgent] = []
+    resolved_shell_allow_list = _resolve_shell_allow_list()
     restrictive_shell_allow_list: list[str] | None = None
     if interrupt_shell_only and not auto_approve:
         # Prefer the explicitly forwarded allow-list (set by the CLI process
-        # and passed through ServerConfig).  Fall back to settings only for
-        # direct callers (e.g. benchmarking frameworks) that don't go through
-        # the server subprocess path.
+        # and passed through ServerConfig). Resolve the shared shell policy
+        # only for direct callers (e.g. benchmarking frameworks) that don't go
+        # through the server subprocess path.
         if shell_allow_list:
             restrictive_shell_allow_list = list(shell_allow_list)
-        elif settings.shell_allow_list and not isinstance(
-            settings.shell_allow_list, _ShellAllowAll
+        elif resolved_shell_allow_list and not isinstance(
+            resolved_shell_allow_list, _ShellAllowAll
         ):
-            restrictive_shell_allow_list = list(settings.shell_allow_list)
+            restrictive_shell_allow_list = list(resolved_shell_allow_list)
         else:
             logger.warning(
                 "interrupt_shell_only=True but no restrictive shell allow-list "
@@ -2579,11 +2670,11 @@ def create_cli_agent(
         else None
     )
 
-    user_agents_dir = settings.get_user_agents_dir(assistant_id)
+    user_agents_dir = get_user_agents_dir(assistant_id)
     project_agents_dir = (
         project_context.project_agents_dir()
         if project_context is not None
-        else settings.get_project_agents_dir()
+        else get_project_agents_dir(credentials.project_root)
     )
 
     def _subagent_cli_middleware(
@@ -2638,9 +2729,7 @@ def create_cli_agent(
             from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
 
             middleware.append(
-                ManagedMemoryGuardMiddleware(
-                    [settings.get_user_agent_md_path(assistant_id)]
-                )
+                ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
             )
         return middleware
 
@@ -2799,11 +2888,11 @@ def create_cli_agent(
 
     # Add memory middleware
     if enable_memory:
-        memory_sources = [str(settings.get_user_agent_md_path(assistant_id))]
+        memory_sources = [str(get_user_agent_md_path(assistant_id))]
         project_agent_md_paths = (
             project_context.project_agent_md_paths()
             if project_context is not None
-            else settings.get_project_agent_md_path()
+            else get_project_agent_md_path(credentials.project_root)
         )
         memory_sources.extend(str(p) for p in project_agent_md_paths)
 
@@ -2829,9 +2918,7 @@ def create_cli_agent(
         from deepagents_code.memory_guard import ManagedMemoryGuardMiddleware
 
         agent_middleware.append(
-            ManagedMemoryGuardMiddleware(
-                [settings.get_user_agent_md_path(assistant_id)]
-            )
+            ManagedMemoryGuardMiddleware([get_user_agent_md_path(assistant_id)])
         )
 
     # Add skills middleware
@@ -2848,6 +2935,9 @@ def create_cli_agent(
         )
 
     # CONDITIONAL SETUP: Local vs Remote Sandbox
+    artifact_routes: dict[str, BackendProtocol] = {}
+    protected_extension_routes: set[str] = set()
+    artifacts_root: str | None = None
     if sandbox is None:
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
@@ -2858,8 +2948,9 @@ def create_cli_agent(
             # `deepagents-code` default applied at bootstrap) entirely so shell
             # commands don't inherit it.
             shell_env = os.environ.copy()
-            if settings.user_langchain_project is not None:
-                shell_env["LANGSMITH_PROJECT"] = settings.user_langchain_project
+            shell_env["GIT_TERMINAL_PROMPT"] = "0"
+            if credentials.user_langchain_project is not None:
+                shell_env["LANGSMITH_PROJECT"] = credentials.user_langchain_project
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
             restore_user_tracing_env(shell_env)
@@ -2906,10 +2997,11 @@ def create_cli_agent(
         )
         from langchain_quickjs import CodeInterpreterMiddleware, PTCOption
 
+        interpreter = interpreter_config or InterpreterConfig.from_resolver()
         ptc_names = _resolve_ptc_option(
-            settings.interpreter_ptc,
+            interpreter.ptc,
             tools=tools,
-            acknowledge_unsafe=settings.interpreter_ptc_acknowledge_unsafe,
+            acknowledge_unsafe=interpreter.ptc_acknowledge_unsafe,
             auto_approve=auto_approve,
         )
         ptc_option: PTCOption | None = (
@@ -2922,10 +3014,10 @@ def create_cli_agent(
             agent_middleware.append(
                 CodeInterpreterMiddleware(
                     tool_name="js_eval",
-                    timeout=settings.interpreter_timeout_seconds,
-                    memory_limit=settings.interpreter_memory_limit_mb * 1024 * 1024,
-                    max_ptc_calls=settings.interpreter_max_ptc_calls,
-                    max_result_chars=settings.interpreter_max_result_chars,
+                    timeout=interpreter.timeout_seconds,
+                    memory_limit=interpreter.memory_limit_mb * 1024 * 1024,
+                    max_ptc_calls=interpreter.max_ptc_calls,
+                    max_result_chars=interpreter.max_result_chars,
                     ptc=ptc_option,
                 )
             )
@@ -2937,7 +3029,7 @@ def create_cli_agent(
                 backend=backend,
                 mcp_server_info=mcp_server_info,
                 tracing_project=get_langsmith_project_name(),
-                user_tracing_project=settings.user_langchain_project,
+                user_tracing_project=credentials.user_langchain_project,
             )
         )
 
@@ -2958,7 +3050,7 @@ def create_cli_agent(
     interrupt_on: dict[str, bool | InterruptOnConfig] = {}
     auto_mode_config: tuple[Path, list[str]] | None = None
     if resolved_interrupt_on is not None and auto_mode_enabled:
-        configured_allow_list = shell_allow_list or settings.shell_allow_list
+        configured_allow_list = shell_allow_list or resolved_shell_allow_list
         narrow_allow_list = (
             configured_allow_list if isinstance(configured_allow_list, list) else []
         )
@@ -2981,14 +3073,17 @@ def create_cli_agent(
         # recovers, so archive paths saved during fallback stay resolvable.
         artifacts_storage = _artifacts_root()
         artifacts_root = artifacts_storage.root
+        conversation_history_root = (
+            _offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME
+        )
         conversation_history_backend = FilesystemBackend(
-            root_dir=_offload_fallback_root() / CONVERSATION_HISTORY_DIRNAME,
+            root_dir=conversation_history_root,
             virtual_mode=True,
         )
         fallback_history_root = (
             f"{_FALLBACK_ARTIFACTS_ROOT}/{CONVERSATION_HISTORY_DIRNAME}/"
         )
-        artifact_routes: dict[str, BackendProtocol] = {
+        artifact_routes = {
             f"{artifacts_root}/{CONVERSATION_HISTORY_DIRNAME}/": (
                 conversation_history_backend
             ),
@@ -3001,22 +3096,46 @@ def create_cli_agent(
                     virtual_mode=True,
                 )
             )
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes=artifact_routes,
-            artifacts_root=artifacts_root,
-        )
-    else:
-        # Sandbox mode: No special routing needed
-        composite_backend = CompositeBackend(
-            default=backend,
-            routes={},
+        protected_extension_routes = {
+            f"{_FALLBACK_ARTIFACTS_ROOT.rstrip('/')}/",
+            f"{artifacts_root.rstrip('/')}/",
+            f"/{str(conversation_history_root).lstrip('/').rstrip('/')}/",
+        }
+    extension_routes: dict[str, BackendProtocol] = {}
+    if extension_registry is not None:
+        from deepagents_code.extensions.hosting import (
+            bind_runtime_host_policy,
+            validate_backend_route,
         )
 
+        for route in extension_registry.backend_routes:
+            validate_backend_route(
+                route,
+                protected_extension_routes,
+                sandbox_active=sandbox is not None,
+            )
+            extension_routes[route.name] = route.unit
+        bind_runtime_host_policy(
+            extension_registry,
+            protected_extension_routes,
+            sandbox_active=sandbox is not None,
+        )
+    if artifacts_root is None:
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes=extension_routes,
+        )
+    else:
+        composite_backend = CompositeBackend(
+            default=backend,
+            routes={**extension_routes, **artifact_routes},
+            artifacts_root=artifacts_root,
+        )
     compaction_middleware = _create_cli_compaction_middleware(
         model,
         composite_backend,
         cli_max_retries=cli_max_retries,
+        summarization_model_spec=summarization_model,
     )
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
@@ -3153,7 +3272,12 @@ def create_cli_agent(
     # with a non-zero request-time budget.
     from deepagents_code.model_retry import CodeModelRetryMiddleware
 
-    agent_middleware.append(CodeModelRetryMiddleware(max_retries=model_retries))
+    agent_middleware.extend(
+        [
+            CodeModelRetryMiddleware(max_retries=model_retries),
+            ToolErrorMiddleware(_format_task_error, tools=["task"]),
+        ]
+    )
 
     grader_context_tools = _normalize_rubric_grader_context_tools(
         rubric_grader_tools or ()
@@ -3188,13 +3312,21 @@ def create_cli_agent(
         fs_tools=fs_tools,
     )
     from deepagents_code.goal_rubric import (
+        RubricGraderState,
         _ContextToolCallBudgetMiddleware,
         _CriteriaContextBudgetMiddleware,
+        _rubric_grader_messages,
+        _rubric_grader_state,
         _rubric_interrupt_on,
         _WebSearchBudgetMiddleware,
     )
 
     grader_middleware: list[AgentMiddleware[Any, Any]] = [
+        ConfigurableModelMiddleware(
+            persist_model_state=False,
+            cli_max_retries=cli_max_retries,
+            strict_model_resolution=True,
+        ),
         # Both clients filter this nested message stream. A transient fault can
         # safely retry the failed model node without replaying grader tools.
         CodeModelRetryMiddleware(
@@ -3261,6 +3393,16 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            "grader_state_schema": RubricGraderState,
+            "prepare_messages_for_grader": _rubric_grader_messages,
+            "build_grader_state": _rubric_grader_state,
+            # The bootstrap only scaffolds the runtime grader's graph;
+            # `ConfigurableModelMiddleware` swaps in the thread-selected model
+            # before any call. Pass the main model through even as an
+            # unresolved spec so a runtime selection never depends on the
+            # startup rubric model resolving.
+            "runtime_bootstrap_model": model,
+            "inherit_main_model": rubric_model is None,
         }
         if rubric_max_iterations is not None:
             rubric_kwargs["max_iterations"] = rubric_max_iterations
@@ -3277,6 +3419,31 @@ def create_cli_agent(
     effective_recursion_limit = (
         recursion_limit if recursion_limit is not None else resolve_recursion_limit()
     )
+    if extension_registry is not None:
+        extension_tools = extension_registry.tool_units()
+        extension_tool_names = {registered.name for registered in extension_tools}
+        tools = [
+            item
+            for item in tools
+            if (getattr(item, "name", None) or getattr(item, "__name__", None))
+            not in extension_tool_names
+        ]
+        tools.extend(registered.unit for registered in extension_tools)
+        extension_middleware_names = {
+            registered.name for registered in extension_registry.middleware
+        }
+        agent_middleware = [
+            item
+            for item in agent_middleware
+            if getattr(item, "name", type(item).__name__)
+            not in extension_middleware_names
+        ]
+        agent_middleware.extend(
+            registered.unit for registered in extension_registry.middleware
+        )
+        from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
+
+        agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
     agent = create_deep_agent(
         model=model,
         system_prompt=system_prompt,
@@ -3289,5 +3456,17 @@ def create_cli_agent(
         store=store,
         subagents=all_subagents or None,
         name=_sanitize_agent_message_name(assistant_id),
-    ).with_config({**config, "recursion_limit": effective_recursion_limit})
+    )
+    if effective_recursion_limit is not None:
+        # `Pregel.with_config` uses `merge_configs`, which discards a value equal
+        # to LangGraph's environment-derived default. Replace the copied graph's
+        # config directly so that inherited default can override the SDK's 9,999.
+        agent = agent.copy(
+            {
+                "config": {
+                    **(agent.config or {}),
+                    "recursion_limit": effective_recursion_limit,
+                }
+            }
+        )
     return agent, composite_backend

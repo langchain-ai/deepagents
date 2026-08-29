@@ -8,6 +8,7 @@ import threading
 from collections import OrderedDict
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager
+from ipaddress import ip_address
 from typing import TYPE_CHECKING, Any, Literal, cast
 from weakref import WeakValueDictionary
 
@@ -31,7 +32,13 @@ from deepagents_code.offload_middleware import (
     _archive_lock,
     unchanged_offload_result,
 )
-from deepagents_code.server_graph import get_server_runtime
+from deepagents_code.server_graph import _workspace_runtime as get_server_runtime
+from deepagents_code.workspace import (
+    WorkspaceConflictError,
+    bind_thread_workspace,
+    canonical_workspace_config,
+    require_thread_workspace,
+)
 
 if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
@@ -154,7 +161,95 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
     try:
         yield
     finally:
-        await _flush_traces()
+        try:
+            from deepagents_code.extensions.runtime import shutdown_server_extensions
+
+            await shutdown_server_extensions()
+        finally:
+            await _flush_traces()
+
+
+async def workspace(request: Request) -> JSONResponse:
+    """Create or verify the durable workspace assigned to a thread.
+
+    Returns:
+        A validated workspace descriptor or an error response.
+    """
+    thread_id = request.path_params["thread_id"]
+    body = await request.json()
+    if not isinstance(body, dict):
+        return JSONResponse(
+            {"detail": "request body must be an object"}, status_code=422
+        )
+    try:
+        from deepagents_code._server_config import ServerConfig
+
+        server_config = ServerConfig.from_env()
+        trusted_config = server_config.to_workspace_payload()
+        if "workspace_config" in body or "config_fingerprint" in body:
+            _, trusted_policy_fingerprint = canonical_workspace_config(trusted_config)
+            _, claimed_policy_fingerprint = canonical_workspace_config(
+                body.get("workspace_config")
+            )
+            claimed_config_fingerprint = body.get("config_fingerprint")
+            if (
+                claimed_policy_fingerprint != trusted_policy_fingerprint
+                or claimed_config_fingerprint != server_config.workspace_fingerprint()
+            ):
+                return JSONResponse(
+                    {"detail": "workspace configuration does not match server policy"},
+                    status_code=409,
+                )
+        binding = await bind_thread_workspace(
+            thread_id,
+            body.get("cwd"),
+            trusted_config,
+            config_fingerprint=server_config.workspace_fingerprint(),
+        )
+    except (TypeError, ValueError) as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=422)
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    client = _thread_client()
+    metadata = {
+        "cwd": binding.cwd,
+        "dcode_workspace_id": binding.workspace_id,
+        "dcode_workspace_generation": binding.generation,
+    }
+    try:
+        await client.threads.create(
+            thread_id=thread_id,
+            if_exists="do_nothing",
+            metadata=metadata,
+            graph_id="agent",
+        )
+        await client.threads.update(thread_id, metadata=metadata)
+    except Exception:
+        logger.exception("Failed to mirror workspace metadata for thread %s", thread_id)
+        return JSONResponse(
+            {"detail": "Workspace was bound but thread metadata could not be updated."},
+            status_code=503,
+        )
+    return JSONResponse({"workspace": binding.to_payload()})
+
+
+def _extensions(request: Request) -> JSONResponse:
+    """Return extension provenance only to a loopback client."""
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    if not is_env_truthy(EXPERIMENTAL):
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    host = request.client.host if request.client is not None else ""
+    try:
+        loopback = ip_address(host).is_loopback
+    except ValueError:
+        loopback = host == "localhost"
+    if not loopback:
+        return JSONResponse({"detail": "Not found"}, status_code=404)
+    from deepagents_code.extensions.runtime import server_extension_report
+
+    return JSONResponse(server_extension_report())
 
 
 # One client for the process. `get_client` builds a fresh `httpx.AsyncClient`
@@ -225,9 +320,9 @@ class _OffloadConflictError(RuntimeError):
 class _OffloadUnavailableError(RuntimeError):
     """The server runtime could not be built, so no operation can run.
 
-    `get_server_runtime` converts a construction failure into a startup-error
-    marker and `sys.exit(1)`. That barrier was written for the `langgraph.json`
-    graph factory, where exiting is right; reached from a request handler it
+    Runtime construction can emit a startup-error marker and `sys.exit(1)`.
+    That barrier was written for the `langgraph.json` graph factory, where
+    exiting is right; reached from a request handler it
     would kill the server process mid-request, and `SystemExit` is a
     `BaseException`, so the route's own handler could not turn it into a
     response. Server-owned offload cannot run without that runtime, so report
@@ -254,12 +349,17 @@ class _OffloadIndeterminateError(RuntimeError):
 _CONTEXT_STR_OR_NONE_FIELDS = (
     "model",
     "classifier_model",
+    "summarization_model",
     "approval_mode",
     "thread_id",
     "hooks_snapshot_id",
     "prompt_id",
 )
-_CONTEXT_DICT_FIELDS = ("model_params", "profile_overrides")
+_CONTEXT_DICT_FIELDS = (
+    "model_params",
+    "profile_overrides",
+    "workspace",
+)
 
 _TRANSPORT_MODEL_PARAM_KEYS = frozenset(
     {
@@ -297,9 +397,11 @@ server accepts connections from any local process, so the request's model
 selection must not extend to its network plumbing.
 
 A backstop, not the primary control. `_checkpoint_model_context` discards the
-request's `model` and `model_params` outright and substitutes the checkpointed
-values, so a client-supplied endpoint cannot reach `create_model` even without
-this filter. It is kept for the case that control cannot cover: a future path
+request's `model`, `model_params`, and `summarization_model` outright, and
+substitutes checkpointed values for the first two, so a client-supplied
+endpoint cannot reach `create_model` even without this filter. Every spec the
+operation resolves is server-sourced; no client string reaches a model
+constructor. It is kept for the case that control cannot cover: a future path
 that resolves a model before, or instead of, reading the checkpoint. Treat a
 warning from here as a client sending params it should not, not as a breach.
 
@@ -474,11 +576,19 @@ def _checkpoint_model_context(
     """Replace request model selection with server-checkpointed values.
 
     The client still supplies hook and profile context, but it cannot choose
-    the model's outbound transport for this server-owned operation. Successful
-    agent turns checkpoint the resolved model spec and the runtime overrides
-    they actually used, so those values preserve trusted launch/model-switch
-    settings such as a private `base_url` without accepting an arbitrary
-    offload request's endpoint override.
+    which model runs -- or its outbound transport -- for this server-owned
+    operation. Successful agent turns checkpoint the resolved model spec and
+    the runtime overrides they actually used, so those values preserve trusted
+    launch/model-switch settings such as a private `base_url` without accepting
+    an arbitrary offload request's endpoint override.
+
+    `summarization_model` is dropped for the same reason and has no checkpoint
+    to restore from, so the operation falls back to the server's own launch
+    configuration (`--summarization-model` / `[models].summarization_default`).
+    A bare spec cannot carry an endpoint, but it can still name a provider the
+    server holds credentials for, which would send conversation history
+    somewhere the thread's owner never chose. A mid-session
+    `/summarization-model` override therefore does not apply to `/offload`.
 
     Args:
         context: Validated request context.
@@ -492,6 +602,7 @@ def _checkpoint_model_context(
     trusted = dict(context)
     trusted.pop("model", None)
     trusted.pop("model_params", None)
+    trusted.pop("summarization_model", None)
     model = state.get("_model_spec")
     params = state.get("_model_params")
     if isinstance(model, str) and model:
@@ -787,6 +898,13 @@ async def _execute_offload(
         checkpoint_id = _checkpoint_id(before)
         context = _checkpoint_model_context(context, state)
         context["thread_id"] = thread_id
+        try:
+            binding = await require_thread_workspace(
+                thread_id,
+                context.get("workspace"),
+            )
+        except (TypeError, ValueError, WorkspaceConflictError) as exc:
+            raise _OffloadConflictError(str(exc)) from exc
         namespace = f"dcode_offload:{operation_id}"
         info = ExecutionInfo(
             checkpoint_id=checkpoint_id,
@@ -796,7 +914,11 @@ async def _execute_offload(
             run_id=operation_id,
         )
         try:
-            server = await get_server_runtime()
+            schema = CLIContextSchema.from_payload(context)
+            if schema is None:
+                msg = "Offload requires workspace runtime context."
+                raise _OffloadConflictError(msg)
+            server = await get_server_runtime(binding)
         except SystemExit as exc:
             msg = (
                 "The server could not build its agent runtime, so /offload is "
@@ -1007,6 +1129,11 @@ app = Starlette(
     lifespan=_lifespan,
     routes=[
         Route(
+            "/dcode/threads/{thread_id:str}/workspace",
+            workspace,
+            methods=["POST"],
+        ),
+        Route(
             "/dcode/threads/{thread_id:str}/offload",
             offload,
             methods=["POST"],
@@ -1016,5 +1143,6 @@ app = Starlette(
             cancel_offload,
             methods=["POST"],
         ),
+        Route("/extensions", _extensions, methods=["GET"]),
     ],
 )

@@ -28,6 +28,7 @@
 - Custom subagent loader (`subagents.py`, `agent.py:load_async_subagents`)
 - Conversation offload (`offload.py`)
 - Skill management (`skills/commands.py`)
+- Python extension loading (`extensions/`)
 - Persisted goal/rubric state notices (`goal_state_notice.py`, `goal_tools.py`,
   `goal_state_limits.py`)
 
@@ -55,6 +56,8 @@
 7. `DA_SERVER_*` environment variables are readable only by the CLI process and its child server subprocess (OS process isolation assumption).
 8. Users who set `class_path` in `config.toml` accept the same trust model as `pyproject.toml` build scripts — they control their own machine.
 9. Administrators deploy and protect the fixed `managed_config.toml` path with operating-system controls; the CLI does not validate its owner or mode and never writes it.
+10. User-directory, user-config, CLI, installed-plugin, and Python entry-point extensions are authorized by the user action that supplied them. Project extensions execute only after explicit, configured, or persisted trust.
+11. Extension backend routes cannot overlap dcode's local artifact or conversation-history storage. A sandboxed agent rejects direct `FilesystemBackend` and `LocalShellBackend` mounts, including subclasses; wrapper implementations are responsible for their own isolation because dcode does not recursively inspect arbitrary backend object graphs.
 
 ---
 
@@ -140,7 +143,7 @@
 | C6  | Hook Runtime                | Fires subprocess commands on agent lifecycle events                                                                 | framework-controlled | No³      | `hooks.runtime.HooksRuntime`, `hooks.runner.run_command_handler`                                  |
 | C7  | Sandbox Integration         | Creates/destroys remote sandboxes (Daytona, LangSmith, Modal, Runloop, AgentCore)                                  | framework-controlled | No⁴      | `integrations.sandbox_factory.create_sandbox`                                                     |
 | C8  | Session Persistence         | SQLite checkpoint store for LangGraph thread state                                                                  | framework-controlled | Yes      | `sessions.get_db_path`, `sessions.generate_thread_id`                                             |
-| C9  | Configuration System        | Managed/user TOML, env vars, `AGENTS.md` system prompts, model config                                               | administrator/user-controlled | N/A | `configuration`, `config.settings`, `model_config.ModelConfig`, fixed managed path, `~/.deepagents/config.toml` |
+| C9  | Configuration System        | Managed/user TOML, env vars, `AGENTS.md` system prompts, model config                                               | administrator/user-controlled | N/A | `configuration`, `config.Credentials`, `config.RuntimeState`, `_paths.PATHS`, `model_config.ModelConfig`, fixed managed path, `~/.deepagents/config.toml` |
 | C10 | Unicode/URL Safety          | Detects hidden Unicode, checks URL domain spoofing for approval UI warnings                                         | framework-controlled | Yes      | `unicode_security.detect_dangerous_unicode`, `unicode_security.check_url_safety`                  |
 | C11 | LangGraph Dev Server        | Subprocess running `langgraph dev` with `LANGGRAPH_AUTH_TYPE=noop`; managed by `ServerProcess`                      | framework-controlled | Yes⁵     | `client.launch.server.ServerProcess.start`, `client.launch.server.generate_langgraph_json`, `client.launch.server_manager.start_server_and_get_agent` |
 | C12 | Remote Agent Client         | HTTP+SSE client wrapping `RemoteGraph`; connects to C11 on localhost                                                | framework-controlled | Yes⁵     | `client.remote_client.RemoteAgent.astream`, `client.remote_client.RemoteAgent.aget_state`         |

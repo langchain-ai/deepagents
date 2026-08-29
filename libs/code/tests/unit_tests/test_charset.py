@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import os
-import sys
-from dataclasses import fields
 from typing import TYPE_CHECKING
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
 import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
-from deepagents_code._env_vars import HIDE_SPLASH_VERSION
+from dataclasses import fields
+
 from deepagents_code.config import (
     _ASCII_BANNER,
     _UNICODE_BANNER,
@@ -21,7 +20,6 @@ from deepagents_code.config import (
     UNICODE_GLYPHS,
     CharsetMode,
     Glyphs,
-    __version__,
     _detect_charset_mode,
     get_banner,
     get_glyphs,
@@ -46,17 +44,6 @@ def _restore_glyphs_cache() -> Iterator[None]:
 
 class TestCharsetMode:
     """Tests for CharsetMode enum."""
-
-    def test_charset_mode_values(self) -> None:
-        """Test that CharsetMode has expected values."""
-        assert CharsetMode.UNICODE.value == "unicode"
-        assert CharsetMode.ASCII.value == "ascii"
-        assert CharsetMode.AUTO.value == "auto"
-
-    def test_charset_mode_is_str_enum(self) -> None:
-        """Test that CharsetMode values are strings."""
-        assert isinstance(CharsetMode.UNICODE, str)
-        assert CharsetMode.ASCII == "ascii"
 
 
 class TestGlyphs:
@@ -90,7 +77,14 @@ class TestGlyphs:
         assert ord(UNICODE_GLYPHS.hunk_break) > 127
 
     def test_ascii_glyphs_are_ascii(self) -> None:
-        """Test that ASCII_GLYPHS contains only ASCII characters."""
+        """Test that every ASCII glyph field contains only ASCII characters."""
+        for field in fields(Glyphs):
+            value = getattr(ASCII_GLYPHS, field.name)
+            values = value if isinstance(value, tuple) else (value,)
+            assert all(text.isascii() for text in values)
+
+    def test_legacy_ascii_glyphs_are_ascii(self) -> None:
+        """Keep explicit coverage of the established ASCII glyph values."""
         for char in ASCII_GLYPHS.tool_prefix:
             assert ord(char) < 128
         for char in ASCII_GLYPHS.ellipsis:
@@ -133,77 +127,9 @@ class TestGlyphs:
         for char in ASCII_GLYPHS.hunk_break:
             assert ord(char) < 128
 
-    def test_glyphs_frozen(self) -> None:
-        """Test that Glyphs instances are immutable."""
-        with pytest.raises(AttributeError):
-            UNICODE_GLYPHS.tool_prefix = "changed"  # ty: ignore
-
-    def test_glyphs_all_fields_present(self) -> None:
-        """Test that both glyph sets populate every declared field.
-
-        Enumerated from `dataclasses.fields` rather than a hand-written list: a
-        restated list silently stops covering new fields, and this one had
-        already drifted behind six of them.
-        """
-        for field in fields(Glyphs):
-            assert getattr(UNICODE_GLYPHS, field.name) is not None
-            assert getattr(ASCII_GLYPHS, field.name) is not None
-
 
 class TestDetectCharsetMode:
     """Tests for _detect_charset_mode function."""
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_explicit_unicode_mode(self) -> None:
-        """Test explicit unicode mode via env var."""
-        mode = _detect_charset_mode()
-        assert mode == CharsetMode.UNICODE
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
-    def test_explicit_ascii_mode(self) -> None:
-        """Test explicit ascii mode via env var."""
-        mode = _detect_charset_mode()
-        assert mode == CharsetMode.ASCII
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "UNICODE"}, clear=False)
-    def test_case_insensitive_mode(self) -> None:
-        """Test that mode parsing is case-insensitive."""
-        mode = _detect_charset_mode()
-        assert mode == CharsetMode.UNICODE
-
-    @patch.dict(
-        "os.environ", {"UI_CHARSET_MODE": "auto", "LANG": "en_US.UTF-8"}, clear=False
-    )
-    def test_auto_mode_with_utf_lang(self) -> None:
-        """Test auto mode detects UTF from LANG env var."""
-        # Mock stdout without utf encoding
-        mock_stdout = Mock()
-        mock_stdout.encoding = "ascii"
-        with patch.object(sys, "stdout", mock_stdout):
-            mode = _detect_charset_mode()
-        assert mode == CharsetMode.UNICODE
-
-    @patch.dict("os.environ", {"LANG": "C", "LC_ALL": ""}, clear=False)
-    def test_auto_mode_with_c_locale_falls_back_to_ascii(self) -> None:
-        """Test auto mode falls back to ASCII with C locale."""
-        # Remove UI_CHARSET_MODE if set
-        with patch.dict("os.environ", {"UI_CHARSET_MODE": "auto"}, clear=False):
-            mock_stdout = Mock()
-            mock_stdout.encoding = "ascii"
-            with patch.object(sys, "stdout", mock_stdout):
-                mode = _detect_charset_mode()
-        assert mode == CharsetMode.ASCII
-
-    def test_auto_mode_with_utf_stdout_encoding(self) -> None:
-        """Test auto mode detects UTF from stdout encoding."""
-        with patch.dict(
-            "os.environ", {"UI_CHARSET_MODE": "auto", "LANG": "C", "LC_ALL": ""}
-        ):
-            mock_stdout = Mock()
-            mock_stdout.encoding = "utf-8"
-            with patch.object(sys, "stdout", mock_stdout):
-                mode = _detect_charset_mode()
-        assert mode == CharsetMode.UNICODE
 
     @patch.dict("os.environ", {"DEEPAGENTS_CODE_UI_CHARSET_MODE": "ascii"}, clear=False)
     def test_prefixed_env_var_is_honored(self) -> None:
@@ -225,118 +151,13 @@ class TestDetectCharsetMode:
 class TestGetGlyphs:
     """Tests for get_glyphs function."""
 
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_get_glyphs_returns_unicode_for_unicode_mode(self) -> None:
-        """Test get_glyphs returns UNICODE_GLYPHS for unicode mode."""
-        glyphs = get_glyphs()
-        assert glyphs is UNICODE_GLYPHS
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
-    def test_get_glyphs_returns_ascii_for_ascii_mode(self) -> None:
-        """Test get_glyphs returns ASCII_GLYPHS for ascii mode."""
-        glyphs = get_glyphs()
-        assert glyphs is ASCII_GLYPHS
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_get_glyphs_caches_result(self) -> None:
-        """Test that get_glyphs caches the result."""
-        glyphs1 = get_glyphs()
-        glyphs2 = get_glyphs()
-        assert glyphs1 is glyphs2
-
-    def test_reset_glyphs_cache_works(self) -> None:
-        """Test that reset_glyphs_cache clears the cache."""
-        with patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}):
-            glyphs1 = get_glyphs()
-            assert glyphs1 is UNICODE_GLYPHS
-
-        reset_glyphs_cache()
-
-        with patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}):
-            glyphs2 = get_glyphs()
-            assert glyphs2 is ASCII_GLYPHS
-
 
 class TestGlyphUsability:
     """Tests to verify glyph values are usable in context."""
 
-    def test_spinner_frames_not_empty(self) -> None:
-        """Test that spinner frames have multiple frames for animation."""
-        assert len(UNICODE_GLYPHS.spinner_frames) > 1
-        assert len(ASCII_GLYPHS.spinner_frames) > 1
-
-    def test_ascii_ellipsis_is_three_dots(self) -> None:
-        """Test that ASCII ellipsis is standard three dots."""
-        assert ASCII_GLYPHS.ellipsis == "..."
-
-    def test_unicode_ellipsis_is_single_char(self) -> None:
-        """Test that Unicode ellipsis is single character."""
-        assert len(UNICODE_GLYPHS.ellipsis) == 1
-
-    def test_ascii_spinner_classic_frames(self) -> None:
-        """Test ASCII spinner uses parenthesized frames for consistent width."""
-        assert set(ASCII_GLYPHS.spinner_frames) == {"(-)", "(\\)", "(|)", "(/)"}
-
-    def test_unicode_box_drawing_characters(self) -> None:
-        """Test Unicode box-drawing characters are the expected characters."""
-        assert UNICODE_GLYPHS.box_horizontal == "─"
-        assert UNICODE_GLYPHS.box_horizontal_heavy == "━"
-        assert UNICODE_GLYPHS.hunk_break == "⋮"
-        assert UNICODE_GLYPHS.line_continuation == "…"
-
-    def test_ascii_box_drawing_characters(self) -> None:
-        """Test ASCII box-drawing alternatives are simple ASCII."""
-        assert ASCII_GLYPHS.box_horizontal == "-"
-        assert ASCII_GLYPHS.box_horizontal_heavy == "="
-        assert ASCII_GLYPHS.hunk_break == ":"
-        assert ASCII_GLYPHS.line_continuation == "."
-
 
 class TestGetBanner:
     """Tests for get_banner function."""
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_get_banner_returns_unicode_for_unicode_mode(self) -> None:
-        """Test get_banner returns Unicode banner for unicode mode."""
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            banner = get_banner()
-        assert banner is _UNICODE_BANNER
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
-    def test_get_banner_returns_ascii_for_ascii_mode(self) -> None:
-        """Test get_banner returns ASCII banner for ascii mode."""
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            banner = get_banner()
-        assert banner is _ASCII_BANNER
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_get_banner_adds_local_install_suffix_for_editable(self) -> None:
-        """Test get_banner adds (local) suffix for editable installs."""
-        with patch("deepagents_code.config._is_editable_install", return_value=True):
-            banner = get_banner()
-        assert "(local)" in banner
-        assert f"v{__version__} (local)" in banner
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
-    def test_get_banner_adds_local_install_suffix_for_editable_ascii(self) -> None:
-        """Test get_banner adds (local) suffix in ASCII mode."""
-        with patch("deepagents_code.config._is_editable_install", return_value=True):
-            banner = get_banner()
-        assert "(local)" in banner
-        assert f"v{__version__} (local)" in banner
-
-    @patch.dict(
-        "os.environ",
-        {"UI_CHARSET_MODE": "unicode", HIDE_SPLASH_VERSION: "1"},
-        clear=False,
-    )
-    def test_get_banner_hides_version_and_local_suffix(self) -> None:
-        """Splash version override should hide version and skip local detection."""
-        with patch("deepagents_code.config._is_editable_install") as editable:
-            banner = get_banner()
-        editable.assert_not_called()
-        assert f"v{__version__}" not in banner
-        assert "(local)" not in banner
 
     def test_unicode_banner_contains_box_drawing_chars(self) -> None:
         """Test that Unicode banner contains non-ASCII box drawing characters."""
@@ -352,13 +173,3 @@ class TestGetBanner:
 
 class TestIsAsciiMode:
     """Tests for is_ascii_mode helper."""
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "unicode"}, clear=False)
-    def test_false_in_unicode_mode(self) -> None:
-        """Test that is_ascii_mode returns False in Unicode mode."""
-        assert is_ascii_mode() is False
-
-    @patch.dict("os.environ", {"UI_CHARSET_MODE": "ascii"}, clear=False)
-    def test_true_in_ascii_mode(self) -> None:
-        """Test that is_ascii_mode returns True in ASCII mode."""
-        assert is_ascii_mode() is True

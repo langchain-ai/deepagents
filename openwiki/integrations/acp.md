@@ -1,167 +1,117 @@
 ---
 type: integration-guide
-title: ACP (Agent Client Protocol) Integration
-description: How Deep Agents run inside ACP-capable editors like Zed, covering the deepagents-acp server that bridges a Deep Agent to the Agent Client Protocol and the prebuilt dcode coding agent exposed with `dcode --acp`.
-tags: [acp, zed, integration, deep-agent, dcode, editor, stdio, langgraph]
+title: ACP Integration
+description: Run a reusable Deep Agents graph or the prebuilt dcode coding agent from an ACP-capable editor over stdio. Covers session lifecycle, streamed multimodal output and visible reasoning, HITL interrupts, durable replay, and dcode-specific boundaries.
+tags: [acp, integration, dcode, editor, stdio, langgraph]
 verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+  - by: openwiki/0.4.2
+    at: 2026-08-28T11:44:48.051Z
 sources:
-  - id: openwiki-source-daa924d26004fa66ec39ce3e
-    resource: repo://libs/acp/.env.example
-  - id: openwiki-source-ffc41789c892ca61e2829a4c
-    resource: repo://libs/acp/deepagents_acp/server.py
-  - id: openwiki-source-8134f31fb22085cb0e6b4054
-    resource: repo://libs/acp/README.md
-  - id: openwiki-source-d9abb97409b2eaab2ad0b9e1
-    resource: repo://libs/acp/run_demo_agent.sh
-  - id: openwiki-source-4d4186e9d62fb4abe495cdd0
-    resource: repo://libs/code/deepagents_code/acp.py
+  - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
+    resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-2e03fee957625ca21a1c21af
     resource: repo://libs/code/deepagents_code/main.py
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
 ---
 
-# ACP (Agent Client Protocol) Integration
+# ACP Integration
 
-The [Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction)
-lets an editor such as [Zed](https://zed.dev/) talk to an external agent process
-over stdio. The `deepagents-acp` package (in `libs/acp`) is the connector that
-turns a Python [Deep Agent](https://docs.langchain.com/oss/python/deepagents/overview)
-into an ACP server, so you can drive the agent from the editor's agent panel
-instead of a terminal.
+[Agent Client Protocol (ACP)](https://agentclientprotocol.com/overview/introduction) lets an editor such as [Zed](https://zed.dev/) run an agent process over stdio. This repository provides two deliberately different ACP entry points:
 
-There are two ways to run a Deep Agent in an ACP editor:
+- **`deepagents-acp`** is the reusable adapter. `AgentServerACP` projects a supplied LangGraph graph into the ACP server interface; it does not define a particular coding agent or automatically load editor-provided MCP servers.
+- **`dcode --acp`** is a dcode factory around that adapter. It builds the preconfigured Deep Agents Code graph for each ACP session, including dcode's filesystem and shell tools, configured MCP tools, and subagents.
 
-1. **A custom / bare Deep Agent** — wrap your own `create_deep_agent(...)` graph
-   with `AgentServerACP` and launch it as an ACP server.
-2. **The prebuilt `dcode` coding agent** — run `dcode --acp` to expose the full
-   Deep Agents Code agent (filesystem tools, shell, MCP, subagents) as an ACP
-   server with no custom code.
+Neither is dcode's normal client/server path: the normal remote client talks to a LangGraph server over HTTP+SSE and adapts that stream for the Textual UI. `--acp` instead runs an ACP server over stdio rather than launching that UI. See [Code Agent architecture](/openwiki/architecture/code-agent.md) for the coding graph, [MCP integration](/openwiki/integrations/mcp.md) for MCP configuration, and [Permissions & Human-in-the-Loop](/openwiki/concepts/permissions-hitl.md) for dcode policy.
 
-For the agent that `dcode --acp` exposes, see
-[Code Agent architecture](/openwiki/architecture/code-agent.md). For MCP tool
-wiring that the ACP server forwards, see [MCP integration](/openwiki/integrations/mcp.md).
-To build the kind of Deep Agent you would wrap in path 1, see
-[Build a Deep Agent](/openwiki/workflows/build-a-deep-agent.md).
+## Reusable `deepagents-acp` adapter
 
-## Environment and configuration
-
-The bare-agent quickstart uses Anthropic's Claude models. Copy
-`libs/acp/.env.example` to `.env` and set `ANTHROPIC_API_KEY`; the same file
-carries optional LangSmith tracing variables (`LANGSMITH_TRACING`,
-`LANGSMITH_API_KEY`, `LANGSMITH_PROJECT`), all commented out by default.
-
-Zed launches the agent by running a command declared in its `settings.json`
-under `agent_servers`. The bare example points at `run_demo_agent.sh`, a wrapper
-that runs `examples/demo_agent.py` with the project's own dependencies while
-preserving the editor's current working directory.
-
-For `dcode --acp`, provider API keys are read from the environment exactly as in
-the terminal (e.g. `ANTHROPIC_API_KEY`), and the model is selected with
-`--model` in `provider:model-name` form.
-
-## The ACP server (`AgentServerACP`)
-
-`AgentServerACP` subclasses the ACP `Agent` interface and is the bridge between
-the protocol and a LangGraph Deep Agent. It is constructed with either a
-compiled `CompiledStateGraph` or a factory `Callable[[AgentSessionContext], ...]`
-that builds a graph per session; `modes` and `models` may only be supplied when a
-factory is used, and passing them with a compiled graph raises `ValueError`.
-
-Its ACP responsibilities include:
-
-- **`initialize`** advertises capabilities to the client: image prompt support,
-  and the `load_session` capability only when `load_sessions=True`.
-- **`new_session`** allocates a session id, records the editor's `cwd` and any
-  MCP servers, and returns session config options (mode/model selectors) when
-  configured.
-- **`prompt`** converts inbound ACP content blocks into LangChain multimodal
-  content, streams the Deep Agent, and relays output back to the editor.
-- **`set_session_mode` / `set_config_option`** switch mode or model mid-session,
-  resetting the agent graph so the change takes effect without losing history.
-
-### Prompt streaming and the tool loop
-
-`prompt` streams the agent with `astream(..., stream_mode=["messages", "updates"],
-subgraphs=True)` and loops while the graph is interrupted. Assistant message
-chunks become ACP message updates, tool-call chunks are accumulated by index and
-surfaced as tool-call start/update events, and `todos` updates are relayed as an
-ACP plan. When the graph interrupts for a human-in-the-loop decision, the server
-calls the client's `request_permission` with approve / reject / "always allow"
-options and resumes the graph with the user's decision via `Command(resume=...)`.
-A `--yolo`-style cancellation returns a `PromptResponse(stop_reason="cancelled")`.
-
-```mermaid
-sequenceDiagram
-    participant Editor as Zed Editor
-    participant Server as AgentServerACP
-    participant Graph as Deep Agent Graph
-    Editor->>Server: prompt(content blocks, session_id)
-    Server->>Graph: astream(messages, config)
-    Graph-->>Server: message and tool-call chunks
-    Server-->>Editor: session update (text, tool calls, plan)
-    Graph-->>Server: interrupt (permission needed)
-    Server->>Editor: request_permission(tool_call, options)
-    Editor-->>Server: selected option
-    Server->>Graph: resume with decision
-    Graph-->>Server: final response
-    Server-->>Editor: PromptResponse(stop_reason)
-```
-
-*How AgentServerACP relays a single prompt turn, including a permission round-trip.*
-
-### Interrupt shape is constrained
-
-ACP can only render human-in-the-loop prompts with a fixed decision set
-(approve / reject / edit). If the agent raises a free-form LangGraph
-`interrupt()` whose value is not a permission-style dict, the server rejects it
-with a `RequestError` explaining that the agent must use
-`HumanInTheLoopMiddleware`-style interrupts instead. This is a protocol
-limitation, not an agent bug.
-
-### Session persistence and replay
-
-With `load_sessions=True`, `AgentServerACP` advertises and implements ACP's
-`session/load`. The agent graph must use a checkpointer that survives process
-restarts; an in-memory checkpointer works for tests but not across restarts. On
-load, the server restores the LangGraph thread, verifies the persisted `cwd`
-matches the requested working directory (raising `invalid_params` otherwise),
-rejects unknown sessions with `resource_not_found`, and replays the stored
-conversation to the client through `session/update` before returning.
-
-### Model switching
-
-When the server is built with a `models` list, it exposes a model selector as an
-ACP session config option. Selecting a model routes through `set_config_option`,
-which resets the session's agent graph so the factory rebuilds it with the new
-model — conversation history is preserved because the checkpointed thread is
-unchanged.
-
-## Path 1: a custom bare Deep Agent
-
-Wrap any `create_deep_agent(...)` graph and run it:
+`AgentServerACP` subclasses ACP's `Agent` interface. Construct it with either a compiled `CompiledStateGraph`, or a factory accepting `AgentSessionContext(cwd, mode, model)` and returning a graph. The factory form isolates graph construction by editor working directory and selected configuration. `modes` and `models` are factory-only: passing either with a compiled graph raises `ValueError`.
 
 ```python
+import asyncio
+
 from acp import run_agent
 from deepagents import create_deep_agent
 from langgraph.checkpoint.memory import MemorySaver
+
 from deepagents_acp.server import AgentServerACP
 
-agent = create_deep_agent(tools=[...], checkpointer=MemorySaver())
-server = AgentServerACP(agent)
-await run_agent(server)
+
+async def main() -> None:
+    agent = create_deep_agent(
+        tools=[...],
+        checkpointer=MemorySaver(),
+    )
+    server = AgentServerACP(agent)
+    await run_agent(server)
+
+
+asyncio.run(main())
 ```
 
-Point Zed's `agent_servers` entry at a launcher (the repo ships
-`run_demo_agent.sh` for the example). This path runs a general Deep Agent and
-does not include the `dcode` coding agent.
+The bare example is launched from Zed through `run_demo_agent.sh`. Its `uv` project is the script directory, while the process keeps the editor's current working directory. The example expects `ANTHROPIC_API_KEY` in `.env`; LangSmith tracing can additionally use `LANGSMITH_TRACING`, `LANGSMITH_API_KEY`, and `LANGSMITH_PROJECT`.
 
-## Path 2: the prebuilt `dcode` coding agent (`dcode --acp`)
+### Sessions and configuration
 
-`deepagents-code` (the `dcode` terminal coding agent) can run its prebuilt
-coding agent as an ACP server over stdio. Install it with the ACP extra and
-point the editor at `dcode --acp`:
+On `initialize`, the adapter advertises image-prompt support and advertises `session/load` only when constructed with `load_sessions=True`. `new_session` generates an ACP session ID, stores the supplied `cwd` and MCP descriptors, initializes mode/model state, and returns selectors when modes or models were configured. The adapter supports old and new ACP schema forms: it dynamically handles the optional `SessionConfigOption` wrapper and distinguishes legacy positional MCP-server arguments from `additional_directories`.
+
+Mode and model selectors are ACP session config options. A valid selection updates state and resets the session graph, so a factory receives the new context. With durable loading enabled, metadata is persisted as well; the LangGraph thread ID is the ACP session ID, so changing models rebuilds the graph without changing the conversation thread. Unknown option IDs, invalid selector values, and non-string selector values are invalid-parameter errors.
+
+### Prompt stream, output, and cancellation
+
+The adapter converts inbound text, image, resource-link, and embedded-resource blocks to LangChain content. An inbound ACP audio block is currently **not supported**: its conversion raises `NotImplementedError`, despite the prompt method accepting that schema type. By contrast, normalized assistant text, image, and audio blocks can be emitted as ACP updates. Provider-exposed plaintext reasoning blocks become `AgentThoughtChunk` updates in their original block order; encrypted/redacted or otherwise non-plaintext reasoning is not exposed. Only top-level graph text and reasoning are sent to the editor—subagent text and reasoning remain internal.
+
+It calls `astream` with `stream_mode=["messages", "updates"]` and `subgraphs=True`. Message chunks drive assistant content and tool lifecycle updates; `todos` state updates become ACP plans. Tool-call arguments are accumulated until they parse as JSON before a tool start is sent, and results complete the matching call. If a graph has no checkpointer, `prompt` attaches `MemorySaver` so the thread can run; that fallback is not restart-durable.
+
+```mermaid
+sequenceDiagram
+    participant Editor
+    participant Adapter as AgentServerACP
+    participant Graph as Deep Agent graph
+    Editor->>Adapter: new session with cwd
+    Editor->>Adapter: prompt content blocks
+    Adapter->>Graph: astream with thread config
+    Graph-->>Adapter: text, media, reasoning, tool chunks
+    Adapter-->>Editor: message, thought, and tool updates
+    Graph-->>Adapter: permission interrupt
+    Adapter->>Editor: request permission
+    Editor-->>Adapter: selected decision
+    Adapter->>Graph: Command resume with decisions
+    Graph-->>Adapter: completed turn
+    Adapter-->>Editor: prompt response
+```
+
+*ACP prompt processing streams visible top-level output and resumes permission-style graph interrupts.*
+
+`cancel` sets a cancellation flag checked before and during stream iteration; a detected cancellation returns `PromptResponse(stop_reason="cancelled")`. A completed turn returns `end_turn`. On an interrupt update, the adapter waits for the stream iterator to close before reading graph state, which avoids a stale snapshot when an asynchronous persistent checkpointer has not yet made the interrupt visible.
+
+### Fixed-decision interrupts and temporary approvals
+
+ACP can render fixed permission decisions, not arbitrary questions. Thus a free-form LangGraph `interrupt()` value is rejected as a `RequestError`; a compatible graph must use the permission-style `action_requests` and review configuration emitted by `HumanInTheLoopMiddleware`.
+
+For every action request, the adapter offers **Approve**, **Reject**, and **Always allow**, and resumes the graph with the resulting decisions. A cancelled permission request is treated as rejection. `write_todos` receives special handling: rejection clears the ACP plan and adds feedback asking the agent to seek a better plan; updates to an approved incomplete plan are subsequently auto-approved.
+
+Always-allow state is in-memory and scoped to the ACP session, not checkpointed authorization. Non-shell tools are remembered by tool name. For `execute`, the adapter records extracted command signatures; a later compound command is auto-approved only if every signature is allowed and the command contains no dangerous shell pattern such as expansion, substitution, redirects, control characters, or standalone backgrounding.
+
+## Durable load and replay
+
+`load_sessions=True` promises ACP `session/load`, but persistence depends on the graph's checkpointer surviving server restarts. `MemorySaver` is appropriate for tests, not process-restart recovery. When durable sessions are created or reconfigured, the adapter writes ACP marker, `cwd`, and available mode/model selections into the LangGraph thread metadata.
+
+Loading requires a checkpointed graph and an ACP-marked thread. Missing or unrelated threads yield `resource_not_found`; a `cwd` that differs from the recorded directory yields `invalid_params`. For a valid session, the adapter restores saved supported selectors, rebuilds a factory graph when needed, and replays persisted user messages, assistant content—including visible reasoning—and tool starts/results through `session/update` before returning. Consequently, loading cannot be used to move a session into another editor working directory. See [State & Persistence](/openwiki/concepts/state-persistence.md) for the wider checkpoint model.
+
+## MCP boundary
+
+The generic adapter retains ACP MCP descriptors supplied on `new_session` or `load_session`, but `AgentSessionContext` exposes only `cwd`, mode, and model. It neither turns those descriptors into tools nor passes them to the factory; an adapter consumer that needs dynamic editor MCP must implement that boundary explicitly.
+
+dcode has a different model: before creating its ACP server it resolves configured MCP tools using dcode configuration, project trust, and plugin-discovered configurations, then gives the resulting fixed tool set to every session graph. Missing MCP configuration or tool-loading failure is written to stderr and exits with code 1; the MCP session manager is cleaned up on exit. `--no-mcp` and `--mcp-config` are mutually exclusive and exit with argument error code 2.
+
+## Prebuilt dcode server
+
+Install and configure an ACP-capable editor to launch the CLI:
+
+```sh
+uv tool install -U deepagents-code --with deepagents-acp
+```
 
 ```json
 {
@@ -175,42 +125,20 @@ point the editor at `dcode --acp`:
 }
 ```
 
-Under the hood, `dcode` detects `--acp` in `argv` and skips the Textual UI
-dependency checks. ACP dependencies (`acp`, `deepagents-acp`) are imported
-lazily; if they are missing, `dcode` prints an install hint
-(`uv tool install --reinstall -U deepagents-code --with deepagents-acp`) and
-exits non-zero. The ACP driver (`_run_acp_cli_async`) then:
+`--acp` bypasses Textual dependency checks and lazily imports `acp` and `deepagents-acp`; absent dependencies produce a reinstall hint and nonzero exit. Provider credentials come from the environment as in terminal dcode, and model specifications use `provider:model-name`.
 
-- resolves the model with `create_model` and builds the selectable `models` list
-  from recent and available models,
-- loads MCP tools (honoring `--mcp-config` / `--no-mcp`), web tools, and async
-  subagents,
-- opens a durable checkpointer and constructs `AgentServerACP(build_agent,
-  models=..., load_sessions=True)`, where `build_agent` calls `create_cli_agent`
-  per session,
-- and runs the server with ACP's `run_agent`.
+### dcode factory, state, and approval modes
 
-`--no-mcp` and `--mcp-config` are mutually exclusive. YOLO approval in ACP mode
-requires a prior acknowledgement in the interactive TUI, and
-`--auto-classifier-model` is only valid together with Auto mode.
+`_run_acp_cli_async` resolves the startup model, creates its selectable model list, loads built-in web tools, MCP tools, and async subagents, and opens/initializes dcode's checkpointer. It then creates `AgentServerACP(build_agent, models=models, load_sessions=True)` and runs it over ACP. `build_agent` selects the session model or startup model and calls `create_cli_agent` with the shared checkpointer, session `cwd`, tools, MCP information, subagents, filesystem allowlist, and project context. Model selection therefore rebuilds a dcode graph while preserving the durable thread.
 
-### The dcode-side ACP bridge
+Do not conflate the adapter's rendering limitation with dcode's approval decision:
 
-`deepagents_code/acp.py` provides a `dcode`-specific subclass of
-`AgentServerACP` used for **Auto** approval mode. It wraps each session's graph
-in an `_AutoGraph` that injects trusted classifier context (`CLIContextSchema`
-with `ApprovalMode.AUTO`), writes the Auto approval-mode payload into the
-LangGraph store before each run, and attaches per-turn user-prompt metadata so
-the Auto classifier can decide which actions to auto-approve. When Auto is
-enabled, `_run_acp_cli_async` selects this subclass and passes it the shared
-`store`; otherwise it uses the base `AgentServerACP`.
+- **Manual** leaves normal gated tool actions for ACP to render if they interrupt.
+- **Auto** selects dcode's `deepagents_code.acp.AgentServerACP` subclass. It wraps each graph in `_AutoGraph`, writes trusted Auto approval payload into the shared store, injects `CLIContextSchema` with Auto enabled, and attaches text-prompt metadata per turn for the classifier. It does not make arbitrary free-form LangGraph interrupts compatible with ACP.
+- **YOLO** passes `auto_approve=True` to `create_cli_agent`, so gated tools do not produce the interrupts ACP would render. ACP mode requires a prior YOLO acknowledgement made in the interactive TUI.
 
-## Operational notes
+`--auto-classifier-model` is valid in ACP mode only with Auto. The factory passes `auto_approve=yolo` and `auto_mode_enabled=auto`, so ACP's fixed-decision UI applies only when dcode's selected policy leaves an interrupt to display.
 
-- The connector targets ACP-capable editors; Zed is the primary tested client,
-  with Toad supported as an alternative launcher.
-- `AgentServerACP` tolerates both older positional and newer keyword forms of
-  `new_session`, and imports cleanly across ACP schema versions that did or did
-  not wrap config options in `SessionConfigOption`.
-- Shell command approvals can be broadened per session ("always allow" a command
-  type), tracked in the server's per-session allowed-command set.
+## Focused verification
+
+The ACP tests cover capability negotiation; session config and compatibility; text, media, and visible-reasoning streaming; top-level output ordering; cancellation; permission decisions and plan clearing; command allowlisting; durable replay including reasoning and tool calls; and cwd/session validation. The dcode integration smoke test starts `deepagents --acp --no-mcp` as a subprocess, initializes ACP, opens a session, and checks that a session ID is returned.

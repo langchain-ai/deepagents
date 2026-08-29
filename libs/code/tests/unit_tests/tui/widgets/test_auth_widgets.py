@@ -1378,7 +1378,7 @@ api_key_url = "javascript:alert(1)"
             return []
 
         monkeypatch.setattr(
-            "deepagents_code.config.settings.reload_from_environment",
+            "deepagents_code.config.credentials.reload_from_environment",
             blocked_reload,
         )
         app = _AuthHostApp()
@@ -1407,7 +1407,7 @@ api_key_url = "javascript:alert(1)"
             return []
 
         monkeypatch.setattr(
-            "deepagents_code.config.settings.reload_from_environment",
+            "deepagents_code.config.credentials.reload_from_environment",
             reload_from_environment,
         )
         app = _AuthHostApp()
@@ -1441,7 +1441,7 @@ api_key_url = "javascript:alert(1)"
             notices.append((str(message), severity))
 
         monkeypatch.setattr(
-            "deepagents_code.config.settings.reload_from_environment",
+            "deepagents_code.config.credentials.reload_from_environment",
             lambda: [blocked],
         )
         cache_cleared = False
@@ -1534,7 +1534,7 @@ api_key_url = "javascript:alert(1)"
                 raise ValueError(msg)
 
             monkeypatch.setattr(
-                "deepagents_code.config.settings.reload_from_environment", _boom
+                "deepagents_code.config.credentials.reload_from_environment", _boom
             )
             await pilot.press("ctrl+r")
             await pilot.pause()

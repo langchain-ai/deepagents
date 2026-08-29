@@ -49,7 +49,6 @@ Follow [the PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - For features and behavior-changing fixes, place one plain-English user-visible summary above `---`. It is the release note; do not add a release-note heading or repeat it below the divider. Omit it for chores, refactors, and test-only changes.
 - Below `---`, explain why the change is needed and why the approach is appropriate. Keep prose concise and public-reader friendly.
 - Do not cite line numbers. Prefer symbols or subsystems over full paths, and format code entities with backticks.
-- Add a collapsed test plan only for large or consequential changes. Call out areas needing careful review.
 
 ## Core development principles
 
@@ -77,11 +76,11 @@ When adding or updating model names in docs, examples, or defaults, verify the l
 
 ### Testing
 
-Every feature or bugfix needs unit coverage.
+Add unit coverage when it meaningfully protects changed observable behavior; do not add tests solely to accompany every change.
 
 - Put network-free tests in `tests/unit_tests/` and networked tests in `tests/integration_tests/`.
 - Do not add `@pytest.mark.asyncio`; packages use `asyncio_mode = "auto"`.
-- Test behavior rather than duplicating implementation logic. Cover edge cases and keep tests deterministic.
+- Test observable behavior rather than duplicating implementation logic. Do not add change-detector tests that merely restate the current code structure or assert incidental interactions, such as internal call order, without proving meaningful behavior. Refactors that preserve behavior should not require mechanical test updates; rewrite or remove tests that do. Cover edge cases and keep tests deterministic.
 
 #### Warnings are errors
 

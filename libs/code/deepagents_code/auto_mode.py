@@ -341,6 +341,9 @@ class AutoDecisionPlan(TypedDict):
     batch_id: str
     thread_key: str
     mode_at_proposal: str
+    effective_approval_mode: NotRequired[str]
+    approval_mode_tags: NotRequired[list[str]]
+    approval_mode_metadata: NotRequired[dict[str, str]]
     phase: Literal["planned", "routed"]
     manual_gated_ids: list[str]
     decisions: list[PlannedDecision]
@@ -844,20 +847,95 @@ def _thread_key(runtime: object) -> str | None:
     return raw_key if raw_key == approval_mode_key(thread_id) else None
 
 
-async def _live_mode(runtime: object) -> tuple[ApprovalMode, bool]:
-    """Read the live mode and report whether control state was unavailable.
+class ApprovalModeResolution(TypedDict):
+    """Server-resolved approval mode and trace-safe diagnostics."""
+
+    mode: ApprovalMode
+    """Effective mode resolved by the server for this turn."""
+    fallback_reason: Literal["approval_mode_unavailable"] | None
+    """Fixed reason when Store state is unavailable or cannot be trusted."""
+
+
+async def _live_mode(runtime: object) -> ApprovalModeResolution:
+    """Read the live mode, failing closed with an explicit reason.
 
     Returns:
-        The effective mode and whether the Store control record was unavailable.
+        The effective mode and a fixed fallback reason when Store state is unavailable.
     """
     key = _thread_key(runtime)
     if key is None:
         logger.warning("Approval-mode Store key is missing or invalid; using Manual")
-        return ApprovalMode.MANUAL, True
+        return {
+            "mode": ApprovalMode.MANUAL,
+            "fallback_reason": "approval_mode_unavailable",
+        }
     mode = await aread_approval_mode_from_store(getattr(runtime, "store", None), key)
-    if mode is None:
-        return ApprovalMode.MANUAL, True
-    return mode, False
+    return {
+        "mode": mode or ApprovalMode.MANUAL,
+        "fallback_reason": None if mode is not None else "approval_mode_unavailable",
+    }
+
+
+def _fallback_telemetry(reason: str) -> tuple[list[str], dict[str, str]]:
+    """Build the tags and metadata that mark an approval-mode fallback.
+
+    Returns:
+        LangSmith tags and trace-safe metadata for one fallback reason.
+    """
+    return (
+        ["approval_mode:fallback", "approval_mode:store_unavailable"],
+        {"approval_mode_fallback_reason": reason},
+    )
+
+
+def _approval_mode_telemetry(
+    runtime: object, resolution: ApprovalModeResolution
+) -> tuple[list[str], dict[str, str]]:
+    """Build validated approval-mode tags and metadata for one resolution.
+
+    Returns:
+        LangSmith tags and trace-safe metadata.
+    """
+    mode = resolution["mode"]
+    client_mode = _context_value(_runtime_context(runtime), "approval_mode")
+    metadata = {"effective_approval_mode": mode.value}
+    tags: list[str] = []
+    if isinstance(client_mode, str) and client_mode in ApprovalMode:
+        metadata["client_approval_mode"] = client_mode
+        metadata["server_approval_mode"] = mode.value
+        if client_mode != mode.value:
+            tags.append("approval_mode:mismatch")
+            metadata["approval_mode_warning"] = "client_server_mismatch"
+            logger.warning(
+                "Approval mode mismatch client_approval_mode=%s "
+                "server_approval_mode=%s",
+                client_mode,
+                mode.value,
+            )
+    if fallback_reason := resolution["fallback_reason"]:
+        fallback_tags, fallback_metadata = _fallback_telemetry(fallback_reason)
+        tags.extend(fallback_tags)
+        metadata.update(fallback_metadata)
+    return tags, metadata
+
+
+def _attach_approval_mode_telemetry(
+    tags: Sequence[str], metadata: Mapping[str, str]
+) -> None:
+    """Attach approval-mode diagnostics to the active LangSmith trace."""
+    from langsmith import get_current_run_tree
+
+    run = get_current_run_tree()
+    if run is None:
+        return
+    root = run
+    while root.parent_run is not None:
+        root = root.parent_run
+    targets = [run] if root is run else [run, root]
+    payload = dict(metadata)
+    for target in targets:
+        target.add_tags([tag for tag in tags if tag not in (target.tags or [])])
+        target.add_metadata(payload)
 
 
 def _trusted_prompt_rows(
@@ -1667,15 +1745,61 @@ def _resolved_tools(request: ModelRequest) -> dict[str, BaseTool]:
 
 
 def _resolve_path(root: Path, raw: object) -> Path | None:
+    """Return the absolute path a model-authored path argument names.
+
+    The argument is untrusted model output, so expansion is part of what can
+    fail: `Path.expanduser` raises `RuntimeError` for a `~name` prefix that
+    names no account on this host. Expansion runs inside the guard for that
+    reason, and every failure yields `None`.
+
+    Callers treat `None` as "not deterministically safe" and route the call to
+    model review, so an unresolvable path costs one review instead of raising
+    through the approval gate.
+    """
     if not isinstance(raw, str) or not raw:
         return None
-    candidate = Path(raw).expanduser()
-    if not candidate.is_absolute():
-        candidate = root / candidate
     try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
         return candidate.resolve(strict=False)
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return None
+
+
+def _path_error_reason(error: Exception, raw: str) -> str:
+    """Return a reason describing why a model-authored path failed to resolve.
+
+    The path is echoed back so the model can see which argument to correct, and
+    it is untrusted: it carries whatever length and bytes the model produced.
+    `sanitize_auto_reason` strips control characters and caps the result at
+    `_REASON_LIMIT`, which keeps an oversized path from failing plan validation
+    and discarding the decisions for every other call in the batch.
+    """
+    return sanitize_auto_reason(f"{type(error).__name__}: {error} (path: {raw})")
+
+
+_WRITE_PATH_TOOLS = frozenset({"write_file", "edit_file", "delete"})
+
+
+def _unresolvable_write_path_reason(root: Path, raw: object) -> str | None:
+    """Return why a write path cannot be resolved, or `None` when it resolves.
+
+    A `file_path` argument is unambiguously a path, so a path this host cannot
+    resolve at all — a `~name` prefix naming no account, an embedded NUL — can
+    only fail. Reporting the resolver's own error tells the model what to
+    correct, which a silent denial or a review pass does not.
+    """
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        candidate = Path(raw).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate.resolve(strict=False)
+    except (OSError, RuntimeError, ValueError) as error:
+        return _path_error_reason(error, raw)
+    return None
 
 
 def _is_within(root: Path, path: Path) -> bool:
@@ -2235,15 +2359,27 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 tool_call_id=_tool_call_id(request.tool_call),
                 status="error",
             )
-        if tool_name not in {"write_file", "edit_file", "delete"}:
+        if tool_name not in _WRITE_PATH_TOOLS:
             return None
         raw_path = request.tool_call.get("args", {}).get("file_path")
         if not isinstance(raw_path, str):
             return None
-        candidate = Path(raw_path).expanduser()
-        if not candidate.is_absolute():
-            candidate = self._worktree_root / candidate
-        normalized_path = os.path.normcase(str(candidate.absolute()))
+        try:
+            candidate = Path(raw_path).expanduser()
+            if not candidate.is_absolute():
+                candidate = self._worktree_root / candidate
+            normalized_path = os.path.normcase(str(candidate.absolute()))
+        except (OSError, RuntimeError, ValueError) as error:
+            # The backend does not expand `~`, so letting this through writes to
+            # a literal `~name` directory and reports success. Report the
+            # resolver's error instead, which the model can act on. Reached in
+            # approval modes that do not consult the Auto gate.
+            return ToolMessage(
+                content=_path_error_reason(error, raw_path),
+                name=tool_name,
+                tool_call_id=_tool_call_id(request.tool_call),
+                status="error",
+            )
         artifacts = _active_temp_artifacts(cast("Mapping[str, object]", request.state))
         protected_paths = {
             os.path.normcase(str(Path(artifact["file_path"]).absolute()))
@@ -2356,8 +2492,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         thread_key = _thread_key(request.runtime)
         if thread_key is None:
             return
-        mode, _mode_unavailable = await _live_mode(request.runtime)
-        counters = await _read_counters(request.runtime.store, thread_key, mode)
+        resolution = await _live_mode(request.runtime)
+        counters = await _read_counters(
+            request.runtime.store, thread_key, resolution["mode"]
+        )
         if counters is None:
             return
         if any(message.status != "error" for message in terminal.values()):
@@ -2528,6 +2666,73 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         dispositions: Mapping[str, str],
         tools: Mapping[str, BaseTool],
     ) -> AutoDecisionBatch:
+        """Review one batch inside a span that survives the review failing.
+
+        A deadline *cancels* the inner `ainvoke` rather than raising into it, and
+        LangChain closes its run from `on_llm_error`, which never sees a
+        `CancelledError`. Timed-out reviews therefore left a run with a null
+        `end_time` and no error — invisible to any error rate built on the
+        project. This span is closed on the way out, so deadlines and
+        construction faults land as real errors. The inner run stays orphaned:
+        nothing here can close a run that was cancelled rather than failed.
+
+        Args:
+            request: Resolved primary-model request for the current batch.
+            calls: Tool calls this batch must review.
+            all_calls: Every tool call in the turn, for context.
+            dispositions: Dispositions already decided for this turn.
+            tools: Tool objects by name.
+
+        Returns:
+            Validated classifier verdict for the batch.
+        """
+        from langsmith import trace
+
+        # Names only: arguments can carry file contents and secrets.
+        async with trace(
+            name="auto_classifier_review",
+            run_type="chain",
+            inputs={
+                "tool_count": len(calls),
+                "tools": [call["name"] for call in calls],
+                "classifier_model": self._classifier_model_label(request),
+            },
+            tags=["dcode:auto"],
+            metadata={"lc_source": "auto_mode_classifier"},
+        ) as span:
+            batch = await self._review_batch(
+                request, calls, all_calls, dispositions, tools
+            )
+            span.end(outputs={"decision_count": len(batch.decisions)})
+            return batch
+
+    async def _review_batch(
+        self,
+        request: ModelRequest,
+        calls: Sequence[ToolCall],
+        all_calls: Sequence[ToolCall],
+        dispositions: Mapping[str, str],
+        tools: Mapping[str, BaseTool],
+    ) -> AutoDecisionBatch:
+        """Build the classifier, ask it for a verdict, and validate the reply.
+
+        Args:
+            request: Resolved primary-model request for the current batch.
+            calls: Tool calls this batch must review.
+            all_calls: Every tool call in the turn, for context.
+            dispositions: Dispositions already decided for this turn.
+            tools: Tool objects by name.
+
+        Returns:
+            Validated classifier verdict for the batch.
+
+        Raises:
+            _ClassifierConstructionDeadlineExceededError: If the model could not
+                be built within its budget.
+            _ClassifierDeadlineExceededError: If the classifier did not answer
+                within its budget.
+            TimeoutError: If the provider raised a timeout of its own.
+        """
         # Construction and inference get separate budgets: a cold provider
         # import must not eat the time reserved for the verdict, and the two
         # failures need different reasons. Constructor threads cannot be
@@ -2623,7 +2828,25 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             Primary response with a private decision-plan state update.
         """
         await self._reconcile_routed_plan(request)
-        response = await handler(request)
+        trace_resolution = await _live_mode(request.runtime)
+        trace_tags, trace_metadata = _approval_mode_telemetry(
+            request.runtime, trace_resolution
+        )
+        _attach_approval_mode_telemetry(trace_tags, trace_metadata)
+        from langsmith import tracing_context
+        from langsmith.run_helpers import get_tracing_context
+
+        current_trace = get_tracing_context()
+        model_tags = sorted({*(current_trace.get("tags") or []), *trace_tags})
+        model_metadata = {**(current_trace.get("metadata") or {}), **trace_metadata}
+        with tracing_context(tags=model_tags, metadata=model_metadata):
+            response = await handler(request)
+        resolution = await _live_mode(request.runtime)
+        mode_tags, mode_metadata = _approval_mode_telemetry(request.runtime, resolution)
+        # The mode rarely changes across the model call, so re-attaching identical
+        # diagnostics would only re-walk the run tree.
+        if (mode_tags, mode_metadata) != (trace_tags, trace_metadata):
+            _attach_approval_mode_telemetry(mode_tags, mode_metadata)
         ai_message = next(
             (
                 message
@@ -2640,7 +2863,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         calls = list(ai_message.tool_calls)
         gated_calls = [call for call in calls if call["name"] in self.interrupt_on]
-        mode, mode_unavailable = await _live_mode(request.runtime)
+        mode = resolution["mode"]
         if mode is ApprovalMode.AUTO:
             _validate_unique_tool_call_ids(calls)
         thread_key = _thread_key(request.runtime) or ""
@@ -2650,6 +2873,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "batch_id": batch_id,
             "thread_key": thread_key,
             "mode_at_proposal": mode.value,
+            "effective_approval_mode": mode.value,
+            "approval_mode_tags": mode_tags,
+            "approval_mode_metadata": mode_metadata,
             "phase": "planned",
             "manual_gated_ids": manual_ids,
             "decisions": [],
@@ -2657,9 +2883,8 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             "processed_result_ids": [],
             "counters_applied": False,
             "fallback_reason": (
-                "approval_mode_unavailable"
-                if mode_unavailable
-                and _context_value(_runtime_context(request.runtime), "approval_mode")
+                resolution["fallback_reason"]
+                if _context_value(_runtime_context(request.runtime), "approval_mode")
                 == ApprovalMode.AUTO.value
                 else None
             ),
@@ -2684,6 +2909,26 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 and tool is not None
                 and tool is self._trusted_compaction_tool
             )
+            if call["name"] in _WRITE_PATH_TOOLS:
+                # `resolve` touches the filesystem, so it stays off the event
+                # loop like the deterministic check below.
+                unresolvable = await asyncio.to_thread(
+                    _unresolvable_write_path_reason,
+                    self._worktree_root,
+                    call.get("args", {}).get("file_path"),
+                )
+                if unresolvable is not None:
+                    deterministic_dispositions[_tool_call_id(call)] = "deny"
+                    plan["decisions"].append(
+                        {
+                            "tool_call_id": _tool_call_id(call),
+                            "disposition": "policy_deny",
+                            "category": AutoDecisionCategory.OTHER_POLICY.value,
+                            "reason": unresolvable,
+                            "path": "deterministic",
+                        }
+                    )
+                    continue
             if is_trusted_compaction and trusted_compaction_seen:
                 deterministic_dispositions[_tool_call_id(call)] = "deny"
                 plan["decisions"].append(
@@ -2726,6 +2971,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
 
         if counter_context is None:
             plan["fallback_reason"] = "control_state_unavailable"
+            fallback_tags, fallback_metadata = _fallback_telemetry(
+                "control_state_unavailable"
+            )
+            plan["approval_mode_tags"] = sorted(
+                {*plan["approval_mode_tags"], *fallback_tags}
+            )
+            plan["approval_mode_metadata"].update(fallback_metadata)
+            _attach_approval_mode_telemetry(fallback_tags, fallback_metadata)
             for call in review_calls:
                 plan["decisions"].append(
                     {
@@ -3337,9 +3590,27 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         if thread_key is None or raw.get("thread_key") != thread_key:
             return None
         raw_mode = raw.get("mode_at_proposal")
-        if not isinstance(raw_mode, str) or raw_mode not in {
-            mode.value for mode in ApprovalMode
-        }:
+        if not isinstance(raw_mode, str) or raw_mode not in ApprovalMode:
+            return None
+        effective_mode = raw.get("effective_approval_mode")
+        if effective_mode is not None and (
+            not isinstance(effective_mode, str) or effective_mode not in ApprovalMode
+        ):
+            return None
+        mode_tags = raw.get("approval_mode_tags")
+        if mode_tags is not None and (
+            not isinstance(mode_tags, list)
+            or not all(isinstance(tag, str) for tag in mode_tags)
+        ):
+            return None
+        mode_metadata = raw.get("approval_mode_metadata")
+        if mode_metadata is not None and (
+            not isinstance(mode_metadata, Mapping)
+            or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in mode_metadata.items()
+            )
+        ):
             return None
         decisions = raw.get("decisions")
         manual_ids = raw.get("manual_gated_ids")
@@ -3466,7 +3737,9 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         # a caller ever passed a message whose tool calls had been filtered.
         event_scope = _event_scope(runtime, ai_message.tool_calls)
         plan = self._validated_plan(state, ai_message, thread_key)
-        current_mode, current_mode_unavailable = await _live_mode(runtime)
+        current_resolution = await _live_mode(runtime)
+        current_mode = current_resolution["mode"]
+        current_mode_unavailable = current_resolution["fallback_reason"] is not None
         manual_ids = {
             _tool_call_id(call)
             for call in ai_message.tool_calls

@@ -10,10 +10,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+    from collections.abc import AsyncIterator, Awaitable, Callable
 
     from deepagents_code.offload_middleware import OffloadResult
 
@@ -166,6 +167,78 @@ def _require_thread_id(config: Mapping[str, Any] | None) -> str:
     return thread_id
 
 
+def state_has_pending_work(state: object) -> bool:
+    """Return whether a checkpoint snapshot still holds unfinished graph work.
+
+    Single definition of "pending" shared by the app-side detector and the
+    post-recovery verification, so the two cannot drift apart.
+
+    Args:
+        state: A `StateSnapshot`-shaped object, or `None`.
+
+    Returns:
+        Whether the snapshot has a queued node, task, or interrupt.
+    """
+    if state is None:
+        return False
+    return bool(
+        getattr(state, "next", None)
+        or getattr(state, "tasks", None)
+        or getattr(state, "interrupts", None)
+    )
+
+
+def _cancelled_tool_messages(values: object) -> list[Any]:
+    """Build terminal results for tool calls left unanswered by a lost run.
+
+    Only the trailing turn is considered. The queued `tools` step is triggered
+    by the final `AIMessage`, and a provider requires every `tool_result` to
+    sit immediately after the `tool_use` it answers. Earlier unanswered calls
+    are left alone on purpose: interrupt recovery writes a partial `AIMessage`
+    with its in-flight `tool_calls` and then closes the turn with a following
+    message (`_build_interrupted_ai_message` in the TUI adapter), so those
+    calls stay dangling by design. Answering them here would append their
+    results at the tail, far from their `tool_use`, and the next model call --
+    the compaction summarizer that runs right after recovery -- would be
+    rejected.
+
+    Blocking and CPU-bound over the checkpoint history; async callers must
+    offload it with `asyncio.to_thread`.
+
+    Returns:
+        Error results for the trailing turn's unanswered tool calls.
+    """
+    if not isinstance(values, dict):
+        return []
+    from langchain_core.messages import AIMessage, ToolMessage, convert_to_messages
+
+    raw_messages = values.get("messages")
+    if not isinstance(raw_messages, list):
+        return []
+    messages = convert_to_messages(cast("list[Any]", raw_messages))
+    # Walk back over the results the lost run did manage to write, then stop at
+    # the message that owns them. Anything but an `AIMessage` there means the
+    # turn was already closed out and nothing is dangling.
+    answered: set[str] = set()
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            answered.add(message.tool_call_id)
+            continue
+        if not isinstance(message, AIMessage):
+            return []
+        return [
+            ToolMessage(
+                content="Tool call cancelled because the previous session ended.",
+                name=call["name"],
+                tool_call_id=call["id"],
+                status="error",
+            )
+            for call in message.tool_calls
+            if call["id"] not in answered
+        ]
+    return []
+
+
 def agent_error_type(exc: BaseException) -> str:
     """Best-effort error-type name for an exception from `RemoteAgent.astream`.
 
@@ -257,6 +330,10 @@ class RemoteAgent:
         self._api_key = api_key
         self._headers = headers
         self._graph: Any = None
+        self._workspaces: dict[str, dict[str, Any]] = {}
+        self._workspace_config: dict[str, Any] | None = None
+        self._workspace_config_fingerprint: str | None = None
+        self._workspace_cwd: str | None = None
 
     def _get_graph(self) -> Any:  # noqa: ANN401
         """Lazily create the `RemoteGraph` instance.
@@ -310,6 +387,9 @@ class RemoteAgent:
         from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
 
         thread_id = _require_thread_id(config)
+        workspace = await self._workspace_for_thread(config)
+        operation_context = dict(context)
+        operation_context["workspace"] = workspace
         # The operation reads and writes thread state over HTTP, so the thread's
         # live row must exist first. Checkpoint persistence and registration are
         # separate on the dev server (see `aensure_thread`), so a resumed thread
@@ -326,7 +406,7 @@ class RemoteAgent:
                         f"/dcode/threads/{thread_id}/offload",
                         json={
                             "operation_id": operation_id,
-                            "context": dict(context),
+                            "context": operation_context,
                             "hook_responses": hook_responses,
                         },
                     ),
@@ -447,6 +527,9 @@ class RemoteAgent:
         # verified against `langgraph-api` 0.10.0 and subject to change.)
         from deepagents_code.config import get_langsmith_replica_project
 
+        payload = dict(context) if isinstance(context, Mapping) else {}
+        payload["workspace"] = await self._workspace_for_thread(config)
+
         extra_stream_kwargs: dict[str, Any] = {}
         replica_project = get_langsmith_replica_project()
         if replica_project:
@@ -457,7 +540,7 @@ class RemoteAgent:
             stream_mode=stream_mode or ["messages", "updates"],
             subgraphs=subgraphs,
             config=config,
-            context=context,
+            context=payload,
             **extra_stream_kwargs,
         ):
             logger.debug("RemoteGraph event mode=%s ns=%s", mode, ns)
@@ -573,7 +656,7 @@ class RemoteAgent:
     async def aupdate_state(
         self,
         config: Mapping[str, Any],
-        values: dict[str, Any],
+        values: dict[str, Any] | None,
         *,
         as_node: str | None = None,
     ) -> None:
@@ -634,6 +717,41 @@ class RemoteAgent:
             )
             raise
 
+    async def aabandon_pending_work(self, config: Mapping[str, Any]) -> None:
+        """Cancel active runs and discard checkpointed work without replaying it.
+
+        The state writes go through `aupdate_state` so they inherit its HTTP
+        409 recovery: this method runs on exactly the threads whose run was
+        cancelled out from under the client, which is when 409s occur.
+
+        Args:
+            config: Config with `configurable.thread_id`.
+
+        Raises:
+            RuntimeError: If pending work remains after the state update.
+        """
+        thread_id = _require_thread_id(config)
+        prepared = _prepare_config(config)
+        await _cancel_active_runs(self._get_graph(), thread_id)
+        state = await self.aget_state(prepared)
+        cancelled = await asyncio.to_thread(
+            _cancelled_tool_messages, getattr(state, "values", None)
+        )
+        if cancelled:
+            # `create_agent` names the tool step "tools", but only adds the node
+            # when the agent has tools. A toolless graph therefore rejects this
+            # update with `InvalidUpdateError` -- and could not have produced a
+            # dangling tool call in the first place, so the branch is dead
+            # there. The caller reports the failure rather than compacting.
+            await self.aupdate_state(prepared, {"messages": cancelled}, as_node="tools")
+        await self.aupdate_state(prepared, None, as_node="__end__")
+        if state_has_pending_work(await self.aget_state(prepared)):
+            msg = (
+                f"Pending graph work remained on thread {thread_id} after "
+                "clearing checkpoint state"
+            )
+            raise RuntimeError(msg)
+
     async def aput_store_item(
         self,
         namespace: tuple[str, ...],
@@ -669,6 +787,69 @@ class RemoteAgent:
             )
             # Load-bearing: see Notes. Callers fail closed on this propagation.
             raise
+
+    async def _workspace_for_thread(
+        self,
+        config: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        thread_id = _require_thread_id(config)
+        workspace = self._workspaces.get(thread_id)
+        if workspace is not None:
+            return workspace
+        if self._workspace_cwd is None:
+            msg = "RemoteAgent workspace is not configured."
+            raise RuntimeError(msg)
+        return await self.abind_workspace(config, self._workspace_cwd)
+
+    async def abind_workspace(
+        self, config: Mapping[str, Any], cwd: str
+    ) -> dict[str, Any]:
+        """Create or verify the remote thread's durable workspace binding.
+
+        Returns:
+            The server-validated workspace descriptor.
+
+        Raises:
+            TypeError: If the server returns a malformed descriptor.
+        """
+        thread_id = _require_thread_id(config)
+        graph = self._get_graph()
+        payload: dict[str, Any] = {"cwd": cwd}
+        if self._workspace_config is not None:
+            payload["workspace_config"] = self._workspace_config
+            payload["config_fingerprint"] = self._workspace_config_fingerprint
+        response = await graph.client.http.post(
+            f"/dcode/threads/{thread_id}/workspace",
+            json=payload,
+        )
+        if not isinstance(response, dict) or not isinstance(
+            response.get("workspace"), dict
+        ):
+            msg = "Workspace server returned an invalid binding response."
+            raise TypeError(msg)
+        workspace = cast("dict[str, Any]", response["workspace"])
+        self._workspaces[thread_id] = workspace
+        return workspace
+
+    def set_workspace(
+        self,
+        cwd: str,
+        config: Mapping[str, Any] | None = None,
+        *,
+        config_fingerprint: str | None = None,
+    ) -> None:
+        """Configure the explicit workspace used when binding threads.
+
+        Raises:
+            ValueError: If only one policy field is provided.
+        """
+        if (config is None) != (config_fingerprint is None):
+            msg = "Workspace policy and fingerprint must be configured together."
+            raise ValueError(msg)
+        self._workspace_cwd = cwd
+        self._workspace_config = dict(config) if config is not None else None
+        self._workspace_config_fingerprint = config_fingerprint
+        self._workspaces.clear()
 
     async def aensure_thread(self, config: dict[str, Any]) -> None:
         """Ensure the remote thread record exists before mutating state.

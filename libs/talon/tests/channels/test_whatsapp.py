@@ -492,6 +492,29 @@ async def test_channel_sends_chunked_formatted_text(tmp_path: Path) -> None:
     assert cast("str", transport.posts[1][1]["text"]).startswith("*deepagents bot*\n")
 
 
+async def test_send_message_debug_logs_are_payload_safe(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = RecordingTransport()
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("_BridgeTransport", transport),
+    )
+    conversation_id = "private-chat-123"
+    text = "private message contents"
+
+    with caplog.at_level(logging.DEBUG, logger="deepagents_talon.channels.whatsapp"):
+        await channel.send_message(conversation_id, text)
+
+    assert "whatsapp.outbound.text.started" in caplog.text
+    assert "whatsapp.outbound.text.completed" in caplog.text
+    assert '"chunk_count": 1' in caplog.text
+    assert f'"text_chars": {len(text)}' in caplog.text
+    assert conversation_id not in caplog.text
+    assert text not in caplog.text
+
+
 async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
     transport = RecordingTransport()
     image = tmp_path / "image.png"

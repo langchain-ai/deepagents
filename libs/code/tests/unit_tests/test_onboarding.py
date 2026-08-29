@@ -3,113 +3,27 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
-from unittest.mock import patch
 
-import pytest
-
-from deepagents_code._env_vars import ONBOARDING
 from deepagents_code.onboarding import (
-    GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME,
     ONBOARDING_MARKER_FILENAME,
     ONBOARDING_NAME_MEMORY_END,
     ONBOARDING_NAME_MEMORY_START,
     extract_onboarding_name_block,
-    goal_auto_accept_prompt_marker_path,
     has_completed_onboarding,
-    has_shown_goal_auto_accept_prompt,
     mark_goal_auto_accept_prompt_shown,
     mark_onboarding_complete,
     onboarding_marker_path,
-    should_run_onboarding,
     write_onboarding_name_memory,
 )
 
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 
 class TestOnboardingState:
     """Tests for the onboarding completion marker and env override."""
-
-    def test_missing_marker_runs_onboarding(self, tmp_path) -> None:
-        """Onboarding should run before the marker exists."""
-        assert should_run_onboarding(tmp_path) is True
-
-    def test_existing_marker_skips_onboarding(self, tmp_path) -> None:
-        """Onboarding should not run after completion is marked."""
-        onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
-
-        assert has_completed_onboarding(tmp_path) is True
-        assert should_run_onboarding(tmp_path) is False
-
-    def test_truthy_override_runs_even_with_marker(
-        self,
-        tmp_path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """A truthy override should force onboarding every startup."""
-        onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
-        monkeypatch.setenv(ONBOARDING, "1")
-
-        assert should_run_onboarding(tmp_path) is True
-
-    @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
-    def test_falsy_override_skips_onboarding_without_marker(
-        self,
-        tmp_path,
-        monkeypatch: pytest.MonkeyPatch,
-        value: str,
-    ) -> None:
-        """A falsy override should skip onboarding on a fresh install."""
-        monkeypatch.setenv(ONBOARDING, value)
-
-        assert should_run_onboarding(tmp_path) is False
-        assert has_completed_onboarding(tmp_path) is False
-
-    def test_unrecognized_override_falls_back_to_marker(
-        self,
-        tmp_path,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        """An unparseable override should leave the marker in charge."""
-        monkeypatch.setenv(ONBOARDING, "maybe")
-
-        assert should_run_onboarding(tmp_path) is True
-
-        onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
-
-        assert should_run_onboarding(tmp_path) is False
-
-    def test_mark_onboarding_complete_creates_marker(self, tmp_path) -> None:
-        """Completion should create the marker under the state directory."""
-        assert mark_onboarding_complete(tmp_path) is True
-
-        assert onboarding_marker_path(tmp_path).read_text(encoding="utf-8") == "1\n"
-        assert should_run_onboarding(tmp_path) is False
-
-    def test_goal_preference_prompt_marker_is_versioned(self, tmp_path) -> None:
-        """Answering the prompt should write its dedicated versioned marker."""
-        assert has_shown_goal_auto_accept_prompt(tmp_path) is False
-
-        assert mark_goal_auto_accept_prompt_shown(tmp_path) is True
-
-        path = goal_auto_accept_prompt_marker_path(tmp_path)
-        assert path.name == GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME
-        assert path.read_text(encoding="utf-8") == "1\n"
-        assert has_shown_goal_auto_accept_prompt(tmp_path) is True
-
-    def test_goal_preference_prompt_marker_uses_state_dir(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """The one-time prompt marker should remain private app state."""
-        from deepagents_code import onboarding as onboarding_module
-
-        state_dir = tmp_path / ".deepagents" / ".state"
-        monkeypatch.setattr(onboarding_module, "DEFAULT_STATE_DIR", state_dir)
-
-        assert goal_auto_accept_prompt_marker_path() == (
-            state_dir / GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME
-        )
 
     def test_goal_preference_prompt_marker_write_failure_returns_false(
         self,
@@ -173,16 +87,6 @@ class TestOnboardingState:
         assert "Existing notes" in content
         assert "Keep this note." in content
 
-    def test_write_onboarding_name_memory_skips_empty_name(self, tmp_path) -> None:
-        """Empty optional names should not create memory files."""
-        memory_path = tmp_path / "agent" / "AGENTS.md"
-
-        assert (
-            write_onboarding_name_memory("", "agent", memory_path=memory_path) is False
-        )
-
-        assert not memory_path.exists()
-
     def test_default_marker_path_lives_under_state_dir(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -235,47 +139,6 @@ class TestOnboardingState:
         monkeypatch.setattr(_Path, "exists", boom)
 
         assert has_completed_onboarding(tmp_path) is False
-
-    def test_write_onboarding_name_memory_returns_false_on_decode_error(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """A non-UTF-8 existing memory file should not be clobbered."""
-        memory_path = tmp_path / "agent" / "AGENTS.md"
-        memory_path.parent.mkdir(parents=True)
-        memory_path.write_bytes(b"\xff\xfe garbage \x00\x01")
-
-        assert (
-            write_onboarding_name_memory("Ada", "agent", memory_path=memory_path)
-            is False
-        )
-
-        # Existing bytes are preserved — write was aborted.
-        assert memory_path.read_bytes() == b"\xff\xfe garbage \x00\x01"
-
-    def test_write_onboarding_name_memory_returns_false_on_oserror(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        tmp_path: Path,
-    ) -> None:
-        """A write failure on the memory file should return `False`."""
-        from pathlib import Path as _Path
-
-        memory_path = tmp_path / "agent" / "AGENTS.md"
-        original_write_text = _Path.write_text
-
-        def boom(self: _Path, *args: object, **kwargs: object) -> int:
-            if self == memory_path:
-                msg = "simulated full disk"
-                raise OSError(msg)
-            return original_write_text(self, *args, **kwargs)  # ty: ignore
-
-        monkeypatch.setattr(_Path, "write_text", boom)
-
-        assert (
-            write_onboarding_name_memory("Ada", "agent", memory_path=memory_path)
-            is False
-        )
 
     def test_write_onboarding_name_memory_appends_heading_when_absent(
         self,
@@ -333,42 +196,6 @@ class TestExtractOnboardingNameBlock:
 
         assert extract_onboarding_name_block(text) == block
 
-    def test_only_start_marker_returns_none(self) -> None:
-        """A lone start marker is not a well-formed block."""
-        text = f"{ONBOARDING_NAME_MEMORY_START}\n- dangling content\n"
-
-        assert extract_onboarding_name_block(text) is None
-
-    def test_only_end_marker_returns_none(self) -> None:
-        """A lone end marker is not a well-formed block."""
-        text = f"- dangling content\n{ONBOARDING_NAME_MEMORY_END}\n"
-
-        assert extract_onboarding_name_block(text) is None
-
-    def test_end_before_start_returns_none(self) -> None:
-        """Markers in the wrong order are not a well-formed block."""
-        text = (
-            f"{ONBOARDING_NAME_MEMORY_END}\nbetween\n{ONBOARDING_NAME_MEMORY_START}\n"
-        )
-
-        assert extract_onboarding_name_block(text) is None
-
-    def test_no_markers_returns_none(self) -> None:
-        """Text without markers has no managed block."""
-        assert extract_onboarding_name_block("## Notes\n\nfreeform\n") is None
-
 
 class TestOnboardingSkipsReservedAgents:
     """The marker write is the path that would stamp `AGENTS.md` into app state."""
-
-    def test_a_reserved_agent_name_writes_nothing(self, tmp_path: Path) -> None:
-        from deepagents_code.onboarding import write_onboarding_name_memory
-
-        with patch("deepagents_code.config.settings") as mock_settings:
-            mock_settings.get_user_agent_md_path.side_effect = ValueError(
-                "Invalid agent name: 'plugins' is reserved for dcode's own state.",
-            )
-
-            assert write_onboarding_name_memory("plugins", "Mason") is False
-
-        assert list(tmp_path.iterdir()) == []

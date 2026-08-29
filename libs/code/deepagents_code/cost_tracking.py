@@ -2254,10 +2254,10 @@ def _pricing_target(
     resolved_model = model_name or fallback[0]
     resolved_provider = provider or fallback[1]
     if not resolved_model:
-        from deepagents_code.config import settings
+        from deepagents_code.config import runtime_state
 
-        resolved_model = settings.model_name or ""
-        resolved_provider = resolved_provider or settings.model_provider or ""
+        resolved_model = runtime_state.model_name or ""
+        resolved_provider = resolved_provider or runtime_state.model_provider or ""
     return resolved_model, resolved_provider
 
 
@@ -2376,7 +2376,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         """Charge model requests that completed after the last model step.
 
         Work outside the agent loop can spend once `after_model` has run for the
-        final step: `ReliableRubricMiddleware.aafter_agent` runs a whole grading
+        final step: `RubricMiddleware.aafter_agent` runs a whole grading
         agent, and `after_agent` hooks run in reverse stack order, so this one
         drains after it. Anything that still spends later is charged on the next
         turn's first step rather than lost, but draining here keeps the turn's

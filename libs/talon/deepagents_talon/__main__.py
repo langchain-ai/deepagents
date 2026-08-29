@@ -42,6 +42,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DCODE_DEBUG_ENV = "DEEPAGENTS_CODE_DEBUG"
+_DCODE_LOG_LEVEL_ENV = "DEEPAGENTS_CODE_LOG_LEVEL"
+_DCODE_DEBUG_VALUES = frozenset({"1", "true", "yes", "on"})
+_DCODE_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+_CHANNEL_LOGGER_NAME = "deepagents_talon.channels"
+
 
 def main() -> None:
     """Run the Talon host with the placeholder runtime."""
@@ -66,7 +78,7 @@ def main() -> None:
     _add_mcp_parsers(subparsers)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    _configure_logging(os.environ)
 
     config = TalonConfig.from_env()
     if args.command == "import-fleet":
@@ -254,6 +266,26 @@ def _channels(
     if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
     return tuple(channels)
+
+
+def _configure_logging(env: Mapping[str, str]) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    logging.getLogger(_CHANNEL_LOGGER_NAME).setLevel(_channel_log_level(env))
+
+
+def _channel_log_level(env: Mapping[str, str]) -> int:
+    debug_enabled = env.get(_DCODE_DEBUG_ENV, "").strip().lower() in _DCODE_DEBUG_VALUES
+    fallback = logging.DEBUG if debug_enabled else logging.INFO
+    raw_level = env.get(_DCODE_LOG_LEVEL_ENV, "").strip().upper()
+    if not raw_level:
+        return fallback
+    if level := _DCODE_LOG_LEVELS.get(raw_level):
+        return level
+    logger.warning(
+        "Ignoring invalid %s; expected DEBUG, INFO, WARNING, ERROR, or CRITICAL",
+        _DCODE_LOG_LEVEL_ENV,
+    )
+    return fallback
 
 
 def _env_enabled(env: Mapping[str, str], key: str) -> bool:

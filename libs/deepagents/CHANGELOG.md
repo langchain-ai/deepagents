@@ -2,6 +2,19 @@
 
 # Deep Agents Changelog
 
+## [0.7.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.10...deepagents==0.7.11) (2026-08-28)
+
+### Features
+
+- Added SDK integration hooks for rubric graders ([#5874](https://github.com/langchain-ai/deepagents/issues/5874))
+
+## [0.7.10](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.9...deepagents==0.7.10) (2026-08-28)
+
+### Bug Fixes
+
+- Prevent local shell commands from stealing TUI input ([#5873](https://github.com/langchain-ai/deepagents/issues/5873))
+- Surface sandbox glob failures instead of reporting no matches ([#5566](https://github.com/langchain-ai/deepagents/issues/5566))
+
 ## [0.7.9](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.8...deepagents==0.7.9) (2026-08-25)
 
 ### Features

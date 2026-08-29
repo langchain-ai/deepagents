@@ -238,7 +238,7 @@ class _CheckpointSummary(NamedTuple):
 
 
 def format_timestamp(iso_timestamp: str | None) -> str:
-    """Format ISO timestamp for display (e.g., 'Dec 30, 6:10pm').
+    """Format ISO timestamp for display (e.g., 'dec 05, 6:10pm').
 
     Args:
         iso_timestamp: ISO 8601 timestamp string, or `None`.
@@ -250,12 +250,6 @@ def format_timestamp(iso_timestamp: str | None) -> str:
         return ""
     try:
         dt = datetime.fromisoformat(iso_timestamp).astimezone()
-        return (
-            dt.strftime("%b %d, %-I:%M%p")
-            .lower()
-            .replace("am", "am")
-            .replace("pm", "pm")
-        )
     except (ValueError, TypeError):
         logger.debug(
             "Failed to parse timestamp %r; displaying as blank",
@@ -263,6 +257,12 @@ def format_timestamp(iso_timestamp: str | None) -> str:
             exc_info=True,
         )
         return ""
+    # `%-I` (12-hour clock, no zero padding) is a glibc/BSD extension. MSVC's
+    # CRT rejects it as an invalid formatting code, which CPython surfaces as
+    # `ValueError`, so the hour is derived by hand to keep every platform on
+    # the same rendering.
+    hour_12 = dt.hour % 12 or 12
+    return f"{dt:%b %d}, {hour_12}:{dt:%M}{dt:%p}".lower()
 
 
 def format_relative_timestamp(iso_timestamp: str | None) -> str:

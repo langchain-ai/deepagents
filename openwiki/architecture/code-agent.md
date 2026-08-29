@@ -1,170 +1,224 @@
 ---
 type: architecture-overview
 title: Deep Agents Code (dcode) Architecture
-description: How the prebuilt terminal coding agent splits into a terminal client and an agent server, how a request flows between them over a streaming protocol, and how its layered configuration resolves.
-tags: [deepagents-code, dcode, architecture, client-server, langgraph, configuration, headless, streaming]
+description: Ownership and lifecycle guide for dcode's loopback client/server runtime and its separate ACP stdio mode. Covers graph construction, streaming, persistence, startup cleanup, configuration, and failure boundaries.
+tags: [deepagents-code, dcode, architecture, client-server, langgraph, acp, configuration, streaming]
 verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+  - by: openwiki/0.4.2
+    at: 2026-08-28T11:44:48.051Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
   - id: openwiki-source-1728494bdd59604ce9b5f65b
     resource: repo://libs/code/deepagents_code/_server_config.py
+  - id: openwiki-source-4d4186e9d62fb4abe495cdd0
+    resource: repo://libs/code/deepagents_code/acp.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
   - id: openwiki-source-b9ef532d79a0667acf40e58b
     resource: repo://libs/code/deepagents_code/client/launch/server_manager.py
+  - id: openwiki-source-074ce96a8baea27a6c43328b
+    resource: repo://libs/code/deepagents_code/client/launch/server.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-b7d66cbdbe9dae9f133a7c5e
     resource: repo://libs/code/deepagents_code/client/remote_client.py
   - id: openwiki-source-52d96f61bc4737f02a18cf79
     resource: repo://libs/code/deepagents_code/configuration/resolver.py
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
   - id: openwiki-source-a9eb680bb6bdae179f52a3ac
     resource: repo://libs/code/deepagents_code/server_graph.py
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+  - id: openwiki-source-784e764f7f5eb5169220c3d2
+    resource: repo://libs/code/tests/unit_tests/test_server_graph.py
+generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
 ---
 
 # Deep Agents Code (dcode) Architecture
 
-`deepagents-code` (`dcode`) is a prebuilt terminal coding agent built on top of
-the `deepagents` SDK. The SDK supplies the agent harness; this package packages
-that harness into a product by combining it with a terminal experience,
-persistence, tools, skills, and optional sandboxed execution. It is a reference
-implementation rather than the only way to assemble those pieces.
+`deepagents-code` (`dcode`) is a prebuilt terminal coding agent built on the
+`deepagents` SDK. It packages the SDK harness with a terminal experience,
+persistence, tools, skills, and optional sandboxed execution as a reference
+implementation. See the [architecture overview](/openwiki/architecture/overview.md)
+and [source map](/openwiki/architecture/source-map.md) for broader context.
 
-For where these components live in the tree, see
-[the source map](/openwiki/architecture/source-map.md). For the full
-configuration model, see [config layering](/openwiki/concepts/config-layering.md);
-for the tool/filesystem surface see
-[tools and filesystem](/openwiki/concepts/tools-filesystem.md); for cost and
-session behavior see [cost and sessions](/openwiki/operations/cost-and-sessions.md);
-and for an end-to-end walkthrough see
-[run a dcode session](/openwiki/workflows/run-dcode-session.md).
+This page distinguishes two launch designs that must not be conflated:
 
-## Two runtime halves
+- Normal interactive and headless dcode launch a loopback `langgraph dev`
+  **server subprocess** and connect a `RemoteAgent` client.
+- `dcode --acp` is an **ACP server over stdio** in the launching process. It
+  constructs local graphs through an ACP callback; it does not start
+  `langgraph dev` or use `RemoteAgent`.
 
-Deep Agents Code has two runtime halves that run in separate processes:
+## Normal local runtime: ownership and request path
 
-- **Terminal client** — owns presentation and input. It renders interactive or
-  headless output, collects user input, and collects approvals. In interactive
-  mode this is the Textual TUI; in headless mode it is machine-friendly IO.
-- **Agent server** — owns the agent runtime. It runs the coding-agent graph and
-  connects the model, tools, memory, skills, and backend.
-
-The client spawns a `langgraph dev` server as a subprocess and reaches it over
-HTTP with server-sent events; it never binds a typed-in address, and the server
-deliberately avoids the well-known `langgraph dev` default port (2024) by picking
-a free ephemeral port so users can run their own LangGraph projects alongside
-`dcode`. Keeping the boundary narrow keeps the UI responsive while the agent
-uses LangGraph's streaming, checkpointing, and resume behavior.
+The normal runtime has two processes. The terminal client owns presentation,
+input, and approval interaction. The agent server owns the compiled graph,
+model execution, tools, MCP sessions, memory and skills middleware, backend,
+and checkpointed session state. Interactive mode uses the Textual client;
+headless mode reuses the same local server and `RemoteAgent` for one task,
+streaming machine-friendly output to stdout. Quiet headless mode suppresses
+stream-time diagnostics, leaving response text.
 
 ```mermaid
 sequenceDiagram
     participant User
     participant Client as Terminal client
-    participant Server as Agent server
-    participant Graph as Coding agent graph
+    participant Manager as Server manager
+    participant Server as LangGraph server
+    participant Graph as Agent graph
 
-    User->>Client: type input or approval
-    Client->>Server: send input over streaming protocol
-    Server->>Graph: run agent
-    Graph-->>Server: emit stream events
-    Server-->>Client: stream events back
-    Client->>User: render events
-    User->>Client: provide human response when needed
-    Client->>Server: resume run with response
-    Server->>Server: persist session checkpoint
+    Client->>Manager: resolve launch arguments
+    Manager->>Server: spawn langgraph dev
+    Server->>Graph: call make_graph on readiness
+    Graph-->>Server: cached compiled graph
+    User->>Client: prompt or approval
+    Client->>Server: HTTP request and SSE stream
+    Server->>Graph: run or resume thread
+    Graph-->>Server: events and checkpoint updates
+    Server-->>Client: SSE events
+    Client->>User: render output or request response
 ```
 
-Client and server run as separate processes and communicate over an HTTP plus SSE streaming protocol.
+This shows the normal local request path and server-side checkpoint updates.
 
-## Request flow
+`RemoteAgent` is deliberately thin. It wraps LangGraph's `RemoteGraph`, which
+handles HTTP/SSE, `messages-tuple` stream negotiation, namespace extraction,
+and interrupt detection. dcode converts streamed message dictionaries for the
+Textual adapter and normalizes thread IDs, but leaves state snapshots in the
+server's serialized form. Consequently, presentation and input failures usually
+belong to the client; model, tool, memory, graph-build, and server-startup
+failures usually belong to the server.
 
-A request follows the same shape in interactive and headless mode:
+### Startup, persistence, and cleanup
 
-1. The client receives user input.
-2. The client sends that input to the agent server.
-3. The server runs the agent graph and streams events back.
-4. The client renders those events and collects any needed human response
-   (for example, a tool approval or a clarifying answer).
-5. Session state is preserved via server-side checkpoints so the conversation
-   can be resumed later.
+The server manager captures project context and validates an explicit MCP
+configuration before spawning. It translates arguments into `ServerConfig`,
+exports the `DEEPAGENTS_CODE_SERVER_*` representation, and creates a temporary
+workspace containing `langgraph.json`, a minimal runtime project, and a
+generated SQLite checkpointer module. That module gets the application session
+database path from the environment, so the server uses persistent SQLite
+checkpoints rather than a path baked into generated source.
 
-Headless (non-interactive) mode reuses the same agent runtime as the interactive
-UI. `run_non_interactive` runs a single user task against the agent graph inside
-the same `langgraph dev` server subprocess, connected through the same
-`RemoteAgent` client, and swaps the terminal interface for machine-friendly
-input and output (streaming to stdout, with an optional quiet mode that leaves
-only the agent's response text).
+The generated graph reference is `deepagents_code.server_graph:make_graph`.
+The owned process binds loopback by default with port `0`, letting the OS select
+an ephemeral port instead of occupying LangGraph's customary port 2024. The
+manager waits for the `agent` graph and returns a `RemoteAgent` only after it is
+ready. If startup, readiness, construction of the client, or cancellation fails
+before handoff, its `finally` path stops the owned process; `server_session`
+extends that ownership with guaranteed teardown for successful sessions.
 
-## Client/server contract
+## Server graph construction and lifecycle
 
-The two halves stay in sync through a single shared schema. The client builds a
-`ServerConfig`, serializes it to `DEEPAGENTS_CODE_SERVER_*` environment variables
-with `ServerConfig.to_env()`, and the server subprocess reconstructs it with the
-inverse `ServerConfig.from_env()`. Defining the variable set, serialization
-format, and defaults in one dataclass keeps the writer and reader from drifting.
+`ServerConfig.to_env()` and `ServerConfig.from_env()` are the shared wire schema
+between the normal app process and its subprocess. They keep the environment
+variable set, serialization, and defaults in one place. The server reconstructs
+resolved model, execution, sandbox, MCP, project-context, filesystem, and
+extension controls from that environment rather than re-parsing terminal
+arguments.
 
-On the server side, the graph is exposed to `langgraph dev` through a generated
-`langgraph.json` that references `deepagents_code.server_graph:make_graph`.
-`make_graph` delegates to a cached runtime factory that builds the compiled
-agent, its composite backend, and the server-owned offload operation exactly
-once per process. That cache is load-bearing, not an optimization: MCP
-discovery, sandbox creation, and `atexit` cleanup registration must each happen
-exactly once, so building per request would re-discover MCP servers, leak
-sandbox sessions, and stack duplicate `atexit` handlers.
+The filesystem allowlist is a security boundary. An absent `ALLOW_FS_TOOLS`
+means unrestricted filesystem tools, but a present value must be valid JSON for
+a non-empty list of known tools and must include `read_file`; malformed,
+unknown, empty, or insufficient values fail closed.
 
-`create_cli_agent` is the single entry point that assembles the agent from the
-resolved model, tools, MCP tools, optional sandbox backend, and the middleware
-that provides filesystem, memory, skills, approvals, and other behavior. A
-construction failure at startup is converted into a machine-readable
-startup-error marker (scraped by the parent app process) before the server
-exits, so the client can report why the runtime never came up.
+`make_graph()` delegates to one process-wide cached `ServerRuntime` containing
+the compiled agent, its `CompositeBackend`, and a server-owned offload
+operation. An async lock serializes first construction. This cache is required
+for correctness: MCP discovery, sandbox creation, and sandbox `atexit`
+registration happen once, and both the graph and offload route use the same
+backend resources.
 
-The `RemoteAgent` client is a thin wrapper around LangGraph's `RemoteGraph`. It
-delegates SSE parsing, stream-mode negotiation (`messages-tuple`), namespace
-extraction, and interrupt detection to `RemoteGraph`, and adds streamed
-message-object conversion for the Textual adapter plus thread-ID normalization,
-while leaving state snapshots in the server's serialized form.
+Construction checks managed configuration, resolves project settings and the
+model, then loads built-in tools and, unless disabled, MCP tools. MCP discovery
+uses temporary stateless sessions; the shared session manager lazily binds real
+sessions on the server loop when a tool is invoked. If configured, the sandbox
+context is retained for the server process lifetime and closed at process exit.
+Finally, `create_cli_agent` assembles the coding graph and composite backend
+from the model, tools and MCP metadata, sandbox, project context, subagents,
+approvals, filesystem restrictions, memory, skills, shell/interpreter options,
+retry settings, and grading context tools.
 
-## Debugging heuristic
+```mermaid
+flowchart TD
+    Config["ServerConfig from environment"] --> Policy["Check managed configuration"]
+    Policy --> Resolve["Resolve project settings and model"]
+    Resolve --> Tools["Build built-in and MCP tools"]
+    Tools --> Sandbox{"Sandbox configured"}
+    Sandbox -->|yes| CreateSandbox["Create lifetime sandbox"]
+    Sandbox -->|no| Assemble["Call create_cli_agent"]
+    CreateSandbox --> Assemble
+    Assemble --> Runtime["Cache agent backend and offload operation"]
+    Runtime --> Graph["Serve cached agent graph"]
+```
 
-The main cost of this design is the client/server boundary. When debugging,
-first decide which side owns the failure: presentation and input usually belong
-to the **client**; model execution, tools, memory, and graph startup usually
-belong to the **server**.
+This is the once-per-process construction path for the normal server.
 
-## Layered configuration
+Only built-in external context tools and MCP tools explicitly and coherently
+annotated read-only are passed to criteria generation and rubric grading.
+Missing, malformed, or contradictory MCP annotations do not grant this access.
 
-Configuration is layered across user, project, session, and runtime scopes, so
-teams can share project defaults while individual users keep their own
-credentials, preferences, skills, and local settings. The ranked resolver
-selects a value by precedence, where lower numeric ranks win: managed policy,
-parsed command-line arguments, the process environment, the user `config.toml`,
-and finally the typed manifest defaults.
+### Startup versus request failures
 
-Configuration files are read into a single process-wide generation, built on the
-first read and reused after that. Every reader that resolves through the shared
-resolver observes that one generation, so they cannot disagree about a setting.
-An edit to `config.toml` while the app runs has no effect on those readers until
-the generation advances, which happens on an in-app write to the default config
-path or on `/reload`; each source keeps its last usable snapshot, so a file that
-fails to parse leaves that tier unchanged instead of erasing it. The app does
-not watch files, because a partly applied configuration is a worse failure than
-a stale one. A few readers deliberately sit outside the shared generation and
-take their own file snapshot (for example, the config and doctor diagnostics),
-and the environment tier is always live because the process mutates `os.environ`
-during dotenv bootstrap and on each cwd switch. Full detail lives in the
-[config layering](/openwiki/concepts/config-layering.md) concept page.
+The graph factory is a startup barrier. A runtime-construction exception is
+emitted to stderr with a `DEEPAGENTS_STARTUP_ERROR:` marker and exits with code
+1. The parent captures server output and extracts the marker, allowing the
+terminal to report the construction cause instead of only a readiness timeout.
 
-## Extension points
+The same cached runtime also serves dcode's offload route. This makes the
+startup-exit behavior unsuitable for request scope: a request handler must
+catch `SystemExit` and turn it into temporary unavailability rather than
+terminate an already-serving process. Focused server-graph tests cover cache
+reuse, concurrent first construction, the off-event-loop managed-policy gate,
+startup marker behavior, and read-only MCP context-tool admission. Server
+manager tests cover cleanup after failed or cancelled readiness; see the
+[testing guide](/openwiki/testing/testing-guide.md).
 
-The main extension points compose so a project can supply shared defaults and
-integrations while each user layers personal configuration on top:
+## ACP stdio mode is a separate construction path
 
-- **Skills and subagents** for reusable agent workflows.
-- **Tools and MCP servers** for external capabilities.
-- **Sandboxes** for changing where tool execution happens.
-- **Hooks and commands** for integrating with local workflows.
+With `--acp`, `main` invokes `_run_acp_cli_async` in the launching process.
+It resolves an initial model and project context, loads built-in and MCP tools,
+and opens dcode's checkpointer. It gives `deepagents_acp` an ACP server whose
+`build_agent(context)` callback constructs a local `create_cli_agent` graph.
+The callback uses the ACP session's selected model when supplied, passes the
+session cwd, derives its `ProjectContext`, and shares the open checkpointer.
+ACP graph construction is therefore session-local rather than the normal
+server process's cached, environment-configured graph construction.
+
+ACP keeps the checkpointer open while serving and requests session loading. It
+cleans up its MCP session manager in `finally`. Model and MCP-loading errors are
+reported to stderr, and serving exceptions become `Error: ACP server failed:
+...`; ACP does not use the normal subprocess startup marker and parent-side
+scraper path.
+
+When ACP Auto mode is selected, dcode uses `AgentServerACP` with an in-memory
+store. Its graph wrapper records trusted Auto approval state and injects prompt
+metadata before streaming the local graph through `deepagents_acp`. YOLO
+requires prior acknowledgement, and a classifier model is accepted only when
+the resolved approval mode is Auto. See [ACP](/openwiki/integrations/acp.md)
+for protocol setup and host integration.
+
+## Configuration and extension boundaries
+
+Configuration spans user, project, session, and runtime scopes, allowing teams
+to share defaults while users retain credentials, preferences, skills, and
+local settings. The ranked resolver selects lower numeric ranks first:
+managed policy, command-line arguments, retained runtime reload values,
+process environment, user `config.toml`, and typed manifest defaults.
+
+Shared-resolver readers see one process-wide configuration-file generation.
+Hand edits do not affect that generation until an in-app default-path write or
+`/reload` advances it; each source retains its last usable snapshot, so a parse
+failure leaves that tier unchanged. dcode deliberately does not watch files:
+a partly applied configuration is worse than a stale one. Environment reads
+remain live because dcode mutates `os.environ` during dotenv bootstrap and cwd
+switches. See [config layering](/openwiki/concepts/config-layering.md).
+
+The practical extension boundaries are skills and subagents, built-in and MCP
+tools, sandboxes, hooks and commands, and Python extensions for middleware,
+tools, and virtual storage routes. Project configuration supplies shared
+integrations, while user configuration layers personal choices on top. Changes
+to normal server construction should be evaluated separately for ACP, which
+uses a distinct local graph lifecycle. For operational session concerns, see
+[cost and sessions](/openwiki/operations/cost-and-sessions.md) and [run a dcode
+session](/openwiki/workflows/run-dcode-session.md).

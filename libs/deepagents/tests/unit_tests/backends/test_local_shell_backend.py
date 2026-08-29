@@ -1,9 +1,12 @@
 """Unit tests for LocalShellBackend."""
 
+import os
+import subprocess
 import sys
 import tempfile
 import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -11,6 +14,36 @@ from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
+
+
+def _execute_controlling_terminal_probe(directory: Path, result_file: Path) -> None:
+    """Run the backend probe after proving this process owns `/dev/tty`."""
+    descriptor = os.open("/dev/tty", os.O_RDONLY)
+    os.close(descriptor)
+    result = LocalShellBackend(root_dir=directory).execute(": </dev/tty")
+    result_file.write_text(f"{result.exit_code}\n{result.output}", encoding="utf-8")
+
+
+def _run_controlling_terminal_probe(directory: Path) -> tuple[int, str]:
+    """Run the backend inside a child that owns a real controlling terminal."""
+    pty = pytest.importorskip("pty")
+    result_file = directory / "tty-result"
+    child_id, terminal = pty.fork()
+    if child_id == 0:  # pragma: no cover - assertions run in the parent process
+        try:
+            _execute_controlling_terminal_probe(directory, result_file)
+        except BaseException as error:  # noqa: BLE001  # Report child setup failures to the parent.
+            result_file.write_text(f"harness error: {error}", encoding="utf-8")
+            os._exit(1)
+        os._exit(0)
+    try:
+        _, status = os.waitpid(child_id, 0)
+    finally:
+        os.close(terminal)
+    details = result_file.read_text(encoding="utf-8")
+    assert os.waitstatus_to_exitcode(status) == 0, details
+    exit_code, output = details.split("\n", 1)
+    return int(exit_code), output
 
 
 def test_local_shell_backend_initialization() -> None:
@@ -34,6 +67,24 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.exit_code == 0
         assert "Hello World" in result.output
         assert result.truncated is False
+
+
+def test_local_shell_backend_execute_starts_new_session() -> None:
+    """Test that commands cannot access the parent's controlling terminal."""
+    completed = subprocess.CompletedProcess(args="echo hello", returncode=0, stdout="hello\n", stderr="")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir)
+        with patch("subprocess.run", return_value=completed) as run:
+            backend.execute("echo hello")
+
+    assert run.call_args.kwargs["start_new_session"] is True
+
+
+def test_local_shell_backend_cannot_open_parent_controlling_terminal(tmp_path: Path) -> None:
+    """Test a command cannot open the controlling terminal owned by its parent."""
+    exit_code, output = _run_controlling_terminal_probe(tmp_path)
+    assert exit_code != 0
+    assert "/dev/tty" in output
 
 
 def test_local_shell_backend_execute_with_error() -> None:

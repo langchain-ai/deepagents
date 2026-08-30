@@ -27,15 +27,11 @@ if TYPE_CHECKING:
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
 
-_SIGPIPE_STATUS = 128 + 13
-"""Exit status of a process killed by `SIGPIPE`, i.e. one whose reader closed the pipe."""
-
 _MIN_PIPELINE_STAGES = 2
 """Below this, the recorded statuses say nothing `returncode` does not already say."""
 
-_PIPESTATUS_WRAPPER = """( trap 'printf "%s " "${{PIPESTATUS[@]}}" > {statusfile}' EXIT
-{command}
-)"""
+_PIPESTATUS_WRAPPER = """trap 'printf "%s " "${{PIPESTATUS[@]}}" > {statusfile}' EXIT
+{command}"""
 """Run the command under bash and side-channel the per-stage statuses of its last pipeline.
 
 The subshell is what makes this safe: a command containing `exit` terminates the subshell
@@ -66,7 +62,7 @@ def _read_pipeline_statuses(statusfile: str | None) -> list[int]:
     """Read the statuses the wrapper recorded, tolerating anything unexpected.
 
     An unreadable or malformed file must never fail the command the agent ran, so this
-    degrades to an empty list, which `_resolve_pipeline_status` treats as "use returncode".
+    degrades to an empty list, which `_describe_pipeline_stages` reports nothing for.
     """
     if statusfile is None:
         return []
@@ -85,31 +81,28 @@ def _discard_status_file(statusfile: str | None) -> None:
         os.unlink(statusfile)  # noqa: PTH108
 
 
-def _resolve_pipeline_status(statuses: list[int], returncode: int) -> int:
-    """Reduce a pipeline's per-stage statuses to the one worth reporting.
+def _describe_pipeline_stages(statuses: list[int], returncode: int) -> str:
+    """Describe a pipeline's per-stage statuses, or "" when there is nothing to add.
 
-    A shell reports only the last stage of a pipeline, so `pytest ... | tail` looks
-    successful whenever `tail` succeeds. Walking the stages instead surfaces the failure
-    the agent actually needs to see.
+    Deliberately does not decide whether the command failed. Nothing at this layer can:
+    `pytest` exiting 1 means the tests failed, `grep` exiting 1 means it matched nothing,
+    and the shell cannot tell them apart. The agent can, because it chose the command, so
+    the stage statuses are reported and the judgement is left to the reader.
 
-    Two rules matter:
+    Returns "" when the statuses add nothing or cannot be trusted:
 
-    - A stage killed by `SIGPIPE` *before the last one* is not a failure. It means a later
-      stage closed the pipe early, which is exactly what `head` and `grep -q` do on
-      purpose. Treating it as failure would break far more commands than it fixes.
-    - Fewer than two stages carries no more information than `returncode` and can carry
-      less: for `echo hi; exit 5` the last pipeline succeeded, so the statuses read `[0]`
-      while the command as a whole exited 5. Defer to `returncode` there.
+    - Fewer than two stages says no more than `returncode` already does.
+    - A last stage disagreeing with `returncode` means the array is stale. `exit` is a
+      builtin that terminates before `PIPESTATUS` is reset, so for `false | cat; exit 9`
+      the trap still sees the earlier pipeline's `[1, 0]` while the command exited 9.
     """
     if len(statuses) < _MIN_PIPELINE_STAGES:
-        return returncode
-    last = len(statuses) - 1
-    for index, status in enumerate(statuses):
-        if status == _SIGPIPE_STATUS and index < last:
-            continue
-        if status != 0:
-            return status
-    return 0
+        return ""
+    if statuses[-1] != returncode:
+        return ""
+    if all(status == 0 for status in statuses):
+        return ""
+    return ", ".join(str(status) for status in statuses)
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -426,17 +419,19 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=(sys.platform != "win32"),
             )
-            returncode = result.returncode
-            if statusfile is not None:
-                returncode = _resolve_pipeline_status(_read_pipeline_statuses(statusfile), result.returncode)
+            stages = _describe_pipeline_stages(
+                _read_pipeline_statuses(statusfile), result.returncode
+            )
 
             output, truncated = self._combine_output(result.stdout, result.stderr)
-            if returncode != 0:
-                output = f"{output.rstrip()}\n\nExit code: {returncode}"
+            if stages:
+                output = f"{output.rstrip()}\n\nPipeline stages exited: {stages}"
+            if result.returncode != 0:
+                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
 
             return ExecuteResponse(
                 output=output,
-                exit_code=returncode,
+                exit_code=result.returncode,
                 truncated=truncated,
             )
 

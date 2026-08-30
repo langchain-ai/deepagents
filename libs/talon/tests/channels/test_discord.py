@@ -338,7 +338,7 @@ async def test_inbound_message_from_non_operator_is_rejected(tmp_path):
     assert received == []
 
 
-async def test_self_authored_message_is_allowed_via_metadata_flag(tmp_path):
+async def test_self_authored_message_is_dropped(tmp_path):
     gateway = RecordingGateway()
     channel = DiscordChannel(_make_config(tmp_path), gateway=gateway)
     received, handler = _collector()
@@ -356,8 +356,7 @@ async def test_self_authored_message_is_allowed_via_metadata_flag(tmp_path):
         ),
     )
 
-    assert len(received) == 1
-    assert received[0].metadata["from_self"] is True
+    assert received == []
 
 
 async def test_allowlist_mode_allows_dm_from_allowlisted_user(tmp_path):

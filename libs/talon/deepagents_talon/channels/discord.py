@@ -255,13 +255,18 @@ class _DiscordPyGateway:
             timeout=self._connect_timeout_seconds,
             return_when=asyncio.FIRST_COMPLETED,
         )
-        for pending_task in pending:
-            pending_task.cancel()
         if ready_task in done:
-            return
-        if task in done:
+            if task in pending:
+                # Gateway connected; leave it running for the adapter's lifetime.
+                return
             await task
             return
+        if task in done:
+            ready_task.cancel()
+            await task
+            return
+        task.cancel()
+        ready_task.cancel()
         msg = "Timed out connecting to the Discord Gateway"
         raise TimeoutError(msg)
 
@@ -485,6 +490,13 @@ class DiscordChannel:
         return None
 
     async def _process_message(self, inbound: _DiscordInboundMessage) -> None:
+        if inbound.from_self:
+            # Discord's Gateway re-delivers the bot's own outbound messages through
+            # on_message. Unlike Telegram/WhatsApp, the bot identity here is the
+            # transport itself, not an operator account, so self-authored events
+            # must never reach exposure checks -- admitting them would redispatch
+            # every reply as a new prompt, looping forever.
+            return
         message = ChannelMessage(
             conversation_id=inbound.channel_id,
             text=inbound.text,

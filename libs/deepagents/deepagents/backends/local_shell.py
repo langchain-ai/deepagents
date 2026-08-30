@@ -7,9 +7,13 @@ run directly on the host machine with full system access.
 
 from __future__ import annotations
 
+import contextlib
 import os
+import shlex
+import shutil
 import subprocess
 import sys
+import tempfile
 import uuid
 from typing import TYPE_CHECKING
 
@@ -22,6 +26,90 @@ if TYPE_CHECKING:
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
+
+_SIGPIPE_STATUS = 128 + 13
+"""Exit status of a process killed by `SIGPIPE`, i.e. one whose reader closed the pipe."""
+
+_MIN_PIPELINE_STAGES = 2
+"""Below this, the recorded statuses say nothing `returncode` does not already say."""
+
+_PIPESTATUS_WRAPPER = """( trap 'printf "%s " "${{PIPESTATUS[@]}}" > {statusfile}' EXIT
+{command}
+)"""
+"""Run the command under bash and side-channel the per-stage statuses of its last pipeline.
+
+The subshell is what makes this safe: a command containing `exit` terminates the subshell
+rather than the wrapper, and the `EXIT` trap still fires, so the statuses are recorded either
+way. Writing them to a file rather than a stream keeps the command's own stdout and stderr
+untouched.
+"""
+
+
+def _prepare_pipeline_status_capture(command: str) -> tuple[str, str | None, str | None]:
+    """Wrap `command` so its pipeline statuses are recoverable, when the shell allows it.
+
+    Returns the command to run, the shell to run it with, and the status file to read
+    afterwards. Where bash is unavailable -- POSIX `sh` has no `PIPESTATUS`, and Windows has
+    no `sh` at all -- returns the command untouched and `None` for the rest, leaving the
+    existing behaviour exactly as it was.
+    """
+    bash = shutil.which("bash") if sys.platform != "win32" else None
+    if bash is None:
+        return command, None, None
+    descriptor, statusfile = tempfile.mkstemp(prefix="deepagents-pipestatus-")
+    os.close(descriptor)
+    wrapped = _PIPESTATUS_WRAPPER.format(statusfile=shlex.quote(statusfile), command=command)
+    return wrapped, bash, statusfile
+
+
+def _read_pipeline_statuses(statusfile: str | None) -> list[int]:
+    """Read the statuses the wrapper recorded, tolerating anything unexpected.
+
+    An unreadable or malformed file must never fail the command the agent ran, so this
+    degrades to an empty list, which `_resolve_pipeline_status` treats as "use returncode".
+    """
+    if statusfile is None:
+        return []
+    try:
+        with open(statusfile) as handle:  # noqa: PTH123
+            return [int(token) for token in handle.read().split()]
+    except (OSError, ValueError):
+        return []
+
+
+def _discard_status_file(statusfile: str | None) -> None:
+    """Remove the status side-channel, tolerating it never having been created."""
+    if statusfile is None:
+        return
+    with contextlib.suppress(OSError):
+        os.unlink(statusfile)  # noqa: PTH108
+
+
+def _resolve_pipeline_status(statuses: list[int], returncode: int) -> int:
+    """Reduce a pipeline's per-stage statuses to the one worth reporting.
+
+    A shell reports only the last stage of a pipeline, so `pytest ... | tail` looks
+    successful whenever `tail` succeeds. Walking the stages instead surfaces the failure
+    the agent actually needs to see.
+
+    Two rules matter:
+
+    - A stage killed by `SIGPIPE` *before the last one* is not a failure. It means a later
+      stage closed the pipe early, which is exactly what `head` and `grep -q` do on
+      purpose. Treating it as failure would break far more commands than it fixes.
+    - Fewer than two stages carries no more information than `returncode` and can carry
+      less: for `echo hi; exit 5` the last pipeline succeeded, so the statuses read `[0]`
+      while the command as a whole exited 5. Defer to `returncode` there.
+    """
+    if len(statuses) < _MIN_PIPELINE_STAGES:
+        return returncode
+    last = len(statuses) - 1
+    for index, status in enumerate(statuses):
+        if status == _SIGPIPE_STATUS and index < last:
+            continue
+        if status != 0:
+            return status
+    return 0
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -213,6 +301,28 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         """
         return self._sandbox_id
 
+    def _combine_output(self, stdout: str, stderr: str) -> tuple[str, bool]:
+        r"""Merge stdout and stderr into one stream, truncating past the size limit.
+
+        Each stderr line is prefixed with `[stderr]` for clear attribution, e.g.
+        `hello\n[stderr] error: file not found`.
+        """
+        output_parts = []
+        if stdout:
+            output_parts.append(stdout)
+        if stderr:
+            output_parts.extend(f"[stderr] {line}" for line in stderr.strip().split("\n"))
+
+        output = "\n".join(output_parts) if output_parts else "<no output>"
+
+        if len(output) > self._max_output_bytes:
+            truncated_output = output[: self._max_output_bytes]
+            return (
+                f"{truncated_output}\n\n... Output truncated at {self._max_output_bytes} bytes.",
+                True,
+            )
+        return output, False
+
     def execute(
         self,
         command: str,
@@ -300,11 +410,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
             msg = f"timeout must be positive, got {effective_timeout}"
             raise ValueError(msg)
 
+        run_command, bash, statusfile = _prepare_pipeline_status_capture(command)
+
         try:
             result = subprocess.run(  # noqa: S602
-                command,
+                run_command,
                 check=False,
                 shell=True,  # Intentional: designed for LLM-controlled shell execution
+                executable=bash,
                 capture_output=True,
                 stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
                 text=True,
@@ -313,33 +426,17 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
                 start_new_session=(sys.platform != "win32"),
             )
+            returncode = result.returncode
+            if statusfile is not None:
+                returncode = _resolve_pipeline_status(_read_pipeline_statuses(statusfile), result.returncode)
 
-            # Combine stdout and stderr
-            # Prefix each stderr line with [stderr] for clear attribution.
-            # Example: "hello\n[stderr] error: file not found"  # noqa: ERA001
-            output_parts = []
-            if result.stdout:
-                output_parts.append(result.stdout)
-            if result.stderr:
-                stderr_lines = result.stderr.strip().split("\n")
-                output_parts.extend(f"[stderr] {line}" for line in stderr_lines)
-
-            output = "\n".join(output_parts) if output_parts else "<no output>"
-
-            # Check for truncation
-            truncated = False
-            if len(output) > self._max_output_bytes:
-                output = output[: self._max_output_bytes]
-                output += f"\n\n... Output truncated at {self._max_output_bytes} bytes."
-                truncated = True
-
-            # Add exit code info if non-zero
-            if result.returncode != 0:
-                output = f"{output.rstrip()}\n\nExit code: {result.returncode}"
+            output, truncated = self._combine_output(result.stdout, result.stderr)
+            if returncode != 0:
+                output = f"{output.rstrip()}\n\nExit code: {returncode}"
 
             return ExecuteResponse(
                 output=output,
-                exit_code=result.returncode,
+                exit_code=returncode,
                 truncated=truncated,
             )
 
@@ -361,6 +458,8 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
                 exit_code=1,
                 truncated=False,
             )
+        finally:
+            _discard_status_file(statusfile)
 
 
 __all__ = ["DEFAULT_EXECUTE_TIMEOUT", "LocalShellBackend"]

@@ -1,6 +1,7 @@
 """Unit tests for LocalShellBackend."""
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from deepagents.backends.local_shell import LocalShellBackend
+from deepagents.backends.local_shell import LocalShellBackend, _resolve_pipeline_status
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
@@ -381,3 +382,74 @@ class TestLocalShellVirtualModeDefault:
 
         deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
         assert deprecations == []
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="pipeline status recovery requires bash")
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param("sh -c 'echo out; exit 1' | tail -1", 1, id="failure-piped-into-filter"),
+        pytest.param("sh -c 'exit 3' | sh -c 'exit 0' | tail -1", 3, id="first-of-three-stages-fails"),
+        pytest.param("echo hi | cat", 0, id="clean-pipeline"),
+    ],
+)
+def test_local_shell_backend_reports_failure_masked_by_a_pipeline(command: str, expected: int) -> None:
+    """A shell reports only a pipeline's last stage, hiding `pytest ... | tail`-style failures."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute(command)
+        assert result.exit_code == expected
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="pipeline status recovery requires bash")
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("seq 1 100000 | head -3", id="head-closes-the-pipe"),
+        pytest.param("yes | head -1", id="infinite-writer-closed-early"),
+        pytest.param("seq 1 100000 | grep -q 5", id="grep-q-exits-on-first-match"),
+    ],
+)
+def test_local_shell_backend_ignores_sigpipe_from_a_reader_exiting_early(command: str) -> None:
+    """`head` and `grep -q` close the pipe on purpose; the writer's SIGPIPE is not a failure."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute(command)
+        assert result.exit_code == 0
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param("sh -c 'exit 1'; echo done", 0, id="semicolon-chain-reports-last-command"),
+        pytest.param("sh -c 'exit 1' || true", 0, id="explicit-suppression-is-honoured"),
+        pytest.param("echo a; exit 5", 5, id="command-exiting-directly"),
+        pytest.param("sh -c 'exit 7'", 7, id="plain-failure"),
+        pytest.param("echo ok", 0, id="plain-success"),
+    ],
+)
+def test_local_shell_backend_leaves_non_pipeline_status_alone(command: str, expected: int) -> None:
+    """`a; b` and `a || true` mean what they say -- recovering a status there would break them."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute(command)
+        assert result.exit_code == expected
+
+
+def test_local_shell_backend_pipeline_recovery_preserves_output() -> None:
+    """The status side-channel must not leak into the output the agent reads."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute("echo HELLO | cat")
+        assert result.output.strip() == "HELLO"
+
+
+@pytest.mark.parametrize(
+    ("statuses", "returncode", "expected"),
+    [
+        pytest.param([1, 0], 0, 1, id="earlier-stage-failed"),
+        pytest.param([141, 0], 0, 0, id="sigpipe-before-last-stage-is-benign"),
+        pytest.param([0, 141], 141, 141, id="sigpipe-on-last-stage-is-real"),
+        pytest.param([0], 5, 5, id="single-stage-defers-to-returncode"),
+        pytest.param([], 5, 5, id="unavailable-defers-to-returncode"),
+        pytest.param([0, 0], 0, 0, id="all-clean"),
+    ],
+)
+def test_resolve_pipeline_status(statuses: list[int], returncode: int, expected: int) -> None:
+    assert _resolve_pipeline_status(statuses, returncode) == expected

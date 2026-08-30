@@ -66,6 +66,8 @@ package = true
 packages = ["deepagents_talon"]
 artifacts = [
     "deepagents_talon/channels/whatsapp_bridge/bridge.js",
+    "deepagents_talon/channels/whatsapp_bridge/id_compat.js",
+    "deepagents_talon/channels/whatsapp_bridge/package-lock.json",
     "deepagents_talon/channels/whatsapp_bridge/package.json",
 ]
 

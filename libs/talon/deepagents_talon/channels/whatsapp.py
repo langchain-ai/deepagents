@@ -16,6 +16,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
+from http import HTTPStatus
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -69,6 +70,10 @@ OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 
 class _WhatsAppBridgeError(RuntimeError):
     """Raised when the WhatsApp bridge reports or causes a transport error."""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +247,11 @@ class _BridgeTransport:
                 return json.loads(response.read().decode())
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
             msg = f"WhatsApp bridge request failed: {method} {path}"
-            raise _WhatsAppBridgeError(msg) from error
+            retryable = (
+                isinstance(error, urllib.error.HTTPError)
+                and error.code == HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            raise _WhatsAppBridgeError(msg, retryable=retryable) from error
 
 
 class WhatsAppChannel:
@@ -347,8 +356,14 @@ class WhatsAppChannel:
             chunk_count=len(chunks),
             text_chars=len(text),
         )
-        for chunk in chunks:
-            response = await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
+        try:
+            for chunk in chunks:
+                response = await self._post_result(
+                    "/send",
+                    {"chatId": conversation_id, "text": chunk},
+                )
+        except _WhatsAppBridgeError as error:
+            return SendResult(success=False, error=str(error), retryable=error.retryable)
         message_id = _extract_message_id(response)
         log_debug_event(
             logger,
@@ -374,12 +389,13 @@ class WhatsAppChannel:
             max_bytes=self.config.max_media_bytes,
         )
         staged = await asyncio.to_thread(_stage_bridge_media, checked.path, self.config)
+        staged_copy = staged != checked.path.expanduser().resolve()
         log_debug_event(
             logger,
             "whatsapp.outbound.media.started",
             caption_present=checked.caption is not None,
             media_type=checked.media_type,
-            staged_copy=staged != checked.path,
+            staged_copy=staged_copy,
         )
         payload: dict[str, object] = {
             "chatId": conversation_id,
@@ -392,7 +408,13 @@ class WhatsAppChannel:
             )
         else:
             payload["caption"] = _bot_header(self.config.bot_header)
-        response = await self._post_result("/send-media", payload)
+        try:
+            response = await self._post_result("/send-media", payload)
+        except _WhatsAppBridgeError as error:
+            return SendResult(success=False, error=str(error), retryable=error.retryable)
+        finally:
+            if staged_copy:
+                await asyncio.to_thread(_remove_staged_media, staged)
         message_id = _extract_message_id(response)
         log_debug_event(
             logger,
@@ -421,7 +443,7 @@ class WhatsAppChannel:
         Returns:
             Result indicating whether the edit succeeded.
         """
-        await self._post_result(
+        response = await self._post_result(
             "/edit",
             {
                 "chatId": conversation_id,
@@ -429,7 +451,7 @@ class WhatsAppChannel:
                 "content": _with_bot_header(text, bot_header=self.config.bot_header),
             },
         )
-        return SendResult(success=True, message_id=message_id)
+        return SendResult(success=True, message_id=_extract_message_id(response) or message_id)
 
     async def status(self) -> ChannelStatus:
         """Report the most recent bridge connection status."""
@@ -688,6 +710,13 @@ def _stage_bridge_media(path: Path, config: WhatsAppChannelConfig) -> Path:
     return destination
 
 
+def _remove_staged_media(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to remove staged WhatsApp outbound media")
+
+
 def _validate_loopback_url(value: str) -> str:
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -739,7 +768,7 @@ def _parse_message(payload: object) -> ChannelMessage:
             "chat_id_from": values.get("chat_id_from") or values.get("chatIdFrom"),
             "user_name": values.get("user_name") or values.get("senderName"),
             "raw_message": values.get("raw_message") or {},
-            "from_self": bool(values.get("from_self") or values.get("fromSelf")),
+            "from_self": values.get("from_self") is True or values.get("fromSelf") is True,
         },
     )
     return message_with_media_paths(

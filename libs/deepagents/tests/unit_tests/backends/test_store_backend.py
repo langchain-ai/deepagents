@@ -193,6 +193,29 @@ def test_store_backend_edit_migrates_legacy_list_content() -> None:
     assert stored.value["encoding"] == "utf-8"
 
 
+def test_store_backend_edit_normalizes_crlf_from_read_content() -> None:
+    """CRLF-backed store files can be edited with LF text copied from `read`."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    be.write("/main.py", "def main():\r\n    print('hi')\r\n    return 0\r\n")
+
+    shown = be.read("/main.py")
+    assert shown.file_data is not None
+    assert shown.file_data["content"] == "def main():\n    print('hi')\n    return 0\n"
+
+    result = be.edit(
+        "/main.py",
+        "    print('hi')\n    return 0\n",
+        "    print('bye')\n    return 0\n",
+    )
+
+    assert result.error is None
+    assert result.occurrences == 1
+    stored = mem_store.get(("filesystem",), "/main.py")
+    assert stored is not None
+    assert stored.value["content"] == "def main():\n    print('bye')\n    return 0\n"
+
+
 def test_store_backend_write_overwrites_existing_file():
     mem_store = InMemoryStore()
     be = StoreBackend(store=mem_store, namespace=lambda _ctx: ("filesystem",))

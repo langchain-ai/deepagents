@@ -117,6 +117,29 @@ async def test_store_backend_aedit_migrates_legacy_list_content() -> None:
     assert stored.value["encoding"] == "utf-8"
 
 
+async def test_store_backend_aedit_normalizes_crlf_from_aread_content() -> None:
+    """CRLF-backed store files can be edited with LF text copied from `aread`."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    await be.awrite("/main.py", "def main():\r\n    print('hi')\r\n    return 0\r\n")
+
+    shown = await be.aread("/main.py")
+    assert shown.file_data is not None
+    assert shown.file_data["content"] == "def main():\n    print('hi')\n    return 0\n"
+
+    result = await be.aedit(
+        "/main.py",
+        "    print('hi')\n    return 0\n",
+        "    print('bye')\n    return 0\n",
+    )
+
+    assert result.error is None
+    assert result.occurrences == 1
+    stored = await mem_store.aget(("filesystem",), "/main.py")
+    assert stored is not None
+    assert stored.value["content"] == "def main():\n    print('bye')\n    return 0\n"
+
+
 async def test_store_backend_aread_surfaces_pagination_metadata():
     """`StoreBackend.aread` propagates the pagination metadata from `slice_read_response`."""
     mem_store = InMemoryStore()

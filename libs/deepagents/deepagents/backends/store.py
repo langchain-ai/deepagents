@@ -27,6 +27,7 @@ from deepagents.backends.utils import (
     InvalidGlobPatternError,
     _get_backend_read_file_type,
     _glob_search_files,
+    _normalize_newlines,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -494,6 +495,10 @@ class StoreBackend(BackendProtocol):
             return EditResult(error=f"Error: {e}")
 
         content = file_data_to_string(file_data)
+        if _get_backend_read_file_type(file_path) == "text":
+            content = _normalize_newlines(content)
+            old_string = _normalize_newlines(old_string)
+            new_string = _normalize_newlines(new_string)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
 
         if isinstance(result, str):
@@ -532,6 +537,10 @@ class StoreBackend(BackendProtocol):
             return EditResult(error=f"Error: {e}")
 
         content = file_data_to_string(file_data)
+        if _get_backend_read_file_type(file_path) == "text":
+            content = _normalize_newlines(content)
+            old_string = _normalize_newlines(old_string)
+            new_string = _normalize_newlines(new_string)
         result = perform_string_replacement(content, old_string, new_string, replace_all)
 
         if isinstance(result, str):

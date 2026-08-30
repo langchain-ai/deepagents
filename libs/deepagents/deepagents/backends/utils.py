@@ -197,6 +197,21 @@ def _normalize_content(file_data: FileData) -> str:
     return content
 
 
+def _normalize_newlines(content: str) -> str:
+    r"""Normalize CRLF and bare-CR newlines to LF.
+
+    `read()` and `edit()` share this normalization so exact-match edits can use
+    text copied from `read_file` output even when storage retains CRLF.
+
+    Args:
+        content: Text content that may contain `\r\n` and/or bare `\r`.
+
+    Returns:
+        Content with all line endings normalized to `\n`.
+    """
+    return content.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def sanitize_tool_call_id(tool_call_id: str) -> str:
     r"""Sanitize tool_call_id to prevent path traversal and separator issues.
 
@@ -506,7 +521,7 @@ def slice_read_response(
     # Normalize line endings to LF, but only across the requested window.
     # State/Store backends may carry CRLF or CR content as written;
     # downstream tooling (edit match, grep, format) assumes LF.
-    sliced = "".join(lines[start_idx:end_idx]).replace("\r\n", "\n").replace("\r", "\n")
+    sliced = _normalize_newlines("".join(lines[start_idx:end_idx]))
     next_offset = end_idx if end_idx < total_lines else None
     return ReadResult(
         file_data=_copy_file_data_with_content(file_data, sliced),

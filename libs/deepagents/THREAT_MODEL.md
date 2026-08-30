@@ -128,7 +128,7 @@
 | C1 | Agent Factory (`graph.py`) | Assembles and returns a `CompiledStateGraph`; the primary user-facing API | framework-controlled | Yes | `graph.py:create_deep_agent`, `graph.py:resolve_model`, `graph.py:get_default_model` |
 | C2 | StateBackend | Stores files in LangGraph agent state (ephemeral, per-thread) | framework-controlled | **Yes** (default backend) | `backends/state.py:StateBackend.__init__`, `StateBackend.read`, `StateBackend.write`, `StateBackend.edit` |
 | C3 | FilesystemBackend | Reads/writes files directly from the host filesystem | user-controlled | No (opt-in) | `backends/filesystem.py:FilesystemBackend.__init__`, `FilesystemBackend._resolve_path` |
-| C4 | LocalShellBackend | FilesystemBackend + unrestricted local shell execution via `subprocess.run(shell=True)` | user-controlled | **No** (must be explicitly provided) | `backends/local_shell.py:LocalShellBackend.execute` |
+| C4 | LocalShellBackend | FilesystemBackend + unrestricted local shell execution via `subprocess.Popen(shell=True)` | user-controlled | **No** (must be explicitly provided) | `backends/local_shell.py:LocalShellBackend.execute` |
 | C5 | StoreBackend | Persistent cross-thread storage via LangGraph `BaseStore` | user-controlled | No (opt-in, requires `store=`) | `backends/store.py:StoreBackend.__init__`, `StoreBackend._validate_namespace` |
 | C6 | CompositeBackend | Routes file operations by path prefix to multiple backends | user-controlled | No (opt-in) | `backends/composite.py:CompositeBackend.__init__` |
 | C7 | MemoryMiddleware | Loads AGENTS.md files from backend and injects into system prompt | framework-controlled | No (opt-in, `memory=` param) | `middleware/memory.py:MemoryMiddleware.modify_request` |
@@ -177,7 +177,7 @@
 
 - **Inside** (virtual_mode=True only): `FilesystemBackend._resolve_path` checks `..` and `~` and verifies `full.relative_to(self.cwd)` (`backends/filesystem.py:FilesystemBackend._resolve_path`). `LocalShellBackend` runs commands with configurable timeout (`backends/local_shell.py:LocalShellBackend.execute`). Output capped at 100KB.
 - **Outside**: Host filesystem layout, environment variables, OS user permissions, installed software. Shell commands with `shell=True` have full access regardless of `virtual_mode`.
-- **Crossing mechanism**: `os.open` / `subprocess.run` with `shell=True` (LocalShellBackend).
+- **Crossing mechanism**: `os.open` / `subprocess.Popen` with `shell=True` (LocalShellBackend).
 
 #### TB6: Framework / Remote LangGraph API
 
@@ -197,7 +197,7 @@
 | DF4 | C1 (User) | C8 (SkillsMiddleware) | Skill source paths | — | TB1 | function argument |
 | DF5 | C1 (User) | C7 (MemoryMiddleware) | Memory file paths | — | TB1 | function argument |
 | DF6 | C1 (User) | C5 (StoreBackend) | Namespace factory callable | — | TB1 | function argument → callable invoked at runtime |
-| DF7 | C10 (LLM) | C4 (LocalShellBackend) | LLM-generated shell command string | DC4 | TB3, TB5 | function call → `subprocess.run(shell=True)` |
+| DF7 | C10 (LLM) | C4 (LocalShellBackend) | LLM-generated shell command string | DC4 | TB3, TB5 | function call → `subprocess.Popen(shell=True)` |
 | DF8 | C2/C3/C5 (Backend) | C9 (SubAgentMiddleware) | LangGraph state (files, todos, context) | DC1 | TB3 | state dict pass-through to subagent |
 | DF9 | C11 (Checkpointer) | C10 (LLM) | Deserialized checkpoint state (messages, files) | DC1 | TB4, TB2 | LangGraph checkpoint load → agent state → prompt |
 | DF10 | C12 (AsyncSubAgentMiddleware) | Remote LangGraph server | Task launch: `graph_id`, `description` (LLM-generated), `thread_id` | DC7 | TB6 | HTTPS via LangGraph SDK |
@@ -220,7 +220,7 @@
 
 #### DF7: LLM → LocalShellBackend (`execute`)
 
-- **Data**: LLM-generated shell command string, passed through `FilesystemMiddleware._create_execute_tool` to `subprocess.run(shell=True)`. Produces DC4 (shell output) that re-enters agent context via DF12.
+- **Data**: LLM-generated shell command string, passed through `FilesystemMiddleware._create_execute_tool` to `subprocess.Popen(shell=True)`. Produces DC4 (shell output) that re-enters agent context via DF12.
 - **Validation**: Command validated as non-empty string only (`backends/local_shell.py:LocalShellBackend.execute`). No command allow-listing, blocklisting, or pattern filtering. Timeout enforced (default 120s). Output truncated at 100KB.
 - **Trust assumption**: Requires user to explicitly provide `LocalShellBackend` (not the default) and trust the LLM + HITL middleware.
 
@@ -263,7 +263,7 @@
 #### T3: Arbitrary Shell Command Execution (LocalShellBackend)
 
 - **Flow**: DF7 (LLM → LocalShellBackend), DF12 (output → context)
-- **Description**: `LocalShellBackend.execute` passes the LLM-generated command string directly to `subprocess.run(shell=True)` at `backends/local_shell.py:LocalShellBackend.execute`. Zero validation on command content beyond a non-empty string check. Commands execute with the process owner's full permissions. With `inherit_env=True`, all process environment variables (including API keys) are available to every command.
+- **Description**: `LocalShellBackend.execute` passes the LLM-generated command string directly to `subprocess.Popen(shell=True)` at `backends/local_shell.py:LocalShellBackend.execute`. Zero validation on command content beyond a non-empty string check. Commands execute with the process owner's full permissions. With `inherit_env=True`, all process environment variables (including API keys) are available to every command.
 - **Preconditions**: User must explicitly configure `LocalShellBackend` as the backend (not the default — `StateBackend` is default, and it does not implement `SandboxBackendProtocol`, so the `execute` tool is filtered out at `middleware/filesystem.py:FilesystemMiddleware`). HITL middleware (`interrupt_on={"execute": True}`) is available but opt-in, not default.
 
 #### T4: Unsafe msgpack Deserialization in LangGraph Checkpointer

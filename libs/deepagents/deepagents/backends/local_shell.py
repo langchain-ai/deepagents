@@ -24,17 +24,30 @@ from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
 
+_POSIX = sys.platform != "win32"
+"""Whether this host has POSIX process groups and a POSIX shell. Windows has neither."""
+
 _MIN_PIPELINE_STAGES = 2
 """Below this, the recorded statuses say nothing `returncode` does not already say."""
+
+_SIGPIPE_STATUS = 141
+"""128 + `SIGPIPE`: how a shell reports a stage stopped because a later stage stopped reading.
+
+`seq 1 100000 | head -3` and `yes | head` end this way by construction, so this status on a
+non-final stage is the pipeline working rather than a fault. It is excluded from the check
+for a hidden failure, and spelled out wherever it is shown, because a bare `141` reads as an
+error to a model.
+"""
 
 _PIPESTATUS_WRAPPER = """trap 'printf "%s " "${{PIPESTATUS[@]}}" > {statusfile}' EXIT
 {command}"""
 """Run the command under bash and side-channel the per-stage statuses of its last pipeline.
 
-The subshell is what makes this safe: a command containing `exit` terminates the subshell
-rather than the wrapper, and the `EXIT` trap still fires, so the statuses are recorded either
-way. Writing them to a file rather than a stream keeps the command's own stdout and stderr
-untouched.
+The `EXIT` trap fires however the command ends, including on `exit`, so the statuses are
+always recorded. `exit` is a builtin that returns before `PIPESTATUS` is reset, though, so
+what the trap records then belongs to an earlier pipeline; `_describe_pipeline_stages` detects
+that and reports nothing. Writing to a file rather than a stream keeps the command's own
+stdout and stderr untouched.
 """
 
 
@@ -47,7 +60,6 @@ def _run_shell(command: str, *, executable: str | None, timeout: int, env: dict[
     listed in `THREAT_MODEL.md` as the mitigation at trust boundary TB5, so it has to reach
     everything the command started.
     """
-    new_session = sys.platform != "win32"
     with subprocess.Popen(  # noqa: S602
         command,
         shell=True,  # Intentional: designed for LLM-controlled shell execution
@@ -58,40 +70,66 @@ def _run_shell(command: str, *, executable: str | None, timeout: int, env: dict[
         text=True,
         env=env,
         cwd=cwd,
-        start_new_session=new_session,
+        start_new_session=_POSIX,
     ) as process:
         try:
             stdout, stderr = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
-            _terminate_process_group(process, new_session=new_session)
-            process.communicate()
+            _terminate_process_group(process)
+            _collect_killed_process(process)
             raise
     return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
 
 
-def _terminate_process_group(process: subprocess.Popen, *, new_session: bool) -> None:
-    """Kill the timed-out command and anything it spawned."""
-    if not new_session:
+def _terminate_process_group(process: subprocess.Popen[str]) -> None:
+    """Kill the timed-out command and anything it spawned.
+
+    `start_new_session=True` makes the shell the leader of a new process group, so its pgid
+    is its pid and `os.killpg` reaches every descendant. Looking the pgid up with
+    `os.getpgid` instead fails in exactly the case that matters: a shell that has already
+    returned while leaving a background descendant behind is an unreaped zombie, and on macOS
+    `os.getpgid` raises `ProcessLookupError` for it, so nothing is signalled at all.
+    """
+    if not _POSIX:
         process.kill()
         return
     try:
-        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
-    except (OSError, ProcessLookupError):
+        os.killpg(process.pid, signal.SIGKILL)
+    except OSError:
         process.kill()
+
+
+def _collect_killed_process(process: subprocess.Popen[str]) -> None:
+    """Collect the killed shell, doing what `subprocess.run` does on each platform.
+
+    Windows accumulates the output on reader threads that only `communicate` joins. On POSIX
+    `communicate` would read the pipes to EOF with no timeout, so a descendant that inherited
+    them could hold `execute` open for its whole lifetime, long past the timeout. `wait`
+    waits only for the shell, which has just been killed.
+    """
+    if _POSIX:
+        process.wait()
+    else:
+        process.communicate()
 
 
 def _prepare_pipeline_status_capture(command: str) -> tuple[str, str | None, str | None]:
     """Wrap `command` so its pipeline statuses are recoverable, when the shell allows it.
 
     Returns the command to run, the shell to run it with, and the status file to read
-    afterwards. Where bash is unavailable -- POSIX `sh` has no `PIPESTATUS`, and Windows has
-    no `sh` at all -- returns the command untouched and `None` for the rest, leaving the
-    existing behaviour exactly as it was.
+    afterwards. Where the wrapper cannot be set up -- POSIX `sh` has no `PIPESTATUS`, Windows
+    has no `sh` at all, and a read-only or exhausted temp directory has nowhere to record the
+    statuses -- returns the command untouched and `None` for the rest, leaving the existing
+    behaviour exactly as it was. The detail is a diagnostic, so failing to arrange it must
+    never stop the agent's command from running.
     """
-    bash = shutil.which("bash") if sys.platform != "win32" else None
+    bash = shutil.which("bash") if _POSIX else None
     if bash is None:
         return command, None, None
-    descriptor, statusfile = tempfile.mkstemp(prefix="deepagents-pipestatus-")
+    try:
+        descriptor, statusfile = tempfile.mkstemp(prefix="deepagents-pipestatus-")
+    except OSError:
+        return command, None, None
     os.close(descriptor)
     wrapped = _PIPESTATUS_WRAPPER.format(statusfile=shlex.quote(statusfile), command=command)
     return wrapped, bash, statusfile
@@ -133,14 +171,18 @@ def _describe_pipeline_stages(statuses: list[int], returncode: int) -> str:
     - A last stage disagreeing with `returncode` means the array is stale. `exit` is a
       builtin that terminates before `PIPESTATUS` is reset, so for `false | cat; exit 9`
       the trap still sees the earlier pipeline's `[1, 0]` while the command exited 9.
+    - No non-final stage failing. `returncode` is the last stage's status, so for
+      `cat hosts | grep -c zzz` the detail would only repeat it, and a pipeline whose
+      earlier stages were all fine has nothing hidden in it. `SIGPIPE` does not count as a
+      failure here, since it is how `seq 1 100000 | head -3` is meant to end.
     """
     if len(statuses) < _MIN_PIPELINE_STAGES:
         return ""
     if statuses[-1] != returncode:
         return ""
-    if all(status == 0 for status in statuses):
+    if all(status in (0, _SIGPIPE_STATUS) for status in statuses[:-1]):
         return ""
-    return ", ".join(str(status) for status in statuses)
+    return ", ".join(f"{status} (SIGPIPE)" if status == _SIGPIPE_STATUS else str(status) for status in statuses)
 
 
 class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
@@ -365,7 +407,7 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         !!! danger "Unrestricted Execution"
 
             Commands are executed directly on your host system
-            using `subprocess.run()` with `shell=True`. There is **no sandboxing,
+            using `subprocess.Popen` with `shell=True`. There is **no sandboxing,
             isolation, or security restrictions**. The command runs with
             your user's full permissions and can:
 

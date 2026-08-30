@@ -1,6 +1,8 @@
 """Unit tests for LocalShellBackend."""
 
+import errno
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -12,7 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from deepagents.backends.local_shell import LocalShellBackend, _describe_pipeline_stages
+from deepagents.backends.local_shell import LocalShellBackend, _describe_pipeline_stages, _prepare_pipeline_status_capture
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
@@ -458,7 +460,12 @@ def test_local_shell_backend_pipeline_detail_preserves_output() -> None:
     ("statuses", "returncode", "expected"),
     [
         pytest.param([1, 0], 0, "1, 0", id="earlier-stage-failed"),
-        pytest.param([141, 0], 0, "141, 0", id="sigpipe-reported-not-judged"),
+        pytest.param([3, 0, 0], 0, "3, 0, 0", id="first-of-three-stages-failed"),
+        pytest.param([2, 141, 0], 0, "2, 141 (SIGPIPE), 0", id="sigpipe-spelled-out-alongside-a-real-failure"),
+        pytest.param([0, 1], 1, "", id="only-the-last-stage-failed-so-the-exit-code-says-it"),
+        pytest.param([0, 0, 5], 5, "", id="only-the-last-of-three-failed"),
+        pytest.param([141, 0], 0, "", id="sigpipe-alone-is-how-a-reader-stops-a-producer"),
+        pytest.param([141, 141, 0], 0, "", id="sigpipe-throughout-adds-nothing"),
         pytest.param([0, 0], 0, "", id="all-clean-adds-nothing"),
         pytest.param([0], 5, "", id="single-stage-adds-nothing"),
         pytest.param([], 5, "", id="unavailable"),
@@ -469,27 +476,112 @@ def test_describe_pipeline_stages(statuses: list[int], returncode: int, expected
     assert _describe_pipeline_stages(statuses, returncode) == expected
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX-only")
-def test_local_shell_backend_timeout_kills_what_the_command_started() -> None:
-    """A timed-out command must die, not just stop being waited on.
+@pytest.mark.skipif(shutil.which("bash") is None, reason="pipeline status detail requires bash")
+@pytest.mark.parametrize(
+    "command",
+    [
+        pytest.param("cat /etc/hosts | grep -c zzz", id="only-the-last-stage-failed"),
+        pytest.param("seq 1 100000 | head -3", id="reader-stops-the-producer"),
+        pytest.param("yes | head -2", id="endless-producer-stopped-by-its-reader"),
+        pytest.param("echo hi | cat", id="nothing-went-wrong"),
+    ],
+)
+def test_local_shell_backend_omits_detail_a_reader_cannot_use(command: str) -> None:
+    """Detail that only repeats the exit code, or that reports a pipeline working, is noise.
 
-    Wrapping the command to capture `PIPESTATUS` stops bash `exec`-ing it in place, so the
-    direct child is the shell and the real work is a grandchild. Killing only the child
-    would leave it running. `THREAT_MODEL.md` lists this timeout as the mitigation at trust
-    boundary TB5.
+    `grep -c` exiting 1 as the last stage is already in `Exit code: 1`, and the 141 that
+    `head` provokes in `seq` is how the command is supposed to end. A bare number next to
+    either reads as a second, unexplained failure.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute(command)
+        assert "Pipeline stages exited" not in result.output
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="pipeline status detail requires bash")
+def test_local_shell_backend_names_sigpipe_when_it_reports_a_hidden_failure() -> None:
+    """When there is a real failure to report, any `SIGPIPE` beside it is named, not numbered."""
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute("sh -c 'exit 2' | seq 1 100000 | head -3")
+        assert "Pipeline stages exited: 2, 141 (SIGPIPE), 0" in result.output
+
+
+def test_local_shell_backend_runs_when_the_status_file_cannot_be_created() -> None:
+    """A temp directory that is read-only, full, or out of descriptors must not fail the command."""
+    unwritable = OSError(errno.EROFS, "Read-only file system")
+    with tempfile.TemporaryDirectory() as temp_dir:
+        backend = LocalShellBackend(root_dir=temp_dir)
+        with patch("tempfile.mkstemp", side_effect=unwritable):
+            result = backend.execute("echo still here | cat")
+    assert result.exit_code == 0
+    assert "still here" in result.output
+
+
+def test_prepare_pipeline_status_capture_degrades_to_the_plain_command() -> None:
+    """Without a status file the command must run exactly as it did before this diagnostic."""
+    with patch("tempfile.mkstemp", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+        assert _prepare_pipeline_status_capture("echo hi | cat") == ("echo hi | cat", None, None)
+
+
+TIMEOUT_SECONDS = 2
+"""Short enough to keep the timeout tests quick, long enough not to race a loaded machine."""
+
+RETURN_DEADLINE_SECONDS = 15
+"""`execute` must be back long before its descendant finishes, and with room over the timeout.
+
+The markers below double as the descendants' lifetimes, so each is at least 27 seconds -- far
+enough past this deadline that a run hitting it has genuinely waited for the descendant.
+"""
+
+
+def _reap_survivors(pattern: str) -> int:
+    """Count -- and then kill -- any process whose command line still matches `pattern`."""
+    # S603/S607: fixed argv, no shell; the only interpolation is a constant marker from a test.
+    found = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True, check=False)  # noqa: S603, S607
+    survivors = found.stdout.split()
+    if survivors:
+        subprocess.run(["pkill", "-f", pattern], check=False)  # noqa: S603, S607
+    return len(survivors)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX-only")
+def test_local_shell_backend_timeout_kills_a_background_descendant_and_returns() -> None:
+    """A timed-out command must die at the timeout, and `execute` must come back then too.
+
+    `echo hi; sleep N &` is the awkward shape: the shell returns immediately, so by the time
+    the timeout fires it is an exited-but-unreaped zombie whose pgid can no longer be looked
+    up, while the descendant it left behind is still holding the pipes `execute` reads.
+    `THREAT_MODEL.md` lists this timeout as the mitigation at trust boundary TB5, so neither
+    the kill nor the return may depend on the shell still being alive.
     """
     marker = "31.41592"
     with tempfile.TemporaryDirectory() as temp_dir:
-        result = LocalShellBackend(root_dir=temp_dir).execute(f"sleep {marker}", timeout=1)
+        backend = LocalShellBackend(root_dir=temp_dir)
+        start = time.monotonic()
+        result = backend.execute(f"echo hi; sleep {marker} &", timeout=TIMEOUT_SECONDS)
+        elapsed = time.monotonic() - start
+    survivors = _reap_survivors(f"^sleep {marker}$")
     assert result.exit_code == 124
-    time.sleep(0.5)
-    # S603/S607: fixed argv, no shell; the only interpolation is the constant marker above
-    survivors = subprocess.run(  # noqa: S603
-        ["pgrep", "-f", f"^sleep {marker}$"],  # noqa: S607
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if survivors.stdout.split():
-        subprocess.run(["pkill", "-f", f"^sleep {marker}$"], check=False)  # noqa: S603, S607
-        pytest.fail(f"timeout left {len(survivors.stdout.split())} process(es) running")
+    assert elapsed < RETURN_DEADLINE_SECONDS, f"execute blocked for {elapsed:.1f}s on a {TIMEOUT_SECONDS}s timeout"
+    assert survivors == 0, f"timeout left {survivors} process(es) running"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX-only")
+def test_local_shell_backend_timeout_returns_even_when_a_descendant_escapes_the_kill() -> None:
+    """A descendant the kill cannot reach must not be able to hold `execute` open either.
+
+    Nothing can signal a process that has put itself in another session, so this one outlives
+    the timeout by design -- and it still holds the inherited pipes. Draining those pipes
+    after the kill would wait for it. Waiting for the shell alone does not.
+    """
+    marker = "27.182818"
+    escapee = f"import os, time; os.setsid(); time.sleep({marker})"
+    command = f"echo hi; {shlex.quote(sys.executable)} -c {shlex.quote(escapee)} &"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        backend = LocalShellBackend(root_dir=temp_dir)
+        start = time.monotonic()
+        result = backend.execute(command, timeout=TIMEOUT_SECONDS)
+        elapsed = time.monotonic() - start
+    _reap_survivors(f"time.sleep\\({marker}\\)")
+    assert result.exit_code == 124
+    assert elapsed < RETURN_DEADLINE_SECONDS, f"execute blocked for {elapsed:.1f}s on a {TIMEOUT_SECONDS}s timeout"

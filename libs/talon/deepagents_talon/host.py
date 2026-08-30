@@ -59,6 +59,7 @@ _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
 _APPROVAL_LOG_RAW_IDS_ENV = "DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS"
+_TYPING_REFRESH_SECONDS = 4.0
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -282,19 +283,26 @@ class TalonHost:
         if content != message.text:
             metadata["model_content"] = content
 
-        await _send_typing(channel, message.conversation_id)
-        result = await self._invoke_agent(
-            conversation_id=agent_conversation_id,
-            text=message.text,
-            metadata=metadata,
-            approval_handler=lambda approval: self._request_tool_approval(
-                channel,
-                approval,
-                provider=_channel_key(channel, provider),
-                reply_conversation_id=message.conversation_id,
-                sender_id=message.sender_id,
-            ),
+        typing_task = asyncio.create_task(
+            _typing_refresh_loop(channel, message.conversation_id),
         )
+        try:
+            result = await self._invoke_agent(
+                conversation_id=agent_conversation_id,
+                text=message.text,
+                metadata=metadata,
+                approval_handler=lambda approval: self._request_tool_approval(
+                    channel,
+                    approval,
+                    provider=_channel_key(channel, provider),
+                    reply_conversation_id=message.conversation_id,
+                    sender_id=message.sender_id,
+                ),
+            )
+        finally:
+            typing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await typing_task
         await self._deliver_agent_result(channel, message.conversation_id, result)
 
     async def run_scheduled_job(self, job: CronJob) -> str:
@@ -749,6 +757,13 @@ async def _send_typing(channel: ChannelAdapter, conversation_id: str) -> None:
         await channel.send_typing(conversation_id)
     except Exception:  # noqa: BLE001  # typing indicators are best-effort adapter calls.
         logger.debug("Could not send typing indicator", exc_info=True)
+
+
+async def _typing_refresh_loop(channel: ChannelAdapter, conversation_id: str) -> None:
+    """Repeat the typing indicator for as long as an agent turn is in flight."""
+    while True:
+        await _send_typing(channel, conversation_id)
+        await asyncio.sleep(_TYPING_REFRESH_SECONDS)
 
 
 async def _channel_provider(channel: ChannelAdapter) -> str | None:

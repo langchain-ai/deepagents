@@ -5,9 +5,10 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import warnings
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -72,13 +73,16 @@ def test_local_shell_backend_execute_simple_command() -> None:
 
 def test_local_shell_backend_execute_starts_new_session() -> None:
     """Test that commands cannot access the parent's controlling terminal."""
-    completed = subprocess.CompletedProcess(args="echo hello", returncode=0, stdout="hello\n", stderr="")
+    process = MagicMock()
+    process.communicate.return_value = ("hello\n", "")
+    process.returncode = 0
+    process.__enter__.return_value = process
     with tempfile.TemporaryDirectory() as tmpdir:
         backend = LocalShellBackend(root_dir=tmpdir)
-        with patch("subprocess.run", return_value=completed) as run:
+        with patch("subprocess.Popen", return_value=process) as popen:
             backend.execute("echo hello")
 
-    assert run.call_args.kwargs["start_new_session"] is True
+    assert popen.call_args.kwargs["start_new_session"] is True
 
 
 def test_local_shell_backend_cannot_open_parent_controlling_terminal(tmp_path: Path) -> None:
@@ -463,3 +467,29 @@ def test_local_shell_backend_pipeline_detail_preserves_output() -> None:
 )
 def test_describe_pipeline_stages(statuses: list[int], returncode: int, expected: str) -> None:
     assert _describe_pipeline_stages(statuses, returncode) == expected
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="process groups are POSIX-only")
+def test_local_shell_backend_timeout_kills_what_the_command_started() -> None:
+    """A timed-out command must die, not just stop being waited on.
+
+    Wrapping the command to capture `PIPESTATUS` stops bash `exec`-ing it in place, so the
+    direct child is the shell and the real work is a grandchild. Killing only the child
+    would leave it running. `THREAT_MODEL.md` lists this timeout as the mitigation at trust
+    boundary TB5.
+    """
+    marker = "31.41592"
+    with tempfile.TemporaryDirectory() as temp_dir:
+        result = LocalShellBackend(root_dir=temp_dir).execute(f"sleep {marker}", timeout=1)
+    assert result.exit_code == 124
+    time.sleep(0.5)
+    # S603/S607: fixed argv, no shell; the only interpolation is the constant marker above
+    survivors = subprocess.run(  # noqa: S603
+        ["pgrep", "-f", f"^sleep {marker}$"],  # noqa: S607
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if survivors.stdout.split():
+        subprocess.run(["pkill", "-f", f"^sleep {marker}$"], check=False)  # noqa: S603, S607
+        pytest.fail(f"timeout left {len(survivors.stdout.split())} process(es) running")

@@ -11,18 +11,15 @@ import contextlib
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
 import uuid
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
-
-if TYPE_CHECKING:
-    from pathlib import Path
-
 
 DEFAULT_EXECUTE_TIMEOUT = 120
 """Default timeout in seconds for shell command execution."""
@@ -39,6 +36,48 @@ rather than the wrapper, and the `EXIT` trap still fires, so the statuses are re
 way. Writing them to a file rather than a stream keeps the command's own stdout and stderr
 untouched.
 """
+
+
+def _run_shell(command: str, *, executable: str | None, timeout: int, env: dict[str, str], cwd: str) -> subprocess.CompletedProcess[str]:
+    """Run `command` under the shell, killing the whole process group on timeout.
+
+    `subprocess.run` kills only the process it started. That was enough when bash could
+    `exec` the command in place, but wrapping it to capture `PIPESTATUS` means the direct
+    child is the shell and the real work is a grandchild, which survives. The timeout is
+    listed in `THREAT_MODEL.md` as the mitigation at trust boundary TB5, so it has to reach
+    everything the command started.
+    """
+    new_session = sys.platform != "win32"
+    with subprocess.Popen(  # noqa: S602
+        command,
+        shell=True,  # Intentional: designed for LLM-controlled shell execution
+        executable=executable,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin
+        text=True,
+        env=env,
+        cwd=cwd,
+        start_new_session=new_session,
+    ) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            _terminate_process_group(process, new_session=new_session)
+            process.communicate()
+            raise
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _terminate_process_group(process: subprocess.Popen, *, new_session: bool) -> None:
+    """Kill the timed-out command and anything it spawned."""
+    if not new_session:
+        process.kill()
+        return
+    try:
+        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+    except (OSError, ProcessLookupError):
+        process.kill()
 
 
 def _prepare_pipeline_status_capture(command: str) -> tuple[str, str | None, str | None]:
@@ -67,8 +106,7 @@ def _read_pipeline_statuses(statusfile: str | None) -> list[int]:
     if statusfile is None:
         return []
     try:
-        with open(statusfile) as handle:  # noqa: PTH123
-            return [int(token) for token in handle.read().split()]
+        return [int(token) for token in Path(statusfile).read_text().split()]
     except (OSError, ValueError):
         return []
 
@@ -78,7 +116,7 @@ def _discard_status_file(statusfile: str | None) -> None:
     if statusfile is None:
         return
     with contextlib.suppress(OSError):
-        os.unlink(statusfile)  # noqa: PTH108
+        Path(statusfile).unlink()
 
 
 def _describe_pipeline_stages(statuses: list[int], returncode: int) -> str:
@@ -340,8 +378,10 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
 
             **Always use Human-in-the-Loop (HITL) middleware when using this method.**
 
-        The command is executed using the system shell (`/bin/sh` or equivalent)
-        with the working directory set to the backend's `root_dir`.
+        The command is executed using bash where it is available, falling back to the
+        system shell (`/bin/sh` or equivalent) otherwise, with the working directory set to
+        the backend's `root_dir`. Bash is preferred because it exposes `PIPESTATUS`, which
+        is what lets a failure hidden inside a pipeline be reported rather than dropped.
         Stdout and stderr are combined into a single output stream.
 
         Args:
@@ -406,22 +446,14 @@ class LocalShellBackend(FilesystemBackend, SandboxBackendProtocol):
         run_command, bash, statusfile = _prepare_pipeline_status_capture(command)
 
         try:
-            result = subprocess.run(  # noqa: S602
+            result = _run_shell(
                 run_command,
-                check=False,
-                shell=True,  # Intentional: designed for LLM-controlled shell execution
                 executable=bash,
-                capture_output=True,
-                stdin=subprocess.DEVNULL,  # Prevent hanging on commands that read stdin (e.g. python, cat)
-                text=True,
                 timeout=effective_timeout,
                 env=self._env,
                 cwd=str(self.cwd),  # Use the root_dir from FilesystemBackend
-                start_new_session=(sys.platform != "win32"),
             )
-            stages = _describe_pipeline_stages(
-                _read_pipeline_statuses(statusfile), result.returncode
-            )
+            stages = _describe_pipeline_stages(_read_pipeline_statuses(statusfile), result.returncode)
 
             output, truncated = self._combine_output(result.stdout, result.stderr)
             if stages:

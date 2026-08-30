@@ -2212,6 +2212,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         self._classifier_model_constructions: dict[
             str, asyncio.Task[BaseChatModel]
         ] = {}
+        self._openai_prompt_cache_key_enabled: bool | None = None
         self._known_secrets = _known_credential_values()
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
@@ -2706,6 +2707,38 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             span.end(outputs={"decision_count": len(batch.decisions)})
             return batch
 
+    def _classifier_session_settings(
+        self,
+        request: ModelRequest,
+        model: BaseChatModel,
+        settings: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Add a stable per-thread cache session to classifier reviews.
+
+        Returns:
+            Model settings with supported provider session hints added.
+        """
+        thread_key = _thread_key(request.runtime)
+        if thread_key is None:
+            return settings
+        session_key = sha256(f"auto:{thread_key}".encode()).hexdigest()
+        from deepagents_code.configurable_model import (
+            _resolve_openai_prompt_cache_key_enabled,
+            _with_model_session_settings,
+        )
+
+        if self._openai_prompt_cache_key_enabled is None:
+            self._openai_prompt_cache_key_enabled = (
+                _resolve_openai_prompt_cache_key_enabled()
+            )
+        updated = _with_model_session_settings(
+            model,
+            settings,
+            session_key,
+            openai_prompt_cache_key=self._openai_prompt_cache_key_enabled,
+        )
+        return updated or settings
+
     async def _review_batch(
         self,
         request: ModelRequest,
@@ -2774,6 +2807,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 # with the primary model. A distinct classifier runs on its
                 # own defaults.
                 settings = request.model_settings if spec is None else {}
+                settings = self._classifier_session_settings(request, model, settings)
                 from deepagents_code.model_retry import aretry_model_call
 
                 # The retry backoff sleeps inside this deadline, so an

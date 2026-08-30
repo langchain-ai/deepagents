@@ -289,6 +289,25 @@ def _with_openai_prompt_cache_key(
     return {**model_settings, "prompt_cache_key": thread_id}
 
 
+def _with_model_session_settings(
+    model: object,
+    model_settings: dict[str, Any],
+    session_id: str,
+    *,
+    openai_prompt_cache_key: bool,
+) -> dict[str, Any] | None:
+    """Add provider-specific cache session settings when supported.
+
+    Returns:
+        Updated settings, or `None` when the provider needs no session hints.
+    """
+    if _is_fireworks_model(model):
+        return _with_fireworks_session_settings(model_settings, session_id)
+    if _is_openai_model(model) and openai_prompt_cache_key:
+        return _with_openai_prompt_cache_key(model, model_settings, session_id)
+    return None
+
+
 def _resolve_openai_prompt_cache_key_enabled() -> bool:
     """Resolve the `models.openai_prompt_cache_key` opt-out (default on).
 

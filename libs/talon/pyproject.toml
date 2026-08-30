@@ -129,5 +129,10 @@ filterwarnings = [
     # at import time, which Python 3.14 deprecates. Nothing here can act on it --
     # it fires before any of our code runs and is fixed by upgrading the SDK.
     "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # `discord.py`'s voice-playback module unconditionally imports the stdlib
+    # `audioop` module (removed in Python 3.13, hence deprecated on 3.12) even
+    # though talon never uses Discord voice features. Nothing here can act on
+    # it -- it fires at `import discord` before any of our code runs.
+    "ignore:'audioop' is deprecated:DeprecationWarning:discord\\.player",
 ]
 asyncio_mode = "auto"

@@ -2,16 +2,20 @@
 """Fork-vs-handoff cost/cache demo: PR review with specialized reviewers.
 
 A parent agent fetches a real PR's diff (and any repo files it needs) once,
-then delegates review to N specialist subagents (one per lens, e.g.
-correctness/backcompat/tests/performance/api_design) using an IDENTICAL short
-instruction regardless of mode:
+then delegates review to the general-purpose subagent N times -- one call per
+lens (e.g. correctness/backcompat/tests/performance/api_design) -- using an
+IDENTICAL short instruction regardless of branch:
 
     "Review this change specifically for {lens} issues."
 
-Only the subagents' `mode` changes between runs -- "fork" (inherits the
-parent's full context for free, via cache reuse) vs "handoff" (isolated;
-must re-fetch context itself via tool calls, or have the parent paste it
-into the directive, to do useful work at all).
+This deliberately does NOT declare a custom subagent or pass a `mode=` flag.
+The general-purpose subagent's own default (fork vs. handoff) comes entirely
+from whichever `deepagents` checkout this script runs against -- compare a
+branch that forces it into `mode: "fork"` by default (e.g.
+`bengret/sug-agent-forking-evals`) against one that leaves it as the normal
+isolated default (e.g. `bengret/feat-subagent-forking`). See
+.github/workflows/fork_cache_demo.yml, which checks out a different
+`deepagents` ref per leg rather than passing this script a mode flag.
 
 Metrics are captured via a plain callback handler attached to the top-level
 `invoke()` call -- subagent `.invoke()` calls run in the same call stack and
@@ -20,13 +24,20 @@ for the numbers themselves. LangSmith tracing (when LANGSMITH_API_KEY is set)
 is enabled purely so a human can inspect the run visually afterward; it is
 not load-bearing for anything this script prints or writes.
 
+Each of the general-purpose subagent's five invocations shares the same
+`lc_agent_name` ("general-purpose"), so per-lens attribution instead walks
+each event's `parent_run_id` chain back to the specific `task` tool call that
+spawned it, and labels that invocation by its position in the (deterministic,
+instructed) delegation order.
+
 Local usage (from libs/deepagents, with a real ANTHROPIC_API_KEY exported):
 
     uv run python ../../.github/scripts/evals/fork_cache_demo.py \
-        --repo langchain-ai/deepagents --pr 5873 --mode fork
+        --repo langchain-ai/deepagents --pr 5873 --branch-tag fork
 
 CI usage: see .github/workflows/fork_cache_demo.yml, which runs this once per
-mode and compares the resulting --out-json files.
+branch (checking out a different `deepagents` ref each time) and compares the
+resulting --out-json files.
 """
 
 from __future__ import annotations
@@ -91,25 +102,38 @@ def build_parent_instruction(
 First, use get_pr_diff to fetch the diff, and read_repo_file for any files you
 need to understand the change in its surrounding context.
 
-Then delegate the review to specialist subagents, one call each, using
-EXACTLY this instruction for each (only the lens name changes):
+Then delegate the review to the general-purpose subagent, ONE CALL AT A TIME
+(wait for each result before starting the next -- do not delegate in
+parallel), using EXACTLY this instruction each time (only the lens name
+changes):
 
 {lens_line}
 
-The subagent_type values to delegate to, in this order: {", ".join(lenses)}.
+Use these lenses in this exact order: {", ".join(lenses)}.
 
 Once all have reported back, summarize their findings in one paragraph.
 """
 
 
 class MetricsHandler(BaseCallbackHandler):
-    """Captures per-subagent token/tool/wall-clock metrics locally, keyed by
-    `lc_agent_name` -- no LangSmith dependency for the numbers themselves.
+    """Captures per-lens token/tool/wall-clock metrics locally.
+
+    Every call to the general-purpose subagent shares the same
+    `lc_agent_name`, so attribution instead walks each event's
+    `parent_run_id` chain back to the enclosing `task` tool call and labels
+    it by that call's position in the (instructed, deterministic) lens
+    order -- not by `lc_agent_name`.
     """
 
-    def __init__(self) -> None:
-        self._run_metadata: dict[str, dict[str, Any]] = {}
+    def __init__(self, lenses: list[str]) -> None:
+        self._lenses = lenses
+        self._task_seq = 0
+
+        self._parent_of: dict[str, str | None] = {}
+        self._run_label: dict[str, str] = {}
+        self._task_run_label: dict[str, str] = {}
         self._run_start: dict[str, float] = {}
+
         self.per_agent: dict[str, dict[str, Any]] = defaultdict(
             lambda: {
                 "llm_calls": 0,
@@ -123,9 +147,16 @@ class MetricsHandler(BaseCallbackHandler):
         )
         self.directives: dict[str, str] = {}
 
-    @staticmethod
-    def _agent_name(metadata: dict[str, Any] | None) -> str:
-        return (metadata or {}).get("lc_agent_name") or "main"
+    def _label_for(self, run_id: Any, parent_run_id: Any) -> str:
+        rid = str(run_id)
+        pid = str(parent_run_id) if parent_run_id is not None else None
+        self._parent_of[rid] = pid
+        cursor = pid
+        while cursor is not None:
+            if cursor in self._task_run_label:
+                return self._task_run_label[cursor]
+            cursor = self._parent_of.get(cursor)
+        return "main"
 
     def on_chat_model_start(
         self,
@@ -138,9 +169,9 @@ class MetricsHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        key = str(run_id)
-        self._run_metadata[key] = metadata or {}
-        self._run_start[key] = time.monotonic()
+        label = self._label_for(run_id, parent_run_id)
+        self._run_label[str(run_id)] = label
+        self._run_start[str(run_id)] = time.monotonic()
 
     def on_llm_end(
         self,
@@ -152,7 +183,7 @@ class MetricsHandler(BaseCallbackHandler):
         **kwargs: Any,
     ) -> None:
         key = str(run_id)
-        agent_name = self._agent_name(self._run_metadata.pop(key, None))
+        agent_name = self._run_label.pop(key, "main")
         start = self._run_start.pop(key, None)
         elapsed = time.monotonic() - start if start is not None else 0.0
 
@@ -187,8 +218,8 @@ class MetricsHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        agent_name = self._agent_name(metadata)
-        self.per_agent[agent_name]["tool_calls"] += 1
+        label = self._label_for(run_id, parent_run_id)
+        self.per_agent[label]["tool_calls"] += 1
 
         if serialized.get("name") != "task":
             return
@@ -200,18 +231,25 @@ class MetricsHandler(BaseCallbackHandler):
             return
         if not isinstance(parsed, dict):
             return
-        subagent_type = parsed.get("subagent_type")
-        description = parsed.get("description", "")
-        if subagent_type:
-            self.directives[subagent_type] = description
+        if parsed.get("subagent_type") != "general-purpose":
+            return
+
+        lens = (
+            self._lenses[self._task_seq]
+            if self._task_seq < len(self._lenses)
+            else f"unexpected-lens-{self._task_seq}"
+        )
+        self._task_seq += 1
+        self._task_run_label[str(run_id)] = lens
+        self.directives[lens] = parsed.get("description", "")
 
     def as_json(self) -> dict[str, Any]:
         return {"per_agent": self.per_agent, "directives": self.directives}
 
     def print_report(self) -> None:
-        print("\n=== Per-agent metrics ===")
+        print("\n=== Per-lens metrics ===")
         header = (
-            f"{'agent':<14} {'llm_calls':>9} {'in_tok':>8} {'out_tok':>8} "
+            f"{'lens':<14} {'llm_calls':>9} {'in_tok':>8} {'out_tok':>8} "
             f"{'cache_read':>10} {'1st_hit':>8} {'tool_calls':>10} {'wall_s':>7}"
         )
         print(header)
@@ -252,29 +290,30 @@ def make_tools(allowed_prefix: Path, diff_text: str):
     return get_pr_diff, read_repo_file
 
 
-def build_agent(mode: str, model: str, lenses: list[str], tools: list):
-    subagents = [
-        {
-            "name": lens,
-            "description": f"Specialist reviewer focused on {lens} issues for a code change.",
-            "tools": list(tools),
-            "mode": mode,
-        }
-        for lens in lenses
-    ]
-    return create_deep_agent(model=model, tools=list(tools), subagents=subagents)
+def build_agent(model: str, tools: list):
+    # No `subagents=` override: the general-purpose subagent this delegates
+    # to is whichever default `create_deep_agent` auto-adds -- fork or
+    # handoff is entirely a property of the `deepagents` checkout this runs
+    # against, not anything this script configures.
+    return create_deep_agent(model=model, tools=list(tools))
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True, help="owner/repo, e.g. langchain-ai/deepagents")
     parser.add_argument("--pr", required=True, help="PR number to use as the diff substrate")
-    parser.add_argument("--mode", choices=["fork", "handoff"], required=True)
+    parser.add_argument(
+        "--branch-tag",
+        default="unknown",
+        help="Label for this run's output only (e.g. 'fork'/'handoff') -- "
+        "does not affect agent construction. The actual fork/handoff "
+        "behavior comes from whichever deepagents checkout is on PYTHONPATH.",
+    )
     parser.add_argument("--model", default="anthropic:claude-sonnet-4-6")
     parser.add_argument(
         "--lenses",
         default=",".join(DEFAULT_LENSES),
-        help="Comma-separated review lenses / subagent names",
+        help="Comma-separated review lenses, delegated to in this exact order",
     )
     parser.add_argument(
         "--allowed-prefix",
@@ -295,10 +334,10 @@ def main() -> None:
     )
 
     tools = make_tools(allowed_prefix, diff_text)
-    handler = MetricsHandler()
-    agent = build_agent(args.mode, args.model, lenses, tools)
+    handler = MetricsHandler(lenses)
+    agent = build_agent(args.model, tools)
 
-    print(f"=== Running mode={args.mode} model={args.model} ===", flush=True)
+    print(f"=== Running branch_tag={args.branch_tag} model={args.model} ===", flush=True)
     start = time.monotonic()
     result = agent.invoke(
         {"messages": [HumanMessage(content=instruction)]},
@@ -317,7 +356,7 @@ def main() -> None:
         out_path = Path(args.out_json)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
-            "mode": args.mode,
+            "branch_tag": args.branch_tag,
             "model": args.model,
             "repo": args.repo,
             "pr": args.pr,

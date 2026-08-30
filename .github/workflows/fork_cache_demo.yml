@@ -2,10 +2,17 @@
 #
 # Manual only (workflow_dispatch) -- this spends real model tokens on a live
 # PR review and is not wired to pull_request/push, so it never runs on a PR
-# or merge. Runs fork_cache_demo.py once per selected mode against a real
-# PR's diff, then (when both "fork" and "handoff" ran) compares the two
-# runs' locally-captured metrics: cache-read tokens, token/tool-call cost,
-# wall-clock, and delegation-directive size.
+# or merge. Runs fork_cache_demo.py once per branch leg against a real PR's
+# diff, checking out a *different* `deepagents` ref for each leg so the
+# general-purpose subagent's own real default (fork vs. handoff) drives the
+# comparison -- not a `--mode` flag on a single checkout. Then (when both
+# legs ran) compares the two runs' locally-captured metrics: cache-read
+# tokens, token/tool-call cost, wall-clock, and delegation-directive size.
+#
+# The workflow file and eval scripts always come from wherever this workflow
+# itself is running from (main, once this is merged); only the `libs/`
+# directory tree gets overlaid per leg from `fork_ref`/`handoff_ref`, so
+# those branches don't need to carry the eval scripts themselves.
 #
 # LangSmith tracing is enabled automatically when LANGSMITH_API_KEY is
 # present in the `evals` environment, purely so a human can inspect the run
@@ -20,7 +27,8 @@
 
 name: "🍴 Fork cache demo"
 run-name: >-
-  🍴 Fork cache demo — PR #${{ inputs.pr_number }} (${{ inputs.repo }}) / ${{ inputs.modes }}
+  🍴 Fork cache demo — PR #${{ inputs.pr_number }} (${{ inputs.repo }}) —
+  ${{ inputs.fork_ref }} vs ${{ inputs.handoff_ref }}
 
 on:
   workflow_dispatch:
@@ -38,12 +46,16 @@ on:
         description: "provider:model spec passed to init_chat_model"
         type: string
         default: "anthropic:claude-sonnet-4-6"
-      modes:
-        description: "Comma-separated modes to run. Include both to get the comparison job; a single mode just runs and uploads its own metrics."
+      fork_ref:
+        description: "Git ref whose deepagents package forces the general-purpose subagent into mode: \"fork\" by default"
         type: string
-        default: "fork,handoff"
+        default: "bengret/sug-agent-forking-evals"
+      handoff_ref:
+        description: "Git ref whose deepagents package leaves the general-purpose subagent as the normal (handoff) default. Leave blank to skip this leg and only run fork_ref."
+        type: string
+        default: "bengret/feat-subagent-forking"
       lenses:
-        description: "Comma-separated review lenses (= subagent names delegated to)"
+        description: "Comma-separated review lenses, delegated to (in order) via the general-purpose subagent"
         type: string
         default: "correctness,backcompat,tests,performance,api_design"
       allowed_path_prefix:
@@ -60,7 +72,7 @@ concurrency:
 
 jobs:
   prep:
-    name: "🔧 Parse modes"
+    name: "🔧 Parse refs"
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.set-matrix.outputs.matrix }}
@@ -70,7 +82,8 @@ jobs:
           REPO: ${{ inputs.repo }}
           PR_NUMBER: ${{ inputs.pr_number }}
           MODEL: ${{ inputs.model }}
-          MODES: ${{ inputs.modes }}
+          FORK_REF: ${{ inputs.fork_ref }}
+          HANDOFF_REF: ${{ inputs.handoff_ref }}
           LENSES: ${{ inputs.lenses }}
           ALLOWED_PATH_PREFIX: ${{ inputs.allowed_path_prefix }}
         run: |
@@ -82,35 +95,38 @@ jobs:
             echo "| \`repo\` | \`${REPO}\` |"
             echo "| \`pr_number\` | \`${PR_NUMBER}\` |"
             echo "| \`model\` | \`${MODEL}\` |"
-            echo "| \`modes\` | \`${MODES}\` |"
+            echo "| \`fork_ref\` | \`${FORK_REF}\` |"
+            echo "| \`handoff_ref\` | \`${HANDOFF_REF:-(skipped)}\` |"
             echo "| \`lenses\` | \`${LENSES}\` |"
             echo "| \`allowed_path_prefix\` | \`${ALLOWED_PATH_PREFIX}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: "🧮 Build mode matrix"
+      - name: "🧮 Build ref matrix"
         id: set-matrix
         env:
-          MODES: ${{ inputs.modes }}
+          FORK_REF: ${{ inputs.fork_ref }}
+          HANDOFF_REF: ${{ inputs.handoff_ref }}
         run: |
           python3 - <<'PY'
           import json
           import os
 
-          modes = [m.strip() for m in os.environ["MODES"].split(",") if m.strip()]
-          valid = {"fork", "handoff"}
-          unknown = [m for m in modes if m not in valid]
-          if unknown:
-              raise SystemExit(f"::error::Unknown mode(s): {unknown}; must be 'fork' or 'handoff'")
-          if not modes:
-              raise SystemExit("::error::No modes given")
+          fork_ref = os.environ["FORK_REF"].strip()
+          handoff_ref = os.environ["HANDOFF_REF"].strip()
+          if not fork_ref:
+              raise SystemExit("::error::fork_ref is required")
 
-          matrix = json.dumps({"mode": modes})
+          legs = [{"tag": "fork", "ref": fork_ref}]
+          if handoff_ref:
+              legs.append({"tag": "handoff", "ref": handoff_ref})
+
+          matrix = json.dumps({"include": legs})
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"matrix={matrix}\n")
           PY
 
   demo:
-    name: "🍴 Run (${{ matrix.mode }})"
+    name: "🍴 Run (${{ matrix.tag }}: ${{ matrix.ref }})"
     needs: prep
     strategy:
       fail-fast: false
@@ -125,10 +141,21 @@ jobs:
       # LangSmith. Tracing turns on only when the secret is present (no
       # warnings when absent), same idiom as clbench.yml.
       LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
-      LANGSMITH_PROJECT: fork-cache-demo-${{ matrix.mode }}-${{ github.run_id }}
+      LANGSMITH_PROJECT: fork-cache-demo-${{ matrix.tag }}-${{ github.run_id }}
     steps:
       - name: "📋 Checkout Code"
+        # No `ref:` override here -- this gives us the workflow's own
+        # eval scripts/config from wherever this workflow runs from
+        # (main, once merged). Only `libs/` gets overlaid per leg below,
+        # so fork_ref/handoff_ref don't need to carry the eval scripts.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: "📋 Overlay libs/ from ${{ matrix.ref }}"
+        run: |
+          git fetch --depth=1 origin "${{ matrix.ref }}"
+          rm -rf libs
+          git checkout FETCH_HEAD -- libs
+          echo "Overlaid libs/ from ${{ matrix.ref }} ($(git rev-parse FETCH_HEAD))"
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -152,18 +179,18 @@ jobs:
           uv run python ../../.github/scripts/evals/fork_cache_demo.py \
             --repo "${{ inputs.repo }}" \
             --pr "${{ inputs.pr_number }}" \
-            --mode "${{ matrix.mode }}" \
+            --branch-tag "${{ matrix.tag }}" \
             --model "$MODEL" \
             --lenses "${{ inputs.lenses }}" \
             --allowed-prefix "${{ inputs.allowed_path_prefix }}" \
-            --out-json "../../_fork_cache_demo/${{ matrix.mode }}.json"
+            --out-json "../../_fork_cache_demo/${{ matrix.tag }}.json"
 
       - name: "📤 Upload metrics"
-        if: ${{ always() && hashFiles(format('_fork_cache_demo/{0}.json', matrix.mode)) != '' }}
+        if: ${{ always() && hashFiles(format('_fork_cache_demo/{0}.json', matrix.tag)) != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: fork-cache-demo-${{ matrix.mode }}
-          path: _fork_cache_demo/${{ matrix.mode }}.json
+          name: fork-cache-demo-${{ matrix.tag }}
+          path: _fork_cache_demo/${{ matrix.tag }}.json
           if-no-files-found: error
 
   compare:
@@ -183,7 +210,7 @@ jobs:
           merge-multiple: true
 
       - name: "📊 Compare"
-        # Only meaningful once both modes ran; a single-mode dispatch has
+        # Only meaningful once both legs ran; a fork_ref-only dispatch has
         # nothing to diff against, so just say so rather than failing.
         run: |
           if [ -f _fork_cache_demo/fork.json ] && [ -f _fork_cache_demo/handoff.json ]; then
@@ -193,5 +220,5 @@ jobs:
           else
             echo "## Fork cache demo" >> "$GITHUB_STEP_SUMMARY"
             echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "Only one mode was dispatched (\`${{ inputs.modes }}\`); nothing to compare. See that mode's own job log/artifact for its metrics." >> "$GITHUB_STEP_SUMMARY"
+            echo "\`handoff_ref\` was not given; nothing to compare. See the fork leg's own job log/artifact for its metrics." >> "$GITHUB_STEP_SUMMARY"
           fi

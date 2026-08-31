@@ -16,6 +16,7 @@ from deepagents_code.tui.widgets.status import (
     _PICKER_TARGET_META,
     BranchLabel,
     ModelLabel,
+    PullRequestLabel,
     StatusBar,
 )
 
@@ -151,6 +152,30 @@ class TestBranchDisplay:
             from deepagents_code.config import get_glyphs
 
             assert rendered.startswith(get_glyphs().git_branch)
+
+
+class TestPullRequestDisplay:
+    async def test_link_shows_and_clears(self) -> None:
+        async with StatusBarApp().run_test() as pilot:
+            bar = pilot.app.query_one("#status-bar", StatusBar)
+            display = pilot.app.query_one("#pull-request-display", PullRequestLabel)
+            assert display.display is False
+
+            bar.set_pull_request(3328, "https://github.com/acme/repo/pull/3328")
+            await pilot.pause()
+
+            assert display.display is True
+            assert str(display.render()) == "PR #3328"
+            links = {
+                segment.style.link
+                for segment in display.render_line(0)
+                if segment.style is not None and segment.style.link
+            }
+            assert links == {"https://github.com/acme/repo/pull/3328"}
+
+            bar.set_pull_request(None)
+            await pilot.pause()
+            assert display.display is False
 
 
 class TestResizePriority:

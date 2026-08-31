@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import logging
 import os
 import re
+from contextlib import suppress
 from pathlib import Path
 from typing import NamedTuple
 from urllib.parse import urlparse
@@ -22,6 +25,8 @@ _GIT_REF_PREFIXES = ("refs/heads/", "refs/remotes/", "refs/tags/", "refs/")
 
 _git_dir_cache: dict[str, Path] = {}
 """Positive-only cache of resolved git metadata directories keyed by lookup path."""
+
+_MAX_PR_OUTPUT_BYTES = 4096
 
 
 def _abbreviate_git_ref(ref: str) -> str:
@@ -480,6 +485,104 @@ def resolve_git_branch(path: str | Path) -> str:
     if branch is not None:
         return branch
     return read_git_branch_via_subprocess(path)
+
+
+class PullRequestMetadata(NamedTuple):
+    """GitHub pull request identity for the current branch."""
+
+    number: int
+    url: str
+
+
+def _parse_github_pull_request(raw: bytes) -> PullRequestMetadata | None:
+    """Validate bounded JSON returned by `gh pr view`.
+
+    Returns:
+        Validated pull request metadata, or `None` for malformed output.
+    """
+    try:
+        payload = json.loads(raw)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    number = payload.get("number")
+    url = payload.get("url")
+    if not isinstance(number, int) or isinstance(number, bool) or number <= 0:
+        return None
+    if not isinstance(url, str):
+        return None
+    parsed = urlparse(url)
+    expected_path = re.compile(rf"\A/[^/]+/[^/]+/pull/{number}\Z")
+    if (
+        parsed.scheme != "https"
+        or parsed.hostname != "github.com"
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.port is not None
+        or parsed.query
+        or parsed.fragment
+        or expected_path.fullmatch(parsed.path) is None
+    ):
+        return None
+    return PullRequestMetadata(number, url)
+
+
+async def read_github_pull_request(path: str | Path) -> PullRequestMetadata | None:
+    """Read the open GitHub pull request for the current branch via `gh`.
+
+    Args:
+        path: Directory inside the repository to inspect.
+
+    Returns:
+        Validated pull request metadata, or `None` when no open pull request can
+        be resolved.
+
+    Raises:
+        asyncio.CancelledError: If the lookup task is cancelled.
+    """
+    process: asyncio.subprocess.Process | None = None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "gh",
+            "pr",
+            "view",
+            "--json",
+            "number,url",
+            cwd=path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        stdout_reader = process.stdout
+        if stdout_reader is None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+            return None
+        stdout = await asyncio.wait_for(
+            stdout_reader.read(_MAX_PR_OUTPUT_BYTES + 1), timeout=3
+        )
+        if len(stdout) > _MAX_PR_OUTPUT_BYTES:
+            with suppress(ProcessLookupError):
+                process.kill()
+        await asyncio.wait_for(process.wait(), timeout=3)
+    except TimeoutError:
+        if process is not None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+        return None
+    except asyncio.CancelledError:
+        if process is not None:
+            with suppress(ProcessLookupError):
+                process.kill()
+            await process.wait()
+        raise
+    except (FileNotFoundError, OSError):
+        return None
+    if process.returncode != 0 or len(stdout) > _MAX_PR_OUTPUT_BYTES:
+        return None
+    return _parse_github_pull_request(stdout)
 
 
 _GIT_SHA_RE = re.compile(r"\A[0-9a-f]{40}(?:[0-9a-f]{24})?\Z")

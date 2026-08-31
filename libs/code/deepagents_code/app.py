@@ -72,6 +72,7 @@ from deepagents_code._content_blocks import reasoning_text
 from deepagents_code._git import (
     read_git_branch_from_filesystem,
     read_git_branch_via_subprocess,
+    read_github_pull_request,
 )
 from deepagents_code._invocation import invoked_name
 from deepagents_code._markdown import escape_markdown as _escape_markdown
@@ -4460,6 +4461,9 @@ class DeepAgentsApp(App):
         self._git_branch_refresh_task: asyncio.Task[None] | None = None
         """Latest background git-branch refresh task, if one is running."""
 
+        self._pull_request_refresh_task: asyncio.Task[None] | None = None
+        """Latest background GitHub pull request refresh task."""
+
         self._graceful_exit_task: asyncio.Task[None] | None = None
         """Fire-and-forget task for the deferred, overlapping teardown.
 
@@ -5051,6 +5055,49 @@ class DeepAgentsApp(App):
         if self._status_bar:
             self._status_bar.branch = branch
 
+    async def _refresh_pull_request(self, cwd: str) -> None:
+        """Resolve and render the open pull request for the current branch.
+
+        Raises:
+            asyncio.CancelledError: If a newer refresh supersedes this one.
+        """
+        try:
+            pull_request = await read_github_pull_request(cwd)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Pull request resolution failed", exc_info=True)
+            return
+        if self._status_bar is None:
+            return
+        if pull_request is None:
+            self._status_bar.set_pull_request(None)
+        else:
+            self._status_bar.set_pull_request(pull_request.number, pull_request.url)
+
+    def _schedule_pull_request_refresh(self) -> None:
+        """Replace any pending pull request lookup with a fresh one."""
+        prior_task = self._pull_request_refresh_task
+        if prior_task is not None and not prior_task.done():
+            prior_task.cancel()
+        refresh_task = asyncio.create_task(self._refresh_pull_request(self._cwd))
+        self._pull_request_refresh_task = refresh_task
+
+        def finalize(task: asyncio.Task[None]) -> None:
+            if self._pull_request_refresh_task is task:
+                self._pull_request_refresh_task = None
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.warning(
+                    "Background pull request refresh failed unexpectedly",
+                    exc_info=True,
+                )
+
+        refresh_task.add_done_callback(finalize)
+
     def _cancel_git_branch_refresh_task(self) -> None:
         """Cancel and clear any in-flight background branch refresh task."""
         prior_task = self._git_branch_refresh_task
@@ -5081,6 +5128,7 @@ class DeepAgentsApp(App):
             if self._status_bar:
                 self._status_bar.branch = branch
             self._cancel_git_branch_refresh_task()
+            self._schedule_pull_request_refresh()
             return
 
         # Unusual repo layout — hop to a thread for `git rev-parse`.
@@ -5104,6 +5152,7 @@ class DeepAgentsApp(App):
                 )
 
         refresh_task.add_done_callback(_finalize_git_branch_refresh)
+        self._schedule_pull_request_refresh()
 
     async def _resolve_git_branch_and_continue(self) -> None:
         """Resolve git branch, then schedule remaining init workers.
@@ -5119,6 +5168,7 @@ class DeepAgentsApp(App):
             # Always schedule post-paint init — even if branch resolution
             # fails, the app must still start the server, session, etc.
             self.call_after_refresh(self._post_paint_init)
+            self.call_after_refresh(self._schedule_pull_request_refresh)
 
     async def _post_paint_init(self) -> None:
         """Fire background workers for remaining startup work.
@@ -21189,6 +21239,8 @@ class DeepAgentsApp(App):
             self._agent_worker.cancel()
         if self._git_branch_refresh_task is not None:
             self._git_branch_refresh_task.cancel()
+        if self._pull_request_refresh_task is not None:
+            self._pull_request_refresh_task.cancel()
         if self._external_event_source_task is not None:
             self._external_event_source_task.cancel()
         # Cancellation alone is not enough: the task's `finally` block runs

@@ -21,6 +21,7 @@ from deepagents_code._constants import FIREWORKS_MODEL_ID_PREFIXES
 from deepagents_code._env_vars import HIDE_CWD, HIDE_GIT_BRANCH, is_env_truthy
 from deepagents_code._session_stats import format_cost, format_token_count
 from deepagents_code.config import get_glyphs
+from deepagents_code.tui.widgets._links import event_targets_link, open_style_link
 from deepagents_code.tui.widgets.loading import Spinner
 
 logger = logging.getLogger(__name__)
@@ -335,6 +336,38 @@ class ModelLabel(Widget):
         return self._clickable_content(ellipsis[:width])
 
 
+class PullRequestLabel(Static):
+    """A clickable link to the open pull request for the current branch."""
+
+    number: reactive[int | None] = reactive(None)
+    url: reactive[str] = reactive("")
+
+    def render(self) -> RenderResult:
+        """Render the pull request number as a terminal hyperlink.
+
+        Returns:
+            Linked pull request text, or an empty string when unset.
+        """
+        if self.number is None or not self.url:
+            return ""
+        return Content.styled(
+            f"PR #{self.number}",
+            Style(link=self.url, underline=True),
+        )
+
+    def on_click(self, event: events.Click) -> None:  # noqa: PLR6301
+        """Open the linked pull request in the default browser."""
+        open_style_link(event)
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        """Show a pointer while hovering the link."""
+        self.styles.pointer = "pointer" if event_targets_link(event) else "default"
+
+    def on_leave(self) -> None:
+        """Restore the default pointer after leaving the label."""
+        self.styles.pointer = "default"
+
+
 class BranchLabel(Widget):
     """A label that displays the git branch with glyph-aware truncation.
 
@@ -521,6 +554,12 @@ class StatusBar(Vertical):
         color: $warning;
     }
 
+    StatusBar .status-pr {
+        width: auto;
+        padding: 0 1 0 0;
+        color: $primary;
+    }
+
     StatusBar .status-cwd {
         width: auto;
         max-width: 45%;
@@ -584,6 +623,8 @@ class StatusBar(Vertical):
     approval_mode: reactive[str] = reactive(default="manual", init=False)
     cwd: reactive[str] = reactive("", init=False)
     branch: reactive[str] = reactive("", init=False)
+    pull_request_number: reactive[int | None] = reactive(None, init=False)
+    pull_request_url: reactive[str] = reactive("", init=False)
     tokens: reactive[int] = reactive(0, init=False)
     cost_usd: reactive[float] = reactive(0.0, init=False)
     rubric_label: reactive[str] = reactive("", init=False)
@@ -625,6 +666,7 @@ class StatusBar(Vertical):
                 classes="status-auto-approve manual",
                 id="auto-approve-indicator",
             )
+            yield PullRequestLabel(classes="status-pr", id="pull-request-display")
             yield Static("", classes="status-cwd", id="cwd-display")
             yield BranchLabel(classes="status-branch", id="branch-display")
             yield Static("", classes="status-rubric", id="rubric-display")
@@ -674,8 +716,8 @@ class StatusBar(Vertical):
         self.set_context_limit(runtime_state.model_context_limit)
         with suppress(NoMatches):
             self.query_one("#rubric-display", Static).display = False
-        # Reactives are `init=False`, so the connection watcher never fires on
-        # mount; render once to hide the empty indicator (and its padding).
+        # Reactives are `init=False`, so these watchers never fire on mount.
+        self.watch_pull_request_number(self.pull_request_number)
         self._render_connection()
         self.watch_status_message(self.status_message)
         self._refresh_metrics()
@@ -727,6 +769,27 @@ class StatusBar(Vertical):
         except NoMatches:
             return
         display.branch = new_value
+
+    def watch_pull_request_number(self, new_value: int | None) -> None:
+        """Update pull request visibility and identity."""
+        try:
+            display = self.query_one("#pull-request-display", PullRequestLabel)
+        except NoMatches:
+            return
+        display.number = new_value
+        display.url = self.pull_request_url
+        display.display = new_value is not None and bool(self.pull_request_url)
+
+    def set_pull_request(self, number: int | None, url: str = "") -> None:
+        """Show or clear the pull request link.
+
+        Args:
+            number: Pull request number, or `None` to clear the link.
+            url: Canonical pull request URL.
+        """
+        self.pull_request_url = url
+        self.pull_request_number = number
+        self.watch_pull_request_number(number)
 
     def watch_status_message(self, new_value: str) -> None:
         """Update status message display."""

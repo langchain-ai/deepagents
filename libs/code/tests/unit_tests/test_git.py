@@ -1,5 +1,6 @@
 """Unit tests for the deepagents_code._git module."""
 
+import asyncio
 import subprocess
 from collections.abc import Iterator
 from pathlib import Path
@@ -8,12 +9,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from deepagents_code._git import (
+    PullRequestMetadata,
     _git_dir_cache,
     _parse_git_dir_pointer,
+    _parse_github_pull_request,
     find_git_common_dir,
     parse_repository_metadata,
     read_git_branch_from_filesystem,
     read_git_remote_url_from_filesystem,
+    read_github_pull_request,
 )
 
 _FULL_SHA = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
@@ -246,6 +250,63 @@ class TestReadGitBranchFromFilesystem:
 
         mock_read.side_effect = OSError("Permission denied")
         assert read_git_branch_from_filesystem(tmp_path) is None
+
+
+class TestParseGitHubPullRequest:
+    def test_accepts_canonical_pull_request(self) -> None:
+        raw = b'{"number":3328,"url":"https://github.com/acme/repo/pull/3328"}'
+
+        assert _parse_github_pull_request(raw) == PullRequestMetadata(
+            3328,
+            "https://github.com/acme/repo/pull/3328",
+        )
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            b"not json",
+            b'{"number":true,"url":"https://github.com/acme/repo/pull/1"}',
+            b'{"number":1,"url":"https://example.com/acme/repo/pull/1"}',
+            b'{"number":1,"url":"https://github.com/acme/repo/pull/2"}',
+            b'{"number":1,"url":"https://user@github.com/acme/repo/pull/1"}',
+            b'{"number":1,"url":"https://github.com/acme/repo/pull/1?x=1"}',
+        ],
+    )
+    def test_rejects_invalid_output(self, raw: bytes) -> None:
+        assert _parse_github_pull_request(raw) is None
+
+
+class TestReadGitHubPullRequest:
+    async def test_invokes_gh_with_fixed_arguments(self, tmp_path: Path) -> None:
+        class Stdout:
+            async def read(self, limit: int) -> bytes:
+                assert limit == 4097
+                return b'{"number":9,"url":"https://github.com/acme/repo/pull/9"}'
+
+        class Process:
+            stdout = Stdout()
+            returncode = 0
+
+            async def wait(self) -> int:
+                return 0
+
+        with patch(
+            "deepagents_code._git.asyncio.create_subprocess_exec",
+            return_value=Process(),
+        ) as create_process:
+            result = await read_github_pull_request(tmp_path)
+
+        assert result == PullRequestMetadata(9, "https://github.com/acme/repo/pull/9")
+        create_process.assert_awaited_once_with(
+            "gh",
+            "pr",
+            "view",
+            "--json",
+            "number,url",
+            cwd=tmp_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
 
 
 class TestReadGitRemoteUrlFromFilesystem:

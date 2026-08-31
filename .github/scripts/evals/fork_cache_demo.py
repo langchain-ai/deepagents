@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import os
 import re
 import subprocess
 import time
@@ -31,6 +32,7 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
+from langchain_anthropic import ChatAnthropic
 from langchain_core.callbacks.base import BaseCallbackHandler
 from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
@@ -271,6 +273,17 @@ def make_tools(repo_root_dir: Path, allowed_prefix: Path, diff_text: str):
 
 def build_agent(model: str, tools: list):
     # No subagents= override: fork/handoff comes from the deepagents checkout, not this script.
+    custom_header = os.environ.get("ANTHROPIC_CUSTOM_HEADERS")
+    if custom_header and model.startswith("anthropic:"):
+        # Gateway auth: ChatAnthropic.default_headers has no env-var binding of its
+        # own (unlike base_url, which already reads ANTHROPIC_BASE_URL directly), so
+        # a header-based key has to go through the constructor.
+        header_name, _, header_value = custom_header.partition(":")
+        chat_model = ChatAnthropic(
+            model=model.split(":", 1)[1],
+            default_headers={header_name.strip(): header_value.strip()},
+        )
+        return create_deep_agent(model=chat_model, tools=list(tools))
     return create_deep_agent(model=model, tools=list(tools))
 
 

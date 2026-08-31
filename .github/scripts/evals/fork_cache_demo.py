@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import ast
 import json
+import re
 import subprocess
 import time
 from collections import defaultdict
@@ -37,6 +38,13 @@ from langchain_core.tools import tool
 from deepagents import create_deep_agent
 
 DEFAULT_LENSES = ["correctness", "backcompat", "tests", "performance", "api_design"]
+
+
+def pr_number_type(value: str) -> str:
+    if not re.fullmatch(r"[0-9]+", value):
+        msg = f"pr_number must be numeric, got {value!r}"
+        raise argparse.ArgumentTypeError(msg)
+    return value
 
 
 def repo_root() -> Path:
@@ -269,7 +277,9 @@ def build_agent(model: str, tools: list):
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", required=True, help="owner/repo, e.g. langchain-ai/deepagents")
-    parser.add_argument("--pr", required=True, help="PR number to use as the diff substrate")
+    parser.add_argument(
+        "--pr", required=True, type=pr_number_type, help="PR number to use as the diff substrate"
+    )
     parser.add_argument(
         "--branch-tag",
         default="unknown",

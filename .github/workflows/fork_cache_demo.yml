@@ -88,15 +88,20 @@ jobs:
         env:
           FORK_REF: ${{ inputs.fork_ref }}
           HANDOFF_REF: ${{ inputs.handoff_ref }}
+          PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           python3 - <<'PY'
           import json
           import os
+          import re
 
           fork_ref = os.environ["FORK_REF"].strip()
           handoff_ref = os.environ["HANDOFF_REF"].strip()
+          pr_number = os.environ["PR_NUMBER"].strip()
           if not fork_ref:
               raise SystemExit("::error::fork_ref is required")
+          if not re.fullmatch(r"[0-9]+", pr_number):
+              raise SystemExit(f"::error::pr_number must be numeric, got {pr_number!r}")
 
           legs = [{"tag": "fork", "ref": fork_ref}]
           if handoff_ref:

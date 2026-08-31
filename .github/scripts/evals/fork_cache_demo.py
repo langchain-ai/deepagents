@@ -237,7 +237,7 @@ class MetricsHandler(BaseCallbackHandler):
             print(f"  {lens}: {len(desc)} chars -- {desc!r}")
 
 
-def make_tools(allowed_prefix: Path, diff_text: str):
+def make_tools(repo_root_dir: Path, allowed_prefix: Path, diff_text: str):
     @tool
     def get_pr_diff() -> str:
         """Return the full diff for the pull request under review."""
@@ -248,8 +248,8 @@ def make_tools(allowed_prefix: Path, diff_text: str):
         """Read a file from the repo. `path` must be relative to the repo
         root and stay under the allowed prefix.
         """
-        resolved = (allowed_prefix.parent / path).resolve()
-        if not str(resolved).startswith(str(allowed_prefix)):
+        resolved = (repo_root_dir / path).resolve()
+        if resolved != allowed_prefix and not resolved.is_relative_to(allowed_prefix):
             return f"Error: access denied for path outside {allowed_prefix.name}/: {path}"
         if not resolved.is_file():
             return f"Error: file not found: {path}"
@@ -292,7 +292,8 @@ def main() -> None:
     args = parser.parse_args()
 
     lenses = [lens.strip() for lens in args.lenses.split(",") if lens.strip()]
-    allowed_prefix = (repo_root() / args.allowed_prefix).resolve()
+    root = repo_root()
+    allowed_prefix = (root / args.allowed_prefix).resolve()
 
     print(f"Fetching PR #{args.pr} from {args.repo}...", flush=True)
     diff_text = fetch_pr_diff(args.repo, args.pr)
@@ -301,7 +302,7 @@ def main() -> None:
         args.repo, args.pr, meta.get("title", ""), meta.get("body", ""), lenses
     )
 
-    tools = make_tools(allowed_prefix, diff_text)
+    tools = make_tools(root, allowed_prefix, diff_text)
     handler = MetricsHandler(lenses)
     agent = build_agent(args.model, tools)
 

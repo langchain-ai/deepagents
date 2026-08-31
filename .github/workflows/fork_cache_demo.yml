@@ -127,11 +127,16 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "📋 Overlay libs/ from ${{ matrix.ref }}"
+        # Dispatch inputs must reach the shell via env:, never interpolated directly into
+        # run: -- GitHub substitutes ${{ }} before Bash parses the script, so an input
+        # containing shell metacharacters would execute rather than being treated as data.
+        env:
+          REF: ${{ matrix.ref }}
         run: |
-          git fetch --depth=1 origin "${{ matrix.ref }}"
+          git fetch --depth=1 origin "$REF"
           rm -rf libs
           git checkout FETCH_HEAD -- libs
-          echo "Overlaid libs/ from ${{ matrix.ref }} ($(git rev-parse FETCH_HEAD))"
+          echo "Overlaid libs/ from $REF ($(git rev-parse FETCH_HEAD))"
 
       - name: "🐍 Set up Python + UV"
         uses: "./.github/actions/uv_setup"
@@ -148,6 +153,13 @@ jobs:
         working-directory: libs/evals
         env:
           GH_TOKEN: ${{ github.token }}
+          # Dispatch inputs go through env: too -- same script-injection reasoning as the
+          # overlay step above, and this step's env already carries live secrets.
+          REPO: ${{ inputs.repo }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          BRANCH_TAG: ${{ matrix.tag }}
+          LENSES: ${{ inputs.lenses }}
+          ALLOWED_PATH_PREFIX: ${{ inputs.allowed_path_prefix }}
           # Same provider-key gating as _harbor_run.yml, keyed off inputs.model's prefix.
           ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(inputs.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
@@ -162,13 +174,13 @@ jobs:
           XAI_API_KEY: ${{ startsWith(inputs.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           uv run python ../../.github/scripts/evals/fork_cache_demo.py \
-            --repo "${{ inputs.repo }}" \
-            --pr "${{ inputs.pr_number }}" \
-            --branch-tag "${{ matrix.tag }}" \
+            --repo "$REPO" \
+            --pr "$PR_NUMBER" \
+            --branch-tag "$BRANCH_TAG" \
             --model "$MODEL" \
-            --lenses "${{ inputs.lenses }}" \
-            --allowed-prefix "${{ inputs.allowed_path_prefix }}" \
-            --out-json "../../_fork_cache_demo/${{ matrix.tag }}.json"
+            --lenses "$LENSES" \
+            --allowed-prefix "$ALLOWED_PATH_PREFIX" \
+            --out-json "../../_fork_cache_demo/$BRANCH_TAG.json"
 
       - name: "📤 Upload metrics"
         if: ${{ always() && hashFiles(format('_fork_cache_demo/{0}.json', matrix.tag)) != '' }}

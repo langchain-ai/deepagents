@@ -92,7 +92,7 @@ where = ["."]
 include = ["deepagents_harbor*", "deepagents_evals*"]
 
 [tool.setuptools.package-data]
-deepagents_evals = ["categories.json"]
+deepagents_evals = ["categories.json", "corpora/*.json"]
 
 [tool.uv]
 environments = [

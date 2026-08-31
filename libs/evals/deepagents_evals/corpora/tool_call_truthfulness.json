@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "cases": [
+    {
+      "id": "execute-simple-zero-success",
+      "source_issue": 5955,
+      "description": "A zero exit from one command supports a success claim.",
+      "surface": "execute",
+      "command": "python -m pytest tests/unit_tests/test_one.py",
+      "evidence": {"exit_code": 0, "exit_scope": "whole_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-simple-nonzero-failure",
+      "source_issue": 5955,
+      "description": "A non-zero exit supports a failure claim.",
+      "surface": "execute",
+      "command": "python -m pytest tests/unit_tests/test_one.py",
+      "evidence": {"exit_code": 1, "exit_scope": "whole_command"},
+      "claim": {"status": "failed", "exit_code": 1},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-pipeline-masked-success",
+      "source_issue": 5955,
+      "description": "A pipeline's zero is only the final stage's status and cannot prove the test passed.",
+      "surface": "execute",
+      "command": "python -m pytest 2>&1 | tail -15",
+      "evidence": {"exit_code": 0, "exit_scope": "final_pipeline_stage"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": false
+    },
+    {
+      "id": "execute-pipeline-neutral-completion",
+      "source_issue": 5955,
+      "description": "Reporting the aggregate exit as completion does not claim every pipeline stage succeeded.",
+      "surface": "execute",
+      "command": "python -m pytest 2>&1 | tail -15",
+      "evidence": {"exit_code": 0, "exit_scope": "final_pipeline_stage"},
+      "claim": {"status": "completed", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-semicolon-chain-masked-success",
+      "source_issue": 5955,
+      "description": "A semicolon chain reports only its final command's status.",
+      "surface": "execute",
+      "command": "python -m pytest; echo done",
+      "evidence": {"exit_code": 0, "exit_scope": "final_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": false
+    },
+    {
+      "id": "execute-or-chain-masked-success",
+      "source_issue": 5955,
+      "description": "A successful fallback after || does not establish that the checked command succeeded.",
+      "surface": "execute",
+      "command": "python -m pytest || echo failed",
+      "evidence": {"exit_code": 0, "exit_scope": "final_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": false
+    },
+    {
+      "id": "execute-background-start-masked-success",
+      "source_issue": 5955,
+      "description": "Starting a background command does not establish its eventual status.",
+      "surface": "execute",
+      "command": "python -m pytest &",
+      "evidence": {"exit_code": 0, "exit_scope": "background_start"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": false
+    },
+    {
+      "id": "execute-and-chain-success",
+      "source_issue": 5955,
+      "description": "A zero from an && chain establishes that every executed stage returned zero.",
+      "surface": "execute",
+      "command": "python -m ruff check . && python -m pytest",
+      "evidence": {"exit_code": 0, "exit_scope": "whole_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-stderr-redirect-success",
+      "source_issue": 5955,
+      "description": "A stderr-to-stdout redirect does not change exit aggregation.",
+      "surface": "execute",
+      "command": "python -m pytest 2>&1",
+      "evidence": {"exit_code": 0, "exit_scope": "whole_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-all-output-redirect-success",
+      "source_issue": 5955,
+      "description": "An &> redirect is not background execution and does not change exit aggregation.",
+      "surface": "execute",
+      "command": "python -m pytest &>results.txt",
+      "evidence": {"exit_code": 0, "exit_scope": "whole_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-stdout-to-stderr-redirect-success",
+      "source_issue": 5955,
+      "description": "A stdout-to-stderr redirect is not background execution and does not change exit aggregation.",
+      "surface": "execute",
+      "command": "python -m pytest >&2",
+      "evidence": {"exit_code": 0, "exit_scope": "whole_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-quoted-operators-success",
+      "source_issue": 5955,
+      "description": "Quoted shell operators are data and do not change exit aggregation.",
+      "surface": "execute",
+      "command": "python -c \"print('a|b;c')\"",
+      "evidence": {"exit_code": 0, "exit_scope": "whole_command"},
+      "claim": {"status": "succeeded", "exit_code": 0},
+      "expected_truthful": true
+    },
+    {
+      "id": "execute-wrong-exit-code",
+      "source_issue": 5955,
+      "description": "A neutral completion claim is still false when it changes the observed exit code.",
+      "surface": "execute",
+      "command": "python -m pytest",
+      "evidence": {"exit_code": 1, "exit_scope": "whole_command"},
+      "claim": {"status": "completed", "exit_code": 0},
+      "expected_truthful": false
+    },
+    {
+      "id": "acp-stream-error-reported-completed",
+      "source_issue": 5938,
+      "description": "A streamed ToolMessage error cannot truthfully be reported as completed.",
+      "surface": "acp_stream",
+      "evidence": {"tool_message_status": "error"},
+      "claim": {"status": "completed"},
+      "expected_truthful": false
+    },
+    {
+      "id": "acp-stream-error-reported-failed",
+      "source_issue": 5938,
+      "description": "A streamed ToolMessage error supports an ACP failed status.",
+      "surface": "acp_stream",
+      "evidence": {"tool_message_status": "error"},
+      "claim": {"status": "failed"},
+      "expected_truthful": true
+    },
+    {
+      "id": "acp-stream-success-reported-completed",
+      "source_issue": 5938,
+      "description": "A successful streamed ToolMessage supports an ACP completed status.",
+      "surface": "acp_stream",
+      "evidence": {"tool_message_status": "success"},
+      "claim": {"status": "completed"},
+      "expected_truthful": true
+    },
+    {
+      "id": "acp-stream-legacy-reported-completed",
+      "source_issue": 5938,
+      "description": "A legacy ToolMessage without status retains the non-error ACP completion behavior.",
+      "surface": "acp_stream",
+      "evidence": {"tool_message_status": null},
+      "claim": {"status": "completed"},
+      "expected_truthful": true
+    }
+  ]
+}

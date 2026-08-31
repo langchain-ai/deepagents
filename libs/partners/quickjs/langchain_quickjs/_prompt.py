@@ -31,8 +31,8 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{side_effects_line}\n"
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result.\n"
-    "- `display(value)` explicitly forwards text or image content blocks to the "
-    "model; ordinary objects remain JavaScript data."
+    "- `display(value)` explicitly forwards native content blocks to the model; "
+    "ordinary objects remain JavaScript data."
 )
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
 
@@ -139,14 +139,6 @@ A subagent receives only its `description` and configured tools. It does not
 receive this conversation or the parent user's prompt. Pass required small data
 explicitly; pass filesystem paths for data the child can read. Do not delegate
 when the essential data exists only in the parent prompt.
-
-#### Repository task loop
-
-For coding tasks, inspect the relevant tests and symbols first. Make the smallest
-correct change, run the targeted tests, read the complete failure output, and
-iterate until the tests pass. Do not claim completion from compilation alone.
-Before finishing, verify the requested file or artifact exists and contains the
-required result.
 
 #### Return results via the last expression, not `console.log`
 
@@ -421,9 +413,8 @@ def render_node_compat_prompt(  # noqa: C901  # simple map of adapter tools to p
         sections.extend(
             [
                 "",
-                "For image results, call `display(await tools.readFile({ ... }))` "
-                "to send the native image to the model. Do not stringify the "
-                "image or use unavailable image libraries in the REPL.",
+                "Use `display(value)` to forward native content blocks to the model; "
+                "keep ordinary tool results as JS data.",
             ]
         )
     if "execute" in names:

@@ -111,9 +111,13 @@ class MetricsHandler(BaseCallbackHandler):
         self._lenses = lenses
         self._task_seq = 0
 
-        self._parent_of: dict[str, str | None] = {}
+        # Timing-based, not run-id-based: subagent.invoke() starts a genuinely
+        # separate run tree, so a child's parent_run_id does not chain back to
+        # the task call that spawned it. Execution is synchronous and one lens
+        # at a time, so "current lens" is just what's on top of this stack.
+        self._active_stack: list[str] = []
+        self._task_run_lens: dict[str, str] = {}
         self._run_label: dict[str, str] = {}
-        self._task_run_label: dict[str, str] = {}
         self._run_start: dict[str, float] = {}
 
         self.per_agent: dict[str, dict[str, Any]] = defaultdict(
@@ -129,16 +133,8 @@ class MetricsHandler(BaseCallbackHandler):
         )
         self.directives: dict[str, str] = {}
 
-    def _label_for(self, run_id: Any, parent_run_id: Any) -> str:
-        rid = str(run_id)
-        pid = str(parent_run_id) if parent_run_id is not None else None
-        self._parent_of[rid] = pid
-        cursor = pid
-        while cursor is not None:
-            if cursor in self._task_run_label:
-                return self._task_run_label[cursor]
-            cursor = self._parent_of.get(cursor)
-        return "main"
+    def _current_label(self) -> str:
+        return self._active_stack[-1] if self._active_stack else "main"
 
     def on_chat_model_start(
         self,
@@ -151,7 +147,7 @@ class MetricsHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        label = self._label_for(run_id, parent_run_id)
+        label = self._current_label()
         self._run_label[str(run_id)] = label
         self._run_start[str(run_id)] = time.monotonic()
 
@@ -200,8 +196,9 @@ class MetricsHandler(BaseCallbackHandler):
         metadata: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> None:
-        label = self._label_for(run_id, parent_run_id)
-        self.per_agent[label]["tool_calls"] += 1
+        # Attribute the delegation call itself to whoever is making it (the
+        # parent, or a fork mid-delegation-refusal attempt), before pushing.
+        self.per_agent[self._current_label()]["tool_calls"] += 1
 
         if serialized.get("name") != "task":
             return
@@ -221,8 +218,22 @@ class MetricsHandler(BaseCallbackHandler):
             else f"unexpected-lens-{self._task_seq}"
         )
         self._task_seq += 1
-        self._task_run_label[str(run_id)] = lens
+        self._task_run_lens[str(run_id)] = lens
+        self._active_stack.append(lens)
         self.directives[lens] = parsed.get("description", "")
+
+    def on_tool_end(
+        self,
+        output: Any,
+        *,
+        run_id: Any,
+        parent_run_id: Any = None,
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        lens = self._task_run_lens.pop(str(run_id), None)
+        if lens is not None and self._active_stack and self._active_stack[-1] == lens:
+            self._active_stack.pop()
 
     def as_json(self) -> dict[str, Any]:
         return {"per_agent": self.per_agent, "directives": self.directives}

@@ -33,7 +33,14 @@ from langchain_quickjs._format import (
     format_outcome,
     format_outcome_content,
 )
-from langchain_quickjs._repl import _clear_exception_references, _Registry, _ThreadREPL
+from langchain_quickjs._repl import (
+    _clear_exception_references,
+    _extract_js_location,
+    _PTCState,
+    _Registry,
+    _TaskCallBudgetExceededError,
+    _ThreadREPL,
+)
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
     _runtime_with_response_format,
@@ -150,6 +157,11 @@ def test_legacy_system_prompt_alias_removed() -> None:
 def test_rejects_invalid_max_ptc_calls() -> None:
     with pytest.raises(ValueError, match="must be >= 1 or None"):
         CodeInterpreterMiddleware(max_ptc_calls=0)
+
+
+def test_rejects_invalid_max_task_calls() -> None:
+    with pytest.raises(ValueError, match="must be >= 1 or None"):
+        CodeInterpreterMiddleware(max_task_calls=0)
 
 
 def test_rejects_invalid_max_snapshot_bytes() -> None:
@@ -396,6 +408,41 @@ def test_state_persists_across_evals(repl: _ThreadREPL) -> None:
     assert second.result == "42"
 
 
+def test_session_state_persists_without_lexical_redeclaration(
+    repl: _ThreadREPL,
+) -> None:
+    first = repl.eval_sync("session.count = 40; session")
+    assert first.error_type is None
+    second = repl.eval_sync("session.count += 2; session.count")
+    assert second.error_type is None
+    assert second.result == "42"
+
+
+def test_call_tool_returns_uniform_success_result(repl: _ThreadREPL) -> None:
+    def greet(name: str) -> str:
+        return f"hello {name}"
+
+    repl.install_tools(
+        [StructuredTool.from_function(name="greet", description="Greet.", func=greet)]
+    )
+    outcome = repl.eval_sync("callTool('greet', {name: 'Ada'})")
+
+    assert outcome.error_type is None
+    assert outcome.result == '{ok: true, value: "hello Ada"}'
+
+
+def test_task_call_budget_is_enforced() -> None:
+    state = _PTCState(remaining_calls=None, remaining_task_calls=1)
+    state = state.consume_task_call_budget(max_task_calls=1)
+    with pytest.raises(_TaskCallBudgetExceededError, match="limit=1"):
+        state.consume_task_call_budget(max_task_calls=1)
+
+
+def test_js_error_location_is_extracted() -> None:
+    assert _extract_js_location("SyntaxError at <eval>:12:7") == (12, 7)
+    assert _extract_js_location(None) is None
+
+
 def test_threads_are_isolated(worker: ThreadWorker, runtime: Runtime) -> None:
     a = _ThreadREPL(
         worker,
@@ -495,6 +542,19 @@ def test_ptc_execute_result_preserves_exit_code() -> None:
     }
 
 
+def test_ptc_error_result_preserves_error_status() -> None:
+    message = ToolMessage(
+        content="invalid input",
+        status="error",
+        tool_call_id="call-1",
+    )
+
+    assert coerce_tool_output_for_ptc(message) == {
+        "ok": False,
+        "error": "invalid input",
+    }
+
+
 # ---------------------------------------------------------------------------
 # Error formatting
 # ---------------------------------------------------------------------------
@@ -512,6 +572,7 @@ def test_runtime_throw_becomes_error_block(repl: _ThreadREPL) -> None:
 def test_syntax_error_surfaces(repl: _ThreadREPL) -> None:
     outcome = repl.eval_sync("1 +")
     assert outcome.error_type == "SyntaxError"
+    assert "Check JavaScript quotes" in outcome.error_message
 
 
 def test_timeout(worker: ThreadWorker, runtime: Runtime) -> None:
@@ -1501,6 +1562,7 @@ async def test_async_task_global_limits_concurrency_per_repl(
             return description
 
     runner = _CountingRunner()
+    repl._max_task_calls = 64
 
     async def _counting_async(state: dict[str, Any], config: Any) -> dict[str, Any]:
         del config

@@ -11,6 +11,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import re
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
@@ -58,6 +59,7 @@ logger = logging.getLogger(__name__)
 _MAX_TASK_CALLS_PER_THREAD = 32
 _MAX_SUBAGENT_DEPTH = 1
 _TASK_FUNCTION_NAME = "task"
+_JS_LOCATION = re.compile(r"(?:<eval>|eval):(?P<line>\d+):(?P<column>\d+)")
 
 
 def _clear_exception_references(exc: BaseException) -> None:
@@ -112,6 +114,22 @@ class _PTCCallBudgetExceededError(RuntimeError):
         )
 
 
+class _TaskCallBudgetExceededError(RuntimeError):
+    """Raised when one eval exceeds its configured task dispatch budget."""
+
+    def __init__(self, *, limit: int, attempted: int) -> None:
+        self.limit = limit
+        self.attempted = attempted
+        msg = f"Task dispatch budget exceeded (limit={limit}, attempted={attempted})"
+        super().__init__(msg)
+
+    def render_message(self) -> str:
+        return (
+            "Task dispatch budget exceeded "
+            f"(limit={self.limit}, attempted={self.attempted})"
+        )
+
+
 class _TaskBridgeError(RuntimeError):
     """Wrap errors from the top-level `task()` host function."""
 
@@ -136,6 +154,7 @@ class _PTCState:
     """Per-eval PTC state (reset on each eval call)."""
 
     remaining_calls: int | None
+    remaining_task_calls: int | None
     outer_runtime: ToolRuntime | None = None
     outer_loop: asyncio.AbstractEventLoop | None = None
     subagent_depth: int = 0
@@ -154,6 +173,21 @@ class _PTCState:
             limit=normalized_limit,
             attempted=normalized_limit + 1,
             function_name=function_name,
+        )
+
+    def consume_task_call_budget(self, *, max_task_calls: int | None) -> _PTCState:
+        """Count one task dispatch and enforce the configured budget."""
+        if self.remaining_task_calls is None:
+            return self
+        if self.remaining_task_calls > 0:
+            return replace(
+                self,
+                remaining_task_calls=self.remaining_task_calls - 1,
+            )
+        normalized_limit = max_task_calls if max_task_calls is not None else 0
+        raise _TaskCallBudgetExceededError(
+            limit=normalized_limit,
+            attempted=normalized_limit + 1,
         )
 
 
@@ -236,6 +270,16 @@ def _normalize_display_content(value: Any) -> list[dict[str, Any]]:
             raise ValueError(msg)
         blocks.append(entry)
     return blocks
+
+
+def _extract_js_location(stack: str | None) -> tuple[int, int] | None:
+    """Extract a source location from a QuickJS stack when one is available."""
+    if stack is None:
+        return None
+    match = _JS_LOCATION.search(stack)
+    if match is None:
+        return None
+    return int(match["line"]), int(match["column"])
 
 
 def _strip_undefined(value: Any) -> Any:
@@ -507,8 +551,12 @@ class _ThreadREPL:
         capture_console: bool,
         max_stdout_chars: int,
         max_ptc_calls: int | None = 256,
+        max_task_calls: int | None = 8,
         subagents_enabled: bool = True,
     ) -> None:
+        if max_task_calls is not None and max_task_calls < 1:
+            msg = "max_task_calls must be >= 1 or None"
+            raise ValueError(msg)
         self._worker = worker
         self._runtime = runtime
         # The Context-level `timeout` is used as the cumulative budget
@@ -519,6 +567,7 @@ class _ThreadREPL:
         self._capture_console = capture_console
         # Static budget config; mutable counters live in `_ptc_state`.
         self._max_ptc_calls = max_ptc_calls
+        self._max_task_calls = max_task_calls
         self._subagents_enabled = subagents_enabled
         self._console = _ConsoleBuffer(max_stdout_chars)
         self._displayed_content: list[dict[str, Any]] | None = None
@@ -553,6 +602,8 @@ class _ThreadREPL:
     async def _ainit(self) -> None:
         self._eval_lock = asyncio.Lock()
         self._ctx = self._runtime.new_context(timeout=self._per_call_timeout)
+        self._install_session()
+        self._install_call_tool()
         self._install_display()
         if self._capture_console:
             self._install_console()
@@ -566,6 +617,39 @@ class _ThreadREPL:
             msg = "QuickJS context is closed"
             raise RuntimeError(msg)
         return self._ctx
+
+    def _install_session(self) -> None:
+        ctx = self._require_ctx()
+        ctx.eval(
+            "globalThis.session = Object.create(null);"
+            "Object.defineProperty(globalThis, 'session', {"
+            " value: globalThis.session, writable: false, configurable: false"
+            "}); undefined"
+        )
+
+    def _install_call_tool(self) -> None:
+        ctx = self._require_ctx()
+        ctx.eval(
+            "globalThis.callTool = async (name, input) => {"
+            " const namespace = globalThis.tools;"
+            " const fn = namespace && Object.prototype.hasOwnProperty.call("
+            "namespace, name) ? namespace[name] : undefined;"
+            " if (typeof fn !== 'function') return { ok: false, error:"
+            " 'Unknown host tool: ' + String(name) };"
+            " try {"
+            "   const value = await fn(input);"
+            "   if (value && typeof value === 'object' && "
+            "typeof value.ok === 'boolean')"
+            "     return value;"
+            "   return { ok: true, value };"
+            " } catch (error) {"
+            "   return { ok: false, error: String(error) };"
+            " }"
+            "}; Object.freeze(globalThis.callTool);"
+            "Object.defineProperty(globalThis, 'callTool', {"
+            " value: globalThis.callTool, writable: false, configurable: false"
+            "}); undefined"
+        )
 
     def _install_display(self) -> None:
         ctx = self._require_ctx()
@@ -770,6 +854,13 @@ class _ThreadREPL:
                 msg = "task call limiter not initialized"
                 raise RuntimeError(msg)
 
+            current_state = self._ptc_state
+            if current_state is None:
+                msg = "task bridge called outside active eval"
+                raise ConcurrentEvalError(msg)
+            self._ptc_state = current_state.consume_task_call_budget(
+                max_task_calls=self._max_task_calls
+            )
             payload = _normalize_tool_input(raw_input)
             async with task_calls:
                 try:
@@ -989,6 +1080,7 @@ class _ThreadREPL:
         prev_ptc_state = self._ptc_state
         self._ptc_state = _PTCState(
             remaining_calls=self._max_ptc_calls,
+            remaining_task_calls=self._max_task_calls,
             outer_runtime=outer_runtime,
             outer_loop=outer_loop,
             subagent_depth=_subagent_depth(outer_runtime),
@@ -1027,6 +1119,10 @@ class _ThreadREPL:
             # Surface it as a distinct, model-recoverable error so the
             # agent can shorten its script rather than crash.
             outcome.error_type = "PTCCallBudgetExceeded"
+            outcome.error_message = e.render_message()
+            _clear_exception_references(e)
+        except _TaskCallBudgetExceededError as e:
+            outcome.error_type = "TaskCallBudgetExceeded"
             outcome.error_message = e.render_message()
             _clear_exception_references(e)
         except QJSTimeoutError as e:
@@ -1072,6 +1168,15 @@ class _ThreadREPL:
     def _record_js_error(self, outcome: EvalOutcome, e: JSError) -> None:
         outcome.error_type = e.name
         outcome.error_message = e.message
+        location = _extract_js_location(e.stack)
+        if location is not None:
+            line, column = location
+            outcome.error_message = f"{e.message} (line {line}, column {column})"
+        if e.name == "SyntaxError":
+            outcome.error_message += (
+                " Check JavaScript quotes, braces, and template literals; "
+                "use String.raw for multiline source."
+            )
         outcome.error_stack = e.stack
 
     def close(self) -> None:
@@ -1113,6 +1218,7 @@ class _Registry:
     capture_console: bool
     max_stdout_chars: int
     max_ptc_calls: int | None = 256
+    max_task_calls: int | None = 8
     subagents_enabled: bool = True
     _slots: dict[str, _Slot] = field(default_factory=dict)
     _lock: threading.Lock = field(default_factory=threading.Lock)
@@ -1161,6 +1267,7 @@ class _Registry:
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
+            max_task_calls=self.max_task_calls,
             subagents_enabled=self.subagents_enabled,
         )
 
@@ -1184,6 +1291,7 @@ class _Registry:
             capture_console=self.capture_console,
             max_stdout_chars=self.max_stdout_chars,
             max_ptc_calls=self.max_ptc_calls,
+            max_task_calls=self.max_task_calls,
             subagents_enabled=self.subagents_enabled,
         )
         return _Slot(worker=worker, runtime=runtime, repl=repl)

@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 _DEFAULT_MEMORY_LIMIT = 64 * 1024 * 1024
 _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
+_DEFAULT_MAX_TASK_CALLS = 8
 _DEFAULT_MAX_RESULT_CHARS = 30_000
 _DEFAULT_TOOL_NAME = "eval"
 
@@ -182,7 +183,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         max_result_chars: Result and stdout blocks are independently
             truncated to this many characters before being sent back to
             the model. Console buffering is also bounded to this value
-            during collection. Default 4000.
+            during collection. Default 30000.
+        max_task_calls: Maximum number of top-level `task(...)` dispatches
+            allowed inside one eval call. `None` disables this budget.
         capture_console: If `True`, install a `console` object that
             buffers `console.log/warn/error` calls and emits them in
             `<stdout>` blocks alongside the result. Default `True`.
@@ -198,7 +201,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 approval middleware inside subagent specs, or set
                 `subagents=False` if per-dispatch parent approval is required.
         ptc: Programmatic tool calling — expose agent tools inside the
-            REPL as `tools.<camelCase>(input) => Promise<string>`. One
+            REPL as `tools.<camelCase>(input) => Promise<unknown>`. One
             `eval` call can then orchestrate many tool calls (loops,
             `Promise.all`, conditional branching). Accepts:
 
@@ -265,6 +268,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         memory_limit: int = _DEFAULT_MEMORY_LIMIT,
         timeout: float = _DEFAULT_TIMEOUT,
         max_ptc_calls: int | None = _DEFAULT_MAX_PTC_CALLS,
+        max_task_calls: int | None = _DEFAULT_MAX_TASK_CALLS,
         tool_name: str = _DEFAULT_TOOL_NAME,
         max_result_chars: int = _DEFAULT_MAX_RESULT_CHARS,
         capture_console: bool = True,
@@ -280,6 +284,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if max_ptc_calls is not None and max_ptc_calls < 1:
             msg = "`max_ptc_calls` must be >= 1 or None"
             raise ValueError(msg)
+        if max_task_calls is not None and max_task_calls < 1:
+            msg = "`max_task_calls` must be >= 1 or None"
+            raise ValueError(msg)
         if max_snapshot_bytes is not None and max_snapshot_bytes < 1:
             msg = "`max_snapshot_bytes` must be >= 1 or None"
             raise ValueError(msg)
@@ -289,6 +296,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._memory_limit = memory_limit
         self._timeout = timeout
         self._max_ptc_calls = max_ptc_calls
+        self._max_task_calls = max_task_calls
         self._tool_name = tool_name
         self._max_result_chars = max_result_chars
         self._capture_console = capture_console
@@ -310,6 +318,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             capture_console=capture_console,
             max_stdout_chars=max_result_chars,
             max_ptc_calls=max_ptc_calls,
+            max_task_calls=max_task_calls,
             subagents_enabled=subagents,
         )
         self._memory_limit_mb = memory_limit // (1024 * 1024)

@@ -5,6 +5,8 @@ An `eval` tool is available. It runs JavaScript in a fresh sandboxed REPL for ea
 - State (variables, functions) does not persist across tool calls. Each invocation starts from a blank environment.
 - Top-level `await` works; Promises resolve before the call returns.
 - Evaluations sharing this REPL are serialized. Put dependent work in one script and use `var` or an IIFE for temporary bindings that may repeat.
+- `session` is a persistent null-prototype object for structured state; store reusable values as `session.name`.
+- `callTool(name, input)` returns `{ ok, value }` or `{ ok: false, error }`; direct `tools.*` calls preserve native values.
 - Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock APIs (`fetch`, `require`, `process`, real `Date.now()` are unavailable or stubbed). The explicitly documented `tools.*` and `fs.promises` host APIs are available when exposed below.
 - The REPL has no access to host tools, files, or the network: it is pure computation. Return values to communicate results.
 - Timeout: 5.0s per call. Memory: 64 MB total.
@@ -80,10 +82,11 @@ scope (see "Reuse what earlier evals left in scope" below).
 #### Bounded delegation
 
 Prefer one direct script over delegation. Delegate only a bounded, independent
-analysis that benefits from another agent, and dispatch no more than four agents.
-Use sequential dispatches by default. Never delegate a routine read, edit, or
-command, and never delegate when the required data exists only in the parent
-user prompt.
+analysis that benefits from another agent, stay within the configured dispatch
+budget, and use sequential dispatches by default. Never delegate a routine read,
+edit, or command, and never delegate when the required data exists only in the parent
+user prompt. The bridge enforces a configured total dispatch budget and a
+concurrency cap; keep delegation bounded so the remaining eval can finish.
 
 ```javascript
 var result = await task({

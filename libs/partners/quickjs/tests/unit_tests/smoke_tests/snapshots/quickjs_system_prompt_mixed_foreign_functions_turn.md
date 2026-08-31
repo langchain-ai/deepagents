@@ -5,6 +5,8 @@ An `eval` tool is available. It runs JavaScript in a persistent REPL.
 - State (variables, functions) persists across tool calls within a single turn of conversation. They DO NOT persist across multiple turns.
 - Top-level `await` works; Promises resolve before the call returns.
 - Evaluations sharing this REPL are serialized. Put dependent work in one script and use `var` or an IIFE for temporary bindings that may repeat.
+- `session` is a persistent null-prototype object for structured state; store reusable values as `session.name`.
+- `callTool(name, input)` returns `{ ok, value }` or `{ ok: false, error }`; direct `tools.*` calls preserve native values.
 - Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock APIs (`fetch`, `require`, `process`, real `Date.now()` are unavailable or stubbed). The explicitly documented `tools.*` and `fs.promises` host APIs are available when exposed below.
 - External side effects from inside the REPL are only reachable via the `tools.*` namespace documented in the API reference below.
 - Timeout: 5.0s per call. Memory: 64 MB total.
@@ -80,10 +82,11 @@ scope (see "Reuse what earlier evals left in scope" below).
 #### Bounded delegation
 
 Prefer one direct script over delegation. Delegate only a bounded, independent
-analysis that benefits from another agent, and dispatch no more than four agents.
-Use sequential dispatches by default. Never delegate a routine read, edit, or
-command, and never delegate when the required data exists only in the parent
-user prompt.
+analysis that benefits from another agent, stay within the configured dispatch
+budget, and use sequential dispatches by default. Never delegate a routine read,
+edit, or command, and never delegate when the required data exists only in the parent
+user prompt. The bridge enforces a configured total dispatch budget and a
+concurrency cap; keep delegation bounded so the remaining eval can finish.
 
 ```javascript
 var result = await task({
@@ -163,6 +166,8 @@ The agent tools listed below are exposed on the global object at `globalThis.too
 
 Invocation pattern: `await tools.<name>({ ... })`.
 
+- `callTool(name, input)` returns `{ ok, value }` or `{ ok: false, error }` for uniform success/error handling; direct `tools.*` calls preserve their native return values.
+- Use `session.name` for values that must survive later eval calls.
 - Use `await` for every host-tool call. Use `Promise.all` only for independent read-only calls; perform writes and edits sequentially.
 - If the task needs multiple tool calls, prefer one `eval` invocation that performs the workflow rather than one call per tool — each additional `eval` call costs a model turn.
 - Keep intermediate results in JS and branch on them before calling the next tool. Do not make the model parse output that JS can inspect.

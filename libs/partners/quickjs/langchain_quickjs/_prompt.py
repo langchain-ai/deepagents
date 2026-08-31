@@ -24,6 +24,11 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "- Top-level `await` works; Promises resolve before the call returns.\n"
     "- Evaluations sharing this REPL are serialized. Put dependent work in one "
     "script and use `var` or an IIFE for temporary bindings that may repeat.\n"
+    "- `session` is a persistent null-prototype object for structured state; "
+    "store reusable values as `session.name`.\n"
+    "- `callTool(name, input)` returns `{{ ok, value }}` or "
+    "`{{ ok: false, error }}`; "
+    "direct `tools.*` calls preserve native values.\n"
     "- Runtime sandbox: no built-in filesystem, network, stdlib, or wall-clock "
     "APIs (`fetch`, `require`, `process`, real `Date.now()` are unavailable or "
     "stubbed). The explicitly documented `tools.*` and `fs.promises` host APIs "
@@ -106,10 +111,11 @@ scope (see "Reuse what earlier evals left in scope" below).
 #### Bounded delegation
 
 Prefer one direct script over delegation. Delegate only a bounded, independent
-analysis that benefits from another agent, and dispatch no more than four agents.
-Use sequential dispatches by default. Never delegate a routine read, edit, or
-command, and never delegate when the required data exists only in the parent
-user prompt.
+analysis that benefits from another agent, stay within the configured dispatch
+budget, and use sequential dispatches by default. Never delegate a routine read,
+edit, or command, and never delegate when the required data exists only in the parent
+user prompt. The bridge enforces a configured total dispatch budget and a
+concurrency cap; keep delegation bounded so the remaining eval can finish.
 
 ```javascript
 var result = await task({
@@ -345,6 +351,10 @@ def render_ptc_prompt(tools: Sequence[BaseTool], *, tool_name: str = "eval") -> 
         "arrays, dicts as objects, and `None` as `null`. You do NOT need to "
         "`JSON.parse` results — they are already typed.\n\n"
         "Invocation pattern: `await tools.<name>({ ... })`.\n\n"
+        "- `callTool(name, input)` returns `{ ok, value }` or `{ ok: false, error }` "
+        "for uniform success/error handling; direct `tools.*` calls preserve their "
+        "native return values.\n"
+        "- Use `session.name` for values that must survive later eval calls.\n"
         "- Use `await` for every host-tool call. Use `Promise.all` only for "
         "independent read-only calls; perform writes and edits sequentially.\n"
         f"- If the task needs multiple tool calls, prefer one `{tool_name}` "

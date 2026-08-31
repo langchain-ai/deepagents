@@ -122,6 +122,8 @@ def coerce_tool_output_for_ptc(value: Any) -> Any:
 def _coerce_tool_message_for_ptc(message: ToolMessage) -> Any:
     """Preserve structured status metadata from command tool messages."""
     artifact = message.artifact
+    if message.status == "error":
+        return {"ok": False, "error": _coerce_for_marshal(message.content)}
     if (
         isinstance(artifact, dict)
         and isinstance(artifact.get("exit_code"), int)

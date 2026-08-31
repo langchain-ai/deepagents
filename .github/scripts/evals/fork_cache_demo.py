@@ -282,8 +282,11 @@ def make_tools(repo_root_dir: Path, allowed_prefix: Path, diff_text: str):
     return get_pr_diff, read_repo_file
 
 
-def build_agent(model: str, tools: list):
+def build_agent(model: str, tools: list, branch_tag: str):
     # No subagents= override: fork/handoff comes from the deepagents checkout, not this script.
+    # name= gives the parent's own LangSmith run this label instead of the generic
+    # "LangGraph" default -- otherwise every leg's top-level trace looks identical.
+    agent_name = f"fork-cache-demo-{branch_tag}"
     custom_header = os.environ.get("ANTHROPIC_CUSTOM_HEADERS")
     if custom_header and model.startswith("anthropic:"):
         # Gateway auth: ChatAnthropic.default_headers has no env-var binding of its
@@ -294,8 +297,8 @@ def build_agent(model: str, tools: list):
             model=model.split(":", 1)[1],
             default_headers={header_name.strip(): header_value.strip()},
         )
-        return create_deep_agent(model=chat_model, tools=list(tools))
-    return create_deep_agent(model=model, tools=list(tools))
+        return create_deep_agent(model=chat_model, tools=list(tools), name=agent_name)
+    return create_deep_agent(model=model, tools=list(tools), name=agent_name)
 
 
 def main() -> None:
@@ -338,7 +341,7 @@ def main() -> None:
 
     tools = make_tools(root, allowed_prefix, diff_text)
     handler = MetricsHandler(lenses)
-    agent = build_agent(args.model, tools)
+    agent = build_agent(args.model, tools, args.branch_tag)
 
     print(f"=== Running branch_tag={args.branch_tag} model={args.model} ===", flush=True)
     start = time.monotonic()

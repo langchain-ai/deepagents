@@ -1,0 +1,40 @@
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/custom_system_message.md
+  h_3e3c9c8a17c7af 10,120-127,280-281
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_execute.md
+  h_3e3c9c8a17c7af 8,118-125,288-289
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_memory_and_skills.md
+  h_3e3c9c8a17c7af 133,243-250,403-404
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_routed_backend.md
+  h_3e3c9c8a17c7af 26,136-143,306-307
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sandbox_default.md
+  h_3e3c9c8a17c7af 22,132-139,302-303
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_with_sync_and_async_subagents.md
+  h_3e3c9c8a17c7af 8,118-125,320-321
+libs/deepagents/tests/unit_tests/smoke_tests/snapshots/system_prompt_without_execute.md
+  h_3e3c9c8a17c7af 8,118-125,278-279
+libs/partners/quickjs/langchain_quickjs/_prompt.py
+  h_3e3c9c8a17c7af 28-30,143-150,420-428
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions.md
+  h_3e3c9c8a17c7af 8,118-125
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_call.md
+  h_3e3c9c8a17c7af 8,118-125
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_mixed_foreign_functions_turn.md
+  h_3e3c9c8a17c7af 8,118-125
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools.md
+  h_3e3c9c8a17c7af 8,118-125
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_call.md
+  h_3e3c9c8a17c7af 8,118-125
+libs/partners/quickjs/tests/unit_tests/smoke_tests/snapshots/quickjs_system_prompt_no_tools_turn.md
+  h_3e3c9c8a17c7af 8,118-125
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.0",
+  "base_commit_sha": "d2bfd6772404376d0e2904ade58ab8d212d67c8f",
+  "prompts": {},
+  "humans": {
+    "h_3e3c9c8a17c7af": {
+      "author": "nick-hollon-lc <nick.hollon@langchain.dev>"
+    }
+  }
+}

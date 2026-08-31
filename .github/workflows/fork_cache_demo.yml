@@ -2,6 +2,11 @@
 # Runs fork_cache_demo.py once per branch leg (fork_ref/handoff_ref) so the general-purpose
 # subagent's own real default drives the comparison, not a --mode flag. Only libs/ gets
 # overlaid per leg, so those branches don't need to carry the eval scripts themselves.
+# The compare job hard-fails (assert_cache_hit_gate.py) if fork's first-call cache_read
+# isn't a real, non-zero improvement over handoff -- not just a printed comparison.
+# The fork leg also runs a second, independent check: the multiturn-incident-correction
+# Harbor task (its own real Verifier, unrelated to our cache metrics) -- it only exists
+# on fork_ref, so it can't run against handoff_ref; see that step's own comment.
 # LangSmith tracing turns on automatically when LANGSMITH_API_KEY is set, purely for visual
 # inspection -- not load-bearing for the comparison, which comes from the script's own metrics.
 # Secrets (evals environment): the provider key matching inputs.model's prefix, same gating
@@ -126,6 +131,19 @@ jobs:
       # Visual inspection only; metrics come from the script's own callback handler.
       LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
       LANGSMITH_PROJECT: fork-cache-demo-${{ matrix.tag }}-${{ github.run_id }}
+      # Job-level so both the fork_cache_demo.py step and the incident-correction
+      # step below can reach them. Same provider-key gating as _harbor_run.yml.
+      ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
+      BASETEN_API_KEY: ${{ startsWith(inputs.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+      FIREWORKS_API_KEY: ${{ startsWith(inputs.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+      GOOGLE_API_KEY: ${{ startsWith(inputs.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+      GROQ_API_KEY: ${{ startsWith(inputs.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
+      LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+      NVIDIA_API_KEY: ${{ startsWith(inputs.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+      OLLAMA_API_KEY: ${{ startsWith(inputs.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+      OPENAI_API_KEY: ${{ startsWith(inputs.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+      OPENROUTER_API_KEY: ${{ startsWith(inputs.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+      XAI_API_KEY: ${{ startsWith(inputs.model, 'xai:') && secrets.XAI_API_KEY || '' }}
     steps:
       - name: "📋 Checkout Code"
         # No ref override: eval scripts come from the workflow's own ref; libs/ is overlaid below.
@@ -165,18 +183,6 @@ jobs:
           BRANCH_TAG: ${{ matrix.tag }}
           LENSES: ${{ inputs.lenses }}
           ALLOWED_PATH_PREFIX: ${{ inputs.allowed_path_prefix }}
-          # Same provider-key gating as _harbor_run.yml, keyed off inputs.model's prefix.
-          ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          BASETEN_API_KEY: ${{ startsWith(inputs.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
-          FIREWORKS_API_KEY: ${{ startsWith(inputs.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
-          GOOGLE_API_KEY: ${{ startsWith(inputs.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
-          GROQ_API_KEY: ${{ startsWith(inputs.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          NVIDIA_API_KEY: ${{ startsWith(inputs.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
-          OLLAMA_API_KEY: ${{ startsWith(inputs.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(inputs.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
-          OPENROUTER_API_KEY: ${{ startsWith(inputs.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
-          XAI_API_KEY: ${{ startsWith(inputs.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           uv run python ../../.github/scripts/evals/fork_cache_demo.py \
             --repo "$REPO" \
@@ -194,6 +200,85 @@ jobs:
           name: fork-cache-demo-${{ matrix.tag }}
           path: _fork_cache_demo/${{ matrix.tag }}.json
           if-no-files-found: error
+
+      # Second, independent check on the fork leg only: multiturn-incident-correction
+      # requires require_replay_before_delegation/replay_correction, which only exists
+      # on fork_ref -- it cannot run against handoff_ref. Not a fork-vs-handoff
+      # comparison; this is a real Harbor Verifier (postmortem-fact + evidence-hash
+      # checks), independent of our own cache-read metrics above.
+      - name: "🚑 Stage local deps + run incident-correction check"
+        if: ${{ matrix.tag == 'fork' }}
+        working-directory: libs/evals
+        env:
+          # Own project, separate from this leg's fork-cache-demo-fork-* trace above.
+          LANGSMITH_PROJECT: fork-cache-demo-incident-check-${{ github.run_id }}
+        run: |
+          make stage-harbor-local-deps
+          mkdir -p _incident_check_jobs
+          uv run harbor run \
+            --path datasets/subagent-forking-evals/tasks \
+            --include-task-name multiturn-incident-correction \
+            --agent langgraph \
+            --agent-kwarg project_path=deepagents_harbor/langgraph_project \
+            --agent-kwarg graph=dcode \
+            --agent-kwarg 'configurable={"enable_replay_tool":true,"deepagents_require_replay_before_delegation":true,"replay_correction_text":"The deployment/feature-flag change is the candidate trigger; pool saturation and 5xx/timeouts are downstream symptoms."}' \
+            --agent-env 'LANGSMITH_API_KEY=${LANGSMITH_API_KEY}' \
+            --agent-env 'LANGSMITH_TRACING=${LANGSMITH_TRACING}' \
+            --agent-env 'LANGSMITH_PROJECT=${LANGSMITH_PROJECT}' \
+            --agent-env 'ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}' \
+            --agent-env 'BASETEN_API_KEY=${BASETEN_API_KEY}' \
+            --agent-env 'FIREWORKS_API_KEY=${FIREWORKS_API_KEY}' \
+            --agent-env 'GOOGLE_API_KEY=${GOOGLE_API_KEY}' \
+            --agent-env 'GROQ_API_KEY=${GROQ_API_KEY}' \
+            --agent-env 'NVIDIA_API_KEY=${NVIDIA_API_KEY}' \
+            --agent-env 'OLLAMA_API_KEY=${OLLAMA_API_KEY}' \
+            --agent-env 'OPENAI_API_KEY=${OPENAI_API_KEY}' \
+            --agent-env 'OPENROUTER_API_KEY=${OPENROUTER_API_KEY}' \
+            --agent-env 'XAI_API_KEY=${XAI_API_KEY}' \
+            --model "$MODEL" \
+            --env docker \
+            --yes \
+            -n 1 \
+            --jobs-dir _incident_check_jobs
+
+      - name: "🚑 Report incident-correction result"
+        if: ${{ matrix.tag == 'fork' && always() }}
+        working-directory: libs/evals
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          jobs_dir = Path("_incident_check_jobs")
+          job_dirs = sorted(p for p in jobs_dir.iterdir() if p.is_dir()) if jobs_dir.is_dir() else []
+          if not job_dirs:
+              print("::error::No Harbor job directory found for multiturn-incident-correction")
+              sys.exit(1)
+          trial_dirs = sorted(
+              p for p in job_dirs[-1].rglob("result.json")
+          )
+          if not trial_dirs:
+              print(f"::error::No trial result found under {job_dirs[-1]}")
+              sys.exit(1)
+          result = json.loads(trial_dirs[-1].read_text())
+          reward = (result.get("verifier_result") or {}).get("rewards", {}).get("reward")
+          exception = (result.get("exception_info") or {}).get("exception_type")
+
+          summary = (
+              "## Incident-correction check (fork leg)\n\n"
+              f"- Reward: `{reward}`\n"
+              f"- Exception: `{exception or 'none'}`\n"
+          )
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(summary + "\n")
+          print(summary)
+
+          if exception or reward != 1.0:
+              print("::error::multiturn-incident-correction did not pass")
+              sys.exit(1)
+          PY
 
   compare:
     name: "📊 Compare fork vs handoff"
@@ -223,3 +308,12 @@ jobs:
             echo "" >> "$GITHUB_STEP_SUMMARY"
             echo "\`handoff_ref\` was not given; nothing to compare. See the fork leg's own job log/artifact for its metrics." >> "$GITHUB_STEP_SUMMARY"
           fi
+
+      - name: "🚦 Assert cache-hit gate"
+        # Hard gate: fails the workflow if fork didn't show a real, non-zero
+        # cache advantage over handoff. Only meaningful once both legs ran.
+        if: ${{ hashFiles('_fork_cache_demo/fork.json') != '' && hashFiles('_fork_cache_demo/handoff.json') != '' }}
+        run: |
+          python3 .github/scripts/evals/assert_cache_hit_gate.py \
+            --fork-json _fork_cache_demo/fork.json \
+            --handoff-json _fork_cache_demo/handoff.json

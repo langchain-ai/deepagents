@@ -860,10 +860,7 @@ def _glob_search_files(
         relative = _relative_to_root(file_path, normalized_path)
 
         if matcher(relative):
-            # `modified_at` is NotRequired on FileData, so seeded state (or any
-            # backend that omits the timestamp) may not carry it. Default to ""
-            # rather than subscripting, which sorts undated files last under
-            # reverse=True instead of raising KeyError.
+            # `modified_at` is NotRequired on `FileData`; undated files sort last.
             matches.append((file_path, file_data.get("modified_at", "")))
 
     matches.sort(key=lambda x: x[1], reverse=True)

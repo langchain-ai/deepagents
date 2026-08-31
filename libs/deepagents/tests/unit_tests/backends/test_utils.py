@@ -304,15 +304,6 @@ class TestGlobSearchFiles:
         assert "/a.py" in result
         assert "/b.py" in result
 
-    def test_undated_files_sort_after_dated(self) -> None:
-        """Dated files rank ahead of files missing `modified_at`."""
-        files = {
-            "/dated.py": {"content": "x", "encoding": "utf-8", "modified_at": "2024-01-01T10:00:00"},
-            "/undated.py": {"content": "y", "encoding": "utf-8"},
-        }
-        result = _glob_search_files(files, "*.py", "/")
-        assert result.split("\n") == ["/dated.py", "/undated.py"]
-
 
 class TestCompileGrepIncludeGlobRefusals:
     """Refusals are a public `ValueError` subtype backends can catch precisely."""

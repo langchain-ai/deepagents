@@ -881,7 +881,7 @@ class TestSubagentMiddlewareInit:
             def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
                 del config
                 captured.update(state)
-                return {"messages": [AIMessage(content="done")]}
+                return {**state, "messages": [AIMessage(content="done")]}
 
         def fake_create_sub_agent(spec: dict[str, Any], **kwargs: Any) -> object:
             del spec, kwargs
@@ -904,6 +904,7 @@ class TestSubagentMiddlewareInit:
             state={
                 "messages": [HumanMessage(content="parent history")],
                 "memory_contents": {"/m.md": "PARENT MEMORY"},
+                "structured_response": {"answer": "stale"},
                 "_summarization_session_id": "session_parent",
             },
             context={},
@@ -913,12 +914,15 @@ class TestSubagentMiddlewareInit:
             tool_call_id="call_worker",
             store=None,
         )
-        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
+        result = task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
 
         # Reusing the parent's session id would append the fork's evicted
-        # history into the parent's offload file.
+        # history into the parent's offload file. A stale parent structured
+        # response must likewise not be available to override this fork's result.
         assert "_summarization_session_id" not in captured
+        assert "structured_response" not in captured
         assert ("memory_contents" in captured) is declarative
+        assert result.update["messages"][0].content == "done"
 
     def test_rejects_duplicate_subagent_names(self) -> None:
         class _Runnable:

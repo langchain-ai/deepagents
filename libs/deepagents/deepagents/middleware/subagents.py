@@ -43,11 +43,12 @@ from deepagents.middleware.summarization import (
 SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY = "__deepagents_subagent_response_format"
 """Configurable key used by task-tool callers to request dynamic response format."""
 
-_FORK_EXCLUDED_STATE_KEYS = frozenset({SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY})
-"""Summarization state a fork must not resume.
+_FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVENT_KEY, SUMMARIZATION_SESSION_ID_KEY})
+"""State a fork must not resume.
 
-The event is folded into the fork's messages instead. Dropping the session ID lets the
-subagent generate its own.
+The summarization event is folded into the fork's messages instead. Dropping the
+session ID lets the subagent generate its own, and dropping a prior structured response
+ensures it cannot be mistaken for the fork's result.
 """
 
 _FORKED_CONTEXT_KEY = "_deepagents_forked_context"

@@ -20,10 +20,12 @@
 # fork_cache_demo.py's own callback handler, not from LangSmith, so tracing
 # being off does not affect the comparison.
 #
-# Required secrets (in the `evals` environment):
-#   ANTHROPIC_API_KEY  — needed for anthropic: models (the default)
-#   OPENAI_API_KEY     — needed for openai: models
-#   LANGSMITH_API_KEY  — optional; enables tracing when present
+# Required secrets (in the `evals` environment): whichever provider key
+# matches `inputs.model`'s prefix -- ANTHROPIC_API_KEY (the default model),
+# BASETEN_API_KEY, FIREWORKS_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY,
+# NVIDIA_API_KEY, OLLAMA_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or
+# XAI_API_KEY, same provider-key gating as _harbor_run.yml. LANGSMITH_API_KEY
+# is optional; enables tracing when present.
 
 name: "🍴 Fork cache demo"
 run-name: >-
@@ -172,9 +174,20 @@ jobs:
         working-directory: libs/evals
         env:
           GH_TOKEN: ${{ github.token }}
+          # Same provider-key gating as _harbor_run.yml: only the secret matching
+          # inputs.model's own prefix gets threaded through, so `model` alone is
+          # enough to pick up the right key -- no separate provider input needed.
           ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
-          OPENAI_API_KEY: ${{ startsWith(inputs.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          BASETEN_API_KEY: ${{ startsWith(inputs.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
+          FIREWORKS_API_KEY: ${{ startsWith(inputs.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
+          GOOGLE_API_KEY: ${{ startsWith(inputs.model, 'google_genai:') && secrets.GOOGLE_API_KEY || '' }}
+          GROQ_API_KEY: ${{ startsWith(inputs.model, 'groq:') && secrets.GROQ_API_KEY || '' }}
           LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
+          NVIDIA_API_KEY: ${{ startsWith(inputs.model, 'nvidia:') && secrets.NVIDIA_API_KEY || '' }}
+          OLLAMA_API_KEY: ${{ startsWith(inputs.model, 'ollama:') && secrets.OLLAMA_API_KEY || '' }}
+          OPENAI_API_KEY: ${{ startsWith(inputs.model, 'openai:') && secrets.OPENAI_API_KEY || '' }}
+          OPENROUTER_API_KEY: ${{ startsWith(inputs.model, 'openrouter:') && secrets.OPENROUTER_API_KEY || '' }}
+          XAI_API_KEY: ${{ startsWith(inputs.model, 'xai:') && secrets.XAI_API_KEY || '' }}
         run: |
           uv run python ../../.github/scripts/evals/fork_cache_demo.py \
             --repo "${{ inputs.repo }}" \

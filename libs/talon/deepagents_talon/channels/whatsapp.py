@@ -251,6 +251,8 @@ class _BridgeTransport:
                 isinstance(error, urllib.error.HTTPError)
                 and error.code == HTTPStatus.SERVICE_UNAVAILABLE
             )
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
             raise _WhatsAppBridgeError(msg, retryable=retryable) from error
 
 

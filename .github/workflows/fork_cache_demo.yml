@@ -1,31 +1,11 @@
-# Fork-vs-handoff cost/cache demo workflow for Deep Agents subagents.
-#
-# Manual only (workflow_dispatch) -- this spends real model tokens on a live
-# PR review and is not wired to pull_request/push, so it never runs on a PR
-# or merge. Runs fork_cache_demo.py once per branch leg against a real PR's
-# diff, checking out a *different* `deepagents` ref for each leg so the
-# general-purpose subagent's own real default (fork vs. handoff) drives the
-# comparison -- not a `--mode` flag on a single checkout. Then (when both
-# legs ran) compares the two runs' locally-captured metrics: cache-read
-# tokens, token/tool-call cost, wall-clock, and delegation-directive size.
-#
-# The workflow file and eval scripts always come from wherever this workflow
-# itself is running from (main, once this is merged); only the `libs/`
-# directory tree gets overlaid per leg from `fork_ref`/`handoff_ref`, so
-# those branches don't need to carry the eval scripts themselves.
-#
-# LangSmith tracing is enabled automatically when LANGSMITH_API_KEY is
-# present in the `evals` environment, purely so a human can inspect the run
-# visually afterward -- the printed/uploaded metrics come from
-# fork_cache_demo.py's own callback handler, not from LangSmith, so tracing
-# being off does not affect the comparison.
-#
-# Required secrets (in the `evals` environment): whichever provider key
-# matches `inputs.model`'s prefix -- ANTHROPIC_API_KEY (the default model),
-# BASETEN_API_KEY, FIREWORKS_API_KEY, GOOGLE_API_KEY, GROQ_API_KEY,
-# NVIDIA_API_KEY, OLLAMA_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, or
-# XAI_API_KEY, same provider-key gating as _harbor_run.yml. LANGSMITH_API_KEY
-# is optional; enables tracing when present.
+# Fork-vs-handoff cost/cache demo. Manual only (workflow_dispatch); never runs on push/PR.
+# Runs fork_cache_demo.py once per branch leg (fork_ref/handoff_ref) so the general-purpose
+# subagent's own real default drives the comparison, not a --mode flag. Only libs/ gets
+# overlaid per leg, so those branches don't need to carry the eval scripts themselves.
+# LangSmith tracing turns on automatically when LANGSMITH_API_KEY is set, purely for visual
+# inspection -- not load-bearing for the comparison, which comes from the script's own metrics.
+# Secrets (evals environment): the provider key matching inputs.model's prefix, same gating
+# as _harbor_run.yml; LANGSMITH_API_KEY optional.
 
 name: "🍴 Fork cache demo"
 run-name: >-
@@ -138,18 +118,12 @@ jobs:
     timeout-minutes: 20
     env:
       MODEL: ${{ inputs.model }}
-      # Trace-level LangSmith tracing only, purely for visual inspection --
-      # this script's own metrics come from its callback handler, not
-      # LangSmith. Tracing turns on only when the secret is present (no
-      # warnings when absent), same idiom as clbench.yml.
+      # Visual inspection only; metrics come from the script's own callback handler.
       LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
       LANGSMITH_PROJECT: fork-cache-demo-${{ matrix.tag }}-${{ github.run_id }}
     steps:
       - name: "📋 Checkout Code"
-        # No `ref:` override here -- this gives us the workflow's own
-        # eval scripts/config from wherever this workflow runs from
-        # (main, once merged). Only `libs/` gets overlaid per leg below,
-        # so fork_ref/handoff_ref don't need to carry the eval scripts.
+        # No ref override: eval scripts come from the workflow's own ref; libs/ is overlaid below.
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "📋 Overlay libs/ from ${{ matrix.ref }}"
@@ -174,9 +148,7 @@ jobs:
         working-directory: libs/evals
         env:
           GH_TOKEN: ${{ github.token }}
-          # Same provider-key gating as _harbor_run.yml: only the secret matching
-          # inputs.model's own prefix gets threaded through, so `model` alone is
-          # enough to pick up the right key -- no separate provider input needed.
+          # Same provider-key gating as _harbor_run.yml, keyed off inputs.model's prefix.
           ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
           BASETEN_API_KEY: ${{ startsWith(inputs.model, 'baseten:') && secrets.BASETEN_API_KEY || '' }}
           FIREWORKS_API_KEY: ${{ startsWith(inputs.model, 'fireworks:') && secrets.FIREWORKS_API_KEY || '' }}
@@ -223,8 +195,7 @@ jobs:
           merge-multiple: true
 
       - name: "📊 Compare"
-        # Only meaningful once both legs ran; a fork_ref-only dispatch has
-        # nothing to diff against, so just say so rather than failing.
+        # Only meaningful once both legs ran.
         run: |
           if [ -f _fork_cache_demo/fork.json ] && [ -f _fork_cache_demo/handoff.json ]; then
             python3 .github/scripts/evals/compare_fork_cache_demo.py \

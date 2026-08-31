@@ -1,43 +1,22 @@
 #!/usr/bin/env python3
 """Fork-vs-handoff cost/cache demo: PR review with specialized reviewers.
 
-A parent agent fetches a real PR's diff (and any repo files it needs) once,
-then delegates review to the general-purpose subagent N times -- one call per
-lens (e.g. correctness/backcompat/tests/performance/api_design) -- using an
-IDENTICAL short instruction regardless of branch:
+Parent fetches a real PR's diff once, then delegates to the general-purpose
+subagent N times (one per lens), with an identical instruction each time. No
+custom subagent or `mode=` flag: fork vs. handoff comes entirely from which
+`deepagents` checkout this runs against (see fork_cache_demo.yml, which
+checks out a different ref per leg).
 
-    "Review this change specifically for {lens} issues."
-
-This deliberately does NOT declare a custom subagent or pass a `mode=` flag.
-The general-purpose subagent's own default (fork vs. handoff) comes entirely
-from whichever `deepagents` checkout this script runs against -- compare a
-branch that forces it into `mode: "fork"` by default (e.g.
-`bengret/sug-agent-forking-evals`) against one that leaves it as the normal
-isolated default (e.g. `bengret/feat-subagent-forking`). See
-.github/workflows/fork_cache_demo.yml, which checks out a different
-`deepagents` ref per leg rather than passing this script a mode flag.
-
-Metrics are captured via a plain callback handler attached to the top-level
-`invoke()` call -- subagent `.invoke()` calls run in the same call stack and
-inherit callbacks/config automatically, so no LangSmith round-trip is needed
-for the numbers themselves. LangSmith tracing (when LANGSMITH_API_KEY is set)
-is enabled purely so a human can inspect the run visually afterward; it is
-not load-bearing for anything this script prints or writes.
-
-Each of the general-purpose subagent's five invocations shares the same
-`lc_agent_name` ("general-purpose"), so per-lens attribution instead walks
-each event's `parent_run_id` chain back to the specific `task` tool call that
-spawned it, and labels that invocation by its position in the (deterministic,
-instructed) delegation order.
+Metrics come from a callback handler on the top-level `invoke()` (subagents
+inherit it automatically). Since every call shares `lc_agent_name`
+("general-purpose"), attribution walks each event's `parent_run_id` chain
+back to its `task` call and labels it by delegation order. LangSmith tracing
+(LANGSMITH_API_KEY) is just for visual inspection, not load-bearing.
 
 Local usage (from libs/deepagents, with a real ANTHROPIC_API_KEY exported):
 
     uv run python ../../.github/scripts/evals/fork_cache_demo.py \
         --repo langchain-ai/deepagents --pr 5873 --branch-tag fork
-
-CI usage: see .github/workflows/fork_cache_demo.yml, which runs this once per
-branch (checking out a different `deepagents` ref each time) and compares the
-resulting --out-json files.
 """
 
 from __future__ import annotations
@@ -116,14 +95,7 @@ Once all have reported back, summarize their findings in one paragraph.
 
 
 class MetricsHandler(BaseCallbackHandler):
-    """Captures per-lens token/tool/wall-clock metrics locally.
-
-    Every call to the general-purpose subagent shares the same
-    `lc_agent_name`, so attribution instead walks each event's
-    `parent_run_id` chain back to the enclosing `task` tool call and labels
-    it by that call's position in the (instructed, deterministic) lens
-    order -- not by `lc_agent_name`.
-    """
+    """Captures per-lens token/tool/wall-clock metrics locally."""
 
     def __init__(self, lenses: list[str]) -> None:
         self._lenses = lenses
@@ -223,8 +195,7 @@ class MetricsHandler(BaseCallbackHandler):
 
         if serialized.get("name") != "task":
             return
-        # on_tool_start's input_str is Python's dict repr (single quotes),
-        # not JSON -- confirmed empirically, json.loads fails on it silently.
+        # input_str is Python's dict repr, not JSON -- json.loads fails on it silently.
         try:
             parsed = ast.literal_eval(input_str)
         except (ValueError, SyntaxError):
@@ -291,10 +262,7 @@ def make_tools(allowed_prefix: Path, diff_text: str):
 
 
 def build_agent(model: str, tools: list):
-    # No `subagents=` override: the general-purpose subagent this delegates
-    # to is whichever default `create_deep_agent` auto-adds -- fork or
-    # handoff is entirely a property of the `deepagents` checkout this runs
-    # against, not anything this script configures.
+    # No subagents= override: fork/handoff comes from the deepagents checkout, not this script.
     return create_deep_agent(model=model, tools=list(tools))
 
 

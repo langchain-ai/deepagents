@@ -25,6 +25,7 @@ INTEGRATION_ENV = {
     "MODAL_TOKEN_SECRET": "${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_SECRET || '' }}",
     "OPENAI_API_KEY": "${{ matrix.working-directory == 'libs/deepagents' && secrets.OPENAI_API_KEY || '' }}",
     "RUNLOOP_API_KEY": "${{ (matrix.working-directory == 'libs/partners/runloop' || matrix.working-directory == 'libs/code') && secrets.RUNLOOP_API_KEY || '' }}",
+    "SPRITES_TOKEN": "${{ matrix.working-directory == 'libs/partners/sprites' && secrets.SPRITES_TOKEN || '' }}",
 }
 RELEASE_INTEGRATION_ENV = {
     "ANTHROPIC_API_KEY": "${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}",
@@ -34,6 +35,7 @@ RELEASE_INTEGRATION_ENV = {
     "MODAL_TOKEN_SECRET": "${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}",
     "OPENAI_API_KEY": "${{ needs.setup.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}",
     "RUNLOOP_API_KEY": "${{ needs.setup.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}",
+    "SPRITES_TOKEN": "${{ needs.setup.outputs.package == 'langchain-sprites' && secrets.SPRITES_TOKEN || '' }}",
     "VERCEL_TOKEN": "${{ needs.setup.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}",
 }
 OVERRIDE_ONLY_INTEGRATION_TARGETS = {

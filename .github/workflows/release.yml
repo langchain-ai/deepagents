@@ -36,6 +36,7 @@ on:
           - langchain-modal
           - langchain-quickjs
           - langchain-runloop
+          - langchain-sprites
           - langchain-vercel-sandbox
         default: deepagents
       package-override:
@@ -148,12 +149,15 @@ jobs:
             langchain-runloop)
               echo "working-dir=libs/partners/runloop" >> $GITHUB_OUTPUT
               ;;
+            langchain-sprites)
+              echo "working-dir=libs/partners/sprites" >> $GITHUB_OUTPUT
+              ;;
             langchain-vercel-sandbox)
               echo "working-dir=libs/partners/vercel" >> $GITHUB_OUTPUT
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
+              echo "Valid packages are: deepagents, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-sprites, langchain-vercel-sandbox"
               exit 1
               ;;
           esac
@@ -829,6 +833,7 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
           OPENAI_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}
           RUNLOOP_API_KEY: ${{ needs.setup.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}
+          SPRITES_TOKEN: ${{ needs.setup.outputs.package == 'langchain-sprites' && secrets.SPRITES_TOKEN || '' }}
           VERCEL_TOKEN: ${{ needs.setup.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}
 
         # The deepagents-code sandbox coverage overlaps with the partner-level

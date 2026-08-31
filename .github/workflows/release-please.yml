@@ -131,6 +131,7 @@ jobs:
       daytona-release: ${{ steps.check-releases.outputs.daytona-release }}
       modal-release: ${{ steps.check-releases.outputs.modal-release }}
       runloop-release: ${{ steps.check-releases.outputs.runloop-release }}
+      sprites-release: ${{ steps.check-releases.outputs.sprites-release }}
       vercel-release: ${{ steps.check-releases.outputs.vercel-release }}
       quickjs-release: ${{ steps.check-releases.outputs.quickjs-release }}
       release-version: ${{ steps.check-releases.outputs.release-version }}
@@ -242,6 +243,13 @@ jobs:
             echo "Runloop release detected: $COMMIT_MSG"
           else
             echo "runloop-release=false" >> "$GITHUB_OUTPUT"
+          fi
+          if echo "$CHANGED" | grep -q "^libs/partners/sprites/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-sprites\):"; then
+            echo "sprites-release=true" >> "$GITHUB_OUTPUT"
+            ANY_PACKAGE=true
+            echo "Sprites release detected: $COMMIT_MSG"
+          else
+            echo "sprites-release=false" >> "$GITHUB_OUTPUT"
           fi
 
           if echo "$CHANGED" | grep -q "^libs/partners/vercel/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(langchain-vercel-sandbox\):"; then
@@ -984,6 +992,7 @@ jobs:
       needs.detect-release-commit.outputs.daytona-release == 'true' ||
       needs.detect-release-commit.outputs.modal-release == 'true' ||
       needs.detect-release-commit.outputs.runloop-release == 'true' ||
+      needs.detect-release-commit.outputs.sprites-release == 'true' ||
       needs.detect-release-commit.outputs.vercel-release == 'true' ||
       needs.detect-release-commit.outputs.quickjs-release == 'true'
     runs-on: ubuntu-latest
@@ -1006,6 +1015,7 @@ jobs:
       DAYTONA_RELEASE: ${{ needs.detect-release-commit.outputs.daytona-release }}
       MODAL_RELEASE: ${{ needs.detect-release-commit.outputs.modal-release }}
       RUNLOOP_RELEASE: ${{ needs.detect-release-commit.outputs.runloop-release }}
+      SPRITES_RELEASE: ${{ needs.detect-release-commit.outputs.sprites-release }}
       VERCEL_RELEASE: ${{ needs.detect-release-commit.outputs.vercel-release }}
       QUICKJS_RELEASE: ${{ needs.detect-release-commit.outputs.quickjs-release }}
     steps:
@@ -1304,6 +1314,7 @@ jobs:
           if [ "$DAYTONA_RELEASE" = "true" ]; then dispatch langchain-daytona;   fi
           if [ "$MODAL_RELEASE" = "true" ];   then dispatch langchain-modal;     fi
           if [ "$RUNLOOP_RELEASE" = "true" ]; then dispatch langchain-runloop;   fi
+          if [ "$SPRITES_RELEASE" = "true" ]; then dispatch langchain-sprites;   fi
           if [ "$VERCEL_RELEASE" = "true" ];   then dispatch langchain-vercel-sandbox; fi
           if [ "$QUICKJS_RELEASE" = "true" ]; then dispatch langchain-quickjs;   fi
 

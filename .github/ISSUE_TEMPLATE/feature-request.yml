@@ -52,6 +52,7 @@ body:
         - label: modal
         - label: quickjs
         - label: runloop
+        - label: sprites
         - label: vercel
         - label: langsmith-sandbox
         - label: Other / not sure / general

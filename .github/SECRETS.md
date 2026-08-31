@@ -122,6 +122,7 @@ The disabled step preserves package-scoped wiring so a future re-enablement has 
 | `langchain-daytona` | `DAYTONA_API_KEY` |
 | `langchain-modal` | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` |
 | `langchain-runloop` | `RUNLOOP_API_KEY` |
+| `langchain-sprites` | `SPRITES_TOKEN` |
 | `langchain-vercel-sandbox` | `VERCEL_TOKEN` plus `VERCEL_TEAM_ID` and `VERCEL_PROJECT_ID` Actions variables |
 
 The disabled Vercel step currently references only `VERCEL_TOKEN`; its access-token authentication contract is incomplete. Add the two variables above, or deliberately adopt and document Vercel OIDC, before re-enabling that package's integration test.

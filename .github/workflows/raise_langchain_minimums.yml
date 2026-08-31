@@ -73,6 +73,7 @@ on:
           - "langchain-modal"
           - "langchain-quickjs"
           - "langchain-runloop"
+          - "langchain-sprites"
           - "langchain-vercel-sandbox"
       dependencies:
         description: "Optional comma-separated PyPI distribution names to restrict the run to (e.g. 'langchain-core,langsmith'). Names are matched exactly; the usual `langchain*`/`langgraph*`/`langsmith*`/`deepagents*` scope prefixes no longer apply. Empty raises every in-scope dependency."

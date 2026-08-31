@@ -65,12 +65,14 @@
     "langchain-modal": "modal",
     "langchain-quickjs": "quickjs",
     "langchain-runloop": "runloop",
+    "langchain-sprites": "sprites",
     "langchain-vercel-sandbox": "vercel",
     "langsmith-sandbox": "langsmith-sandbox",
     "modal": "modal",
     "quickjs": "quickjs",
     "runloop": "runloop",
     "sdk": "deepagents",
+    "sprites": "sprites",
     "talon": "talon",
     "vercel": "vercel"
   },
@@ -124,6 +126,11 @@
     {
       "label": "runloop",
       "prefix": "libs/partners/runloop/",
+      "skipExcludedFiles": true
+    },
+    {
+      "label": "sprites",
+      "prefix": "libs/partners/sprites/",
       "skipExcludedFiles": true
     },
     {

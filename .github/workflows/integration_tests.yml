@@ -21,6 +21,7 @@ on:
           - libs/partners/daytona
           - libs/partners/modal
           - libs/partners/runloop
+          - libs/partners/sprites
       working-directory-override:
         type: string
         description: "Override: custom path (takes precedence over dropdown)"
@@ -39,7 +40,8 @@ env:
     ["libs/deepagents",
     "libs/partners/daytona",
     "libs/partners/modal",
-    "libs/partners/runloop"]
+    "libs/partners/runloop",
+    "libs/partners/sprites"]
 
 jobs:
   compute-matrix:
@@ -121,6 +123,7 @@ jobs:
           MODAL_TOKEN_SECRET: ${{ (matrix.working-directory == 'libs/partners/modal' || matrix.working-directory == 'libs/code') && secrets.MODAL_TOKEN_SECRET || '' }}
           OPENAI_API_KEY: ${{ matrix.working-directory == 'libs/deepagents' && secrets.OPENAI_API_KEY || '' }}
           RUNLOOP_API_KEY: ${{ (matrix.working-directory == 'libs/partners/runloop' || matrix.working-directory == 'libs/code') && secrets.RUNLOOP_API_KEY || '' }}
+          SPRITES_TOKEN: ${{ matrix.working-directory == 'libs/partners/sprites' && secrets.SPRITES_TOKEN || '' }}
         run: make integration_tests
 
       - name: "🧹 Verify Clean Working Directory"

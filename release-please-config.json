@@ -160,6 +160,21 @@
         "libs/partners/runloop/tests"
       ]
     },
+    "libs/partners/sprites": {
+      "release-type": "python",
+      "package-name": "langchain-sprites",
+      "component": "langchain-sprites",
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "extra-files": [
+        "pyproject.toml",
+        "langchain_sprites/_version.py"
+      ],
+      "changelog-path": "CHANGELOG.md",
+      "exclude-paths": [
+        "libs/partners/sprites/tests"
+      ]
+    },
     "libs/partners/vercel": {
       "release-type": "python",
       "package-name": "langchain-vercel-sandbox",

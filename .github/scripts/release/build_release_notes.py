@@ -54,6 +54,7 @@ PACKAGE_MAP = {
     "langchain-modal": "libs/partners/modal",
     "langchain-quickjs": "libs/partners/quickjs",
     "langchain-runloop": "libs/partners/runloop",
+    "langchain-sprites": "libs/partners/sprites",
     "langchain-vercel-sandbox": "libs/partners/vercel",
 }
 

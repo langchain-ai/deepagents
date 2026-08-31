@@ -51,6 +51,7 @@ jobs:
       daytona: ${{ steps.filter.outputs.daytona }}
       modal: ${{ steps.filter.outputs.modal }}
       runloop: ${{ steps.filter.outputs.runloop }}
+      sprites: ${{ steps.filter.outputs.sprites }}
       vercel: ${{ steps.filter.outputs.vercel }}
       quickjs: ${{ steps.filter.outputs.quickjs }}
     steps:
@@ -151,6 +152,13 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            sprites:
+              - 'libs/partners/sprites/**'
+              - 'libs/deepagents/**'
+              - '.github/workflows/ci.yml'
+              - '.github/workflows/_lint.yml'
+              - '.github/workflows/_test.yml'
+              - '.github/actions/**'
             vercel:
               - 'libs/partners/vercel/**'
               - 'libs/deepagents/**'
@@ -236,6 +244,15 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-version: "3.11"
+
+  lint-sprites:
+    name: "🧹 Lint sprites"
+    needs: changes
+    if: needs.changes.outputs.sprites == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_lint.yml
+    with:
+      working-directory: "libs/partners/sprites"
       python-version: "3.11"
 
   lint-vercel:
@@ -328,6 +345,15 @@ jobs:
     uses: ./.github/workflows/_test.yml
     with:
       working-directory: "libs/partners/runloop"
+      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
+
+  test-sprites:
+    name: "🧪 Test sprites"
+    needs: changes
+    if: needs.changes.outputs.sprites == 'true' || github.event_name == 'push'
+    uses: ./.github/workflows/_test.yml
+    with:
+      working-directory: "libs/partners/sprites"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
 
   test-vercel:
@@ -619,6 +645,7 @@ jobs:
       - lint-daytona
       - lint-modal
       - lint-runloop
+      - lint-sprites
       - lint-vercel
       - lint-quickjs
       - test-deepagents
@@ -629,6 +656,7 @@ jobs:
       - test-daytona
       - test-modal
       - test-runloop
+      - test-sprites
       - test-vercel
       - test-quickjs
       - test-quickjs-sdk-smoke

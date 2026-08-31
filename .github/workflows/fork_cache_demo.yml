@@ -49,6 +49,10 @@ on:
         description: "Repo-relative directory the reviewer subagents' read_repo_file tool may read from"
         type: string
         default: "libs"
+      langsmith_project:
+        description: "Optional: LANGSMITH_PROJECT override, e.g. to group this run's traces with others in one shared project. Leave blank for a per-run name (fork-cache-demo-<tag>-<run_id> / fork-cache-demo-incident-check-<run_id>)."
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -73,6 +77,7 @@ jobs:
           HANDOFF_REF: ${{ inputs.handoff_ref }}
           LENSES: ${{ inputs.lenses }}
           ALLOWED_PATH_PREFIX: ${{ inputs.allowed_path_prefix }}
+          LANGSMITH_PROJECT_INPUT: ${{ inputs.langsmith_project }}
         run: |
           {
             echo "### 🍴 Fork cache demo dispatch inputs"
@@ -86,6 +91,7 @@ jobs:
             echo "| \`handoff_ref\` | \`${HANDOFF_REF:-(skipped)}\` |"
             echo "| \`lenses\` | \`${LENSES}\` |"
             echo "| \`allowed_path_prefix\` | \`${ALLOWED_PATH_PREFIX}\` |"
+            echo "| \`langsmith_project\` | \`${LANGSMITH_PROJECT_INPUT:-(per-run name)}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: "🧮 Build ref matrix"
@@ -130,7 +136,9 @@ jobs:
       MODEL: ${{ inputs.model }}
       # Visual inspection only; metrics come from the script's own callback handler.
       LANGSMITH_TRACING: ${{ secrets.LANGSMITH_API_KEY != '' && 'true' || 'false' }}
-      LANGSMITH_PROJECT: fork-cache-demo-${{ matrix.tag }}-${{ github.run_id }}
+      # langsmith_project groups this leg's trace into a shared project when set;
+      # otherwise falls back to a per-run name.
+      LANGSMITH_PROJECT: ${{ inputs.langsmith_project != '' && inputs.langsmith_project || format('fork-cache-demo-{0}-{1}', matrix.tag, github.run_id) }}
       # Job-level so both the fork_cache_demo.py step and the incident-correction
       # step below can reach them. Same provider-key gating as _harbor_run.yml.
       ANTHROPIC_API_KEY: ${{ startsWith(inputs.model, 'anthropic:') && secrets.ANTHROPIC_API_KEY || '' }}
@@ -210,8 +218,9 @@ jobs:
         if: ${{ matrix.tag == 'fork' }}
         working-directory: libs/evals
         env:
-          # Own project, separate from this leg's fork-cache-demo-fork-* trace above.
-          LANGSMITH_PROJECT: fork-cache-demo-incident-check-${{ github.run_id }}
+          # Own project by default, separate from this leg's fork-cache-demo-fork-*
+          # trace above; langsmith_project groups it into a shared project when set.
+          LANGSMITH_PROJECT: ${{ inputs.langsmith_project != '' && inputs.langsmith_project || format('fork-cache-demo-incident-check-{0}', github.run_id) }}
         run: |
           make stage-harbor-local-deps
           mkdir -p _incident_check_jobs

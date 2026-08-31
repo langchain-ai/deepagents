@@ -1,0 +1,2284 @@
+'use strict';
+
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+const test = require('node:test');
+
+const releaseNotes = require('../../release/release-notes.js');
+
+const APP_SLUG = 'release-notes-bot';
+const BOT = { login: `${APP_SLUG}[bot]`, id: 42 };
+const BOT_AUTH = { appSlug: APP_SLUG, login: BOT.login, id: BOT.id };
+const COMPONENT = 'deepagents-code';
+const RELEASE_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${COMPONENT}`;
+const CHANGELOG_PATH = 'libs/code/CHANGELOG.md';
+const HEAD = 'a'.repeat(40);
+const APPLIED_HEAD = 'b'.repeat(40);
+const VERSION = '0.1.35';
+const OVERRIDE_UPDATED_AT = '2026-07-09T12:00:00Z';
+const APPLIED_UPDATED_AT = '2026-07-09T12:05:00Z';
+const HEADING = `## [${VERSION}](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.34...deepagents-code==${VERSION}) (2026-07-09)`;
+const GENERATED_SECTION = `${HEADING}\n\n### Features\n\n* **code:** add useful feature ([#1](https://github.com/langchain-ai/deepagents/issues/1))\n`;
+const CURATED_SECTION = `${HEADING}\n\n### Features\n\n* Add a useful feature ([#1](https://github.com/langchain-ai/deepagents/issues/1))\n`;
+
+function changelog(section = GENERATED_SECTION) {
+  return `# Changelog\n\n${section}\n## [0.1.34](https://example.test) (2026-07-01)\n\n* Older\n`;
+}
+
+function releasePr(overrides = {}) {
+  return {
+    number: 123,
+    title: `release(deepagents-code): ${VERSION}`,
+    state: 'open',
+    draft: false,
+    body: `Release notes preview\n\n${GENERATED_SECTION}\n_End release notes preview._\n`,
+    head: {
+      ref: RELEASE_BRANCH,
+      sha: HEAD,
+      repo: { full_name: 'langchain-ai/deepagents' },
+    },
+    base: { ref: 'main', repo: { full_name: 'langchain-ai/deepagents' } },
+    labels: [],
+    ...overrides,
+  };
+}
+
+function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = releaseNotes.changelogFingerprint(GENERATED_SECTION), head = HEAD, updatedAt = OVERRIDE_UPDATED_AT, htmlUrl = null } = {}) {
+  return {
+    id,
+    updated_at: updatedAt,
+    user: BOT,
+    // Real GitHub always returns html_url; opt in per-test so both the
+    // API-provided link and the hand-built fallback stay covered.
+    ...(htmlUrl === null ? {} : { html_url: htmlUrl }),
+    body: [
+      '<!-- release-notes-override',
+      'package: deepagents-code',
+      `version: ${VERSION}`,
+      `release-pr-head: ${head}`,
+      `release-heading-hash: ${releaseNotes.sha256(HEADING)}`,
+      `changelog-fingerprint: ${fingerprint}`,
+      'state: draft',
+      '-->',
+      'instructions',
+      releaseNotes.CONTENT_START,
+      section.trimEnd(),
+      releaseNotes.CONTENT_END,
+    ].join('\n'),
+  };
+}
+
+function appliedComment({ id = 20, overrideId = 10, overrideUpdatedAt = OVERRIDE_UPDATED_AT, fingerprint = releaseNotes.changelogFingerprint(GENERATED_SECTION), contentHash = releaseNotes.sha256(CURATED_SECTION), sourceHead = HEAD, appliedHead = APPLIED_HEAD, updatedAt = APPLIED_UPDATED_AT } = {}) {
+  return {
+    id,
+    updated_at: updatedAt,
+    user: BOT,
+    body: [
+      '<!-- release-notes-applied',
+      'package: deepagents-code',
+      `version: ${VERSION}`,
+      `source-head: ${sourceHead}`,
+      `applied-head: ${appliedHead}`,
+      `changelog-fingerprint: ${fingerprint}`,
+      `override-comment-id: ${overrideId}`,
+      `override-comment-updated-at: ${overrideUpdatedAt}`,
+      `override-content-hash: ${contentHash}`,
+      'state: applied',
+      '-->',
+    ].join('\n'),
+  };
+}
+
+function makeCore() {
+  return {
+    failed: null,
+    infos: [],
+    warnings: [],
+    info(message) { this.infos.push(message); },
+    warning(message) { this.warnings.push(message); },
+    setFailed(message) { this.failed = message; },
+  };
+}
+
+function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, files = new Map(), comparison = 'ahead', malformedContent = false, onGetPr = null, onListComments = null, onCreateComment = null } = {}) {
+  const calls = {
+    createBlob: [],
+    createComment: [],
+    createCommit: [],
+    createTree: [],
+    getByUsername: [],
+    getCommit: [],
+    getContent: [],
+    getRef: [],
+    updateComment: [],
+    updatePr: [],
+    updateRef: [],
+  };
+  let livePr = structuredClone(pr);
+  let liveBranchHead = pr.head.sha;
+  let getPrCount = 0;
+  let listCommentsCount = 0;
+  const github = {
+    rest: {
+      pulls: {
+        get: async () => {
+          getPrCount += 1;
+          if (onGetPr) onGetPr({ count: getPrCount, pr: livePr });
+          return { data: structuredClone(livePr) };
+        },
+        update: async params => {
+          calls.updatePr.push(params);
+          livePr.body = params.body;
+          return { data: structuredClone(livePr) };
+        },
+      },
+      issues: {
+        listComments: async () => {
+          listCommentsCount += 1;
+          if (onListComments) onListComments({ count: listCommentsCount, comments });
+          return { data: structuredClone(comments) };
+        },
+        createComment: async params => {
+          calls.createComment.push(params);
+          if (onCreateComment) onCreateComment({ count: calls.createComment.length, params });
+          const comment = { id: 100 + calls.createComment.length, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body };
+          comments.push(comment);
+          return { data: comment };
+        },
+        updateComment: async params => {
+          calls.updateComment.push(params);
+          const comment = comments.find(item => item.id === params.comment_id);
+          if (comment) {
+            comment.body = params.body;
+            comment.updated_at = APPLIED_UPDATED_AT;
+          }
+          return { data: comment ?? { id: params.comment_id, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body } };
+        },
+      },
+      repos: {
+        getCollaboratorPermissionLevel: async () => ({ data: { permission, user: { permissions: { admin: adminFlag } } } }),
+        getContent: async params => {
+          calls.getContent.push(params);
+          if (malformedContent) return { data: [] };
+          const fallback = params.ref === APPLIED_HEAD ? changelog(CURATED_SECTION) : changelog();
+          const content = files.get(params.ref) ?? fallback;
+          return { data: { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64') } };
+        },
+        compareCommitsWithBasehead: async () => ({ data: { status: comparison } }),
+      },
+      git: {
+        getCommit: async params => {
+          calls.getCommit.push(params);
+          return { data: { tree: { sha: 'tree-base' } } };
+        },
+        getRef: async params => {
+          calls.getRef.push(params);
+          return { data: { object: { sha: liveBranchHead } } };
+        },
+        createBlob: async params => {
+          calls.createBlob.push(params);
+          return { data: { sha: 'blob-curated' } };
+        },
+        createTree: async params => {
+          calls.createTree.push(params);
+          return { data: { sha: 'tree-curated' } };
+        },
+        createCommit: async params => {
+          calls.createCommit.push(params);
+          return { data: { sha: APPLIED_HEAD } };
+        },
+        updateRef: async params => {
+          calls.updateRef.push(params);
+          liveBranchHead = params.sha;
+          livePr.head.sha = params.sha;
+          return { data: { object: { sha: params.sha } } };
+        },
+      },
+      users: {
+        getByUsername: async params => {
+          calls.getByUsername.push(params);
+          return { data: appUser };
+        },
+      },
+    },
+    paginate: async (method, params) => (await method(params)).data,
+  };
+  return {
+    github,
+    calls,
+    getPr: () => livePr,
+    setBranchHead: value => { liveBranchHead = value; },
+    setPr: value => { livePr = structuredClone(value); },
+  };
+}
+
+function tempWorkspace(section = GENERATED_SECTION) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-test-'));
+  const file = path.join(root, CHANGELOG_PATH);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, changelog(section));
+  return { root, file };
+}
+
+test('identifies only an exact release title and branch pair', () => {
+  assert.equal(releaseNotes.releaseVersion(`release(deepagents-code): ${VERSION}`, COMPONENT), VERSION);
+  assert.equal(releaseNotes.releaseVersion(`release(deepagents): ${VERSION}`, COMPONENT), null);
+  assert.equal(releaseNotes.isReleasePr(releasePr()), true);
+  assert.equal(releaseNotes.isReleasePr(releasePr({ head: { ...releasePr().head, ref: `${RELEASE_BRANCH}-extra` } })), false);
+  assert.equal(releaseNotes.isReleasePr(releasePr({ base: { ref: 'v0.1', repo: { full_name: 'langchain-ai/deepagents' } } })), false);
+  assert.equal(releaseNotes.isReleasePr(releasePr({ head: { ...releasePr().head, repo: null } })), false);
+});
+
+test('extracts and replaces exactly one version section', () => {
+  const section = releaseNotes.extractVersionSection(changelog(), VERSION);
+  assert.equal(section, releaseNotes.canonical(GENERATED_SECTION));
+  const replaced = releaseNotes.replaceVersionSection(changelog(), VERSION, CURATED_SECTION);
+  assert.equal(releaseNotes.extractVersionSection(replaced, VERSION), releaseNotes.canonical(CURATED_SECTION));
+  assert.match(replaced, /## \[0\.1\.34\]/);
+  assert.throws(() => releaseNotes.extractVersionSection('# Changelog\n', VERSION), /exactly one/);
+});
+
+test('release version and section extraction accept prerelease and build metadata', () => {
+  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 0.2.0-rc.1', COMPONENT), '0.2.0-rc.1');
+  assert.equal(releaseNotes.releaseVersion('release(deepagents-code): 1.0.0+build.5', COMPONENT), '1.0.0+build.5');
+  const version = '0.2.0-rc.1';
+  const heading = `## [${version}](https://example.test) (2026-07-09)`;
+  const doc = `# Changelog\n\n${heading}\n\n* Prerelease note\n\n## [0.1.34](https://example.test) (2026-07-01)\n\n* Older\n`;
+  assert.match(releaseNotes.extractVersionSection(doc, version), /Prerelease note/);
+});
+
+test('requires exactly one PR-body preview terminator', () => {
+  const valid = `Release notes preview\n\n${GENERATED_SECTION}\n_End release notes preview._\nFooter\n`;
+  assert.equal(releaseNotes.extractPreviewSection(valid, VERSION), releaseNotes.canonical(GENERATED_SECTION));
+  assert.throws(
+    () => releaseNotes.extractPreviewSection(valid.replace('\n_End release notes preview._', ''), VERSION),
+    /exactly one release-notes preview terminator/,
+  );
+  assert.throws(
+    () => releaseNotes.extractPreviewSection(`${valid}\n_End release notes preview._\n`, VERSION),
+    /exactly one release-notes preview terminator/,
+  );
+  // A second version heading smuggled into the preview region (before the
+  // terminator) must fail closed: the gate compares the preview against the
+  // curated override, so an injected heading can't be allowed to redirect it.
+  const smuggled = `Release notes preview\n\n${GENERATED_SECTION}\n## [9.9.9](https://example.test) (2026-07-09)\n\n* smuggled\n\n_End release notes preview._\n`;
+  assert.throws(
+    () => releaseNotes.extractPreviewSection(smuggled, VERSION),
+    /exactly one release-notes preview terminator/,
+  );
+});
+
+test('fingerprint changes only with generated entries', () => {
+  const original = releaseNotes.extractVersionSection(changelog(), VERSION);
+  const fingerprint = releaseNotes.changelogFingerprint(original);
+  const unrelated = `${changelog()}\n## unrelated package text\n`;
+  assert.equal(fingerprint, releaseNotes.changelogFingerprint(releaseNotes.extractVersionSection(unrelated, VERSION)));
+  const changedHeading = original.replace('(2026-07-09)', '(2026-07-10)');
+  assert.equal(fingerprint, releaseNotes.changelogFingerprint(changedHeading));
+  const changedEntries = GENERATED_SECTION.replace('useful feature', 'new entry');
+  assert.notEqual(fingerprint, releaseNotes.changelogFingerprint(changedEntries));
+  assert.equal(fingerprint, releaseNotes.changelogFingerprint(original.replace(/\n/g, '\r\n')));
+});
+
+test('parses commands in surrounding text and rejects ambiguous comments', () => {
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft'), 'draft');
+  assert.equal(releaseNotes.commandFromComment('Please @release-bot apply when ready.'), 'apply');
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft after fixing the notes'), 'draft');
+  assert.equal(releaseNotes.commandFromComment('not@release-bot apply'), null);
+  assert.equal(releaseNotes.commandFromComment('@release-bot application'), null);
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft and @release-bot apply'), null);
+});
+
+test('captures draft instructions from the command line only', () => {
+  assert.equal(releaseNotes.instructionsFromComment('@release-bot draft'), '');
+  assert.equal(
+    releaseNotes.instructionsFromComment('@release-bot draft emphasize the breaking SDK change'),
+    'emphasize the breaking SDK change',
+  );
+  // Text after `apply` is not instructions: apply republishes the stored draft.
+  assert.equal(releaseNotes.instructionsFromComment('@release-bot apply emphasize this'), '');
+  // Instructions stop at the end of the command's line.
+  assert.equal(
+    releaseNotes.instructionsFromComment('@release-bot draft keep it short\nsome other line'),
+    'keep it short',
+  );
+  // A `@` in the trailing text would read as another mention, so it and
+  // everything after it is dropped rather than smuggled into the prompt.
+  assert.equal(
+    releaseNotes.instructionsFromComment('@release-bot draft cc @someone else'),
+    'cc',
+  );
+  // A second command later in the comment is still ambiguous, not instructions.
+  assert.equal(releaseNotes.commandFromComment('@release-bot draft these notes @release-bot apply'), null);
+  // Over-long instructions are capped.
+  const long = `@release-bot draft ${'x'.repeat(600)}`;
+  assert.equal(releaseNotes.instructionsFromComment(long).length, 500);
+});
+
+test('sanitizeInstructions strips tokens that would corrupt the override comment', () => {
+  // A valid command naming a reserved content marker must not echo that marker
+  // into the parseable comment before the real one (parseOverrideComment scans
+  // for the first occurrence).
+  assert.equal(
+    releaseNotes.sanitizeInstructions('mention <!-- release-notes-content-start --> here'),
+    'mention here',
+  );
+  // Stripping the shared marker prefix leaves inert text (no `<!-- release-notes-`
+  // remains), so no parser can match the residue.
+  assert.equal(
+    releaseNotes.sanitizeInstructions('use <!-- release-notes-content-end --> and <!-- release-notes-override -->'),
+    'use and override -->',
+  );
+  assert.ok(!releaseNotes.sanitizeInstructions('use <!-- release-notes-content-end --> and <!-- release-notes-override -->').includes('<!-- release-notes-'));
+  // A version heading forges a `## [` in the echo whether it is on its own line
+  // or inline (instructions collapse to one line, so both forms are stripped).
+  assert.equal(releaseNotes.sanitizeInstructions('notes\n## [1.2.3]\nmore'), 'notes more');
+  assert.equal(releaseNotes.sanitizeInstructions('mention ## [9.9.9] here'), 'mention here');
+  // The `@` strip, whitespace collapse, and length cap all apply together.
+  assert.equal(releaseNotes.sanitizeInstructions('  keep   it  short @bot now  '), 'keep it short');
+  assert.equal(releaseNotes.sanitizeInstructions('x'.repeat(600)).length, 500);
+  // Non-string input (a caller that did not pre-clean) is coerced, never throws.
+  assert.equal(releaseNotes.sanitizeInstructions(''), '');
+});
+
+test('trusts only marked comments from the configured bot identity', () => {
+  const valid = overrideComment();
+  const impostor = { ...overrideComment({ id: 11 }), user: { login: BOT.login, id: 99 } };
+  assert.equal(releaseNotes.latestOverride({ comments: [valid, impostor], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 10);
+  assert.equal(releaseNotes.latestOverride({ comments: [impostor], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('state: draft', 'state: applied') }), null);
+});
+
+test('manual commands require write permission and ready status', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      // A read-access collaborator: an insider (so feedback is allowed) who still
+      // lacks the write permission the command requires.
+      comment: { body: '@release-bot apply', user: { login: 'reader' }, author_association: 'COLLABORATOR' },
+    },
+  };
+  const denied = makeGithub({ permission: 'read' });
+  assert.equal((await releaseNotes.validateTrigger({ github: denied.github, context, core: makeCore() })).shouldRun, false);
+  assert.match(denied.calls.createComment[0].body, /write access/);
+
+  const draft = makeGithub({ pr: releasePr({ draft: true }) });
+  assert.equal((await releaseNotes.validateTrigger({ github: draft.github, context, core: makeCore() })).shouldRun, false);
+  assert.match(draft.calls.createComment[0].body, /ready for review/);
+});
+
+test('manual commands ignore comments authored by the configured bot', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot draft', user: BOT },
+    },
+  };
+  const run = makeGithub({ permission: 'write' });
+  const result = await releaseNotes.validateTrigger({
+    github: run.github,
+    context,
+    core: makeCore(),
+    botLogin: BOT.login,
+    botId: BOT.id,
+  });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 0);
+});
+
+test('an accepted manual command is acknowledged immediately', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot draft', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub({ permission: 'write' });
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, true);
+  assert.equal(result.command, 'draft');
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /Running `draft` for the `deepagents-code` release PR/);
+  // The ack must land on the PR that carried the command, not merely somewhere.
+  assert.equal(run.calls.createComment[0].owner, 'langchain-ai');
+  assert.equal(run.calls.createComment[0].repo, 'deepagents');
+  assert.equal(run.calls.createComment[0].issue_number, 123);
+  // A mention would make the ack re-trigger the workflow on itself.
+  assert.doesNotMatch(run.calls.createComment[0].body, /@release-bot/);
+});
+
+test('a failed acknowledgment still runs the command', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  // A non-Error rejection is the sharp case: reading `.message` off it unguarded
+  // throws out of the catch and drops a command that passed every gate.
+  for (const thrown of [new Error('secondary rate limit'), 'secondary rate limit']) {
+    const run = makeGithub({
+      permission: 'write',
+      onCreateComment: () => { throw thrown; },
+    });
+    const core = makeCore();
+    const result = await releaseNotes.validateTrigger({ github: run.github, context, core });
+    assert.equal(result.shouldRun, true);
+    assert.equal(result.command, 'apply');
+    assert.equal(core.warnings.length, 1);
+    assert.match(core.warnings[0], /Failed to post acknowledgment comment for apply on PR #123: secondary rate limit/);
+  }
+});
+
+test('ready_for_review automatically validates as draft command', async () => {
+  const { github, calls } = makeGithub();
+  const context = {
+    eventName: 'pull_request_target',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: { action: 'ready_for_review', pull_request: { number: 123 } },
+  };
+  const core = makeCore();
+  const result = await releaseNotes.validateTrigger({ github, context, core });
+  // The automatic trigger fires on every release PR becoming ready, so it must
+  // stay silent; only manual commands are acknowledged.
+  assert.equal(calls.createComment.length, 0);
+  assert.equal(core.warnings.length, 0);
+  assert.deepEqual(result, {
+    shouldRun: true,
+    command: 'draft',
+    number: 123,
+    component: COMPONENT,
+    version: VERSION,
+    head: HEAD,
+    branch: RELEASE_BRANCH,
+    // The automatic trigger has no comment, so there are never instructions.
+    instructions: '',
+  });
+});
+
+test('prepares agent input from the exact validated head', async t => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
+  t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
+  const { github, calls } = makeGithub();
+  const prepared = await releaseNotes.prepareDraft({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    runnerTemp,
+  });
+  assert.match(fs.readFileSync(prepared.input, 'utf8'), /untrusted source material/);
+  assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).fingerprint, releaseNotes.changelogFingerprint(GENERATED_SECTION));
+  // The trusted state file must live outside `work` (the agent's only writable dir)
+  // so a compromised agent can't overwrite what postDraft re-validates against.
+  assert.ok(!prepared.state.startsWith(prepared.work));
+  assert.ok(prepared.state.startsWith(runnerTemp));
+  assert.equal(calls.getContent.length, 1);
+  assert.equal(calls.getContent[0].ref, HEAD);
+});
+
+test('prepares drafting input and state with sanitized maintainer instructions', async t => {
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
+  t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
+  const { github } = makeGithub();
+  const prepared = await releaseNotes.prepareDraft({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    runnerTemp,
+    instructions: 'emphasize the breaking SDK change',
+  });
+  const input = fs.readFileSync(prepared.input, 'utf8');
+  assert.match(input, /^Instructions: emphasize the breaking SDK change$/m);
+  assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).instructions, 'emphasize the breaking SDK change');
+
+  // A raw comment tail is re-sanitized here: `@` truncates and length is capped,
+  // so a caller that bypasses parseCommand cannot smuggle a second mention or an
+  // unbounded prompt into the drafting input.
+  const raw = await releaseNotes.prepareDraft({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    runnerTemp,
+    instructions: `keep it short @release-bot apply ${'x'.repeat(600)}`,
+  });
+  const rawInput = fs.readFileSync(raw.input, 'utf8');
+  assert.match(rawInput, /^Instructions: keep it short$/m);
+  assert.ok(!rawInput.includes('@release-bot apply'));
+  assert.equal(JSON.parse(fs.readFileSync(raw.state, 'utf8')).instructions, 'keep it short');
+});
+
+test('posts a bot-authored draft and refuses stale agent output', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const { github, calls } = makeGithub();
+  await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.deepEqual(calls.getByUsername, [{ username: BOT.login }]);
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, /changelog-fingerprint:/);
+  assert.match(calls.createComment[0].body, /---\n<!-- release-notes-content-start -->/);
+  assert.match(calls.createComment[0].body, /<!-- release-notes-content-end -->\n---/);
+  assert.match(calls.createComment[0].body, /```\n@release-bot apply\n```/);
+  assert.match(calls.createComment[0].body, /```\n@release-bot draft\n```/);
+  assert.match(calls.createComment[0].body, /only way to skip the curated-notes merge gate/);
+  // The header advertises the steering form so maintainers learn it from the draft.
+  assert.match(calls.createComment[0].body, /Keep the version heading intact\. To regenerate with steering/);
+  assert.match(calls.createComment[0].body, /@release-bot draft <instructions>/);
+  // No instructions were recorded in state, so nothing is echoed.
+  assert.ok(!calls.createComment[0].body.includes('<details>'));
+
+  const stale = makeGithub({ pr: releasePr({ head: { ...releasePr().head, sha: 'c'.repeat(40) } }) });
+  await assert.rejects(
+    releaseNotes.postDraft({ github: stale.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH }),
+    /changed while notes were being drafted/,
+  );
+});
+
+test('posts a draft that echoes the maintainer instructions it used', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING, instructions: 'emphasize the breaking SDK change' }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const { github, calls } = makeGithub();
+  await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, /<details>\n<summary>📝 <strong>Drafted with maintainer instructions<\/strong><\/summary>\n\nemphasize the breaking SDK change\n<\/details>/);
+  // The echo sits outside the marked metadata block and the editable content
+  // markers, so it cannot corrupt either parser.
+  const body = calls.createComment[0].body;
+  assert.ok(body.indexOf('-->') < body.indexOf('Drafted with maintainer instructions'));
+  assert.ok(body.indexOf('Drafted with maintainer instructions') < body.indexOf('release-notes-content-start'));
+});
+
+test('escapes HTML in echoed instructions so the details toggle cannot be broken', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-post-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING, instructions: 'describe the section after </details> and <details open>' }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const { github, calls } = makeGithub();
+  await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(calls.createComment.length, 1);
+  const body = calls.createComment[0].body;
+  // Raw closing/opening tags must not appear inside the details block.
+  assert.match(body, /&lt;\/details&gt;/);
+  assert.match(body, /&lt;details open&gt;/);
+  // Only one real <details> and one real </details> should exist.
+  assert.equal(body.split('<details>').length - 1, 1);
+  assert.equal(body.split('</details>').length - 1, 1);
+});
+
+test('prepare apply replaces only the changelog section and records immutable hashes', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const { github } = makeGithub({ comments: [overrideComment()] });
+  const state = await releaseNotes.prepareApply({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    changelogFile: workspace.file,
+    stateFile,
+    ...BOT_AUTH,
+  });
+  assert.equal(releaseNotes.extractVersionSection(fs.readFileSync(workspace.file, 'utf8'), VERSION), releaseNotes.canonical(CURATED_SECTION));
+  assert.equal(state.overrideId, '10');
+  assert.equal(state.overrideUpdatedAt, OVERRIDE_UPDATED_AT);
+  assert.equal(state.contentHash, releaseNotes.sha256(CURATED_SECTION));
+  assert.equal(state.originalBodyHash, releaseNotes.exactSha256(releasePr().body));
+  assert.match(state.body, /\* Add a useful feature/);
+});
+
+test('apply rejects concurrent PR-body and override revisions', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const comments = [overrideComment()];
+  const run = makeGithub({ comments });
+  await releaseNotes.prepareApply({
+    github: run.github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    changelogFile: workspace.file,
+    stateFile,
+    ...BOT_AUTH,
+  });
+
+  run.setPr(releasePr({
+    body: `${releasePr().body}\nMaintainer edit\n`,
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+  }));
+  await assert.rejects(
+    releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH }),
+    /Release PR changed while apply was preparing/,
+  );
+
+  run.setPr(releasePr({ head: { ...releasePr().head, sha: APPLIED_HEAD } }));
+  comments[0].updated_at = '2026-07-09T12:01:00Z';
+  await assert.rejects(
+    releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH }),
+    /draft changed while apply was preparing/,
+  );
+});
+
+test('prepare apply preserves the generated release heading', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const altered = CURATED_SECTION.replace('(2026-07-09)', '(2026-07-10)');
+  const { github } = makeGithub({ comments: [overrideComment({ section: altered })] });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /Keep the generated release version heading unchanged/,
+  );
+});
+
+test('prepare apply rejects new generated entries but permits idempotent recovery', async t => {
+  const changed = GENERATED_SECTION.replace('useful feature', 'brand new feature');
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const files = new Map([[HEAD, changelog(changed)]]);
+  const { github } = makeGithub({ comments: [overrideComment()], files });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /New generated release entries/,
+  );
+
+  files.set(HEAD, changelog(CURATED_SECTION));
+  const recovered = await releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH });
+  assert.equal(recovered.alreadyApplied, true);
+});
+
+test('prepare apply rejects a draft from a rewritten release branch with unchanged entries', async t => {
+  const rewrittenHead = 'c'.repeat(40);
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const pr = releasePr({ head: { ...releasePr().head, sha: rewrittenHead } });
+  const files = new Map([[rewrittenHead, changelog(GENERATED_SECTION)]]);
+  const { github } = makeGithub({ pr, comments: [overrideComment()], files, comparison: 'diverged' });
+
+  await assert.rejects(
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: rewrittenHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /Release PR was rewritten after drafting; run @release-bot draft before apply/,
+  );
+});
+
+test('required check passes only when applied metadata, changelog, body, and ancestry match', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'passed', core.failed);
+  assert.equal(core.failed, null);
+  // The refresh workflow names the validated package+version in its check output,
+  // so the result must carry them.
+  assert.equal(result.component, COMPONENT);
+  assert.equal(result.version, VERSION);
+});
+
+test('required check accepts apply after unrelated branch advancement', async () => {
+  const advancedHead = 'c'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment({ sourceHead: advancedHead })] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'passed', core.failed);
+  assert.equal(core.failed, null);
+});
+
+test('required check accepts an identical-ancestry comparison as a descendant', async () => {
+  // source-head differs from the override head, so ancestry goes through the compare
+  // API rather than the base===head short-circuit; 'identical' must count as ok.
+  const advancedHead = 'c'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment(), appliedComment({ sourceHead: advancedHead })],
+    comparison: 'identical',
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'passed', core.failed);
+  assert.equal(core.failed, null);
+});
+
+test('required check binds to the expected head and rejects malformed target titles', async () => {
+  const staleHead = makeGithub();
+  const staleCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: staleHead.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: staleCore, number: 123, ...BOT_AUTH, expectedHead: APPLIED_HEAD });
+  assert.match(staleCore.failed, /head changed before/);
+
+  const malformed = makeGithub({ pr: releasePr({ title: `release(deepagents): ${VERSION}` }) });
+  const malformedCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: malformed.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: malformedCore, number: 123, ...BOT_AUTH });
+  assert.match(malformedCore.failed, /title does not match/);
+});
+
+test('required check rejects in-flight bypass and comment revisions', async () => {
+  const bypass = makeGithub({
+    pr: releasePr({ labels: [{ name: releaseNotes.BYPASS_LABEL }] }),
+    onGetPr: ({ count, pr }) => {
+      if (count === 2) pr.labels = [];
+    },
+  });
+  const bypassCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: bypass.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: bypassCore, number: 123, ...BOT_AUTH });
+  assert.match(bypassCore.failed, /changed while/);
+
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const comments = [overrideComment(), appliedComment()];
+  const revised = makeGithub({
+    pr,
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) comments[0].updated_at = '2026-07-09T12:01:00Z';
+    },
+  });
+  const revisedCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: revised.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: revisedCore, number: 123, ...BOT_AUTH });
+  assert.match(revisedCore.failed, /comments changed while/);
+});
+
+test('required check fails after override edit and after release-please overwrite', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const edited = CURATED_SECTION.replace('useful', 'excellent');
+  const editedBotComment = overrideComment({ section: edited });
+  const editedRun = makeGithub({ pr, comments: [editedBotComment, appliedComment()] });
+  const editedCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: editedRun.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: editedCore, number: 123, ...BOT_AUTH });
+  assert.match(editedCore.failed, /override changed after apply/);
+
+  const restoredRun = makeGithub({
+    pr,
+    comments: [
+      overrideComment({ updatedAt: '2026-07-09T12:01:00Z' }),
+      appliedComment(),
+    ],
+  });
+  const restoredCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: restoredRun.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: restoredCore, number: 123, ...BOT_AUTH });
+  assert.match(restoredCore.failed, /override was revised after apply/);
+
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const overwrittenPr = releasePr({
+    head: { ...releasePr().head, sha: 'd'.repeat(40) },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[overwrittenPr.head.sha, changelog(newGenerated)]]);
+  const overwritten = makeGithub({ pr: overwrittenPr, comments: [overrideComment(), appliedComment()], files });
+  const overwrittenCore = makeCore();
+  await releaseNotes.checkCuratedState({ github: overwritten.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: overwrittenCore, number: 123, ...BOT_AUTH });
+  assert.match(overwrittenCore.failed, /changelog does not contain/);
+  assert.equal(overwritten.calls.createComment.length, 1);
+  assert.match(overwritten.calls.createComment[0].body, /New generated release entries appeared/);
+
+  await releaseNotes.checkCuratedState({ github: overwritten.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: makeCore(), number: 123, ...BOT_AUTH });
+  assert.equal(overwritten.calls.createComment.length, 1);
+});
+
+test('required check warns when generated entries change after draft before apply', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const comments = [overrideComment()];
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github, calls } = makeGithub({ pr, comments, files });
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.equal(result.status, 'missing');
+  assert.equal(result.component, COMPONENT);
+  assert.equal(result.version, VERSION);
+  assert.match(core.failed, /draft and then/);
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, /New generated release entries appeared/);
+
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: makeCore(), number: 123, ...BOT_AUTH });
+  assert.equal(calls.createComment.length, 1);
+});
+
+test('a failed new-entries warning comment does not mask the actionable gate reason', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github } = makeGithub({ pr, comments: [overrideComment()], files });
+  // The courtesy warning comment keeps failing across the retries (rate limit /
+  // transient 5xx / transient permission 403). The gate must still fail closed
+  // with its specific, actionable reason and only log a warning about the
+  // comment, rather than surfacing the raw API error.
+  github.rest.issues.createComment = async () => { throw new Error('rate limited'); };
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    warningCommentRetries: 1,
+    warningCommentRetryIntervalMs: 0,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then/);
+  assert.ok(core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+});
+
+test('the new-entries warning comment retries a transient post failure', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github, calls } = makeGithub({ pr, comments: [overrideComment()], files });
+  // First post 403s (the transient permission error seen on release PRs); the
+  // retry succeeds, so the gate reports no warning about the courtesy comment.
+  let createCommentAttempts = 0;
+  github.rest.issues.createComment = async args => {
+    createCommentAttempts += 1;
+    calls.createComment.push(args);
+    if (createCommentAttempts === 1) throw new Error('Resource not accessible by integration');
+    return { data: { id: 99 } };
+  };
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    warningCommentRetries: 1,
+    warningCommentRetryIntervalMs: 0,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.equal(createCommentAttempts, 2);
+  assert.ok(!core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+});
+
+test('the new-entries warning retry does not duplicate a comment the server already accepted', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const comments = [overrideComment()];
+  const { github, calls } = makeGithub({ pr, comments, files });
+  // The first create succeeds server-side (the marker comment lands) but the
+  // client sees a timeout instead of the response. Retrying against the stale
+  // snapshot would post the identical warning again; the retry must re-read
+  // comments, see the marker, and stop after one POST.
+  github.rest.issues.createComment = async params => {
+    comments.push({ id: 100 + comments.length, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body });
+    calls.createComment.push(params);
+    throw new Error('request timed out');
+  };
+
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    warningCommentRetries: 2,
+    warningCommentRetryIntervalMs: 0,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.equal(calls.createComment.length, 1);
+  assert.ok(!core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+});
+
+test('draft, unmanaged branch, and bypass label pass without metadata', async () => {
+  for (const pr of [
+    releasePr({ draft: true }),
+    // Not a component release-please manages, so the gate does not apply. Every
+    // managed component IS gated — see the companion test below.
+    releasePr({
+      title: `release(not-a-package): ${VERSION}`,
+      head: { ...releasePr().head, ref: 'release-please--branches--main--components--not-a-package' },
+    }),
+    releasePr({ labels: [{ name: releaseNotes.BYPASS_LABEL }] }),
+    // Labels can also arrive as plain strings; the bypass escape hatch and the
+    // TOCTOU label snapshot both depend on labelNames handling that shape.
+    releasePr({ labels: [releaseNotes.BYPASS_LABEL] }),
+  ]) {
+    const { github } = makeGithub({ pr });
+    const core = makeCore();
+    await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+    assert.equal(core.failed, null);
+  }
+});
+
+test('validateDraftOutput rejects empty, metadata, and heading content', () => {
+  assert.throws(() => releaseNotes.validateDraftOutput('   \n'), /empty release notes/);
+  assert.throws(() => releaseNotes.validateDraftOutput('<!-- release-notes-applied\npackage: x\n-->\nnotes'), /only section content/);
+  assert.throws(() => releaseNotes.validateDraftOutput(`${HEADING}\n\n* smuggled heading`), /only section content/);
+  assert.equal(releaseNotes.validateDraftOutput('### Features\n\n* Real note.\n'), '### Features\n\n* Real note.\n');
+});
+
+test('postDraft fails when the installation App is not the configured bot', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-auth-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+
+  const wrongSlug = makeGithub();
+  await assert.rejects(
+    releaseNotes.postDraft({ github: wrongSlug.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH, appSlug: 'someone-else' }),
+    /token was minted for someone-else\[bot\]/,
+  );
+  assert.equal(wrongSlug.calls.getByUsername.length, 0);
+
+  const wrongUser = makeGithub({ appUser: { login: BOT.login, id: 7 } });
+  await assert.rejects(
+    releaseNotes.postDraft({ github: wrongUser.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH }),
+    /GitHub App bot is release-notes-bot\[bot\] \(7\)/,
+  );
+  assert.equal(wrongUser.calls.createComment.length, 0);
+  assert.equal(wrongUser.calls.updateComment.length, 0);
+});
+
+test('required check fails when curated draft or applied metadata is missing', async () => {
+  const { github } = makeGithub({ comments: [] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then/);
+});
+
+test('required check waits for the first automatic draft before validating', async () => {
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 1,
+    sleep: async () => {},
+  });
+  assert.equal(result.status, 'unapplied');
+  assert.equal(
+    result.draftCommentUrl,
+    `https://github.com/langchain-ai/deepagents/pull/123#issuecomment-${comments[0].id}`,
+  );
+  assert.match(core.failed, /Review the curated release-note draft.*apply/);
+  assert.ok(core.infos.some(message => /Waiting for the automatic/.test(message)));
+  assert.equal(run.calls.getContent.length, 1);
+});
+
+test('required check honors draft and bypass state added while polling', async () => {
+  for (const exemption of ['draft', 'bypass']) {
+    const run = makeGithub({
+      comments: [],
+      onGetPr: ({ count, pr }) => {
+        if (count !== 2) return;
+        if (exemption === 'draft') pr.draft = true;
+        else pr.labels = [{ name: releaseNotes.BYPASS_LABEL }];
+      },
+    });
+    const core = makeCore();
+    const result = await releaseNotes.checkCuratedState({
+      github: run.github,
+      context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+      core,
+      number: 123,
+      ...BOT_AUTH,
+      initialDraftPollAttempts: 1,
+      sleep: async () => {},
+    });
+    assert.equal(result.status, exemption === 'draft' ? 'draft' : 'bypassed');
+    assert.equal(core.failed, null);
+    assert.equal(run.calls.getContent.length, 0);
+  }
+});
+
+test('required check requires a fresh draft when heading or release ancestry drifted', async () => {
+  const changedHeading = HEADING.replace('(2026-07-09)', '(2026-07-10)');
+  const headingSection = GENERATED_SECTION.replace(HEADING, changedHeading);
+  const headingPr = releasePr({
+    body: `Release notes preview\n\n${headingSection}\n_End release notes preview._\n`,
+  });
+  const headingFiles = new Map([[HEAD, changelog(headingSection)]]);
+  const headingRun = makeGithub({ pr: headingPr, comments: [overrideComment()], files: headingFiles });
+  const headingCore = makeCore();
+  const headingResult = await releaseNotes.checkCuratedState({
+    github: headingRun.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: headingCore,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(headingResult.status, 'missing');
+  assert.match(headingCore.failed, /draft and then.*apply/);
+
+  const rewrittenHead = 'd'.repeat(40);
+  const rewrittenPr = releasePr({ head: { ...releasePr().head, sha: rewrittenHead } });
+  const rewrittenFiles = new Map([[rewrittenHead, changelog()]]);
+  const rewrittenRun = makeGithub({
+    pr: rewrittenPr,
+    comments: [overrideComment()],
+    files: rewrittenFiles,
+    comparison: 'diverged',
+  });
+  const rewrittenCore = makeCore();
+  const rewrittenResult = await releaseNotes.checkCuratedState({
+    github: rewrittenRun.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: rewrittenCore,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(rewrittenResult.status, 'missing');
+  assert.match(rewrittenCore.failed, /draft and then.*apply/);
+});
+
+test('required check gives up and reports missing when the draft never arrives', async () => {
+  let sleeps = 0;
+  const run = makeGithub({ comments: [] }); // override never appears
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 3,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then/);
+  assert.equal(sleeps, 3); // polled to exhaustion, not short-circuited early
+  assert.equal(run.calls.getContent.length, 0); // returned before fetching the changelog
+});
+
+test('required check keeps polling through a transient read failure', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) throw new Error('transient 502');
+      if (count === 3) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'unapplied'); // recovered after the blip; draft found
+  assert.equal(sleeps, 2); // one failed poll, one that found the draft
+  assert.ok(core.warnings.some(message => /Polling for the curated release-note draft failed/.test(message)));
+});
+
+test('required check retries when the initial comments read fails', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 1) throw new Error('transient 502');
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(result.status, 'unapplied');
+  assert.equal(sleeps, 1);
+  assert.ok(core.warnings.some(message => /Reading comments before polling.*transient 502/.test(message)));
+});
+
+test('required check stops polling as soon as the draft appears', async () => {
+  let sleeps = 0;
+  const comments = [];
+  const run = makeGithub({
+    comments,
+    onListComments: ({ count }) => {
+      if (count === 2) comments.push(overrideComment());
+    },
+  });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 5,
+    sleep: async () => { sleeps += 1; },
+  });
+  assert.equal(sleeps, 1); // exited on the first successful poll, not all 5 attempts
+});
+
+test('required check does not poll when polling is disabled', async () => {
+  const run = makeGithub({ comments: [] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github: run.github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+    initialDraftPollAttempts: 0,
+    sleep: async () => { throw new Error('sleep must not be called when polling is disabled'); },
+  });
+  assert.equal(result.status, 'missing');
+  assert.ok(!core.infos.some(message => /Waiting for the automatic/.test(message)));
+});
+
+test('required check fails when applied metadata references an older override', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment({ overrideId: 999 })] });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.match(core.failed, /older override comment/);
+});
+
+test('required check fails when the applied draft is not based on the latest override', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const staleSource = 'f'.repeat(40);
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment({ sourceHead: staleSource })], comparison: 'diverged' });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.match(core.failed, /not based on the latest curated draft/);
+});
+
+test('required check fails when the applied commit is not an ancestor of the head', async () => {
+  const headSha = 'e'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: headSha },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[headSha, changelog(CURATED_SECTION)]]);
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()], files, comparison: 'diverged' });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.match(core.failed, /not an ancestor of the current release PR head/);
+});
+
+test('parseMetadata rejects malformed, unknown, duplicate, and missing-field comments', () => {
+  const valid = overrideComment();
+  assert.ok(releaseNotes.parseOverrideComment(valid));
+
+  // Missing prefix: body does not start with the marker at byte 0.
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: `noise\n${valid.body}` }), null);
+  // Missing close marker.
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('\n-->', '') }), null);
+  // Unknown field inside the metadata block.
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('state: draft', 'state: draft\nevil: 1') }), null);
+  // Duplicate allowed field: a second value must not silently win over the first.
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('state: draft', `version: ${VERSION}\nstate: draft`) }), null);
+  // Malformed line without a "key: value" shape.
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('state: draft', 'state: draft\ngarbage') }), null);
+  // Missing a required field.
+  assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: valid.body.replace('state: draft\n', '') }), null);
+
+  // The same strictness applies to applied comments.
+  const applied = appliedComment();
+  assert.ok(releaseNotes.parseAppliedComment(applied));
+  assert.equal(releaseNotes.parseAppliedComment({ ...applied, body: applied.body.replace('state: applied', 'state: applied\nextra: x') }), null);
+});
+
+test('extractVersionSection rejects more than one matching heading', () => {
+  const twoHeadings = `${changelog()}\n${GENERATED_SECTION}`;
+  assert.throws(() => releaseNotes.extractVersionSection(twoHeadings, VERSION), /exactly one/);
+});
+
+test('postDraft output round-trips through parseOverrideComment', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-rt-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const { github, calls } = makeGithub();
+  await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  const parsed = releaseNotes.parseOverrideComment({ user: BOT, body: calls.createComment[0].body });
+  assert.ok(parsed, 'override comment should parse');
+  assert.equal(parsed.metadata.version, VERSION);
+  assert.equal(parsed.metadata['release-heading-hash'], releaseNotes.sha256(HEADING));
+});
+
+test('apply uses an exact-parent commit and a non-force branch update', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const { github, calls } = makeGithub({ comments: [overrideComment()] });
+  const state = await releaseNotes.prepareApply({
+    github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  const committed = await releaseNotes.createApplyCommit({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, ...BOT_AUTH,
+  });
+  assert.deepEqual(committed, { appliedHead: APPLIED_HEAD, created: true });
+  assert.deepEqual(calls.createCommit[0].parents, [HEAD]);
+  assert.equal(calls.createTree[0].base_tree, 'tree-base');
+  assert.equal(calls.createTree[0].tree[0].path, CHANGELOG_PATH);
+  assert.deepEqual(calls.updateRef[0], {
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    ref: `heads/${RELEASE_BRANCH}`,
+    sha: APPLIED_HEAD,
+    force: false,
+  });
+  await releaseNotes.publishAppliedState({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+  });
+  assert.equal(calls.updatePr.length, 1);
+  assert.equal(calls.updatePr[0].body, state.body);
+  assert.match(calls.updatePr[0].body, /\* Add a useful feature/);
+  assert.equal(calls.createComment.length, 1);
+  const parsed = releaseNotes.parseAppliedComment({ body: calls.createComment[0].body });
+  assert.ok(parsed, 'applied comment should parse');
+  assert.equal(parsed.metadata['override-content-hash'], releaseNotes.sha256(CURATED_SECTION));
+  assert.equal(parsed.metadata['applied-head'], APPLIED_HEAD);
+  assert.deepEqual(calls.getRef, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    ref: `heads/${RELEASE_BRANCH}`,
+  }]);
+});
+
+test('apply publishes when the PR head has not caught up with the release branch', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  await releaseNotes.createApplyCommit({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, ...BOT_AUTH,
+  });
+  run.setPr(releasePr());
+
+  await releaseNotes.publishAppliedState({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+  });
+
+  assert.equal(run.calls.updatePr.length, 1);
+  assert.equal(run.calls.createComment.length, 1);
+});
+
+test('apply refuses a concurrent branch move before publishing metadata', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  await releaseNotes.createApplyCommit({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, ...BOT_AUTH,
+  });
+  run.setBranchHead('f'.repeat(40));
+
+  await assert.rejects(
+    releaseNotes.publishAppliedState({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+    }),
+    /Release branch changed while apply was preparing/,
+  );
+  assert.equal(run.calls.updatePr.length, 0);
+  assert.equal(run.calls.createComment.length, 0);
+});
+
+test('apply refuses a concurrent branch move before updating the ref', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({
+    comments: [overrideComment()],
+    onGetPr: ({ count, pr }) => {
+      if (count === 3) pr.head.sha = 'f'.repeat(40);
+    },
+  });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile: workspace.file, ...BOT_AUTH,
+    }),
+    /Release PR changed while apply was preparing/,
+  );
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('an already-applied changelog does not create another commit', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({
+    comments: [overrideComment()],
+    files: new Map([[HEAD, changelog(CURATED_SECTION)]]),
+  });
+  const state = await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  assert.equal(state.alreadyApplied, true);
+  const result = await releaseNotes.createApplyCommit({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile: workspace.file, ...BOT_AUTH,
+  });
+  assert.deepEqual(result, { appliedHead: HEAD, created: false });
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('apply rejects a canonically-invisible PR-body edit via the exact hash', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  // Trailing whitespace is erased by canonical()/sha256 but preserved by
+  // exactSha256, so only the byte-exact body guard can reject this edit.
+  run.setPr(releasePr({
+    body: `${releasePr().body}   `,
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+  }));
+  await assert.rejects(
+    releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH }),
+    /Release PR changed while apply was preparing/,
+  );
+  assert.equal(releaseNotes.sha256(`${releasePr().body}   `), releaseNotes.sha256(releasePr().body));
+  assert.notEqual(releaseNotes.exactSha256(`${releasePr().body}   `), releaseNotes.exactSha256(releasePr().body));
+});
+
+test('postApplyFailure posts once per head and requires the configured bot', async () => {
+  const run = makeGithub({ comments: [] });
+  await releaseNotes.postApplyFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH, message: 'boom' });
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /Applying curated release notes failed/);
+  assert.match(run.calls.createComment[0].body, /boom/);
+  // Dedup: a second failure for the same head does not add another comment.
+  await releaseNotes.postApplyFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH, message: 'boom again' });
+  assert.equal(run.calls.createComment.length, 1);
+
+  const wrong = makeGithub({ appUser: { login: 'someone-else', id: 7 } });
+  await assert.rejects(
+    releaseNotes.postApplyFailure({ github: wrong.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH, message: 'x' }),
+    /GitHub App bot is someone-else \(7\)/,
+  );
+  assert.equal(wrong.calls.createComment.length, 0);
+});
+
+test('postDraftFailure posts rerun guidance once per head', async () => {
+  const run = makeGithub({ comments: [] });
+  await releaseNotes.postDraftFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH, message: 'boom' });
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /Automatic release-note drafting failed/);
+  assert.match(run.calls.createComment[0].body, /boom/);
+  assert.equal(releaseNotes.commandFromComment(run.calls.createComment[0].body), 'draft');
+  // Dedup: a second failure for the same head does not add another comment.
+  await releaseNotes.postDraftFailure({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, head: HEAD, ...BOT_AUTH, message: 'boom again' });
+  assert.equal(run.calls.createComment.length, 1);
+});
+
+test('manual commands run for maintainers and admins', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' } },
+    },
+  };
+  const maintain = makeGithub({ permission: 'maintain' });
+  const maintainResult = await releaseNotes.validateTrigger({ github: maintain.github, context, core: makeCore() });
+  assert.equal(maintainResult.shouldRun, true);
+  assert.equal(maintainResult.command, 'apply');
+  // This payload carries no `author_association`, so `canNotify` is false: the
+  // ack fires on write permission alone, unlike every rejection reply.
+  assert.equal(maintain.calls.createComment.length, 1);
+  assert.match(maintain.calls.createComment[0].body, /Running `apply`/);
+
+  // The admin flag grants access even when the permission string is not in the set.
+  const admin = makeGithub({ permission: 'read', adminFlag: true });
+  assert.equal((await releaseNotes.validateTrigger({ github: admin.github, context, core: makeCore() })).shouldRun, true);
+});
+
+test('validateTrigger surfaces draft instructions and drops apply instructions', async () => {
+  const base = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      user: { login: 'maintainer' },
+    },
+  };
+  const draftContext = {
+    ...base,
+    payload: {
+      ...base.payload,
+      comment: { body: '@release-bot draft emphasize the breaking SDK change', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const draftRun = makeGithub({ permission: 'write' });
+  const draftResult = await releaseNotes.validateTrigger({ github: draftRun.github, context: draftContext, core: makeCore() });
+  assert.equal(draftResult.shouldRun, true);
+  assert.equal(draftResult.command, 'draft');
+  assert.equal(draftResult.instructions, 'emphasize the breaking SDK change');
+  // The ack is a plain reply; instructions ride along in the result, not the
+  // comment, so untrusted text never gets echoed back onto the PR.
+  assert.equal(draftRun.calls.createComment.length, 1);
+  assert.match(draftRun.calls.createComment[0].body, /Running `draft`/);
+  assert.doesNotMatch(draftRun.calls.createComment[0].body, /emphasize the breaking SDK change/);
+
+  // Instructions after `apply` never reach the workflow: apply republishes the
+  // stored draft, so the gate reports no instructions for it.
+  const applyContext = {
+    ...base,
+    payload: {
+      ...base.payload,
+      comment: { body: '@release-bot apply emphasize this', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const applyRun = makeGithub({ permission: 'write' });
+  const applyResult = await releaseNotes.validateTrigger({ github: applyRun.github, context: applyContext, core: makeCore() });
+  assert.equal(applyResult.shouldRun, true);
+  assert.equal(applyResult.command, 'apply');
+  assert.equal(applyResult.instructions, '');
+});
+
+test('an explicit command on a non-release PR is explained, not silently ignored', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub({ pr: releasePr({ title: 'feat: something else' }) });
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /only applies to a release-please release PR/);
+});
+
+test('required check fails when applied and override fingerprints differ', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment({ fingerprint: releaseNotes.sha256('different') })] });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.match(core.failed, /fingerprints differ/);
+});
+
+test('required check fails when the PR body preview does not mirror the curated section', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${GENERATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()] });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.match(core.failed, /does not mirror the curated changelog section/);
+});
+
+test('required check fails when the PR changes during the final re-read', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const changed = makeGithub({
+    pr,
+    comments: [overrideComment(), appliedComment()],
+    onGetPr: ({ count, pr: livePr }) => { if (count === 2) livePr.head.sha = 'f'.repeat(40); },
+  });
+  const core = makeCore();
+  await releaseNotes.checkCuratedState({ github: changed.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.match(core.failed, /changed while the curated-notes check was running/);
+});
+
+test('prepareDraft and prepareApply reject a changed release head', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const runnerTemp = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-runner-'));
+  t.after(() => fs.rmSync(runnerTemp, { recursive: true, force: true }));
+  const staleHead = 'c'.repeat(40);
+  const draft = makeGithub();
+  await assert.rejects(
+    releaseNotes.prepareDraft({ github: draft.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: staleHead, runnerTemp }),
+    /changed before drafting started/,
+  );
+  const apply = makeGithub({ comments: [overrideComment()] });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github: apply.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: staleHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /changed before apply started/,
+  );
+});
+
+test('required check surfaces an unreadable changelog', async () => {
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n_End release notes preview._\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()], malformedContent: true });
+  await assert.rejects(
+    releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: makeCore(), number: 123, ...BOT_AUTH }),
+    /Could not read/,
+  );
+});
+
+test('rejects a fork PR whose head branch mimics the release branch', () => {
+  // Fork PR: head and base are DIFFERENT repos but the head branch name matches the
+  // release branch. The headRepository === baseRepository guard must reject it so a
+  // fork can never be treated as the trusted internal release PR.
+  const fork = releasePr({
+    head: { ref: RELEASE_BRANCH, sha: HEAD, repo: { full_name: 'attacker/deepagents' } },
+    base: { ref: 'main', repo: { full_name: 'langchain-ai/deepagents' } },
+  });
+  assert.equal(releaseNotes.isReleaseBranchPr(fork), false);
+  assert.equal(releaseNotes.isReleasePr(fork), false);
+  // The same-repo release PR still passes, so the guard isn't over-broad.
+  assert.equal(releaseNotes.isReleaseBranchPr(releasePr()), true);
+});
+
+test('rejects a bot impostor in both identity directions', () => {
+  // Right id, wrong login: a renamed/cloned account must not impersonate the bot.
+  const rightIdWrongLogin = { ...overrideComment({ id: 12 }), user: { login: 'evil-clone', id: BOT.id } };
+  assert.equal(releaseNotes.latestOverride({ comments: [rightIdWrongLogin], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
+  // Right login, wrong id: a reused login must not impersonate the bot either.
+  const rightLoginWrongId = { ...overrideComment({ id: 13 }), user: { login: BOT.login, id: 999 } };
+  assert.equal(releaseNotes.latestOverride({ comments: [rightLoginWrongId], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
+});
+
+test('parseOverrideComment enforces the content-marker boundary', () => {
+  const valid = overrideComment();
+  assert.ok(releaseNotes.parseOverrideComment(valid));
+
+  // No content markers at all.
+  const noMarkers = {
+    ...valid,
+    body: valid.body.replace(releaseNotes.CONTENT_START, '').replace(releaseNotes.CONTENT_END, ''),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(noMarkers), null);
+
+  // End marker positioned before the start marker (end <= start).
+  const reversed = {
+    ...valid,
+    body: valid.body
+      .replace(releaseNotes.CONTENT_START, '__PLACEHOLDER__')
+      .replace(releaseNotes.CONTENT_END, releaseNotes.CONTENT_START)
+      .replace('__PLACEHOLDER__', releaseNotes.CONTENT_END),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(reversed), null);
+
+  // Two version headings inside the content — exercises the fail-closed catch.
+  const twoHeadings = {
+    ...valid,
+    body: valid.body.replace(CURATED_SECTION.trimEnd(), `${CURATED_SECTION.trimEnd()}\n\n${CURATED_SECTION.trimEnd()}`),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(twoHeadings), null);
+
+  // Text smuggled before the version heading inside the markers — the round-trip
+  // guard (canonical(extracted) !== section) must reject content the heading omits.
+  const smuggled = {
+    ...valid,
+    body: valid.body.replace(
+      `${releaseNotes.CONTENT_START}\n`,
+      `${releaseNotes.CONTENT_START}\nSMUGGLED PREAMBLE\n`,
+    ),
+  };
+  assert.equal(releaseNotes.parseOverrideComment(smuggled), null);
+});
+
+test('an ambiguous two-command comment from an insider is explained, not dropped', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      comment: { body: '@release-bot draft and then @release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub();
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /exactly one/);
+});
+
+test('an external comment never amplifies into a bot reply', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      issue: { number: 123, pull_request: {} },
+      // A drive-by outsider (association NONE) issuing a valid-looking command.
+      comment: { body: '@release-bot apply', user: { login: 'drive-by' }, author_association: 'NONE' },
+    },
+  };
+  const run = makeGithub({ pr: releasePr({ title: 'feat: unrelated' }) });
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 0);
+});
+
+test('re-drafting updates the existing override comment instead of creating a new one', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-redraft-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(run.calls.updateComment.length, 1);
+  assert.equal(run.calls.updateComment[0].comment_id, 55);
+  // The draft itself is an edit, so no *second* override comment is created.
+  // The one comment posted here is the refresh notice, which the test below owns.
+  assert.equal(run.calls.createComment.filter(call => call.body.includes('release-notes-override')).length, 0);
+});
+
+test('re-drafting posts a refreshed notice after editing the override comment in place', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-refresh-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
+  const core = makeCore();
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core, ...BOT_AUTH });
+  assert.equal(run.calls.updateComment.length, 1);
+  // The in-place edit is followed by exactly one timeline comment that points at
+  // the regenerated draft, so maintainers learn the notes changed without
+  // watching the original comment.
+  assert.equal(run.calls.createComment.length, 1);
+  const notice = run.calls.createComment[0].body;
+  assert.match(notice, /regenerated in place/);
+  // Assert the whole marker line: a component/version that stopped flowing
+  // through would otherwise render as "for undefined undefined" unnoticed.
+  assert.ok(notice.startsWith(`<!-- release-notes-refreshed for ${COMPONENT} ${VERSION} -->\n`));
+  // This mocked comment carries no html_url, so the hand-built fallback is used.
+  assert.ok(notice.includes('[the original comment](https://github.com/langchain-ai/deepagents/pull/123#issuecomment-55)'));
+  // Belt and braces: the pointer never echoes the command mention, so it cannot
+  // look like a command even if the bot-author filters are ever loosened.
+  assert.ok(!notice.includes('@release-bot'));
+  assert.equal(core.warnings.length, 0);
+});
+
+test('the refreshed notice prefers the html_url GitHub returns over the built fallback', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-refresh-url-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  // The path production always takes: real GitHub returns a permalink, and the
+  // notice must link to that rather than reconstructing one by hand.
+  const permalink = 'https://github.com/langchain-ai/deepagents/pull/123#issuecomment-987654';
+  const run = makeGithub({ comments: [overrideComment({ id: 55, htmlUrl: permalink })] });
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(run.calls.createComment.length, 1);
+  assert.ok(run.calls.createComment[0].body.includes(`[the original comment](${permalink})`));
+});
+
+test('every re-draft posts its own notice rather than upserting one', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-refresh-twice-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
+  const draft = () => releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  await draft();
+  await draft();
+  // Deliberately not deduped: editing a prior notice in place would be exactly
+  // as invisible as the silent comment edit this whole feature exists to expose.
+  assert.equal(run.calls.updateComment.length, 2);
+  assert.equal(run.calls.createComment.length, 2);
+});
+
+test('postDraft refuses to run without a core to warn through', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-nocore-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub({ comments: [overrideComment({ id: 55 })] });
+  // A missing core used to skip the notice silently, which is the same
+  // invisible-refresh bug this feature fixes. It must fail loudly instead.
+  await assert.rejects(
+    releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, ...BOT_AUTH }),
+    /requires a core/,
+  );
+  assert.equal(run.calls.updateComment.length, 0);
+});
+
+test('a first-time draft creates the override comment without a refreshed notice', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-first-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  const run = makeGithub();
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
+  assert.equal(run.calls.updateComment.length, 0);
+  // Only the draft comment itself; no "regenerated" pointer, because nothing
+  // pre-existing was silently edited.
+  assert.equal(run.calls.createComment.length, 1);
+  assert.match(run.calls.createComment[0].body, /release-notes-override/);
+});
+
+test('a failed refreshed notice only warns and never fails the draft post', async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-refresh-fail-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const state = path.join(dir, 'state.json');
+  const output = path.join(dir, 'output.md');
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
+  let created = 0;
+  const run = makeGithub({
+    comments: [overrideComment({ id: 55 })],
+    onCreateComment: () => {
+      created += 1;
+      throw new Error('secondary rate limit');
+    },
+  });
+  const core = makeCore();
+  await releaseNotes.postDraft({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core, ...BOT_AUTH });
+  assert.equal(created, 1);
+  assert.equal(run.calls.updateComment.length, 1);
+  assert.equal(core.warnings.length, 1);
+  assert.match(core.warnings[0], /posting the refreshed notice failed/);
+});
+
+test('prepareApply fails when no valid override is present', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const missing = makeGithub({ comments: [] });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github: missing.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /No valid bot-authored curated release-note draft exists/,
+  );
+
+  // Override present but missing its GitHub revision timestamp.
+  const noRevision = makeGithub({ comments: [overrideComment({ updatedAt: '' })] });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github: noRevision.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /missing its GitHub revision/,
+  );
+});
+
+test('createApplyCommit rejects a prepared changelog altered before commit creation', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  // Tamper with the prepared changelog on disk between prepare and commit. The
+  // byte-exact changelogHash guard must reject it before any commit/ref mutation, so
+  // the blob committed to the release branch can only be the one prepareApply produced.
+  fs.appendFileSync(workspace.file, '\n<!-- tampered -->\n');
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile: workspace.file, ...BOT_AUTH,
+    }),
+    /Prepared changelog changed before commit creation/,
+  );
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('latest override and applied bind to the newest comment by id, not array order', () => {
+  // Two comments that BOTH parse as valid; the higher comment id must win regardless
+  // of array order. A regression from descending to ascending sort would bind the
+  // gate/apply to a stale draft while every single-survivor test still passed.
+  const olderOverride = overrideComment({ id: 10 });
+  const newerOverride = overrideComment({ id: 30, updatedAt: '2026-07-09T13:00:00Z' });
+  assert.equal(releaseNotes.latestOverride({ comments: [olderOverride, newerOverride], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 30);
+  assert.equal(releaseNotes.latestOverride({ comments: [newerOverride, olderOverride], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 30);
+
+  const olderApplied = appliedComment({ id: 20 });
+  const newerApplied = appliedComment({ id: 40, updatedAt: '2026-07-09T13:05:00Z' });
+  assert.equal(releaseNotes.latestApplied({ comments: [olderApplied, newerApplied], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 40);
+  assert.equal(releaseNotes.latestApplied({ comments: [newerApplied, olderApplied], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }).comment.id, 40);
+});
+
+test('required check fails when the PR body preview terminator is unparseable', async () => {
+  // Everything matches the passing case EXCEPT the PR body is missing its preview
+  // terminator, so extractPreviewSection throws; checkCuratedState must route that
+  // throw into a gate failure rather than letting it escape or pass.
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    body: `Release notes preview\n\n${CURATED_SECTION}\n`,
+  });
+  const { github } = makeGithub({ pr, comments: [overrideComment(), appliedComment()] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
+  assert.equal(result.status, 'failed');
+  assert.equal(result.component, COMPONENT);
+  assert.equal(result.version, VERSION);
+  // The annotation GitHub surfaces from setFailed must name the gated package and
+  // version — the bare reason list is ambiguous across open release PRs.
+  assert.match(core.failed, new RegExp(`^for ${COMPONENT} ${VERSION.replaceAll('.', '\\.')}: `));
+  assert.match(core.failed, /exactly one release-notes preview terminator/);
+});
+
+test('a comment on a plain issue (not a PR) never triggers the bot', async () => {
+  const context = {
+    eventName: 'issue_comment',
+    repo: { owner: 'langchain-ai', repo: 'deepagents' },
+    payload: {
+      action: 'created',
+      // No `pull_request` field: the comment is on a plain issue, not a PR, so the
+      // bot must not act on it (and must not read the PR or post any feedback).
+      issue: { number: 123 },
+      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
+    },
+  };
+  const run = makeGithub();
+  const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
+  assert.equal(result.shouldRun, false);
+  assert.equal(run.calls.createComment.length, 0);
+});
+
+test('rejects a closed or merged release PR', () => {
+  // A dropped state check would let both the automation and the merge gate act on a
+  // closed/merged release PR.
+  assert.equal(releaseNotes.isReleaseBranchPr(releasePr({ state: 'closed' })), false);
+  assert.equal(releaseNotes.isReleasePr(releasePr({ state: 'closed' })), false);
+});
+
+test('prepare apply rejects a changelog heading that drifted from the override', async t => {
+  // The override heading is self-consistent (passes the first guard via its
+  // release-heading-hash), but release-please regenerated the heading date at HEAD, so
+  // it no longer matches the changelog's current heading. The second, distinct heading
+  // guard must reject it even though the generated entries (fingerprint) are unchanged
+  // — proving it is not redundant with the fingerprint guard.
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const reheaded = GENERATED_SECTION.replace('(2026-07-09)', '(2026-07-11)');
+  const files = new Map([[HEAD, changelog(reheaded)]]);
+  const { github } = makeGithub({ comments: [overrideComment()], files });
+  await assert.rejects(
+    releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
+    /Keep the generated release version heading unchanged/,
+  );
+});
+
+test('required check warns about a marked-but-unparsable bot comment without trusting it', async () => {
+  // A bot-authored comment carrying the override marker but failing strict parsing must
+  // (a) produce a warning distinguishing it from "draft never ran" and (b) never be
+  // treated as a valid override — the gate stays fail-closed on `missing`.
+  const marked = {
+    id: 30,
+    updated_at: OVERRIDE_UPDATED_AT,
+    user: BOT,
+    body: '<!-- release-notes-override\npackage: deepagents-code\n-->\nnot a valid draft',
+  };
+  const { github } = makeGithub({ comments: [marked] });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then @release-bot apply/);
+  assert.ok(core.warnings.some(message => message.includes('failed validation')));
+});
+
+test('createApplyCommit rejects a canonically-invisible changelog edit before commit', async t => {
+  // Trailing-whitespace tamper: invisible to canonical()/sha256 but visible to the
+  // byte-exact changelogHash, proving the exact-hash guard — not canonicalization — is
+  // what blocks a changelog altered between prepare and commit.
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile: workspace.file, stateFile, ...BOT_AUTH,
+  });
+  const prepared = fs.readFileSync(workspace.file, 'utf8');
+  const tampered = `${prepared}   `;
+  assert.equal(releaseNotes.sha256(tampered), releaseNotes.sha256(prepared));
+  assert.notEqual(releaseNotes.exactSha256(tampered), releaseNotes.exactSha256(prepared));
+  fs.writeFileSync(workspace.file, tampered);
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile: workspace.file, ...BOT_AUTH,
+    }),
+    /Prepared changelog changed before commit creation/,
+  );
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
+});
+
+test('latest override ignores a bot comment for a different package', () => {
+  // parseMetadata accepts any package string, so latestParsed's package filter is the
+  // only thing rejecting a well-formed bot comment scoped to another package.
+  const wrongPackage = overrideComment();
+  wrongPackage.body = wrongPackage.body.replace('package: deepagents-code', 'package: deepagents');
+  assert.equal(releaseNotes.latestOverride({ comments: [wrongPackage], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }), null);
+  assert.ok(releaseNotes.latestOverride({ comments: [overrideComment()], login: BOT.login, id: BOT.id, component: COMPONENT, version: VERSION }));
+});
+
+// --- multi-component coverage -------------------------------------------------
+// The helper used to be hardcoded to deepagents-code. These tests pin the
+// generalized behavior: the component comes from the PR head ref, is validated
+// against release-please-config.json, and drives every path and ref the apply
+// commit touches.
+
+const OTHER_COMPONENT = 'langchain-daytona';
+const OTHER_CHANGELOG_PATH = 'libs/partners/daytona/CHANGELOG.md';
+const OTHER_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${OTHER_COMPONENT}`;
+
+function prForComponent(component, overrides = {}) {
+  const base = releasePr();
+  return releasePr({
+    title: `release(${component}): ${VERSION}`,
+    head: { ...base.head, ref: `${releaseNotes.RELEASE_BRANCH_PREFIX}${component}` },
+    ...overrides,
+  });
+}
+
+function commentForComponent(component, section = CURATED_SECTION) {
+  return {
+    ...overrideComment({ section }),
+    body: overrideComment({ section }).body.replace(
+      `package: ${COMPONENT}`,
+      `package: ${component}`,
+    ),
+  };
+}
+
+test('every release-please component resolves to its own changelog and branch', () => {
+  const registry = releaseNotes.componentRegistry();
+  assert.ok(registry.size > 1, 'expected more than one managed component');
+  for (const [component, target] of registry) {
+    const pr = prForComponent(component);
+    assert.equal(releaseNotes.isReleaseBranchPr(pr), true, component);
+    assert.deepEqual(releaseNotes.releaseTarget(pr), { ...target, version: VERSION });
+    assert.equal(target.releaseBranch, `${releaseNotes.RELEASE_BRANCH_PREFIX}${component}`);
+    assert.ok(target.changelogPath.startsWith(`${target.packagePath}/`));
+  }
+  // The component the workflow was originally scoped to must keep resolving
+  // exactly as the old hardcoded constants did.
+  assert.equal(registry.get(COMPONENT).changelogPath, CHANGELOG_PATH);
+  assert.equal(registry.get(OTHER_COMPONENT).changelogPath, OTHER_CHANGELOG_PATH);
+});
+
+test('the merge gate now applies to every managed component', async () => {
+  for (const component of releaseNotes.componentRegistry().keys()) {
+    const { github } = makeGithub({ pr: prForComponent(component) });
+    const core = makeCore();
+    const result = await releaseNotes.checkCuratedState({
+      github,
+      context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+      core,
+      number: 123,
+      ...BOT_AUTH,
+    });
+    assert.equal(result.status, 'missing', component);
+    assert.match(core.failed, /Run @release-bot draft and then @release-bot apply/);
+  }
+});
+
+test('rejects a head ref that is not a managed component', () => {
+  for (const ref of [
+    'release-please--branches--main--components--not-a-package',
+    // Path traversal through the component name must not reach a changelog path.
+    'release-please--branches--main--components--../../evil',
+    'release-please--branches--main--components--',
+    'some-unrelated-branch',
+  ]) {
+    const pr = releasePr({ head: { ...releasePr().head, ref } });
+    assert.equal(releaseNotes.isReleaseBranchPr(pr), false, ref);
+    assert.equal(releaseNotes.releaseTarget(pr), null, ref);
+  }
+  assert.throws(() => releaseNotes.targetForComponent('../../evil'), /Unknown release component/);
+  assert.throws(() => releaseNotes.targetForComponent('not-a-package'), /Unknown release component/);
+});
+
+test('rejects a release PR whose title and branch name different components', () => {
+  const mismatched = prForComponent(COMPONENT, {
+    title: `release(${OTHER_COMPONENT}): ${VERSION}`,
+  });
+  // The branch is a real managed component, so the branch check alone passes...
+  assert.equal(releaseNotes.isReleaseBranchPr(mismatched), true);
+  // ...but the title must name that same component before a target is derived.
+  assert.equal(releaseNotes.releaseTarget(mismatched), null);
+  assert.equal(releaseNotes.isReleasePr(mismatched), false);
+  assert.equal(releaseNotes.releaseVersion(`release(${OTHER_COMPONENT}): ${VERSION}`, COMPONENT), null);
+  assert.equal(releaseNotes.releaseVersion(`release(${OTHER_COMPONENT}): ${VERSION}`, OTHER_COMPONENT), VERSION);
+});
+
+test('a curated draft for one component does not satisfy another component', async () => {
+  // Two release PRs are open at once during a fanout release. A draft comment
+  // carrying a different package must not be accepted as this PR's draft.
+  const { github } = makeGithub({
+    pr: prForComponent(OTHER_COMPONENT),
+    comments: [overrideComment()],
+  });
+  const core = makeCore();
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+  assert.equal(result.status, 'missing');
+  assert.equal(
+    releaseNotes.latestOverride({
+      comments: [overrideComment()],
+      login: BOT.login,
+      id: BOT.id,
+      component: OTHER_COMPONENT,
+      version: VERSION,
+    }),
+    null,
+  );
+  assert.ok(releaseNotes.latestOverride({
+    comments: [commentForComponent(OTHER_COMPONENT)],
+    login: BOT.login,
+    id: BOT.id,
+    component: OTHER_COMPONENT,
+    version: VERSION,
+  }));
+});
+
+test('apply commits to the changelog and branch of the PR component', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-other-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const changelogFile = path.join(root, 'CHANGELOG.md');
+  const stateFile = path.join(root, 'apply.json');
+  const { github, calls } = makeGithub({
+    pr: prForComponent(OTHER_COMPONENT),
+    comments: [commentForComponent(OTHER_COMPONENT)],
+  });
+  const state = await releaseNotes.prepareApply({
+    github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: HEAD,
+    changelogFile, stateFile, ...BOT_AUTH,
+  });
+  assert.equal(state.component, OTHER_COMPONENT);
+  // prepareApply reads the component's own changelog, not deepagents-code's.
+  assert.ok(calls.getContent.every(call => call.path === OTHER_CHANGELOG_PATH));
+
+  await releaseNotes.createApplyCommit({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+    changelogFile, ...BOT_AUTH,
+  });
+  assert.equal(calls.createTree[0].tree[0].path, OTHER_CHANGELOG_PATH);
+  assert.equal(calls.updateRef[0].ref, `heads/${OTHER_BRANCH}`);
+  assert.equal(calls.updateRef[0].force, false);
+  assert.equal(calls.createCommit[0].message, `chore(${OTHER_COMPONENT}): apply curated release notes`);
+
+  await releaseNotes.publishAppliedState({
+    github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH,
+  });
+  assert.deepEqual(calls.getRef, [{
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    ref: `heads/${OTHER_BRANCH}`,
+  }]);
+  const applied = releaseNotes.parseAppliedComment({ body: calls.createComment[0].body });
+  assert.ok(applied, 'applied comment should parse');
+  assert.equal(applied.metadata.package, OTHER_COMPONENT);
+});
+
+test('apply refuses a PR retargeted to a different component mid-flight', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-retarget-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const changelogFile = path.join(root, 'CHANGELOG.md');
+  const stateFile = path.join(root, 'apply.json');
+  const harness = makeGithub({
+    pr: prForComponent(OTHER_COMPONENT),
+    comments: [commentForComponent(OTHER_COMPONENT)],
+  });
+  await releaseNotes.prepareApply({
+    github: harness.github, owner: 'langchain-ai', repo: 'deepagents', number: 123,
+    expectedHead: HEAD, changelogFile, stateFile, ...BOT_AUTH,
+  });
+  // Swap the PR onto another component's branch/title after prepare captured state.
+  harness.setPr(prForComponent(COMPONENT));
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: harness.github, owner: 'langchain-ai', repo: 'deepagents', stateFile,
+      changelogFile, ...BOT_AUTH,
+    }),
+    /Release PR changed while apply was preparing/,
+  );
+  assert.equal(harness.calls.updateRef.length, 0);
+});
+
+test('the component registry fails closed on a malformed release-please config', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-notes-config-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = (name, value) => {
+    const file = path.join(root, name);
+    fs.writeFileSync(file, JSON.stringify(value));
+    return file;
+  };
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('empty.json', { packages: {} })),
+    /no non-empty 'packages' map/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('missing.json', { packages: { 'libs/x': {} } })),
+    /no usable 'component' name/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('traversal.json', {
+      packages: { 'libs/x': { component: '../../evil' } },
+    })),
+    /no usable 'component' name/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('dupe.json', {
+      packages: { 'libs/x': { component: 'same' }, 'libs/y': { component: 'same' } },
+    })),
+    /more than once/,
+  );
+  assert.throws(
+    () => releaseNotes.loadComponentRegistry(write('escape.json', {
+      packages: { 'libs/x': { component: 'x', 'changelog-path': '../../../etc/passwd' } },
+    })),
+    /unsafe changelog path/,
+  );
+  // A well-formed config defaults the changelog name and keeps the package prefix.
+  const registry = releaseNotes.loadComponentRegistry(write('ok.json', {
+    packages: { 'libs/x': { component: 'x' } },
+  }));
+  assert.equal(registry.get('x').changelogPath, 'libs/x/CHANGELOG.md');
+});

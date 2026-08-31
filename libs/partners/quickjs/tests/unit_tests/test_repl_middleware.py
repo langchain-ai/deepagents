@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -22,6 +22,8 @@ from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, SystemMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import BaseTool, StructuredTool
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Interrupt
 from pydantic import BaseModel, Field
 from quickjs_rs import Runtime, ThreadWorker
 
@@ -31,6 +33,7 @@ from langchain_quickjs._repl import _clear_exception_references, _Registry, _Thr
 from langchain_quickjs._subagent import (
     _ensure_schema_title,
     _runtime_with_response_format,
+    call_subagent_task_tool,
 )
 
 if TYPE_CHECKING:
@@ -870,6 +873,74 @@ def _subagent_runtime(
     runnable: Any,
 ) -> ToolRuntime:
     return _subagent_runtime_from_task_tool(_task_tool_for_runnable(runnable))
+
+
+async def test_call_subagent_task_tool_forwards_config_and_tool_call_id() -> None:
+    calls: list[dict[str, Any]] = []
+
+    class _TaskTool:
+        name = "task"
+
+        async def arun(
+            self,
+            tool_input: dict[str, Any],
+            *,
+            config: dict[str, Any] | None = None,
+            tool_call_id: str | None = None,
+        ) -> str:
+            calls.append(
+                {
+                    "tool_input": tool_input,
+                    "config": config,
+                    "tool_call_id": tool_call_id,
+                }
+            )
+            return "ok"
+
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {"thread_id": "parent-thread"}},
+        stream_writer=lambda _chunk: None,
+        tools=[],
+        tool_call_id="outer_eval_call",
+        store=None,
+    )
+
+    result = await call_subagent_task_tool(
+        cast("BaseTool", _TaskTool()),
+        description="work",
+        subagent_type="worker",
+        response_schema=None,
+        runtime=runtime,
+    )
+
+    assert result == "ok"
+    assert calls
+    assert calls[0]["config"] == runtime.config
+    assert calls[0]["tool_call_id"].startswith("ptc_task_")
+    assert calls[0]["tool_input"]["runtime"].tool_call_id == calls[0]["tool_call_id"]
+
+
+async def test_async_task_global_propagates_graph_interrupt(repl: _ThreadREPL) -> None:
+    interrupt = GraphInterrupt([Interrupt(value={"action_requests": []})])
+
+    async def _async(state: dict[str, Any], config: Any) -> dict[str, Any]:
+        del state, config
+        raise interrupt
+
+    runnable = RunnableLambda(
+        lambda state, config: {"messages": [AIMessage(content="sync")]},
+        afunc=_async,
+    )
+
+    with pytest.raises(GraphInterrupt) as exc_info:
+        await repl.eval_async(
+            "await task({description: 'work', subagentType: 'worker'})",
+            outer_runtime=_subagent_runtime(runnable),
+        )
+
+    assert exc_info.value is interrupt
 
 
 def test_runtime_with_response_format_uses_configurable() -> None:

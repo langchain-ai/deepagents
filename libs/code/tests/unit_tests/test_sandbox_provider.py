@@ -19,9 +19,9 @@ if TYPE_CHECKING:
     ("kind", "in_app", "expected"),
     [
         ("extra", True, "/install daytona"),
-        ("extra", False, "dcode --install daytona"),
+        ("extra", False, "dcode install daytona"),
         ("package", True, "/install daytona --package"),
-        ("package", False, "dcode --install daytona --package"),
+        ("package", False, "dcode install daytona --package"),
     ],
 )
 def test_install_hint_command(

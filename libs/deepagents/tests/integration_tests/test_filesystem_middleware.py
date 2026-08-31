@@ -45,14 +45,11 @@ class TestFilesystem:
         assert "pokemon" in _to_ascii(response["messages"][1].text.lower())
 
     def test_filesystem_system_prompt_override_with_composite_backend(self):
-        def backend(_rt):
-            return build_composite_state_backend(routes={"/memories/": StoreBackend()})
-
         agent = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=backend,
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                     system_prompt="In every single response, you must say the word 'pizza'! You love it!",
                 )
             ],
@@ -68,7 +65,7 @@ class TestFilesystem:
             ("filesystem",),
             "/test.txt",
             {
-                "content": ["Hello world"],
+                "content": "Hello world",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -78,7 +75,7 @@ class TestFilesystem:
             ("filesystem",),
             "/pokemon/charmander.txt",
             {
-                "content": ["Ember"],
+                "content": "Ember",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -88,7 +85,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -100,12 +97,12 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="List your files in root")],
                 "files": {
                     "/pizza.txt": FileData(
-                        content=["Hello world"],
+                        content="Hello world",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/pokemon/squirtle.txt": FileData(
-                        content=["Splash"],
+                        content="Splash",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
@@ -130,7 +127,7 @@ class TestFilesystem:
             ("filesystem",),
             "/test.txt",
             {
-                "content": ["Hello world"],
+                "content": "Hello world",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -140,7 +137,7 @@ class TestFilesystem:
             ("filesystem",),
             "/pokemon/charmander.txt",
             {
-                "content": ["Ember"],
+                "content": "Ember",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -150,7 +147,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -162,12 +159,12 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="List all of your files in the /pokemon directory")],
                 "files": {
                     "/pizza.txt": FileData(
-                        content=["Hello world"],
+                        content="Hello world",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/pokemon/squirtle.txt": FileData(
-                        content=["Splash"],
+                        content="Splash",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
@@ -187,7 +184,7 @@ class TestFilesystem:
             ("filesystem",),
             "/test.txt",
             {
-                "content": ["Hello world"],
+                "content": "Hello world",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -197,7 +194,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -209,7 +206,7 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Read test.txt from the local filesystem")],
                 "files": {
                     "/test.txt": FileData(
-                        content=["Goodbye world"],
+                        content="Goodbye world",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     )
@@ -229,7 +226,7 @@ class TestFilesystem:
             ("filesystem",),
             "/test.txt",
             {
-                "content": ["Hello world"],
+                "content": "Hello world",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -239,7 +236,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -251,7 +248,7 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Read test.txt from the memories directory")],
                 "files": {
                     "/test.txt": FileData(
-                        content=["Goodbye world"],
+                        content="Goodbye world",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     )
@@ -271,7 +268,7 @@ class TestFilesystem:
             ("filesystem",),
             "/test.txt",
             {
-                "content": ["Hello world"],
+                "content": "Hello world",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -281,7 +278,7 @@ class TestFilesystem:
             ("filesystem",),
             "/pokemon/charmander.txt",
             {
-                "content": ["Ember"],
+                "content": "Ember",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -291,7 +288,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -321,7 +318,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -353,7 +350,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -365,7 +362,7 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Write a haiku about Charmander to /charmander.txt, use the word 'fiery'")],
                 "files": {
                     "/charmander.txt": FileData(
-                        content=["Hello world"],
+                        content="Hello world",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     )
@@ -386,7 +383,7 @@ class TestFilesystem:
             ("filesystem",),
             "/charmander.txt",
             {
-                "content": ["The fire burns brightly. The fire burns hot."],
+                "content": "The fire burns brightly. The fire burns hot.",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -396,7 +393,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -429,7 +426,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -440,11 +437,11 @@ class TestFilesystem:
     def test_longterm_memory_multiple_tools_deepagent(self):
         checkpointer = MemorySaver()
         store = InMemoryStore()
-
-        def backend(_rt):
-            return build_composite_state_backend(routes={"/memories/": StoreBackend()})
-
-        agent = create_deep_agent(backend=backend, checkpointer=checkpointer, store=store)
+        agent = create_deep_agent(
+            backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
+            checkpointer=checkpointer,
+            store=store,
+        )
         assert_longterm_mem_tools(agent, store)
 
     def test_shortterm_memory_multiple_tools_deepagent(self):
@@ -552,17 +549,17 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Use glob to find all Python files")],
                 "files": {
                     "/test.py": FileData(
-                        content=["import os"],
+                        content="import os",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/main.py": FileData(
-                        content=["def main(): pass"],
+                        content="def main(): pass",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/readme.txt": FileData(
-                        content=["Documentation"],
+                        content="Documentation",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
@@ -583,7 +580,7 @@ class TestFilesystem:
             ("filesystem",),
             "/config.py",
             {
-                "content": ["DEBUG = True"],
+                "content": "DEBUG = True",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -593,7 +590,7 @@ class TestFilesystem:
             ("filesystem",),
             "/settings.py",
             {
-                "content": ["SECRET_KEY = 'abc'"],
+                "content": "SECRET_KEY = 'abc'",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -603,7 +600,7 @@ class TestFilesystem:
             ("filesystem",),
             "/notes.txt",
             {
-                "content": ["Important notes"],
+                "content": "Important notes",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -613,7 +610,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -640,7 +637,7 @@ class TestFilesystem:
             ("filesystem",),
             "/longterm.py",
             {
-                "content": ["# Longterm file"],
+                "content": "# Longterm file",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -650,7 +647,7 @@ class TestFilesystem:
             ("filesystem",),
             "/longterm.txt",
             {
-                "content": ["Text file"],
+                "content": "Text file",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -660,7 +657,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -672,12 +669,12 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Use glob to find all Python files")],
                 "files": {
                     "/shortterm.py": FileData(
-                        content=["# Shortterm file"],
+                        content="# Shortterm file",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/shortterm.txt": FileData(
-                        content=["Another text file"],
+                        content="Another text file",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
@@ -709,17 +706,17 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Use grep to find all files containing the word 'import'")],
                 "files": {
                     "/test.py": FileData(
-                        content=["import os", "import sys"],
+                        content="import os\nimport sys",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/main.py": FileData(
-                        content=["def main(): pass"],
+                        content="def main(): pass",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/helper.py": FileData(
-                        content=["import json"],
+                        content="import json",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
@@ -740,7 +737,7 @@ class TestFilesystem:
             ("filesystem",),
             "/pokemon/charmander.txt",
             {
-                "content": ["Charmander is a fire type", "It evolves into Charmeleon"],
+                "content": "Charmander is a fire type\nIt evolves into Charmeleon",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -750,7 +747,7 @@ class TestFilesystem:
             ("filesystem",),
             "/pokemon/squirtle.txt",
             {
-                "content": ["Squirtle is a water type", "It evolves into Wartortle"],
+                "content": "Squirtle is a water type\nIt evolves into Wartortle",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -760,7 +757,7 @@ class TestFilesystem:
             ("filesystem",),
             "/pokemon/bulbasaur.txt",
             {
-                "content": ["Bulbasaur is a grass type"],
+                "content": "Bulbasaur is a grass type",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -770,7 +767,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -797,7 +794,7 @@ class TestFilesystem:
             ("filesystem",),
             "/longterm_config.py",
             {
-                "content": ["DEBUG = True", "TESTING = False"],
+                "content": "DEBUG = True\nTESTING = False",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -807,7 +804,7 @@ class TestFilesystem:
             ("filesystem",),
             "/longterm_settings.py",
             {
-                "content": ["SECRET_KEY = 'abc'"],
+                "content": "SECRET_KEY = 'abc'",
                 "encoding": "utf-8",
                 "created_at": "2021-01-01",
                 "modified_at": "2021-01-01",
@@ -817,7 +814,7 @@ class TestFilesystem:
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
                 FilesystemMiddleware(
-                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend()}),
+                    backend=build_composite_state_backend(routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))}),
                 )
             ],
             checkpointer=checkpointer,
@@ -829,12 +826,12 @@ class TestFilesystem:
                 "messages": [HumanMessage(content="Use grep to find all files containing 'DEBUG'")],
                 "files": {
                     "/shortterm_config.py": FileData(
-                        content=["DEBUG = False", "VERBOSE = True"],
+                        content="DEBUG = False\nVERBOSE = True",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
                     "/shortterm_main.py": FileData(
-                        content=["def main(): pass"],
+                        content="def main(): pass",
                         created_at="2021-01-01",
                         modified_at="2021-01-01",
                     ),
@@ -914,7 +911,7 @@ class TestFilesystem:
         agent_with_sandbox = create_agent(
             model=ChatAnthropic(model="claude-sonnet-4-6"),
             middleware=[
-                FilesystemMiddleware(backend=MockSandboxBackend),
+                FilesystemMiddleware(backend=MockSandboxBackend()),
                 CapturingMiddleware(),
             ],
         )
@@ -925,55 +922,6 @@ class TestFilesystem:
         # Execute tool SHOULD be in the tools passed to model
         assert "execute" in captured_tools
         assert "read_file" in captured_tools
-
-    def test_system_prompt_includes_execute_instructions_only_when_supported(self):
-        """Verify EXECUTION_SYSTEM_PROMPT is only added when backend supports execution."""
-        # Track system prompts passed to the model
-        captured_prompts = []
-
-        class CapturingMiddleware(AgentMiddleware):
-            def wrap_model_call(self, request, handler):
-                captured_prompts.clear()
-                if request.system_prompt:
-                    captured_prompts.append(request.system_prompt)
-                return handler(request)
-
-        # Test with StateBackend (no execution support)
-        agent = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-6"),
-            middleware=[
-                FilesystemMiddleware(backend=StateBackend()),
-                CapturingMiddleware(),
-            ],
-        )
-
-        agent.invoke({"messages": [HumanMessage(content="List files")]})
-
-        # System prompt should NOT include execute instructions
-        assert len(captured_prompts) > 0
-        prompt = captured_prompts[0]
-        assert "execute" not in prompt.lower() or "Execute Tool" not in prompt
-
-        # Test with sandbox backend (has execution support)
-        class MockSandboxBackend(StateBackend, SandboxBackendProtocol):
-            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
-                return ExecuteResponse(output="test", exit_code=0, truncated=False)
-
-        agent_with_sandbox = create_agent(
-            model=ChatAnthropic(model="claude-sonnet-4-6"),
-            middleware=[
-                FilesystemMiddleware(backend=MockSandboxBackend),
-                CapturingMiddleware(),
-            ],
-        )
-
-        captured_prompts.clear()
-        agent_with_sandbox.invoke({"messages": [HumanMessage(content="List files")]})
-
-        # System prompt SHOULD include execute instructions
-        assert len(captured_prompts) > 0
-        prompt = captured_prompts[0]
-        assert "Execute Tool" in prompt or "execute" in prompt
 
     def test_composite_backend_execution_support_detection(self):
         """Verify supports_execution correctly detects CompositeBackend capabilities."""
@@ -986,14 +934,14 @@ class TestFilesystem:
         # Test CompositeBackend with sandbox default
         comp_with_sandbox = CompositeBackend(
             default=MockSandboxBackend(),
-            routes={"/memories/": StoreBackend()},
+            routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))},
         )
         assert supports_execution(comp_with_sandbox)
 
         # Test CompositeBackend with non-sandbox default
         comp_without_sandbox = CompositeBackend(
             default=StateBackend(),
-            routes={"/memories/": StoreBackend()},
+            routes={"/memories/": StoreBackend(namespace=lambda _rt: ("filesystem",))},
         )
         assert not supports_execution(comp_without_sandbox)
 

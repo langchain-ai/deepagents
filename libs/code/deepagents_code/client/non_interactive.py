@@ -1,0 +1,3025 @@
+"""Non-interactive execution mode.
+
+Provides `run_non_interactive` which runs a single user task against the
+agent graph, streams results to stdout, and exits with an appropriate code.
+
+The agent runs inside a `langgraph dev` server subprocess, connected via
+the `RemoteAgent` client (see `server_manager.server_session`).
+
+Shell commands are gated by an optional allow-list (`--shell-allow-list`):
+
+- Not set → shell disabled, all other tool calls auto-approved.
+- `recommended` or explicit list → shell enabled, commands validated
+    against the list; non-shell tools approved unconditionally.
+- `all` → shell enabled, any command allowed, all tools auto-approved.
+
+An optional quiet mode (`--quiet` / `-q`) suppresses stream-time diagnostics
+(the tool-call and file-operation notifications) so stdout carries only the
+agent's response text.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import sys
+import threading
+import time
+from dataclasses import dataclass, field, replace
+from typing import TYPE_CHECKING, Any, NoReturn, cast
+
+from langchain.agents.middleware.human_in_the_loop import ActionRequest, HITLRequest
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langgraph.types import Command, Interrupt
+from pydantic import TypeAdapter, ValidationError
+from rich.console import Console
+from rich.live import Live
+from rich.markup import escape as escape_markup
+from rich.spinner import Spinner as RichSpinner
+from rich.style import Style
+from rich.text import Text
+
+from deepagents_code._cli_context import CLIContext
+from deepagents_code._constants import SESSION_END_DRAIN_TIMEOUT_SECONDS
+from deepagents_code._content_blocks import reasoning_text
+from deepagents_code._session_stats import (
+    RecordedRequest,
+    SessionStats,
+    UsageLedgerKey,
+    classify_usage_kind,
+    finalize_recorded_requests,
+    print_usage_table,
+    record_message_usage,
+    record_model_usage_event,
+    usage_table_enabled,
+)
+from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
+    ToolCallBufferKey,
+    ToolStatus,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    count_unemitted_tool_calls,
+    normalize_tool_status,
+    tool_call_buffer_key,
+)
+from deepagents_code._tracing import stream_trace_config
+from deepagents_code._version import __version__
+from deepagents_code.agent import DEFAULT_AGENT_NAME
+from deepagents_code.config import (
+    SHELL_ALLOW_ALL,
+    build_langsmith_thread_url,
+    create_model,
+    get_glyphs,
+    is_ascii_mode,
+    is_shell_command_allowed,
+    runtime_state,
+)
+from deepagents_code.file_ops import FileOpTracker, record_display_caveat
+from deepagents_code.hooks import (
+    dispatch_hook,
+    dispatch_hook_fire_and_forget,
+    drain_pending_hooks,
+)
+from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
+from deepagents_code.model_config import ModelConfigError
+from deepagents_code.model_retry import (
+    INTERRUPTED_TOOL_OUTPUT,
+    RETRY_BOUNDARY_LINE,
+    legacy_retry_index,
+    model_attempt_from_event,
+    model_retry_from_event,
+    retry_status_from_event,
+)
+from deepagents_code.sessions import generate_thread_id
+from deepagents_code.tool_display import format_tool_message_content
+from deepagents_code.unicode_security import (
+    check_url_safety,
+    detect_dangerous_unicode,
+    format_warning_detail,
+    iter_string_values,
+    looks_like_url_key,
+    summarize_issues,
+)
+
+if TYPE_CHECKING:
+    from asyncio.subprocess import Process
+    from collections.abc import Hashable, Mapping
+    from pathlib import Path
+    from uuid import UUID
+
+    from deepagents import FsToolName
+    from langchain_core.runnables import RunnableConfig
+
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.hooks.manager import HooksManager
+    from deepagents_code.hooks.models.domain import SessionEndCause
+    from deepagents_code.hooks.presenter import (
+        HookNoticeCallback,
+        HookNoticeSeverity,
+    )
+    from deepagents_code.hooks.transcript import TranscriptRecorder
+
+logger = logging.getLogger(__name__)
+
+
+class HITLIterationLimitError(RuntimeError):
+    """Raised when the HITL interrupt loop exceeds `_MAX_HITL_ITERATIONS` rounds."""
+
+
+def _raise_hitl_iteration_limit(message: str) -> NoReturn:
+    """Raise the bounded-turn failure outside the stream-control try block.
+
+    Raises:
+        HITLIterationLimitError: Always, with the supplied message.
+    """
+    raise HITLIterationLimitError(message)
+
+
+def _raise_client_hook_stop(message: str) -> NoReturn:
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
+    raise ClientHookStopError(message)
+
+
+_HITL_REQUEST_ADAPTER = TypeAdapter(HITLRequest)
+
+_STREAM_CHUNK_LENGTH = 3
+"""Expected element counts for the tuples emitted by agent.astream.
+
+Stream chunks are 3-tuples: (namespace, stream_mode, data).
+"""
+
+_MESSAGE_DATA_LENGTH = 2
+"""Message-mode data is a 2-tuple: (message_obj, metadata)."""
+
+_MAX_HITL_ITERATIONS = 50
+"""Safety cap on the number of HITL interrupt round-trips to prevent infinite
+loops (e.g. when the agent keeps retrying rejected commands)."""
+
+
+@dataclass(frozen=True, slots=True)
+class _AttemptLifecycleScope:
+    """Client-side identity of one active model attempt.
+
+    The owning namespace is the `StreamState.active_attempts` key rather than a
+    field here, so a scope cannot disagree with where it is stored.
+    """
+
+    call_id: str
+    attempt: int
+    agent_id: str | None
+    """Transcript staging scope resolved at start (`None` for the root agent);
+    nested events from an unknown agent stage under their namespace label."""
+
+
+def _write_text(text: str) -> None:
+    """Write agent response text to stdout (without a trailing newline).
+
+    Uses `sys.stdout` directly (rather than the Rich Console) so that agent
+    response text always appears on stdout, even in quiet mode where the
+    Console is redirected to stderr.
+
+    Args:
+        text: The text string to write.
+    """
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+def _write_newline() -> None:
+    """Write a newline to stdout (and flush)."""
+    sys.stdout.write("\n")
+    sys.stdout.flush()
+
+
+def _make_stdio_encoding_safe() -> None:
+    """Prevent `UnicodeEncodeError` from killing a non-interactive run.
+
+    Legacy Windows consoles default to a locale code page (e.g. cp1252) that
+    cannot encode decorative Unicode glyphs; the first `console.print()` containing one
+    then crashes the whole run. Reconfiguring the streams with
+    `errors="replace"` degrades unencodable characters to "?" instead. The
+    stream encoding itself is left untouched.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        # Streams replaced by non-reconfigurable objects (e.g. a plain
+        # StringIO or a captured buffer) are left as-is.
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(errors="replace")
+        except (ValueError, OSError, TypeError):
+            # Closed, detached, or otherwise non-reconfigurable stream (a
+            # duck-typed `reconfigure` with a different signature raises
+            # `TypeError`) — leave it as-is. This is a best-effort hardening
+            # step; it must never itself crash the run.
+            logger.debug(
+                "Could not reconfigure %s error handler",
+                getattr(stream, "name", stream),
+                exc_info=True,
+            )
+            continue
+
+
+class _ConsoleSpinner:
+    """Animated spinner for non-interactive verbose output.
+
+    Uses Rich's `Live` display with a transient braille-dot spinner that
+    disappears when stopped, keeping terminal output clean.
+    """
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._live: Live | None = None
+
+    @property
+    def is_running(self) -> bool:
+        """Whether the live spinner is active."""
+        return self._live is not None
+
+    def start(self, message: str = "Working...") -> None:
+        """Start the spinner with the given message.
+
+        No-op if the spinner is already running. Fails silently if the console
+        cannot support live display.
+
+        Args:
+            message: Status text to display next to the spinner.
+        """
+        if self._live is not None:
+            return
+        renderable = self._build_spinner(message)
+        try:
+            self._live = Live(renderable, console=self._console, transient=True)
+            self._live.start()
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning("Spinner start failed: %s", exc)
+            self._live = None
+
+    def update(self, message: str) -> None:
+        """Replace the message on a running spinner.
+
+        Args:
+            message: Status text to display next to the spinner.
+        """
+        if self._live is None:
+            return
+        try:
+            self._live.update(self._build_spinner(message))
+        except (AttributeError, TypeError, OSError) as exc:
+            logger.warning("Spinner update failed: %s", exc)
+
+    def stop(self) -> None:
+        """Stop the spinner if running. Can be restarted with `start`."""
+        if self._live is not None:
+            try:
+                self._live.stop()
+            except (AttributeError, TypeError, OSError) as exc:
+                logger.warning("Spinner stop failed: %s", exc)
+            finally:
+                self._live = None
+
+    @staticmethod
+    def _build_spinner(message: str) -> RichSpinner:
+        spinner = RichSpinner(
+            "dots",
+            text=Text(f" {message}", style="dim"),
+            style="dim",
+        )
+        if is_ascii_mode():
+            spinner.frames = list(get_glyphs().spinner_frames)
+        return spinner
+
+
+async def _terminate_startup_process(proc: Process) -> None:
+    """Terminate and reap a startup command subprocess.
+
+    Args:
+        proc: Process returned by `asyncio.create_subprocess_shell`.
+    """
+    import sys
+
+    if proc.returncode is not None:
+        return
+
+    try:
+        if sys.platform != "win32":
+            import os
+            import signal
+
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        return
+    except OSError:
+        logger.warning(
+            "Failed to terminate startup command (pid=%s)",
+            proc.pid,
+            exc_info=True,
+        )
+        return
+
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=5)
+    except TimeoutError:
+        logger.warning(
+            "Startup command (pid=%s) did not exit after termination; sending SIGKILL",
+            proc.pid,
+        )
+        try:
+            if sys.platform != "win32":
+                import os
+                import signal
+
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            else:
+                proc.kill()
+        except ProcessLookupError:
+            return
+        except OSError:
+            logger.warning(
+                "Failed to SIGKILL startup command (pid=%s); process may leak",
+                proc.pid,
+                exc_info=True,
+            )
+            return
+        try:
+            await proc.wait()
+        except ProcessLookupError:
+            pass
+        except OSError:
+            logger.warning(
+                "Failed to reap startup command (pid=%s) after SIGKILL",
+                proc.pid,
+                exc_info=True,
+            )
+    except ProcessLookupError:
+        pass
+    except OSError:
+        logger.warning(
+            "Failed to wait on startup command (pid=%s) after SIGTERM; "
+            "process may leak",
+            proc.pid,
+            exc_info=True,
+        )
+
+
+@dataclass(frozen=True)
+class InFlightToolCall:
+    """A tool call whose `tool.use` has fired but whose result has not arrived.
+
+    Bundling the name and args into one record keeps them structurally in
+    lock-step: a single `dict[str, InFlightToolCall]` cannot represent an id with
+    args but no name (or vice versa), which two parallel dicts could. That
+    removes the desync failure mode where an orphaned drain would emit a
+    `tool.error` with an empty `tool_name`.
+    """
+
+    name: str
+    """The tool name, carried so an orphaned call can be closed with a name."""
+
+    args: dict[str, Any]
+    """The parsed tool-call arguments, for correlating the matching result."""
+
+
+def _inert_hooks() -> HooksManager:
+    """Build the placeholder coordinator used until hooks are configured.
+
+    Returns:
+        A manager that runs no hooks.
+    """
+    from deepagents_code.hooks.manager import HooksManager
+
+    return HooksManager.inert()
+
+
+def _plain_hook_notice(console: Console) -> HookNoticeCallback:
+    """Build a notice sink that prints hook output without styling.
+
+    Used for hooks loaded before the run owns a spinner; `attach_output` later
+    rebinds the manager's presenter to the styled, spinner-aware sinks.
+
+    Args:
+        console: Destination for notice text.
+
+    Returns:
+        An unstyled notice sink.
+    """
+
+    def notice(message: str, severity: HookNoticeSeverity) -> None:
+        del severity
+        console.print(Text(message), highlight=False)
+
+    return notice
+
+
+@dataclass
+class StreamState:
+    """Mutable state accumulated while iterating over the agent stream."""
+
+    thread_id: str = ""
+    """Thread whose streamed usage this state accepts."""
+
+    quiet: bool = False
+    """When `True`, stream-time diagnostics (the tool-call and file-operation
+    notifications, plus the stdout separator newline preceding a tool call) are
+    suppressed, so stdout carries only agent response text."""
+
+    stream: bool = True
+    """When `True` (default), text chunks are written to stdout as they arrive.
+
+    When `False`, text is buffered in `full_response` and flushed after the
+    agent finishes.
+    """
+
+    show_reasoning: bool = False
+    """Whether provider-visible reasoning is rendered to stderr.
+
+    Immutable configuration. Reasoning is written as it arrives even when
+    `stream` is `False`, and is never accumulated into `full_response`.
+    """
+
+    reasoning_active: bool = False
+    """Whether the `Reasoning:` heading is already written for the current run.
+
+    Cleared by `_end_reasoning` at the next text block, tool call, or round
+    boundary, so each unbroken run of reasoning blocks gets one heading.
+    """
+
+    text_line_open: bool = False
+    """Whether streamed response text left stdout's current line unterminated."""
+
+    full_response: list[str] = field(default_factory=list)
+    """Accumulated text fragments from the AI message stream."""
+
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = field(
+        default_factory=dict
+    )
+    """Maps a tool-call index or ID to its in-progress buffer: name, ID,
+    accumulated argument fragments, and the display latch."""
+
+    in_flight_tool_calls: dict[str, InFlightToolCall] = field(default_factory=dict)
+    """Maps in-flight tool-call IDs (those whose `tool.use` has fired) to their
+    name and parsed arguments, so the matching `tool.result` can be correlated.
+    Entries are removed when the result arrives; any still present when the
+    stream aborts are closed by `_dispatch_orphaned_tool_result_hooks`. One
+    record per id keeps name and args structurally in lock-step (see
+    `InFlightToolCall`)."""
+
+    displayed_tool_call_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs whose non-interactive call line has already been printed."""
+
+    emitted_tool_use_ids: set[str] = field(default_factory=set)
+    """Tool-call IDs for which a `tool.use` has been dispatched.
+
+    Monotonic: never cleared within a run, so `tool.use` fires at most once per
+    id even if a call's arg chunks are redelivered after its result (mirrors the
+    TUI's `displayed_tool_ids`). Result correlation and the orphan drain use the
+    separate `in_flight_tool_calls`, which *is* cleared per result."""
+
+    pending_interrupts: dict[str, HITLRequest] = field(default_factory=dict)
+    """Maps interrupt IDs to their validated HITL requests that are awaiting
+    decisions."""
+
+    hitl_response: dict[str, dict[str, list[dict[str, str]]]] = field(
+        default_factory=dict
+    )
+    """Maps interrupt IDs to dicts containing a `'decisions'` key with a list of
+    decision dicts (each having a `'type'` key of `'approve'` or `'reject'`).
+
+    Used to resume the agent after HITL processing.
+    """
+
+    pending_hook_interrupts: dict[str, object] = field(default_factory=dict)
+    """Raw Hooks v2 invocation interrupt payloads awaiting client fulfillment."""
+
+    hook_response: dict[str, Any] = field(default_factory=dict)
+    """Resume values for fulfilled Hooks v2 interrupts, keyed by interrupt id."""
+
+    hooks: HooksManager = field(default_factory=_inert_hooks)
+    """Client-side Hooks v2 coordinator for this headless session."""
+
+    transcript: TranscriptRecorder | None = None
+    """Completed root and identified subagent stream messages."""
+
+    active_model: str | None = None
+    """Model projected into compact lifecycle events."""
+
+    summarization_observed: bool = False
+    """Whether the current stream crossed a compaction boundary."""
+
+    completed_compaction_ids: set[str] = field(default_factory=set)
+    """Compaction tool results whose post-boundary lifecycle already fired."""
+
+    session_end_fired: bool = False
+    """Whether the headless client session has emitted its terminal event."""
+
+    interrupt_occurred: bool = False
+    """Flag indicating whether any HITL interrupt was received during the
+    current stream pass."""
+
+    stats: SessionStats = field(default_factory=SessionStats)
+    """Accumulated model usage stats for this stream."""
+
+    recorded_usage_requests: dict[UsageLedgerKey, RecordedRequest] = field(
+        default_factory=dict
+    )
+    """Requests already counted in this headless run.
+
+    Keyed by message ID, or by `(attempt_scope, message_id)` while a model
+    attempt lifecycle scope is open (see `UsageLedgerKey`). Monotonic across
+    HITL resume passes so a replayed message does not add its request, tokens,
+    or cost to `stats` again. Each pass closes its entries via
+    `finalize_recorded_requests`, which is what extends that guarantee to
+    replayed *chunks* -- an open chunked request accepts revisions, so without
+    the round boundary a replayed chunk would merge into it a second time -- and
+    which also projects each scoped key down to its bare message ID, since a
+    resume pass replays with no attempt scope open.
+    """
+
+    spinner: _ConsoleSpinner | None = None
+    """Optional animated spinner shown during agent work in verbose mode."""
+
+    show_rubric_iterations: bool = False
+    """Whether rubric lifecycle messages should include iteration numbers."""
+
+    active_attempts: dict[tuple[str, ...], _AttemptLifecycleScope] = field(
+        default_factory=dict
+    )
+    """Open model-attempt lifecycle scopes, keyed by stream namespace.
+
+    Populated by `model_attempt` start events and resolved by complete/retry
+    events. While the current namespace holds one, its
+    `(namespace, call_id, attempt)` triple scopes usage accounting so a retry
+    reusing the provider's message ID cannot revise the failed request; a
+    namespace without one records legacy unscoped (`attempt_scope=None`)."""
+
+    attempt_buffer_offsets: dict[tuple[tuple[str, ...], str, int], int] = field(
+        default_factory=dict
+    )
+    """`full_response` length at each attempt start, keyed by the scope's
+    `(namespace, call_id, attempt)`. In `--no-stream` mode a failed attempt's
+    text is truncated back to this offset, since none of it reached stdout."""
+
+    pending_tool_status_lines: list[str] = field(default_factory=list)
+    """Tool-call status lines staged in `--no-stream` mode until the attempt
+    that produced them completes, so failed attempts leave stdout clean."""
+
+    settled_attempts: set[tuple[tuple[str, ...], str, int]] = field(default_factory=set)
+    """Attempts already reconciled as superseded, keyed by
+    `(namespace, call_id, failed_attempt)`.
+
+    Reconciliation runs even when no scope matches, because a lost lifecycle
+    event must not leave half the state rolled back. That makes a *repeated*
+    `model_retry` for the same attempt indistinguishable from a first one by
+    scope alone, so identity is tracked here instead: a duplicate is a no-op
+    rather than a second boundary and a second set of settled tool rows."""
+
+    transcript_agent_ids: dict[tuple[str, ...], str] = field(default_factory=dict)
+    """Transcript agent IDs observed in nested message metadata, keyed by
+    stream namespace. A namespace carries exactly one subagent, so the first
+    observed ID resolves its lifecycle staging scope; a nested lifecycle from
+    an agent that never streamed a message stages under the namespace label."""
+
+
+@dataclass
+class ThreadUrlLookupState:
+    """Best-effort background LangSmith thread URL lookup state.
+
+    Thread safety: the background thread sets `url` then calls `done.set()`.
+    Consumers must check `done.is_set()` before reading `url`.
+    """
+
+    done: threading.Event = field(default_factory=threading.Event)
+    url: str | None = None
+
+
+def _start_langsmith_thread_url_lookup(thread_id: str) -> ThreadUrlLookupState:
+    """Start background LangSmith URL resolution without blocking.
+
+    Args:
+        thread_id: Thread identifier to resolve.
+
+    Returns:
+        Mutable lookup state whose completion can be checked later.
+    """
+    state = ThreadUrlLookupState()
+
+    def _resolve() -> None:
+        try:
+            state.url = build_langsmith_thread_url(thread_id)
+        except Exception:  # build_langsmith_thread_url already handles known errors
+            logger.debug(
+                "Could not resolve LangSmith thread URL for '%s'",
+                thread_id,
+                exc_info=True,
+            )
+        finally:
+            state.done.set()
+
+    threading.Thread(target=_resolve, daemon=True).start()
+    return state
+
+
+def _process_interrupts(
+    data: dict[str, list[Interrupt]],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Extract HITL interrupts from an `updates` chunk and record them.
+
+    Args:
+        data: The `updates` dict that contains an `__interrupt__` key.
+        state: Stream state to update with new pending interrupts.
+        console: Rich console for user-visible warnings.
+    """
+    from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+    from deepagents_code.hooks.models.domain import HookEvent
+
+    interrupts = data["__interrupt__"]
+    if interrupts:
+        for interrupt_obj in interrupts:
+            if is_hook_interrupt_payload(interrupt_obj.value):
+                state.pending_hook_interrupts[interrupt_obj.id] = interrupt_obj.value
+                state.interrupt_occurred = True
+                continue
+            try:
+                validated_request = _HITL_REQUEST_ADAPTER.validate_python(
+                    interrupt_obj.value
+                )
+            except ValidationError:
+                logger.warning(
+                    "Rejecting malformed HITL interrupt %s (raw value: %r)",
+                    interrupt_obj.id,
+                    interrupt_obj.value,
+                )
+                console.print(
+                    f"[yellow]Warning: Received malformed tool approval "
+                    f"request (interrupt {interrupt_obj.id}). Rejecting.[/yellow]"
+                )
+                # Fail-closed: record a reject decision for malformed interrupts
+
+                state.hitl_response[interrupt_obj.id] = {
+                    "decisions": [{"type": "reject", "message": "Malformed interrupt"}]
+                }
+                continue
+            state.pending_interrupts[interrupt_obj.id] = validated_request
+            state.interrupt_occurred = True
+            if not state.hooks.has_handlers(HookEvent.NOTIFICATION):
+                dispatch_hook_fire_and_forget("input.required", {})
+
+
+def _record_usage_from_message(
+    message_obj: AIMessage,
+    state: StreamState,
+    *,
+    is_main_agent: bool = True,
+    metadata: Mapping[str, Any] | None = None,
+    attempt_scope: Hashable | None = None,
+) -> None:
+    """Record model usage and estimated cost from a streamed AI message.
+
+    Args:
+        message_obj: The `AIMessage` received from the stream.
+        state: Shared stream state holding the usage ledger.
+        is_main_agent: Whether the message belongs to the root graph.
+        metadata: Stream metadata carrying optional subagent identity.
+        attempt_scope: Identity of the attempt that produced this message, or
+            `None` for legacy unscoped recording (no active lifecycle scope).
+    """
+    usage_kind = classify_usage_kind(
+        is_main_agent=is_main_agent,
+        metadata=metadata,
+    )
+    record_message_usage(
+        state.stats,
+        message_obj,
+        fallback_model=runtime_state.model_name or "",
+        fallback_provider=runtime_state.model_provider or "",
+        request_metadata=metadata,
+        kind=usage_kind,
+        recorded_requests=state.recorded_usage_requests,
+        attempt_scope=attempt_scope,
+    )
+
+
+def _write_reasoning(text: str, state: StreamState) -> None:
+    """Write reasoning to stderr under a one-time `Reasoning:` heading.
+
+    Sets `state.reasoning_active` so the heading is not repeated until
+    `_end_reasoning` closes the phase. Gated on `state.show_reasoning` so the
+    invariant holds for every call site, not just the current one.
+    """
+    if not state.show_reasoning:
+        return
+    if not state.reasoning_active:
+        if state.text_line_open:
+            sys.stderr.write("\n")
+        sys.stderr.write("Reasoning:\n")
+        state.reasoning_active = True
+    sys.stderr.write(text)
+    sys.stderr.flush()
+
+
+def _end_reasoning(state: StreamState) -> None:
+    """Terminate an active reasoning phase before other output begins."""
+    if state.reasoning_active:
+        sys.stderr.write("\n")
+        sys.stderr.flush()
+        state.reasoning_active = False
+
+
+def _process_ai_message(
+    message_obj: AIMessage,
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Extract text and tool-call blocks from an AI message and render them.
+
+    When streaming is enabled, text blocks are written to stdout immediately;
+    otherwise they are accumulated in `state.full_response` for deferred
+    output. Tool-call blocks are buffered and their names are printed to the
+    console.
+
+    Args:
+        message_obj: The `AIMessage` received from the stream.
+        state: Stream state for accumulating response text and tool-call buffers.
+        console: Rich console for formatted output.
+    """
+    if not hasattr(message_obj, "content_blocks"):
+        logger.debug("AIMessage missing content_blocks attribute, skipping")
+        return
+    glyphs = get_glyphs()
+    for block in message_obj.content_blocks:
+        if not isinstance(block, dict):
+            continue
+        block_type = block.get("type")
+        if block_type == "text":
+            text = block.get("text", "")
+            if text:
+                _end_reasoning(state)
+                if state.stream:
+                    if state.spinner:
+                        state.spinner.stop()
+                    _write_text(text)
+                    state.text_line_open = not text.endswith("\n")
+                state.full_response.append(text)
+        elif block_type == "reasoning":
+            reasoning = reasoning_text(block)
+            if state.show_reasoning and reasoning is not None:
+                if state.spinner:
+                    state.spinner.stop()
+                _write_reasoning(reasoning, state)
+        elif block_type in {"tool_call_chunk", "tool_call"}:
+            _end_reasoning(state)
+            chunk_name = block.get("name")
+            chunk_id = block.get("id")
+            chunk_index = block.get("index")
+            chunk_args = block.get("args")
+
+            buffer_key = tool_call_buffer_key(
+                chunk_index, chunk_id, len(state.tool_call_buffers)
+            )
+            buffer = state.tool_call_buffers.setdefault(buffer_key, ToolCallBuffer())
+            buffer.ingest(name=chunk_name, tool_id=chunk_id, args=chunk_args)
+
+            buffer_name = buffer.name
+            buffer_id = buffer.tool_id
+            already_displayed = (
+                isinstance(buffer_id, str)
+                and buffer_id in state.displayed_tool_call_ids
+            )
+            if (
+                isinstance(buffer_name, str)
+                and not buffer.displayed
+                and not already_displayed
+            ):
+                if state.stream:
+                    if state.spinner:
+                        state.spinner.stop()
+                    if not state.quiet:
+                        if state.text_line_open:
+                            _write_newline()
+                            state.text_line_open = False
+                        console.print(
+                            f"[dim]{glyphs.tool} Calling tool: "
+                            f"{escape_markup(buffer_name)}[/dim]",
+                            highlight=False,
+                        )
+                elif not state.quiet:
+                    # `--no-stream` holds text client-side until the run ends,
+                    # so the attempt lifecycle can retract a failed attempt's
+                    # text — but only if its tool status is retractable too.
+                    # Stage the line and flush it on attempt completion; the
+                    # terminal flush prints whatever survives reconciliation.
+                    state.pending_tool_status_lines.append(
+                        f"{glyphs.tool} Calling tool: {buffer_name}"
+                    )
+                buffer.displayed = True
+                if isinstance(buffer_id, str):
+                    state.displayed_tool_call_ids.add(buffer_id)
+            elif isinstance(buffer_id, str) and buffer.displayed:
+                state.displayed_tool_call_ids.add(buffer_id)
+
+            # Gate tool.use on a resolved tool id so this surface matches the
+            # interactive one, which dispatches at widget-mount time in
+            # `textual_adapter.execute_task_textual`. Both gate on a resolved
+            # tool-call id and fire at most once per id via a monotonic id set
+            # (`emitted_tool_use_ids` here, `displayed_tool_ids` there) that is
+            # never cleared within the run — see the "fire-once-per-id" clause of
+            # the parity contract in `_tool_stream`. Gating on the monotonic set
+            # rather than `in_flight_tool_calls` (which is cleared per result)
+            # means a redelivery of a completed call's arg chunks does not
+            # re-fire `tool.use` and spawn a spurious orphan.
+            parsed_args = buffer.parse_args()
+            if (
+                isinstance(buffer_name, str)
+                and buffer_id is not None
+                and parsed_args is not None
+                and buffer_id not in state.emitted_tool_use_ids
+            ):
+                dispatch_hook_fire_and_forget(
+                    "tool.use",
+                    build_tool_use_payload(buffer_name, buffer_id, parsed_args),
+                )
+                state.emitted_tool_use_ids.add(buffer_id)
+                state.in_flight_tool_calls[buffer_id] = InFlightToolCall(
+                    buffer_name, parsed_args
+                )
+            if (
+                isinstance(buffer_id, str)
+                and parsed_args is not None
+                and buffer_id in state.emitted_tool_use_ids
+            ):
+                # Drop the buffer so a later turn that reuses this streaming
+                # index (indices restart per message, per LangChain streaming
+                # semantics) starts fresh rather than reusing this call's state.
+                # This also clears a redelivered completed call's recreated
+                # buffer, whose `tool.use` is already suppressed by the
+                # monotonic `emitted_tool_use_ids`.
+                state.tool_call_buffers.pop(buffer_key, None)
+
+
+def _process_message_chunk(
+    data: tuple[AIMessage | ToolMessage, dict[str, str]],
+    state: StreamState,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+) -> None:
+    """Handle a `messages`-mode chunk from the stream.
+
+    Dispatches to AI-message or tool-message processing depending on the
+    message type.
+
+    Args:
+        data: A 2-tuple of `(message_obj, metadata)` from the messages
+            stream mode.
+        state: Shared stream state.
+        console: Rich console for formatted output.
+        file_op_tracker: Tracker for file-operation diffs.
+    """
+    if not isinstance(data, tuple) or len(data) != _MESSAGE_DATA_LENGTH:
+        logger.debug(
+            "Unexpected message-mode data (type=%s), skipping", type(data).__name__
+        )
+        return
+
+    message_obj, metadata = data
+    stream_metadata = metadata if isinstance(metadata, dict) else None
+
+    # Account cost/tokens even for internal model calls whose text is hidden.
+    if isinstance(message_obj, AIMessage):
+        _record_usage_from_message(
+            message_obj,
+            state,
+            is_main_agent=True,
+            metadata=stream_metadata,
+            attempt_scope=_root_attempt_scope(state),
+        )
+
+    # The summarization middleware injects synthetic messages to compress
+    # conversation history for the LLM. These are internal bookkeeping and
+    # should not be rendered to the user.
+    if stream_metadata and stream_metadata.get("lc_source") == "summarization":
+        state.summarization_observed = True
+        return
+
+    if isinstance(message_obj, AIMessage):
+        _process_ai_message(message_obj, state, console)
+    elif isinstance(message_obj, ToolMessage):
+        tool_id = getattr(message_obj, "tool_call_id", None)
+        correlated_tool_name = ""
+        # Args come from the matching tool.use. They default to {} when the call
+        # had no id to correlate on, or no tool.use fired (e.g. its args never
+        # parsed). The seam is intentional — without a correlated id we cannot
+        # pair them — but log the correlation miss so a lost pairing is not
+        # completely silent.
+        if isinstance(tool_id, str):
+            in_flight = state.in_flight_tool_calls.pop(tool_id, None)
+            tool_args = in_flight.args if in_flight is not None else None
+            correlated_tool_name = in_flight.name if in_flight is not None else ""
+            state.displayed_tool_call_ids.discard(tool_id)
+            if tool_args is None:
+                # Warning, not info/debug: a real-id result with no matching
+                # tool.use means a hook consumer sees a `tool.result` with empty
+                # args for a tool that actually executed (its args never parsed) —
+                # degraded audit fidelity worth surfacing at default log levels,
+                # consistent with the rest of this feature's severity philosophy.
+                logger.warning(
+                    "tool.result for %s has no correlated tool.use args; "
+                    "sending empty tool_args",
+                    tool_id,
+                )
+                tool_args = {}
+        else:
+            tool_args = {}
+        record = file_op_tracker.complete_with_message(message_obj)
+        # Gated on the outcome, not on `record.diff`: two of the four outcomes
+        # produce no diff at all (`unreadable_after`, which returns before one is
+        # computed, and `terminators_only`, which has none by definition), and
+        # neither does a `delete` with a lost pre-image, where both sides are
+        # empty. None of those print anything without this. Headless output is
+        # what CI reads, so a change that could not be verified has to say so
+        # here too rather than only in the TUI.
+        caveat = record_display_caveat(record)
+        if record and (record.diff or caveat):
+            if state.spinner:
+                state.spinner.stop()
+            if not state.quiet:
+                console.print(
+                    f"[dim]{get_glyphs().file} "
+                    f"{escape_markup(record.display_path)}[/dim]",
+                    highlight=False,
+                )
+            if caveat:
+                # Printed even under `--quiet`, which suppresses *diagnostics*;
+                # a statement that an operation could not be verified is not
+                # one, and dropping it here would leave the caveat existing
+                # nowhere. Safe for the mode's contract because quiet already
+                # routes `console` to stderr, so this cannot pollute the stdout
+                # result that `-p --quiet` exists to keep clean.
+                console.print(
+                    f"[yellow]{escape_markup(caveat)}[/yellow]",
+                    highlight=False,
+                )
+        tool_name = getattr(message_obj, "name", "")
+        if not tool_name:
+            tool_name = correlated_tool_name
+        # Normalize to the two-value hook domain, fail-closed: an unexpected
+        # provider status is logged and treated as an error (see
+        # `normalize_tool_status`) rather than silently reported as success.
+        tool_status: ToolStatus = normalize_tool_status(
+            getattr(message_obj, "status", "success"), tool_name
+        )
+        # Format the content the same way the interactive surface does so
+        # `tool_output` is identical across surfaces for list/structured content
+        # (e.g. multimodal or MCP tools returning content blocks) rather than a
+        # raw Python list repr here vs. extracted text there. Truncation to
+        # HOOK_TOOL_OUTPUT_LIMIT happens inside build_tool_result_payload.
+        # Guard formatting so a formatter error can't skip the tool.result
+        # dispatch below; on failure use a sentinel (see the except) rather than
+        # re-touching the offending content, so the dispatch stays unconditional.
+        try:
+            tool_content = format_tool_message_content(message_obj.content)
+            tool_output = str(tool_content) if tool_content else ""
+        except Exception:
+            # Guard formatting *and* the str() coercion together: a pathological
+            # __str__ must not re-raise past the fallback and skip the
+            # tool.result dispatch below. Use a sentinel rather than re-touching
+            # the offending content, so the dispatch stays unconditional.
+            logger.exception("Failed to format tool output")
+            tool_output = UNRENDERABLE_TOOL_OUTPUT
+        # Headless always dispatches tool.result for every ToolMessage — there
+        # are no widgets to skip. The TUI handles ToolMessages in four branches
+        # in `textual_adapter.execute_task_textual`: the widget-backed path, a
+        # deferred-`ask_user` path for a row that never mounted, and an `else` for
+        # unmounted tools all dispatch (mirroring this always-dispatch behavior),
+        # while the `completed_tool_result_ids` branch suppresses a duplicate
+        # rather than dispatching. See the parity contract in `_tool_stream` for
+        # the full guarantee.
+        if tool_status == "error":
+            dispatch_hook_fire_and_forget(
+                "tool.error",
+                build_tool_error_payload(tool_name),
+            )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                tool_name, tool_id, tool_args, tool_status, tool_output
+            ),
+        )
+        if state.spinner:
+            state.spinner.start()
+
+
+def _process_rubric_event(
+    data: dict[str, Any],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Render a `RubricMiddleware` lifecycle event from the custom stream.
+
+    `RubricMiddleware` emits `rubric_evaluation_start` / `rubric_evaluation_end`
+    dicts via `runtime.stream_writer`. Non-rubric custom payloads are ignored.
+
+    Args:
+        data: The custom-stream payload dict.
+        state: Shared stream state (used to pause the spinner).
+        console: Rich console for status output (stderr in `--quiet` mode).
+    """
+    event_type = data.get("type")
+    if event_type not in {"rubric_evaluation_start", "rubric_evaluation_end"}:
+        return
+
+    glyphs = get_glyphs()
+    if state.spinner:
+        state.spinner.stop()
+
+    if event_type == "rubric_evaluation_start":
+        # `iteration` is untrusted streamed payload; only render the 1-based
+        # number when it is actually an int and the user explicitly requested an
+        # iteration cap. A non-int previously raised `TypeError` here and aborted
+        # the whole non-interactive run.
+        iteration = data.get("iteration", 0)
+        label = (
+            f" (iteration {iteration + 1})"
+            if state.show_rubric_iterations and isinstance(iteration, int)
+            else ""
+        )
+        console.print(
+            f"[dim]{glyphs.hourglass} Checking acceptance criteria{label}"
+            f"{glyphs.ellipsis}[/dim]",
+            highlight=False,
+        )
+        if state.spinner:
+            state.spinner.start()
+        return
+
+    result = data.get("result")
+    explanation = (data.get("explanation") or "").strip()
+    if result == "satisfied":
+        console.print(
+            f"[green]{glyphs.checkmark} Acceptance criteria satisfied[/green]",
+            highlight=False,
+        )
+    elif result == "needs_revision":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]{glyphs.retry} Acceptance criteria not yet satisfied"
+            f"{suffix}[/yellow]",
+            highlight=False,
+        )
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(
+                    f"[yellow]  {glyphs.error} {name}{detail}[/yellow]",
+                    highlight=False,
+                )
+    elif result == "max_iterations_reached":
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]{glyphs.warning} Acceptance criteria not yet satisfied "
+            f"(iteration limit reached){suffix}[/yellow]",
+            highlight=False,
+        )
+        for criterion in data.get("criteria", []):
+            if isinstance(criterion, dict) and not criterion.get("passed", True):
+                name = escape_markup(str(criterion.get("name", "criterion")))
+                gap = escape_markup(str(criterion.get("gap", "")).strip())
+                detail = f" — {gap}" if gap else ""
+                console.print(
+                    f"[yellow]  {glyphs.error} {name}{detail}[/yellow]",
+                    highlight=False,
+                )
+    elif result in {"failed", "grader_error"}:
+        label = (
+            "Rubric is invalid or cannot be evaluated"
+            if result == "failed"
+            else "Acceptance criteria check failed"
+        )
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(f"[red]{glyphs.warning} {label}{suffix}[/red]", highlight=False)
+    elif result is not None:
+        # A `rubric_evaluation_end` with an unrecognized result is still a
+        # terminal grading event; surface it rather than letting the run go
+        # quiet mid-task (e.g. if the SDK adds a new verdict). Mirrors the
+        # interactive fallback in `textual_adapter._format_rubric_event`.
+        suffix = f": {escape_markup(explanation)}" if explanation else ""
+        console.print(
+            f"[yellow]{glyphs.warning} Acceptance criteria check ended"
+            f"{suffix}[/yellow]",
+            highlight=False,
+        )
+
+    if state.spinner:
+        state.spinner.start()
+
+
+def _attempt_key(
+    namespace: tuple[str, ...], scope: _AttemptLifecycleScope
+) -> tuple[tuple[str, ...], str, int]:
+    """Identity of a lifecycle scope for usage scoping and buffer offsets.
+
+    Returns:
+        The `(namespace, call_id, attempt)` triple identifying the scope.
+    """
+    return (namespace, scope.call_id, scope.attempt)
+
+
+def _root_attempt_scope(state: StreamState) -> tuple[tuple[str, ...], str, int] | None:
+    """The usage scope of the root namespace's active attempt, if one is open.
+
+    Returns:
+        The active attempt's identity triple, or `None` when the root has no
+        open lifecycle scope (legacy unscoped recording).
+    """
+    scope = state.active_attempts.get(())
+    return None if scope is None else _attempt_key((), scope)
+
+
+def _lifecycle_agent_id(state: StreamState, namespace: tuple[str, ...]) -> str | None:
+    """Resolve the transcript staging scope for a lifecycle namespace.
+
+    The root namespace stages under `None`. A nested namespace stages under the
+    transcript agent ID its messages carried; a namespace with no observed
+    messages (e.g. a hidden grader) stages under its namespace label.
+
+    Returns:
+        The transcript agent ID to stage under, or `None` for the root agent.
+    """
+    if not namespace:
+        return None
+    return state.transcript_agent_ids.get(namespace) or "/".join(namespace)
+
+
+def _retarget_transcript_scope(
+    state: StreamState, namespace: tuple[str, ...], agent_id: str
+) -> None:
+    """Point a namespace's open attempt at its observed transcript agent.
+
+    A nested `model_attempt(start)` can arrive before the agent's first
+    message, when its transcript identity is still unknown; staging then falls
+    back to the namespace label. Once a message supplies the real agent ID,
+    re-resolve: open the staging scope under the real ID so completed messages
+    land in the agent transcript, and clean up any fallback-labeled staging
+    (which holds at most partial chunks no final-marked message reached).
+    """
+    scope = state.active_attempts.get(namespace)
+    if scope is None or scope.agent_id == agent_id or state.transcript is None:
+        return
+    state.transcript.discard_attempt(
+        agent_id=scope.agent_id,
+        call_id=scope.call_id,
+        attempt=scope.attempt,
+    )
+    state.active_attempts[namespace] = replace(scope, agent_id=agent_id)
+    state.transcript.start_attempt(
+        agent_id=agent_id,
+        call_id=scope.call_id,
+        attempt=scope.attempt,
+    )
+
+
+def _reconcile_superseded_attempt(
+    namespace: tuple[str, ...],
+    scope: _AttemptLifecycleScope | None,
+    state: StreamState,
+    console: Console,
+    *,
+    attempt_id: tuple[tuple[str, ...], str, int],
+    output_may_have_started: bool,
+) -> None:
+    """Retract everything one superseded model attempt left behind.
+
+    Called from both paths that supersede an attempt: a correlated
+    `model_retry`, and a `model_attempt(start)` for a namespace whose previous
+    attempt never closed. The second path is reachable because
+    `_emit_stream_event` logs and swallows writer faults, so a `model_retry`
+    can be lost in flight; handling the two identically is what stops a lost
+    event from leaving half the state rolled back.
+
+    Nested namespaces reconcile transcript staging and usage scope only -- a
+    nested retry is visible solely through the Task/subagent status surface.
+    For the root, this also settles the attempt's fired `tool.use` hooks,
+    clears its tool buffers, and reconciles output: streaming mode marks the
+    seam when output may have escaped, while `--no-stream` truncates buffered
+    text back to the attempt's recorded offset.
+
+    Args:
+        namespace: Stream namespace the superseded attempt ran on.
+        scope: The superseded attempt, or `None` when the client never opened
+            one (a valid but uncorrelated retry). Output still reconciles: the
+            tools did not run either way.
+        state: Shared stream state.
+        console: Rich console for the boundary (stderr in `--quiet` mode).
+        attempt_id: `(namespace, call_id, failed_attempt)` identity of the
+            superseded attempt, so a repeated event is a no-op. See
+            `StreamState.settled_attempts`.
+        output_may_have_started: Whether the attempt may have put message
+            output beyond server control.
+    """
+    if attempt_id in state.settled_attempts:
+        return
+    state.settled_attempts.add(attempt_id)
+
+    offset: int | None = None
+    if scope is not None:
+        state.active_attempts.pop(namespace, None)
+        offset = state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
+        if state.transcript is not None:
+            state.transcript.discard_attempt(
+                agent_id=scope.agent_id,
+                call_id=scope.call_id,
+                attempt=scope.attempt,
+            )
+    if namespace:
+        return
+
+    # The failed attempt's tool calls never executed. Guarded so a dispatch
+    # fault cannot turn a recoverable transient failure into a hard abort
+    # mid-retry -- the teardown drain is guarded for the same reason.
+    try:
+        _settle_interrupted_tool_hooks(state)
+    except Exception:
+        logger.warning(
+            "Interrupted tool.result drain failed unexpectedly", exc_info=True
+        )
+    # Buffers from earlier model steps are unaffected: indices restart per
+    # message and a completed call's buffer is already popped.
+    discarded_buffer_ids = {
+        buffer.tool_id
+        for buffer in state.tool_call_buffers.values()
+        if isinstance(buffer.tool_id, str)
+    }
+    state.tool_call_buffers.clear()
+    state.displayed_tool_call_ids.difference_update(discarded_buffer_ids)
+
+    if not state.stream:
+        # Buffered output never reached stdout, so discard the failed attempt
+        # regardless of the conservative visibility flag.
+        state.pending_tool_status_lines.clear()
+        if offset is not None:
+            del state.full_response[offset:]
+        elif output_may_have_started and state.full_response:
+            # No recorded offset, but the server says failed output may be in
+            # the buffer. Carry a boundary instead of silently splicing it into
+            # the replay. Legacy servers cannot retry after output and omit this
+            # flag, so their retries leave earlier successful steps untouched.
+            state.full_response.append(f"\n{RETRY_BOUNDARY_LINE}\n")
+        return
+
+    if not output_may_have_started:
+        return
+    # Already-written text cannot be recalled, so mark where the incomplete
+    # attempt ended before the replay begins. Response text goes to raw stdout
+    # with no trailing newline and Rich cannot see it, so terminate the line
+    # first -- otherwise the boundary is welded onto the tail of a half-finished
+    # sentence. In `--quiet` mode `console` writes to stderr, keeping stdout
+    # text-only.
+    if state.full_response:
+        _write_newline()
+    console.print(f"[dim]{escape_markup(RETRY_BOUNDARY_LINE)}[/dim]", highlight=False)
+
+
+def _flush_pending_tool_status(state: StreamState, console: Console) -> None:
+    """Print and clear `--no-stream` tool status staged by completed attempts.
+
+    Lines are only ever staged outside `--quiet` mode, so reaching here with
+    anything to print already means the console is a rendering surface.
+    """
+    lines, state.pending_tool_status_lines = state.pending_tool_status_lines, []
+    for line in lines:
+        console.print(f"[dim]{escape_markup(line)}[/dim]", highlight=False)
+
+
+def _commit_attempt_lifecycle(
+    namespace: tuple[str, ...],
+    scope: _AttemptLifecycleScope,
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Commit one successful attempt whose lifecycle scope is still open."""
+    state.active_attempts.pop(namespace, None)
+    state.attempt_buffer_offsets.pop(_attempt_key(namespace, scope), None)
+    if state.transcript is not None:
+        state.transcript.complete_attempt(
+            agent_id=scope.agent_id,
+            call_id=scope.call_id,
+            attempt=scope.attempt,
+        )
+    if namespace or not state.pending_tool_status_lines:
+        return
+    if state.spinner:
+        state.spinner.stop()
+    _flush_pending_tool_status(state, console)
+
+
+def _process_attempt_lifecycle(
+    namespace: tuple[str, ...],
+    data: dict[str, Any],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Open or commit one model-attempt lifecycle scope.
+
+    `model_attempt` events carry no visible output by themselves; they open a
+    transcript staging scope, record the buffer offset a retry truncates to in
+    `--no-stream` mode, and on completion commit the staged transcript and
+    flush the attempt's staged tool status. Out-of-phase and duplicate events
+    are dropped by key match, making the lifecycle idempotent.
+
+    Args:
+        namespace: Stream namespace the event arrived on (`()` for the root).
+        data: The validated `model_attempt` payload.
+        state: Shared stream state.
+        console: Rich console for flushing staged tool status on completion.
+    """
+    call_id = cast("str", data["call_id"])
+    attempt = cast("int", data["attempt"])
+    if data["phase"] == "start":
+        scope = _AttemptLifecycleScope(
+            call_id=call_id,
+            attempt=attempt,
+            agent_id=_lifecycle_agent_id(state, namespace),
+        )
+        existing = state.active_attempts.get(namespace)
+        if existing is not None and existing != scope:
+            if existing.call_id != call_id:
+                # A different call can only begin after the prior call
+                # succeeded. Its completion event was lost, so commit the open
+                # scope before starting the next model step.
+                logger.warning(
+                    "Model attempt %s/%d did not receive a completion event; "
+                    "committing before model call %s",
+                    existing.call_id,
+                    existing.attempt,
+                    call_id,
+                )
+                _commit_attempt_lifecycle(namespace, existing, state, console)
+            else:
+                # A new attempt for the same call means `model_retry` was lost
+                # to a writer fault. Reconcile exactly as the retry path would.
+                logger.warning(
+                    "Model attempt %s/%d superseded without a model_retry event; "
+                    "reconciling as a lost retry",
+                    existing.call_id,
+                    existing.attempt,
+                )
+                _reconcile_superseded_attempt(
+                    namespace,
+                    existing,
+                    state,
+                    console,
+                    attempt_id=(namespace, existing.call_id, existing.attempt),
+                    output_may_have_started=True,
+                )
+        state.active_attempts[namespace] = scope
+        state.attempt_buffer_offsets.setdefault(
+            _attempt_key(namespace, scope), len(state.full_response)
+        )
+        if state.transcript is not None and existing != scope:
+            state.transcript.start_attempt(
+                agent_id=scope.agent_id,
+                call_id=call_id,
+                attempt=attempt,
+            )
+        return
+
+    scope = state.active_attempts.get(namespace)
+    if scope is None or scope.call_id != call_id or scope.attempt != attempt:
+        return
+    _commit_attempt_lifecycle(namespace, scope, state, console)
+
+
+def _settle_interrupted_tool_hooks(state: StreamState) -> None:
+    """Close in-flight `tool.use` hooks superseded by a failed model attempt.
+
+    A retried model call reruns from the last committed graph state, so none of
+    these tools executed; each gets a synthetic `tool.error`/`tool.result` pair
+    so every emitted `tool.use` sees exactly one terminal event.
+
+    The settled ids are then dropped from `emitted_tool_use_ids` and
+    `displayed_tool_call_ids`. Those sets are monotonic for the run everywhere
+    else, and deliberately so — a provider redelivering a *completed* call's
+    chunks must not re-fire `tool.use`. An attempt boundary is the one place
+    that reasoning inverts: the replay is a genuinely new call, and a provider
+    that reuses the tool-call id would otherwise have its `tool.use` suppressed
+    while the tool really runs, so the real `ToolMessage` would arrive with no
+    open in-flight entry and dispatch a *second* terminal event for the id — one
+    `tool.use`, three terminals, and no "Calling tool" line. Retiring just the
+    ids this call settles keeps the guarantee intact in both directions.
+
+    Args:
+        state: Shared stream state.
+    """
+    settled_ids = list(state.in_flight_tool_calls)
+    _dispatch_orphaned_tool_result_hooks(
+        state,
+        INTERRUPTED_TOOL_OUTPUT,
+        reason="Model attempt superseded by a retry",
+    )
+    for tool_id in settled_ids:
+        state.emitted_tool_use_ids.discard(tool_id)
+        state.displayed_tool_call_ids.discard(tool_id)
+
+
+def _process_retry_lifecycle(
+    namespace: tuple[str, ...],
+    data: dict[str, Any],
+    correlation: dict[str, object],
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Reconcile the superseded attempt a correlated `model_retry` names.
+
+    Nested retries only re-scope transcript staging and usage accounting — they
+    never mutate root presentation. A root retry hands the superseded attempt to
+    `_reconcile_superseded_attempt`, then prints the status line last so the
+    "output above is incomplete" boundary points at the model's text rather than
+    at the status line itself.
+
+    An uncorrelated retry — a structurally valid payload naming an attempt this
+    client never opened — still reconciles output and settles tool hooks (the
+    tools did not run either way); only the transcript and offset steps are
+    skipped, since there is no scope to key them by.
+
+    Args:
+        namespace: Stream namespace the event arrived on (`()` for the root).
+        data: The full `model_retry` payload (for the status line).
+        correlation: The validated `call_id`/`failed_attempt`/
+            `output_may_have_started` triple.
+        state: Shared stream state.
+        console: Rich console for status output (stderr in `--quiet` mode).
+    """
+    call_id = correlation["call_id"]
+    failed_attempt = correlation["failed_attempt"]
+    output_may_have_started = cast("bool", correlation["output_may_have_started"])
+
+    scope = state.active_attempts.get(namespace)
+    if scope is not None and (
+        scope.call_id != call_id or scope.attempt != failed_attempt
+    ):
+        # Names an attempt this client does not have open. Reconcile without it
+        # rather than against the wrong one.
+        logger.warning(
+            "Uncorrelated model_retry for %s/%s; reconciling without a scope",
+            call_id,
+            failed_attempt,
+        )
+        scope = None
+
+    attempt_id = (namespace, cast("str", call_id), cast("int", failed_attempt))
+    if not namespace and state.spinner:
+        state.spinner.stop()
+    _reconcile_superseded_attempt(
+        namespace,
+        scope,
+        state,
+        console,
+        attempt_id=attempt_id,
+        output_may_have_started=output_may_have_started,
+    )
+    if namespace:
+        # Nested output is filtered before rendering, so a nested retry has no
+        # visible surface beyond the reconciliation above.
+        return
+    # A `Retry-After` backoff can hold the turn for a minute, so this line is
+    # the only explanation for the stall; the spinner is stopped first so it
+    # cannot overwrite it. `highlight=False` keeps Rich from bolding the "1/5",
+    # which would cancel the `dim`.
+    status = retry_status_from_event(data)
+    console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+    # Restart the spinner: the backoff is the longest stall of the turn, and
+    # leaving it stopped reads as a hang until some unrelated later event
+    # happens to restart it.
+    if state.spinner:
+        state.spinner.start()
+
+
+def _process_stream_chunk(
+    chunk: object,
+    state: StreamState,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+) -> None:
+    """Route a single raw stream chunk to the appropriate handler.
+
+    Only main-agent chunks are processed; sub-agent output is ignored so
+    that only top-level content is rendered.
+
+    Args:
+        chunk: A raw element yielded by `agent.astream`.
+
+            Expected to be a 3-tuple `(namespace, stream_mode, data)` for
+            main-agent output.
+        state: Shared stream state.
+        console: Rich console for formatted output.
+        file_op_tracker: Tracker for file-operation diffs.
+    """
+    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        logger.debug(
+            "Unexpected stream chunk (type=%s), skipping", type(chunk).__name__
+        )
+        return
+
+    namespace, stream_mode, data = chunk
+    # `namespace` unpacks from an untyped 3-tuple; LangGraph always supplies a
+    # `tuple[str, ...]`, so a cast gives the type checker what it needs without
+    # rebuilding the tuple on every chunk of this hot loop.
+    ns_key = cast("tuple[str, ...]", namespace) if namespace else ()
+    is_main_agent = not ns_key
+
+    if (
+        stream_mode == "messages"
+        and isinstance(data, tuple)
+        and len(data) == _MESSAGE_DATA_LENGTH
+        and state.transcript is not None
+    ):
+        message, metadata = data
+        transcript_metadata = (
+            {str(key): value for key, value in metadata.items()}
+            if isinstance(metadata, dict)
+            else None
+        )
+        if (
+            ns_key
+            and ns_key not in state.transcript_agent_ids
+            and isinstance(transcript_metadata, dict)
+        ):
+            # Only the first message of a namespace can teach us its transcript
+            # identity; once recorded, scopes open under it directly and later
+            # chunks have nothing left to retarget.
+            agent_id = transcript_metadata.get(SUBAGENT_TRANSCRIPT_ID_METADATA_KEY)
+            if isinstance(agent_id, str) and agent_id:
+                state.transcript_agent_ids[ns_key] = agent_id
+                _retarget_transcript_scope(state, ns_key, agent_id)
+        state.transcript.record(
+            message,
+            transcript_metadata,
+            main_agent=is_main_agent,
+        )
+
+    # Nested agent spend still counts even when chat rendering is skipped.
+    if not is_main_agent:
+        if stream_mode == "custom":
+            if isinstance(data, dict) and data.get("type") == "model_attempt":
+                parsed = model_attempt_from_event(data)
+                if parsed is not None:
+                    _process_attempt_lifecycle(ns_key, parsed, state, console)
+            elif isinstance(data, dict) and data.get("type") == "model_retry":
+                correlation = model_retry_from_event(data)
+                if correlation is not None:
+                    _process_retry_lifecycle(
+                        ns_key,
+                        cast("dict[str, Any]", data),
+                        correlation,
+                        state,
+                        console,
+                    )
+                # A nested retry without valid correlation has no visible
+                # surface here; nested output is filtered before rendering.
+            else:
+                scope = state.active_attempts.get(ns_key)
+                record_model_usage_event(
+                    state.stats,
+                    data,
+                    active_thread_id=state.thread_id,
+                    fallback_model=runtime_state.model_name or "",
+                    fallback_provider=runtime_state.model_provider or "",
+                    recorded_requests=state.recorded_usage_requests,
+                    attempt_scope=(
+                        None if scope is None else _attempt_key(ns_key, scope)
+                    ),
+                )
+        elif (
+            stream_mode == "messages"
+            and isinstance(data, tuple)
+            and len(data) == (_MESSAGE_DATA_LENGTH)
+        ):
+            message_obj, nested_metadata = data
+            if isinstance(message_obj, AIMessage):
+                scope = state.active_attempts.get(ns_key)
+                _record_usage_from_message(
+                    message_obj,
+                    state,
+                    is_main_agent=False,
+                    metadata=cast(
+                        "Mapping[str, Any] | None",
+                        nested_metadata if isinstance(nested_metadata, dict) else None,
+                    ),
+                    attempt_scope=(
+                        None if scope is None else _attempt_key(ns_key, scope)
+                    ),
+                )
+        return
+
+    if stream_mode == "updates" and isinstance(data, dict) and "__interrupt__" in data:
+        _process_interrupts(cast("dict[str, list[Interrupt]]", data), state, console)
+    elif stream_mode == "custom" and isinstance(data, dict):
+        if data.get("type") == "model_retry":
+            correlation = model_retry_from_event(data)
+            if correlation is not None:
+                _process_retry_lifecycle(
+                    ns_key, cast("dict[str, Any]", data), correlation, state, console
+                )
+            else:
+                # Unknown or malformed correlation: no scope to key transcript
+                # staging or a buffer offset by. Still reconcile the attempt's
+                # tool state. Legacy producers could only retry before output,
+                # so their missing visibility field must not mark buffered text
+                # from an earlier successful model step as incomplete.
+                if state.spinner:
+                    state.spinner.stop()
+                _reconcile_superseded_attempt(
+                    ns_key,
+                    None,
+                    state,
+                    console,
+                    # A legacy payload names no attempt, so identity falls back
+                    # to the retry counter it does carry. Two retries of one
+                    # call always differ; a redelivery of the same event does
+                    # not, which is exactly the no-op case.
+                    attempt_id=(ns_key, "", legacy_retry_index(data)),
+                    output_may_have_started=False,
+                )
+                status = retry_status_from_event(data)
+                console.print(f"[dim]{escape_markup(status)}[/dim]", highlight=False)
+                if state.spinner:
+                    state.spinner.start()
+        elif data.get("type") == "model_attempt":
+            parsed = model_attempt_from_event(data)
+            if parsed is not None:
+                _process_attempt_lifecycle(ns_key, parsed, state, console)
+        else:
+            _process_rubric_event(cast("dict[str, Any]", data), state, console)
+    elif stream_mode == "messages":
+        _process_message_chunk(
+            cast("tuple[AIMessage | ToolMessage, dict[str, str]]", data),
+            state,
+            console,
+            file_op_tracker,
+        )
+
+
+def _resolve_shell_allow_list() -> list[str] | None:
+    """Resolve the non-interactive shell policy.
+
+    Returns:
+        The configured allow-list, or `None` when shell access is disabled.
+
+    Raises:
+        RuntimeError: If the option is absent from the manifest.
+    """
+    from deepagents_code.config_manifest import _emit_ranked_diagnostics, get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option("shell.allow_list")
+    if option is None:
+        msg = "shell.allow_list is missing from the configuration manifest"
+        raise RuntimeError(msg)
+    resolved = get_config_resolver().get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    return cast("list[str] | None", resolved.value)
+
+
+def _make_hitl_decision(
+    action_request: ActionRequest, console: Console
+) -> dict[str, str]:
+    """Decide whether to approve or reject a single action request.
+
+    This function is only invoked when a restrictive shell allow-list is
+    configured (not `all`). When shell is disabled or unrestricted,
+    `interrupt_on` is empty and this function is bypassed entirely.
+
+    Shell tools are always gated: if an allow-list is configured, the command
+    is validated against it; if no allow-list is configured, shell commands
+    are rejected outright (defense-in-depth — the caller should disable
+    shell tools when no allow-list is present, but this function fails
+    closed regardless). Non-shell tools are approved unconditionally.
+
+    Args:
+        action_request: The action-request dict emitted by the HITL middleware.
+
+            Must contain at least a `name` key.
+        console: Rich console for status output.
+
+    Returns:
+        Decision dict with a `type` key (`"approve"` or `"reject"`)
+            and an optional `message` key with a human-readable explanation.
+    """
+    for warning in _collect_action_request_warnings(action_request):
+        console.print(f"[yellow]Warning:[/yellow] {warning}")
+
+    action_name = action_request.get("name", "")
+
+    if action_name == "execute":
+        shell_allow_list = _resolve_shell_allow_list()
+        if not shell_allow_list:
+            command = action_request.get("args", {}).get("command", "")
+            console.print(
+                f"\n[red]Shell command rejected (no allow-list configured): "
+                f"{command}[/red]"
+            )
+            return {
+                "type": "reject",
+                "message": (
+                    "Shell commands are not permitted in non-interactive mode "
+                    "without a --shell-allow-list. Use --shell-allow-list to "
+                    "specify allowed commands."
+                ),
+            }
+
+        command = action_request.get("args", {}).get("command", "")
+
+        if is_shell_command_allowed(command, shell_allow_list):
+            console.print(
+                f"[dim]{get_glyphs().checkmark} Auto-approved: "
+                f"{escape_markup(command)}[/dim]"
+            )
+            return {"type": "approve"}
+
+        allowed_list_str = ", ".join(shell_allow_list)
+        console.print(f"\n[red]Shell command rejected:[/red] {escape_markup(command)}")
+        console.print(
+            f"[yellow]Allowed commands:[/yellow] {escape_markup(allowed_list_str)}"
+        )
+        return {
+            "type": "reject",
+            "message": (
+                f"Command '{command}' is not in the allow-list. "
+                f"Allowed commands: {allowed_list_str}. "
+                f"Please use allowed commands or try another approach."
+            ),
+        }
+
+    console.print(
+        f"[dim]{get_glyphs().checkmark} Auto-approved action: "
+        f"{escape_markup(action_name)}[/dim]"
+    )
+    return {"type": "approve"}
+
+
+def _collect_action_request_warnings(action_request: ActionRequest) -> list[str]:
+    """Collect Unicode/URL safety warnings for one action request.
+
+    Recursively inspects all nested string values in action arguments.
+
+    Returns:
+        Warning messages for suspicious values in action arguments.
+    """
+    warnings: list[str] = []
+    args = action_request.get("args", {})
+    if not isinstance(args, dict):
+        return warnings
+
+    tool_name = str(action_request.get("name", "unknown"))
+
+    for arg_path, text in iter_string_values(args):
+        issues = detect_dangerous_unicode(text)
+        if issues:
+            warnings.append(
+                f"{tool_name}.{arg_path} contains hidden Unicode "
+                f"({summarize_issues(issues)})"
+            )
+
+        if looks_like_url_key(arg_path):
+            safety = check_url_safety(text)
+            if safety.safe:
+                continue
+            detail = format_warning_detail(safety.warnings)
+            if safety.decoded_domain:
+                detail = f"{detail}; decoded host: {safety.decoded_domain}"
+            warnings.append(f"{tool_name}.{arg_path} URL warning: {detail}")
+
+    return warnings
+
+
+async def _fulfill_pending_hook_interrupts(state: StreamState) -> None:
+    """Execute pending server-owned hook interrupts on the client runtime."""
+    if not state.pending_hook_interrupts:
+        return
+    pending = dict(state.pending_hook_interrupts)
+    state.pending_hook_interrupts.clear()
+    state.hook_response.update(await state.hooks.fulfill_pending_interrupts(pending))
+
+
+async def _process_hitl_interrupts(
+    state: StreamState,
+    console: Console,
+) -> None:
+    """Iterate over pending HITL interrupts and build approval/rejection responses.
+
+    After processing, `state.pending_interrupts` is cleared and decisions
+    are written into `state.hitl_response` so the agent can be resumed.
+
+    Args:
+        state: Stream state containing the pending interrupts to process.
+        console: Rich console for status output.
+
+    Raises:
+        ClientHookStopError: If a hook stops or interrupts approval.
+    """
+    current_interrupts = dict(state.pending_interrupts)
+    state.pending_interrupts.clear()
+
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.models.domain import (
+        DcodeNotificationKind,
+        ToolCallData,
+    )
+
+    for interrupt_id, hitl_request in current_interrupts.items():
+        action_requests = hitl_request["action_requests"]
+        plan = await state.hooks.on_permission_request(
+            [
+                ToolCallData(
+                    id=f"{interrupt_id}:{index}",
+                    name=action_request.get("name", ""),
+                    args=action_request.get("args", {}),
+                )
+                for index, action_request in enumerate(action_requests)
+            ]
+        )
+        if plan.interrupted:
+            interrupting = next(
+                outcome for outcome in plan.outcomes if outcome.interrupt
+            )
+            reason = (
+                interrupting.decision.get("message")
+                if interrupting.decision is not None
+                else None
+            )
+            raise ClientHookStopError(reason or "Permission interrupted by hook")
+
+        if not plan.fully_resolved:
+            await state.hooks.notify(
+                DcodeNotificationKind.PERMISSION_REQUIRED,
+                "Permission required",
+            )
+        resolved: list[dict[str, str]] = []
+        for outcome, action_request in zip(
+            plan.outcomes,
+            action_requests,
+            strict=True,
+        ):
+            decision = outcome.decision
+            resolved.append(
+                cast("dict[str, str]", dict(decision))
+                if decision is not None
+                else _make_hitl_decision(action_request, console)
+            )
+        state.hitl_response[interrupt_id] = {"decisions": resolved}
+
+
+async def _stream_agent(
+    agent: Any,  # noqa: ANN401
+    stream_input: dict[str, Any] | Command,
+    config: RunnableConfig,
+    state: StreamState,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+    context: CLIContext,
+) -> None:
+    """Consume the full agent stream and update *state* with results.
+
+    Args:
+        agent: The agent (Pregel or RemoteAgent).
+        stream_input: Either the initial user message dict or a
+            `Command(resume=...)` for HITL continuation.
+        config: LangGraph runnable config (thread ID, metadata, etc.).
+        state: Shared stream state.
+        console: Rich console for formatted output.
+        file_op_tracker: Tracker for file-operation diffs.
+        context: Runtime context for model-call middleware.
+    """
+    if state.spinner:
+        state.spinner.start()
+    try:
+        async for chunk in agent.astream(
+            stream_input,
+            stream_mode=["messages", "updates", "custom"],
+            subgraphs=True,
+            config=stream_trace_config(config, stream_input),
+            context=context,
+            durability="exit",
+        ):
+            summarization = _summarization_stream_status(chunk)
+            compaction_id = _compaction_result_id(chunk)
+            if summarization is False and state.summarization_observed:
+                if compaction_id is not None:
+                    state.completed_compaction_ids.add(compaction_id)
+                await _after_headless_compact(state)
+                state.summarization_observed = False
+            elif (
+                compaction_id is not None
+                and compaction_id not in state.completed_compaction_ids
+            ):
+                state.completed_compaction_ids.add(compaction_id)
+                await _after_headless_compact(state)
+            _process_stream_chunk(chunk, state, console, file_op_tracker)
+        if state.summarization_observed:
+            await _after_headless_compact(state)
+            state.summarization_observed = False
+    finally:
+        _end_reasoning(state)
+        # Close the ledger at the round boundary, including on an aborted round:
+        # the next HITL pass replays these chunks, which would otherwise revise
+        # their requests a second time and double the run's tokens and cost.
+        finalize_recorded_requests(state.recorded_usage_requests)
+        if state.spinner:
+            state.spinner.stop()
+
+
+def _summarization_stream_status(chunk: object) -> bool | None:
+    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        return None
+    namespace, stream_mode, data = chunk
+    if namespace:
+        return None
+    if (
+        stream_mode != "messages"
+        or not isinstance(data, tuple)
+        or len(data) != _MESSAGE_DATA_LENGTH
+    ):
+        return None
+    _message, metadata = data
+    return isinstance(metadata, dict) and metadata.get("lc_source") == "summarization"
+
+
+def _compaction_result_id(chunk: object) -> str | None:
+    if not isinstance(chunk, tuple) or len(chunk) != _STREAM_CHUNK_LENGTH:
+        return None
+    namespace, stream_mode, data = chunk
+    if namespace:
+        return None
+    if (
+        stream_mode != "messages"
+        or not isinstance(data, tuple)
+        or len(data) != _MESSAGE_DATA_LENGTH
+    ):
+        return None
+    message, _metadata = data
+    if not (
+        isinstance(message, ToolMessage)
+        and getattr(message, "name", None) == "compact_conversation"
+        and str(message.content).startswith("Conversation compacted.")
+    ):
+        return None
+    tool_call_id = getattr(message, "tool_call_id", None)
+    return tool_call_id if isinstance(tool_call_id, str) and tool_call_id else None
+
+
+async def _after_headless_compact(state: StreamState) -> None:
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.models.domain import SessionStartCause
+
+    outcome = await state.hooks.on_session_start(
+        SessionStartCause.COMPACT,
+        model=state.active_model,
+    )
+    if not outcome.ok:
+        raise ClientHookStopError(
+            outcome.stop_reason or "Compact session start stopped by hook"
+        )
+
+
+async def _end_headless_session(
+    state: StreamState,
+    cause: SessionEndCause,
+    *,
+    timeout_seconds: float = SESSION_END_DRAIN_TIMEOUT_SECONDS,
+) -> None:
+    """End a headless session without letting Hooks v2 stall process exit.
+
+    Args:
+        state: Active headless stream state.
+        cause: Reason the session ended.
+        timeout_seconds: Maximum time to wait for `SessionEnd` handlers.
+    """
+    if state.session_end_fired:
+        return
+    state.session_end_fired = True
+    try:
+        await asyncio.wait_for(
+            state.hooks.on_session_end(cause),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError:
+        logger.warning(
+            "SessionEnd hook drain did not finish within %ss; continuing session "
+            "teardown",
+            timeout_seconds,
+        )
+
+
+def _dispatch_orphaned_tool_result_hooks(
+    state: StreamState, tool_output: str, *, reason: str = "Stream ended"
+) -> None:
+    """Close out `tool.use` events that never received a `ToolMessage`.
+
+    On a normally-completing run every `tool.use` is followed by a `ToolMessage`
+    that drains `in_flight_tool_calls`, so this is a no-op. Three cases reach it
+    with work to do: a stream aborted mid-flight (a provider error between the
+    tool call and its result), terminal teardown, and a model retry, where the
+    superseded attempt's tools never ran even though the stream is still alive.
+    Each remaining id had its `tool.use` dispatched with no terminal event; emit
+    `tool.error` + a `tool_status="error"` `tool.result` for each so the headless
+    surface upholds the same "every `tool.use` is closed" guarantee as the TUI's
+    `_dispatch_terminal_tool_result_hooks`.
+
+    Args:
+        state: The stream state whose in-flight tool maps are drained.
+        tool_output: Terminal output recorded on each synthesized `tool.result`.
+        reason: Sentence-leading subject naming why the calls were closed. The
+            retry caller passes its own, since the stream has not ended there
+            and an operator would otherwise chase a phantom abort.
+    """
+    if state.in_flight_tool_calls:
+        # A non-empty in-flight map here means real tool results were lost (a
+        # clean run drains every id via its result). Surface it at warning —
+        # matching the TUI's backstop for the same class — so an operator can
+        # tell a clean run from one that synthesized error closes, rather than
+        # the drain being silent (degraded audit fidelity).
+        logger.warning(
+            "%s with %d in-flight tool call(s) that never received a "
+            "result; closing each with a synthetic tool.error/tool.result",
+            reason,
+            len(state.in_flight_tool_calls),
+        )
+    for tool_id, in_flight in list(state.in_flight_tool_calls.items()):
+        dispatch_hook_fire_and_forget(
+            "tool.error", build_tool_error_payload(in_flight.name)
+        )
+        dispatch_hook_fire_and_forget(
+            "tool.result",
+            build_tool_result_payload(
+                in_flight.name, tool_id, in_flight.args, "error", tool_output
+            ),
+        )
+    state.in_flight_tool_calls.clear()
+
+
+async def _run_agent_loop(
+    agent: Any,  # noqa: ANN401
+    message: str,
+    config: RunnableConfig,
+    console: Console,
+    file_op_tracker: FileOpTracker,
+    *,
+    quiet: bool = False,
+    stream: bool = True,
+    show_reasoning: bool = False,
+    message_kwargs: dict[str, Any] | None = None,
+    thread_url_lookup: ThreadUrlLookupState | None = None,
+    max_turns: int | None = None,
+    rubric: str | None = None,
+    show_rubric_iterations: bool = False,
+    trust_project_hooks: bool = False,
+    hooks: HooksManager | None = None,
+    approval_mode: ApprovalMode | None = None,
+    prompt_id: UUID | None = None,
+    summarization_model: str | None = None,
+) -> None:
+    """Run the agent and handle HITL interrupts until the task completes.
+
+    The loop is capped at `max_turns` when set,
+    otherwise `_MAX_HITL_ITERATIONS`, to prevent runaway retries
+    (e.g. the agent repeatedly attempting rejected commands).
+
+    Args:
+        agent: The agent (Pregel or RemoteAgent).
+        message: The user's task message.
+        config: LangGraph runnable config.
+        console: Rich console for formatted output.
+        file_op_tracker: Tracker for file-operation diffs.
+        quiet: Suppress diagnostic formatting on stdout.
+        stream: When `True`, text is written to stdout as it arrives.
+
+            When `False`, the full response is buffered and flushed at
+            the end.
+        show_reasoning: Write provider-visible reasoning to stderr as it
+            arrives, independent of `stream`.
+        message_kwargs: Extra fields merged into the initial HumanMessage
+            dict (e.g., `additional_kwargs` for persisted skill metadata).
+        thread_url_lookup: Optional non-blocking lookup state for rendering
+            a fast-follow LangSmith thread link.
+        max_turns: Optional cap on total agentic turns (initial response plus
+            HITL resumes).
+
+            When `None`, falls back to `_MAX_HITL_ITERATIONS`.
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via the
+            graph's `rubric` state field.
+
+            `None` leaves it unset (no grading).
+        show_rubric_iterations: Whether rubric lifecycle messages should include
+            iteration numbers.
+        trust_project_hooks: When `True`, load project-scoped
+            `.deepagents/hooks.json` command handlers.
+
+            Defaults to `False` so untrusted checkouts cannot execute repository
+            hooks in CI without an explicit opt-in.
+        hooks: Preloaded Hooks v2 coordinator; one is built when omitted.
+        approval_mode: Effective client approval policy. Defaults to manual.
+        prompt_id: Stable identifier for the headless turn.
+        summarization_model: Model spec used only for context-compaction summaries.
+
+    Raises:
+        ClientHookStopError: If a client-owned hook stops processing.
+    """
+    spinner = None if quiet else _ConsoleSpinner(console)
+    thread_id = config.get("configurable", {}).get("thread_id", "")
+    state = StreamState(
+        thread_id=thread_id if isinstance(thread_id, str) else "",
+        quiet=quiet,
+        stream=stream,
+        show_reasoning=show_reasoning,
+        spinner=spinner,
+        show_rubric_iterations=show_rubric_iterations,
+    )
+    user_msg: dict[str, Any] = {"role": "user", "content": message}
+    if message_kwargs:
+        user_msg.update(message_kwargs)
+    stream_input: dict[str, Any] | Command = {
+        "messages": [user_msg],
+        "goal_criteria_request": None,
+    }
+    if rubric is not None:
+        stream_input["rubric"] = rubric
+
+    thread_id = state.thread_id
+    # An empty or missing thread ID carries no session identity, so leave it
+    # unset in context rather than passing a blank string to model middleware.
+    context_thread_id = thread_id if isinstance(thread_id, str) and thread_id else None
+    context = CLIContext(
+        thread_id=context_thread_id,
+        summarization_model=summarization_model,
+    )
+
+    from pathlib import Path
+
+    from deepagents_code.approval_mode import ApprovalMode
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
+    from deepagents_code.hooks.models.domain import (
+        DcodeNotificationKind,
+        HookEvent,
+        SessionEndCause,
+        SessionStartCause,
+    )
+    from deepagents_code.hooks.trust import WorkspaceTrust
+
+    hook_owned_spinner = False
+
+    def present_hook_notice(
+        message: str,
+        severity: HookNoticeSeverity,
+    ) -> None:
+        style = (
+            "bold red"
+            if severity == "error"
+            else "yellow"
+            if severity == "warning"
+            else "dim"
+        )
+        console.print(Text(message, style=style), highlight=False)
+
+    def update_hook_status(message: str) -> None:
+        nonlocal hook_owned_spinner
+        if spinner is None:
+            return
+        if message:
+            if spinner.is_running:
+                spinner.update(message)
+            else:
+                spinner.start(message)
+                hook_owned_spinner = True
+        elif hook_owned_spinner:
+            spinner.stop()
+            hook_owned_spinner = False
+        elif spinner.is_running:
+            spinner.update("Working...")
+
+    hook_status = update_hook_status if spinner is not None else None
+    resolved_approval_mode = approval_mode or ApprovalMode.MANUAL
+    # One headless turn per process, so identity is fixed for the whole run.
+    identity = HookSessionIdentity(
+        thread_id=thread_id,
+        approval_mode=resolved_approval_mode,
+        prompt_id=prompt_id,
+    )
+    state.hooks = hooks or HooksManager.create(
+        cwd=Path.cwd(),
+        identity=lambda: identity,
+        # Project hooks require an explicit opt-in, matching `--trust-project-mcp`.
+        # Persisted interactive trust deliberately does not carry into headless
+        # runs, so CI never inherits a grant made at someone's terminal.
+        trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
+    )
+    state.hooks.attach_output(notice=present_hook_notice, status=hook_status)
+    state.hooks.apply_graph_context(context)
+    context["approval_mode"] = resolved_approval_mode.value
+    context["auto_approve"] = resolved_approval_mode is ApprovalMode.YOLO
+    state.active_model = runtime_state.model_name or None
+    state.transcript = state.hooks.recorder(thread_id)
+
+    start_outcome = await state.hooks.on_session_start(
+        SessionStartCause.STARTUP,
+        model=runtime_state.model_name or None,
+    )
+    if not start_outcome.ok:
+        await _end_headless_session(state, SessionEndCause.OTHER)
+        raise ClientHookStopError(
+            start_outcome.stop_reason or "Session start stopped by hook"
+        )
+    session_context = state.hooks.take_pending_context()
+    if session_context:
+        stream_input["messages"].insert(
+            0,
+            {"role": "system", "content": "\n\n".join(session_context)},
+        )
+
+    try:
+        state.transcript.append([HumanMessage(content=message)])
+        if state.hooks.has_handlers(HookEvent.USER_PROMPT_SUBMIT):
+            prompt_outcome = await state.hooks.on_user_prompt(message)
+            if not prompt_outcome.ok:
+                _raise_client_hook_stop(
+                    prompt_outcome.stop_reason
+                    or "User prompt submission stopped by hook"
+                )
+            messages = stream_input["messages"]
+            if prompt_outcome.context:
+                messages.insert(
+                    len(messages) - 1,
+                    {
+                        "role": "system",
+                        "content": "\n\n".join(prompt_outcome.context),
+                    },
+                )
+            if prompt_outcome.suppress_original_prompt:
+                messages.pop()
+        else:
+            await dispatch_hook("session.start", {"thread_id": thread_id})
+            await dispatch_hook("user.prompt", {})
+    except BaseException:
+        await _end_headless_session(
+            state,
+            SessionEndCause.OTHER,
+        )
+        raise
+
+    start_time = time.monotonic()
+
+    run_completed = False
+    try:
+        # Initial stream
+        await _stream_agent(
+            agent, stream_input, config, state, console, file_op_tracker, context
+        )
+
+        # The internal default applies when --max-turns is omitted, guarding
+        # against unbounded runaway loops in scripts that forgot to set one.
+        effective_limit = max_turns if max_turns is not None else _MAX_HITL_ITERATIONS
+
+        # The initial stream above counts as turn 1; each HITL resume is a
+        # further turn. Raise before starting a resume that would exceed the
+        # budget so the user-facing count matches the flag's semantics.
+        turns = 1
+        while state.interrupt_occurred:
+            if turns >= effective_limit:
+                limit_source = (
+                    f"--max-turns {max_turns}"
+                    if max_turns is not None
+                    else f"the internal safety default of {_MAX_HITL_ITERATIONS}"
+                )
+                msg = (
+                    f"Exceeded {effective_limit} agentic turns ({limit_source}). "
+                    "The agent may be stuck retrying rejected commands. "
+                    "Increase --max-turns or break the task into smaller steps."
+                )
+                _raise_hitl_iteration_limit(msg)
+            turns += 1
+            state.interrupt_occurred = False
+            state.hitl_response.clear()
+            state.hook_response.clear()
+            await _fulfill_pending_hook_interrupts(state)
+            await _process_hitl_interrupts(state, console)
+            resume_payload = {**state.hook_response, **state.hitl_response}
+            stream_input = Command(resume=resume_payload)
+            await _stream_agent(
+                agent, stream_input, config, state, console, file_op_tracker, context
+            )
+        run_completed = True
+    except BaseException:
+        await _end_headless_session(state, SessionEndCause.OTHER)
+        raise
+    finally:
+        # Close out any `tool.use` with no matching `ToolMessage` — e.g. a stream
+        # aborted by a provider error mid-tool. On a clean run every id was
+        # already drained by its result, so this is a no-op. Guarded so a
+        # dispatch problem can never mask the exception propagating from the
+        # stream (this runs on the error path too).
+        try:
+            _dispatch_orphaned_tool_result_hooks(
+                state, "Stream ended before tool result"
+            )
+        except Exception:
+            logger.warning(
+                "Orphaned tool.result drain failed unexpectedly", exc_info=True
+            )
+        # Surface any buffered tool call whose args never parsed: it never
+        # entered `in_flight_tool_calls` (so the orphan drain above skips it) and
+        # would otherwise be dropped with `state` at scope exit with no trace.
+        # Info, not warning — some of these may still have executed (their
+        # `tool.result` fired with `{}` args and logged a correlation miss); this
+        # only asserts the args never parsed. Guarded so a logging failure can
+        # never mask an exception propagating from the stream.
+        try:
+            # Two distinct reasons a buffered call never fired tool.use — args
+            # that never parsed, and args that parsed but carried no id (so
+            # tool.use was gated out). The classification is shared with the TUI
+            # via `count_unemitted_tool_calls`; each surface logs its own lines.
+            unemitted = count_unemitted_tool_calls(state.tool_call_buffers.values())
+            if unemitted.unparsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unemitted.unparsed,
+                )
+            if unemitted.idless_parsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed but "
+                    "carried no tool-call id; no tool.use was emitted for them",
+                    unemitted.idless_parsed,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
+        # A clean stream can leave its successful final attempt open when the
+        # best-effort completion event was lost. Commit those scopes; only an
+        # aborted stream owns incomplete records that must be discarded.
+        try:
+            if run_completed:
+                for namespace, scope in list(state.active_attempts.items()):
+                    _commit_attempt_lifecycle(namespace, scope, state, console)
+            elif state.transcript is not None:
+                state.transcript.drop_uncommitted()
+        except Exception:
+            logger.warning(
+                "Transcript uncommitted-scope finalization failed", exc_info=True
+            )
+        state.active_attempts.clear()
+        state.attempt_buffer_offsets.clear()
+        state.settled_attempts.clear()
+
+    wall_time = time.monotonic() - start_time
+
+    # Flush `--no-stream` tool status staged by completed attempts before the
+    # buffered response text (a failed attempt's staging was already dropped
+    # at its retry boundary; anything left here never saw a lifecycle).
+    _flush_pending_tool_status(state, console)
+
+    if state.full_response:
+        if not state.stream:
+            _write_text("".join(state.full_response))
+        if not state.stream or state.text_line_open:
+            _write_newline()
+
+    if not quiet:
+        console.print()
+        if (
+            thread_url_lookup is not None
+            and thread_url_lookup.done.is_set()
+            and thread_url_lookup.url
+        ):
+            link_text = Text("View in LangSmith: ", style="dim")
+            link_text.append(
+                thread_url_lookup.url,
+                style=Style(dim=True, link=thread_url_lookup.url),
+            )
+            console.print(link_text)
+        console.print(f"[green]{get_glyphs().checkmark} Task completed[/green]")
+        # Inside `if not quiet:` on purpose — `--quiet` suppresses the table
+        # regardless of the option. `usage_table_enabled` fails open rather
+        # than raising here, because an escape would skip the
+        # `AGENT_COMPLETED` notification and the `session.end` hooks below.
+        if usage_table_enabled():
+            print_usage_table(state.stats, wall_time, console)
+
+    notification_stop: ClientHookStopError | None = None
+    try:
+        await state.hooks.notify(
+            DcodeNotificationKind.AGENT_COMPLETED,
+            "Agent completed",
+        )
+    except ClientHookStopError as exc:
+        notification_stop = exc
+    if not state.hooks.has_handlers(HookEvent.NOTIFICATION):
+        await dispatch_hook("task.complete", {"thread_id": thread_id})
+    await _end_headless_session(state, SessionEndCause.PROMPT_INPUT_EXIT)
+    if not state.hooks.has_handlers(HookEvent.SESSION_END):
+        await dispatch_hook("session.end", {"thread_id": thread_id})
+    if notification_stop is not None:
+        raise notification_stop
+
+
+def _build_non_interactive_header(
+    assistant_id: str,
+    thread_id: str,
+    *,
+    include_thread_link: bool = False,
+    rubric_active: bool = False,
+) -> Text:
+    """Build the non-interactive mode header with model, agent, and thread info.
+
+    By default, this function avoids LangSmith network lookups and renders the
+    thread ID as plain text. Callers can opt in to hyperlink resolution.
+
+    Args:
+        assistant_id: Agent identifier.
+        thread_id: Thread identifier.
+        include_thread_link: Whether to resolve and render a LangSmith link for
+            the thread ID.
+        rubric_active: Whether a rubric is active for this run; when `True`,
+            appends a `Rubric: active` marker so the behavior change is visible.
+
+    Returns:
+        Rich Text object with the formatted header line.
+    """
+    default_label = " (default)" if assistant_id == DEFAULT_AGENT_NAME else ""
+    parts: list[tuple[str, str | Style]] = [
+        (f"App: v{__version__}", "dim"),
+        (" | ", "dim"),
+        (f"Agent: {assistant_id}{default_label}", "dim"),
+    ]
+
+    if runtime_state.model_name:
+        parts.extend([(" | ", "dim"), (f"Model: {runtime_state.model_name}", "dim")])
+
+    parts.append((" | ", "dim"))
+
+    thread_url = build_langsmith_thread_url(thread_id) if include_thread_link else None
+    if thread_url:
+        parts.extend(
+            [
+                ("Thread: ", "dim"),
+                (thread_id, Style(dim=True, link=thread_url)),
+            ]
+        )
+    else:
+        parts.append((f"Thread: {thread_id}", "dim"))
+
+    if rubric_active:
+        parts.extend([(" | ", "dim"), ("Rubric: active", "dim")])
+
+    return Text.assemble(*parts)
+
+
+async def _run_startup_command(
+    command: str,
+    console: Console,
+    *,
+    quiet: bool,
+) -> None:
+    """Run the `--startup-cmd` shell command before the agent loop.
+
+    Stdout and stderr are routed through `console`. In `--quiet` mode the
+    caller wires `console` to stderr so agent output on stdout stays clean;
+    otherwise both streams land on stdout alongside the agent's response.
+    Non-zero exits and timeouts emit a yellow warning but do not abort the
+    session — the non-zero exit code is logged, not propagated.
+
+    Args:
+        command: Shell command to execute (subject to shell expansion).
+        console: Rich console for status messages. Respects `quiet`.
+        quiet: When `True`, suppresses the "Running startup command" header
+            so piped output stays minimal; warnings still appear (on stderr
+            when the caller wired the console there).
+
+    Raises:
+        asyncio.CancelledError: If the caller cancels while the startup command
+            is running.
+    """
+    import sys
+
+    if not quiet:
+        console.print(Text(f"Running startup command: {command}", style="dim"))
+
+    try:
+        proc = await asyncio.create_subprocess_shell(
+            command,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=(sys.platform != "win32"),
+        )
+    except OSError as e:
+        console.print(
+            "[yellow]Warning:[/yellow] startup command failed to launch: "
+            f"{escape_markup(str(e))}"
+        )
+        return
+
+    try:
+        stdout_bytes, stderr_bytes = await asyncio.wait_for(
+            proc.communicate(), timeout=60
+        )
+    except asyncio.CancelledError:
+        await _terminate_startup_process(proc)
+        raise
+    except TimeoutError:
+        await _terminate_startup_process(proc)
+        console.print("[yellow]Warning:[/yellow] startup command timed out (60s limit)")
+        return
+
+    stdout_text = (stdout_bytes or b"").decode(errors="replace").rstrip("\n")
+    stderr_text = (stderr_bytes or b"").decode(errors="replace").rstrip("\n")
+    if stdout_text:
+        # Wrap in `Text` so Rich treats the shell output as literal — otherwise
+        # brackets in tool output (e.g. `[INFO]`, `[1/3]`) would be parsed as
+        # markup and either silently stripped or raise `MarkupError`.
+        console.print(Text(stdout_text), highlight=False)
+    if stderr_text:
+        console.print(Text(stderr_text, style="dim"), highlight=False)
+
+    if proc.returncode:
+        console.print(
+            "[yellow]Warning:[/yellow] startup command exited with code "
+            f"{proc.returncode} — continuing anyway"
+        )
+
+
+async def run_non_interactive(
+    message: str,
+    assistant_id: str = DEFAULT_AGENT_NAME,
+    model_name: str | None = None,
+    model_params: dict[str, Any] | None = None,
+    sandbox_type: str = "none",  # str (not None) to match argparse choices
+    sandbox_id: str | None = None,
+    sandbox_snapshot_name: str | None = None,
+    sandbox_setup: str | None = None,
+    *,
+    cli_max_retries: int | None = None,
+    summarization_model: str | None = None,
+    initial_skill: str | None = None,
+    startup_cmd: str | None = None,
+    profile_override: dict[str, Any] | None = None,
+    quiet: bool = False,
+    stream: bool = True,
+    show_reasoning: bool = False,
+    mcp_config_path: str | None = None,
+    no_mcp: bool = False,
+    trust_project_mcp: bool = False,
+    enable_interpreter: bool | None = None,
+    interpreter_ptc: str | list[str] | None = None,
+    interpreter_ptc_acknowledge_unsafe: bool = False,
+    allow_fs_tools: list[FsToolName] | None = None,
+    max_turns: int | None = None,
+    rubric: str | None = None,
+    rubric_model: str | None = None,
+    rubric_max_iterations: int | None = None,
+    recursion_limit: int | None = None,
+    trust_project_hooks: bool = False,
+    trust_project_extensions: bool = False,
+    extension_paths: tuple[str, ...] = (),
+) -> int:
+    """Run a single task non-interactively and exit.
+
+    The agent is created with `interactive=False`, which tailors the system
+    prompt for autonomous headless execution (no clarification questions,
+    reasonable assumptions).
+
+    Shell access and auto-approval are controlled by `--shell-allow-list`:
+
+    - Not set → shell disabled, all other tools auto-approved.
+    - `recommended` or explicit list → shell enabled, commands gated by
+        allow-list; non-shell tools approved unconditionally.
+    - `all` → shell enabled, any command allowed, all tools auto-approved.
+
+    Note: startup header rendering avoids synchronous LangSmith URL lookups.
+    A background thread resolves the thread URL concurrently and the result is
+    displayed after task completion if available.
+
+    Args:
+        message: The task/message to execute.
+        assistant_id: Agent identifier for memory storage.
+        model_name: Optional model name to use.
+        model_params: Extra kwargs from `--model-params` to pass to the model.
+
+            These override config file values.
+        cli_max_retries: Explicit `--max-retries` value.
+        summarization_model: Model spec used only for context-compaction summaries.
+        sandbox_type: Type of sandbox (`'none'`, `'agentcore'`,
+            `'daytona'`, `'langsmith'`, `'modal'`, `'runloop'`).
+        sandbox_id: Optional existing sandbox ID to reuse.
+        sandbox_snapshot_name: Snapshot (langsmith) or blueprint (runloop) name.
+        sandbox_setup: Optional path to setup script to run in the sandbox
+            after creation.
+        initial_skill: Optional skill name whose `SKILL.md` instructions wrap
+            the user message before sending it to the agent.
+        startup_cmd: Shell command to run at startup, before the agent runs.
+
+            Output follows the same console routing as other app messages:
+            stdout by default, stderr when `-q` is set. Non-zero exits and
+            timeouts warn but do not abort the task.
+        profile_override: Extra profile fields from `--profile-override`.
+
+            Merged on top of config file profile overrides.
+        quiet: When `True`, all console output (headers, status messages,
+            tool notifications, HITL decisions, errors) is redirected to
+            stderr so that only the agent's response text appears on stdout.
+        stream: When `True` (default), text chunks are written to stdout
+            as they arrive.
+
+            When `False`, the full response is buffered and written to stdout in
+            one shot after the agent finishes.
+        show_reasoning: Write provider-visible reasoning to stderr as it
+            arrives, under a one-time `Reasoning:` heading per phase.
+
+            Independent of `stream`: reasoning is never buffered into the final
+            response, so it streams even when `stream` is `False`.
+        mcp_config_path: Optional path to MCP servers JSON configuration file.
+            Merged on top of auto-discovered configs (highest precedence).
+        no_mcp: Disable all MCP tool loading.
+        trust_project_mcp: When `True`, allow project-level stdio MCP
+            servers. When `False` (default), project stdio servers are
+            silently skipped.
+        enable_interpreter: Enable the JS interpreter (`js_eval`) middleware
+            on the main agent. `None` uses the sandbox-aware default.
+        interpreter_ptc: Invocation-scoped PTC allowlist override for `js_eval`.
+        interpreter_ptc_acknowledge_unsafe: Explicit acknowledgement for
+            `interpreter_ptc="all"` outside of `auto_approve`.
+        allow_fs_tools: Allowlist for `FilesystemMiddleware`'s `tools` param,
+            from `--allow-fs-tools`.
+
+            `None` leaves the SDK default (all tools).
+        max_turns: Optional cap on total agentic turns. When `None`, the
+            internal safety default applies.
+        rubric: Acceptance criteria for `RubricMiddleware`. When provided, the
+            agent self-evaluates against it and loops until satisfied.
+
+            `None` disables rubric grading.
+        rubric_model: Grader model spec; `None` reuses the main model.
+        rubric_max_iterations: Grader iterations per rubric attempt; `None`
+            uses the middleware default.
+        recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
+            from runtime configuration at agent-build time.
+        trust_project_hooks: When `True`, load project-scoped
+            `.deepagents/hooks.json` handlers.
+
+            Defaults to `False` so untrusted repositories cannot execute hook
+            commands without an explicit `--trust-project-hooks` opt-in.
+        trust_project_extensions: Allow project-authored Python extensions.
+
+            Defaults to `False`; persisted or configured trust may still grant
+            project loading inside the server.
+        extension_paths: Explicit one-run extension files or directories.
+
+    Returns:
+        Exit code: 0 for success or an intentional hook stop, 1 for error, 124
+            when the `--max-turns` budget was exceeded (matching GNU `timeout`),
+            130 for keyboard interrupt.
+    """
+    _make_stdio_encoding_safe()
+
+    # stderr=True routes all console.print() to stderr; agent response text
+    # uses _write_text() -> sys.stdout directly.
+    console = Console(stderr=True) if quiet else Console()
+
+    if startup_cmd and startup_cmd.strip():
+        await _run_startup_command(startup_cmd.strip(), console, quiet=quiet)
+
+    message_kwargs: dict[str, Any] | None = None
+    skill_name: str | None = None
+    if initial_skill and initial_skill.strip():
+        from deepagents_code.skills.invocation import (
+            build_skill_invocation_envelope,
+            discover_skills_and_roots,
+        )
+        from deepagents_code.skills.load import (
+            ExtendedSkillMetadata,
+            load_skill_content,
+        )
+
+        normalized_skill = initial_skill.strip().lower()
+        try:
+            # Offloaded to a thread: discovery does blocking filesystem I/O
+            # (a JSON trust-store read plus `Path.resolve()` calls) that must
+            # not block the event loop.
+            from deepagents_code.plugins.adapters.skills import (
+                discover_plugin_skill_sources_and_roots,
+            )
+
+            def discover_all_skills() -> tuple[list[ExtendedSkillMetadata], list[Path]]:
+                plugin_sources, plugin_roots = discover_plugin_skill_sources_and_roots()
+                return discover_skills_and_roots(
+                    assistant_id,
+                    plugin_skill_sources=plugin_sources,
+                    plugin_skill_roots=plugin_roots,
+                )
+
+            skills, allowed_roots = await asyncio.to_thread(discover_all_skills)
+            skill = next((s for s in skills if s["name"] == normalized_skill), None)
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+
+        if skill is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill not found: {escape_markup(normalized_skill)}"
+            )
+            return 1
+
+        try:
+            content = load_skill_content(
+                str(skill["path"]),
+                allowed_roots=allowed_roots,
+            )
+        except PermissionError as e:
+            console.print(f"[bold red]Error:[/bold red] {escape_markup(str(e))}")
+            return 1
+        except OSError as e:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not load skill: {escape_markup(normalized_skill)}. "
+                f"Filesystem error: {escape_markup(str(e))}"
+            )
+            return 1
+        except Exception as e:  # noqa: BLE001
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Error loading skill: {escape_markup(normalized_skill)}. "
+                f"Unexpected error: {type(e).__name__}: {escape_markup(str(e))}"
+            )
+            return 1
+        if content is None:
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Could not read content for skill: {escape_markup(normalized_skill)}. "
+                "Check that the SKILL.md file exists, is readable, "
+                "and is saved as UTF-8."
+            )
+            return 1
+
+        if not content.strip():
+            console.print(
+                "[bold red]Error:[/bold red] "
+                f"Skill '{escape_markup(normalized_skill)}' has an empty "
+                "SKILL.md file. "
+                "Add instructions to the file before invoking."
+            )
+            return 1
+
+        envelope = build_skill_invocation_envelope(skill, content, message)
+        message = envelope.prompt
+        message_kwargs = envelope.message_kwargs
+        skill_name = envelope.skill_name
+
+    try:
+        result = create_model(
+            model_name,
+            extra_kwargs=model_params,
+            profile_overrides=profile_override,
+            cli_max_retries=cli_max_retries,
+        )
+    except ModelConfigError as e:
+        console.print(f"[bold red]Error:[/bold red] {e}")
+        return 1
+
+    result.apply_to_runtime_state()
+
+    thread_id = generate_thread_id()
+    from deepagents_code._debug import bind_debug_logging_to_thread
+
+    bind_debug_logging_to_thread(thread_id)
+
+    thread_url_lookup: ThreadUrlLookupState | None = None
+    if not quiet:
+        thread_url_lookup = _start_langsmith_thread_url_lookup(thread_id)
+        console.print(Text("Running task non-interactively...", style="dim"))
+        header = _build_non_interactive_header(
+            assistant_id,
+            thread_id,
+            rubric_active=rubric is not None,
+        )
+        console.print(header)
+
+    from deepagents_code.client.launch.server_manager import server_session
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
+    # Launch MCP preload concurrently with server startup
+    mcp_task: asyncio.Task[Any] | None = None
+    if not no_mcp and not quiet:
+        try:
+            from deepagents_code.main import _preload_session_mcp_server_info
+
+            mcp_task = asyncio.create_task(
+                _preload_session_mcp_server_info(
+                    mcp_config_path=mcp_config_path,
+                    no_mcp=no_mcp,
+                    trust_project_mcp=trust_project_mcp,
+                )
+            )
+        except Exception:
+            logger.warning("MCP metadata preload task creation failed", exc_info=True)
+
+    try:
+        from pathlib import Path
+
+        from deepagents_code.approval_mode import ApprovalMode
+        from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
+        from deepagents_code.hooks.models.domain import HookEvent
+        from deepagents_code.hooks.trust import WorkspaceTrust
+
+        shell_allow_list = _resolve_shell_allow_list()
+        enable_shell = bool(shell_allow_list)
+        shell_is_unrestricted = isinstance(shell_allow_list, type(SHELL_ALLOW_ALL))
+        # Currently, non-shell tools have no HITL handler in non-interactive
+        # mode, so interrupting on them just fragments LangSmith traces
+        # without adding value. Gate only shell execution via middleware.
+        requested_auto_approve = not enable_shell or shell_is_unrestricted
+        approval_mode = (
+            ApprovalMode.YOLO if requested_auto_approve else ApprovalMode.MANUAL
+        )
+
+        # One user turn per process: fresh turn id, turn_number 1. Built before
+        # the hooks manager so its session identity is fixed for the whole run.
+        from uuid import uuid4
+
+        from deepagents_code.config import build_stream_config
+
+        turn_id = uuid4()
+        identity = HookSessionIdentity(
+            thread_id=thread_id,
+            approval_mode=approval_mode,
+            prompt_id=turn_id,
+        )
+        hooks = HooksManager.create(
+            cwd=Path.cwd(),
+            identity=lambda: identity,
+            # Plain output until `_run_agent_loop` attaches the styled,
+            # spinner-aware sinks to this same presenter.
+            notice=_plain_hook_notice(console),
+            # Explicit opt-in only; see `_run_agent_loop` for the rationale.
+            trust=WorkspaceTrust.explicit_only(Path.cwd(), granted=trust_project_hooks),
+        )
+        # Permission hooks need every gated call to reach the client, so they
+        # override both middleware shortcuts that would skip HITL entirely.
+        has_permission_hooks = hooks.has_handlers(HookEvent.PERMISSION_REQUEST)
+        use_auto_approve = requested_auto_approve and not has_permission_hooks
+        use_interrupt_shell_only = (
+            enable_shell and not shell_is_unrestricted and not has_permission_hooks
+        )
+        # Extract the concrete allow-list to forward to the server subprocess.
+        restrictive_allow_list: list[str] | None = (
+            list(shell_allow_list)
+            if use_interrupt_shell_only and shell_allow_list
+            else None
+        )
+
+        config: RunnableConfig = build_stream_config(
+            thread_id,
+            assistant_id,
+            sandbox_type=sandbox_type,
+            turn_id=str(turn_id),
+            turn_number=1,
+            auto_approve=use_auto_approve,
+            skill_name=skill_name,
+        )
+
+        if not quiet:
+            console.print(Text("Starting LangGraph server...", style="dim"))
+
+        async with server_session(
+            assistant_id=assistant_id,
+            model_name=model_name,
+            model_params=model_params,
+            cli_max_retries=cli_max_retries,
+            profile_overrides=profile_override,
+            auto_approve=use_auto_approve,
+            interrupt_shell_only=use_interrupt_shell_only,
+            shell_allow_list=restrictive_allow_list,
+            sandbox_type=sandbox_type,
+            sandbox_id=sandbox_id,
+            sandbox_snapshot_name=sandbox_snapshot_name,
+            sandbox_setup=sandbox_setup,
+            enable_shell=enable_shell,
+            enable_ask_user=False,
+            enable_interpreter=enable_interpreter,
+            interpreter_ptc=interpreter_ptc,
+            interpreter_ptc_acknowledge_unsafe=interpreter_ptc_acknowledge_unsafe,
+            allow_fs_tools=allow_fs_tools,
+            rubric_model=rubric_model,
+            rubric_max_iterations=rubric_max_iterations,
+            recursion_limit=recursion_limit,
+            mcp_config_path=mcp_config_path,
+            no_mcp=no_mcp,
+            trust_project_mcp=trust_project_mcp,
+            trust_project_extensions=trust_project_extensions,
+            extension_paths=extension_paths,
+            interactive=False,
+            cwd=str(Path.cwd()),
+        ) as (agent, _server_proc):
+            # Collect MCP preload result (ran concurrently with server startup)
+            if mcp_task is not None:
+                try:
+                    mcp_info = await mcp_task
+                    if mcp_info:
+                        tool_count = sum(len(s.tools) for s in mcp_info)
+                        if tool_count:
+                            label = "MCP tool" if tool_count == 1 else "MCP tools"
+                            console.print(
+                                f"[green]{get_glyphs().checkmark} "
+                                f"Loaded {tool_count} {label}[/green]"
+                            )
+                except Exception:
+                    logger.warning("MCP metadata preload failed", exc_info=True)
+
+            if not quiet:
+                console.print(f"[green]{get_glyphs().checkmark} Server ready[/green]")
+
+            file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=None)
+
+            await _run_agent_loop(
+                agent,
+                message,
+                config,
+                console,
+                file_op_tracker,
+                quiet=quiet,
+                stream=stream,
+                show_reasoning=show_reasoning,
+                message_kwargs=message_kwargs,
+                thread_url_lookup=thread_url_lookup,
+                max_turns=max_turns,
+                rubric=rubric,
+                show_rubric_iterations=rubric_max_iterations is not None,
+                trust_project_hooks=trust_project_hooks,
+                hooks=hooks,
+                approval_mode=approval_mode,
+                prompt_id=turn_id,
+                summarization_model=summarization_model,
+            )
+
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Interrupted[/yellow]")
+        return 130
+    except ClientHookStopError as exc:
+        console.print(Text(f"\nOperation stopped by hook: {exc}", style="yellow"))
+        return 0
+    except HITLIterationLimitError as e:
+        console.print(f"\n[red]{escape_markup(str(e))}[/red]")
+        console.print(
+            "[yellow]Hint: The agent may be repeatedly attempting commands "
+            "that are not in the allow-list. Consider expanding the "
+            "--shell-allow-list or adjusting the task.[/yellow]"
+        )
+        # Dedicated exit code (matches GNU `timeout`) so CI can distinguish
+        # a turn-budget hit from a generic failure that also returns 1.
+        return 124
+    except (ValueError, OSError) as e:
+        logger.exception("Error during non-interactive execution")
+        console.print(f"\n[red]Error: {escape_markup(str(e))}[/red]")
+        return 1
+    except Exception as e:
+        logger.exception("Unexpected error during non-interactive execution")
+        console.print(
+            f"\n[red]Unexpected error ({type(e).__name__}): "
+            f"{escape_markup(str(e))}[/red]"
+        )
+        return 1
+    else:
+        return 0
+    finally:
+        # Fire-and-forget hooks (tool.use/tool.result) run as background tasks;
+        # await them here so the final tool.result is not cancelled when
+        # asyncio.run tears the loop down. Never return from this block — that
+        # would swallow the exit code determined above. drain_pending_hooks is
+        # documented never to raise, but guard it anyway (mirroring app.py's
+        # shutdown drain) so a future contract break can't replace the exit code
+        # with an exception escaping the finally.
+        try:
+            await drain_pending_hooks()
+        except Exception:
+            logger.warning("Hook drain raised unexpectedly before exit", exc_info=True)

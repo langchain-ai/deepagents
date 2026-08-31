@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import fields
-from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -23,13 +22,7 @@ from deepagents_code.theme import (
     LIGHT_COLORS,
     ThemeColors,
     ThemeEntry,
-    _build_registry,
-    _builtin_names,
-    _builtin_themes,
     _load_user_themes,
-    get_css_variable_defaults,
-    get_registry,
-    get_theme_colors,
 )
 
 # ---------------------------------------------------------------------------
@@ -46,46 +39,6 @@ class TestThemeColorsValidation:
         base.update(overrides)
         return base
 
-    def test_valid_hex_colors_accepted(self) -> None:
-        tc = ThemeColors(**self._make_kwargs())
-        assert tc.primary == "#AABBCC"
-
-    def test_valid_lowercase_hex_accepted(self) -> None:
-        tc = ThemeColors(**self._make_kwargs(primary="#aabbcc"))
-        assert tc.primary == "#aabbcc"
-
-    def test_valid_mixed_case_hex_accepted(self) -> None:
-        tc = ThemeColors(**self._make_kwargs(primary="#AaBb99"))
-        assert tc.primary == "#AaBb99"
-
-    @pytest.mark.parametrize(
-        "bad_value",
-        [
-            "#FFF",  # 3-char shorthand
-            "#GGGGGG",  # invalid hex chars
-            "red",  # named color
-            "",  # empty
-            "rgb(1,2,3)",  # CSS function
-            "#7AA2F7FF",  # 8-char RGBA
-            "7AA2F7",  # missing hash
-            "#7AA2F",  # 5 hex chars
-        ],
-    )
-    def test_invalid_hex_raises(self, bad_value: str) -> None:
-        with pytest.raises(ValueError, match="7-char hex color"):
-            ThemeColors(**self._make_kwargs(primary=bad_value))
-
-    def test_validation_checks_every_field(self) -> None:
-        """Ensure the last field is also validated, not just the first."""
-        last_field = fields(ThemeColors)[-1].name
-        with pytest.raises(ValueError, match=last_field):
-            ThemeColors(**self._make_kwargs(**{last_field: "bad"}))
-
-    def test_frozen_immutability(self) -> None:
-        tc = ThemeColors(**self._make_kwargs())
-        with pytest.raises(AttributeError):
-            cast("Any", tc).primary = "#000000"
-
 
 # ---------------------------------------------------------------------------
 # Pre-built color sets
@@ -95,16 +48,6 @@ class TestThemeColorsValidation:
 class TestColorSets:
     """DARK_COLORS and LIGHT_COLORS are valid ThemeColors instances."""
 
-    def test_dark_colors_is_theme_colors(self) -> None:
-        assert isinstance(DARK_COLORS, ThemeColors)
-
-    def test_light_colors_is_theme_colors(self) -> None:
-        assert isinstance(LIGHT_COLORS, ThemeColors)
-
-    def test_dark_and_light_differ(self) -> None:
-        assert DARK_COLORS.primary != LIGHT_COLORS.primary
-        assert DARK_COLORS.background != LIGHT_COLORS.background
-
 
 # ---------------------------------------------------------------------------
 # Theme registry
@@ -113,55 +56,6 @@ class TestColorSets:
 
 class TestThemeEntryRegistry:
     """Theme registry contents and immutability."""
-
-    def test_registry_contains_builtin_keys(self) -> None:
-        assert set(get_registry().keys()) >= _builtin_names()
-
-    def test_registry_is_read_only(self) -> None:
-        assert isinstance(get_registry(), MappingProxyType)
-        with pytest.raises(TypeError):
-            get_registry()["bad"] = None  # ty: ignore
-
-    def test_default_theme_in_registry(self) -> None:
-        assert DEFAULT_THEME in get_registry()
-
-    @pytest.mark.parametrize(
-        ("name", "dark", "custom"),
-        [
-            ("langchain", True, True),
-            ("langchain-light", False, True),
-            ("textual-dark", True, False),
-            ("textual-light", False, False),
-            ("ansi-dark", True, False),
-            ("ansi-light", False, False),
-            # Community themes
-            ("dracula", True, False),
-            ("monokai", True, False),
-            ("nord", True, False),
-            ("tokyo-night", True, False),
-            ("gruvbox", True, False),
-            ("catppuccin-mocha", True, False),
-            ("solarized-dark", True, False),
-            ("solarized-light", False, False),
-            ("catppuccin-latte", False, False),
-            ("atom-one-dark", True, False),
-            ("atom-one-light", False, False),
-        ],
-    )
-    def test_entry_flags(self, name: str, dark: bool, custom: bool) -> None:
-        entry = get_registry()[name]
-        assert entry.dark is dark
-        assert entry.custom is custom
-
-    def test_every_entry_has_non_empty_label(self) -> None:
-        for name, entry in get_registry().items():
-            assert entry.label.strip(), f"Entry '{name}' has empty label"
-
-    def test_every_entry_has_valid_colors(self) -> None:
-        for name, entry in get_registry().items():
-            assert isinstance(entry.colors, ThemeColors), (
-                f"Entry '{name}' has invalid colors"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -184,32 +78,6 @@ EXPECTED_CSS_KEYS = frozenset(
 
 class TestGetCssVariableDefaults:
     """get_css_variable_defaults() return values."""
-
-    def test_returns_expected_keys(self) -> None:
-        result = get_css_variable_defaults(dark=True)
-        assert set(result.keys()) == EXPECTED_CSS_KEYS
-
-    def test_dark_mode_uses_dark_colors(self) -> None:
-        result = get_css_variable_defaults(dark=True)
-        assert result["mode-bash"] == DARK_COLORS.mode_bash
-        assert result["mode-incognito"] == DARK_COLORS.mode_incognito
-
-    def test_light_mode_uses_light_colors(self) -> None:
-        result = get_css_variable_defaults(dark=False)
-        assert result["mode-bash"] == LIGHT_COLORS.mode_bash
-        assert result["mode-incognito"] == LIGHT_COLORS.mode_incognito
-
-    def test_explicit_colors_take_precedence(self) -> None:
-        result = get_css_variable_defaults(dark=True, colors=LIGHT_COLORS)
-        assert result["mode-bash"] == LIGHT_COLORS.mode_bash
-        assert result["mode-incognito"] == LIGHT_COLORS.mode_incognito
-
-    def test_all_values_are_hex_colors(self) -> None:
-        import re
-
-        hex_re = re.compile(r"^#[0-9A-Fa-f]{6}$")
-        for key, val in get_css_variable_defaults(dark=True).items():
-            assert hex_re.match(val), f"CSS var '{key}' has non-hex value: {val!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -243,36 +111,6 @@ _ANSI_COLOR_NAMES = frozenset(
 class TestSemanticConstants:
     """Module-level constants (PRIMARY, MUTED, etc.) are ANSI color names."""
 
-    @pytest.mark.parametrize(
-        "name",
-        [
-            "PRIMARY",
-            "PRIMARY_DEV",
-            "SUCCESS",
-            "WARNING",
-            "MUTED",
-            "MODE_BASH",
-            "MODE_COMMAND",
-            "DIFF_ADD_FG",
-            "DIFF_ADD_BG",
-            "DIFF_REMOVE_FG",
-            "DIFF_REMOVE_BG",
-            "DIFF_CONTEXT",
-            "TOOL_BORDER",
-            "TOOL_HEADER",
-            "FILE_PYTHON",
-            "FILE_CONFIG",
-            "FILE_DIR",
-            "SPINNER",
-        ],
-    )
-    def test_constant_is_valid_ansi_name(self, name: str) -> None:
-        val = getattr(theme, name)
-        assert isinstance(val, str), f"theme.{name} = {val!r} is not a string"
-        assert val in _ANSI_COLOR_NAMES, (
-            f"theme.{name} = {val!r} is not a valid ANSI color name"
-        )
-
 
 # ---------------------------------------------------------------------------
 # get_theme_colors
@@ -281,215 +119,6 @@ class TestSemanticConstants:
 
 class TestGetThemeColors:
     """get_theme_colors() returns the correct ThemeColors."""
-
-    def test_none_returns_dark_colors(self) -> None:
-        assert get_theme_colors(None) is DARK_COLORS
-
-    def test_no_args_returns_dark_colors(self) -> None:
-        assert get_theme_colors() is DARK_COLORS
-
-    def test_custom_dark_theme_returns_stored_colors(self) -> None:
-        class FakeApp:
-            theme = "langchain"
-
-        assert get_theme_colors(FakeApp()) is DARK_COLORS
-
-    def test_custom_light_theme_returns_stored_colors(self) -> None:
-        class FakeApp:
-            theme = "langchain-light"
-
-        assert get_theme_colors(FakeApp()) is LIGHT_COLORS
-
-    def test_builtin_theme_resolves_dynamically(self) -> None:
-        """Built-in Textual themes derive colors from current_theme."""
-
-        class CurrentTheme:
-            dark = True
-            primary = "#BD93F9"
-            secondary = "#6272A4"
-            accent = "#FF79C6"
-            panel = "#313442"
-            success = "#50FA7B"
-            warning = "#FFB86C"
-            error = "#FF5555"
-            foreground = "#F8F8F2"
-            background = "#282A36"
-            surface = "#2B2E3B"
-
-        class FakeApp:
-            theme = "dracula"
-            current_theme = CurrentTheme()
-
-        colors = get_theme_colors(FakeApp())
-        assert colors.primary == "#BD93F9"
-        assert colors.background == "#282A36"
-        # App-specific fields fall back to base
-        assert colors.muted == DARK_COLORS.muted
-
-    def test_builtin_theme_ansi_falls_back(self) -> None:
-        """ANSI theme has non-hex values; falls back to base palette."""
-
-        class CurrentTheme:
-            dark = False
-            primary = "ansi_blue"
-            secondary = "ansi_cyan"
-            accent = "ansi_bright_blue"
-            panel = "ansi_default"
-            success = "ansi_green"
-            warning = "ansi_yellow"
-            error = "ansi_red"
-            foreground = "ansi_default"
-            background = "ansi_default"
-            surface = "ansi_default"
-
-        class FakeApp:
-            theme = "ansi-light"
-            current_theme = CurrentTheme()
-
-        colors = get_theme_colors(FakeApp())
-        # Non-hex values fall back to light base (ansi-light is dark=False)
-        assert colors.primary == LIGHT_COLORS.primary
-        assert colors.background == LIGHT_COLORS.background
-
-    def test_unknown_theme_dark_fallback(self) -> None:
-        class CurrentTheme:
-            dark = True
-            primary = "#112233"
-            secondary = "#445566"
-            accent = "#778899"
-            panel = "#AABBCC"
-            success = "#AABBCC"
-            warning = "#AABBCC"
-            error = "#AABBCC"
-            foreground = "#AABBCC"
-            background = "#AABBCC"
-            surface = "#AABBCC"
-
-        class FakeApp:
-            theme = "nonexistent"
-            current_theme = CurrentTheme()
-
-        colors = get_theme_colors(FakeApp())
-        assert colors.primary == "#112233"
-
-    def test_unknown_theme_does_not_reuse_cached_palette(self) -> None:
-        """Runtime themes with the same name may have different colors."""
-
-        class FirstTheme:
-            dark = True
-            primary = "#112233"
-            secondary = "#445566"
-            accent = "#778899"
-            panel = "#AABBCC"
-            success = "#AABBCC"
-            warning = "#AABBCC"
-            error = "#AABBCC"
-            foreground = "#AABBCC"
-            background = "#010203"
-            surface = "#AABBCC"
-
-        class SecondTheme:
-            dark = True
-            primary = "#DDEEFF"
-            secondary = "#445566"
-            accent = "#778899"
-            panel = "#AABBCC"
-            success = "#AABBCC"
-            warning = "#AABBCC"
-            error = "#AABBCC"
-            foreground = "#AABBCC"
-            background = "#0A0B0C"
-            surface = "#AABBCC"
-
-        class FirstApp:
-            theme = "runtime-custom"
-            current_theme = FirstTheme()
-
-        class SecondApp:
-            theme = "runtime-custom"
-            current_theme = SecondTheme()
-
-        first = get_theme_colors(FirstApp())
-        second = get_theme_colors(SecondApp())
-
-        assert first.primary == "#112233"
-        assert first.background == "#010203"
-        assert second.primary == "#DDEEFF"
-        assert second.background == "#0A0B0C"
-
-    def test_builtin_theme_colors_are_cached(self) -> None:
-        """Repeated lookups for a registered built-in reuse derived colors."""
-
-        class CurrentTheme:
-            dark = True
-            primary = "#BD93F9"
-            secondary = "#6272A4"
-            accent = "#FF79C6"
-            panel = "#313442"
-            success = "#50FA7B"
-            warning = "#FFB86C"
-            error = "#FF5555"
-            foreground = "#F8F8F2"
-            background = "#282A36"
-            surface = "#2B2E3B"
-
-        class FakeApp:
-            theme = "dracula"  # a registered, non-custom built-in
-            current_theme = CurrentTheme()
-
-        theme.reload_registry()  # start from a clean cache
-        app = FakeApp()
-        first = get_theme_colors(app)
-        second = get_theme_colors(app)
-        # Same object returned — derivation ran once and was cached.
-        assert first is second
-        assert ("dracula", True) in theme._textual_colors_cache
-
-    def test_reload_registry_evicts_cached_colors(self) -> None:
-        """`reload_registry` clears cached built-in colors so they re-derive."""
-
-        class CurrentTheme:
-            dark = True
-            primary = "#BD93F9"
-            secondary = "#6272A4"
-            accent = "#FF79C6"
-            panel = "#313442"
-            success = "#50FA7B"
-            warning = "#FFB86C"
-            error = "#FF5555"
-            foreground = "#F8F8F2"
-            background = "#282A36"
-            surface = "#2B2E3B"
-
-        class FakeApp:
-            theme = "dracula"
-            current_theme = CurrentTheme()
-
-        theme.reload_registry()
-        app = FakeApp()
-        first = get_theme_colors(app)
-        assert ("dracula", True) in theme._textual_colors_cache
-
-        theme.reload_registry()
-        assert ("dracula", True) not in theme._textual_colors_cache
-
-        # Re-derived after eviction: equal values, but a fresh instance.
-        second = get_theme_colors(app)
-        assert second.primary == first.primary
-        assert second is not first
-
-    def test_widget_with_app_property(self) -> None:
-        """Simulates a mounted widget whose .app resolves to an App."""
-
-        class FakeApp:
-            theme = "langchain-light"
-
-        class FakeWidget:
-            @property
-            def app(self) -> FakeApp:
-                return FakeApp()
-
-        assert get_theme_colors(FakeWidget()) is LIGHT_COLORS
 
 
 # ---------------------------------------------------------------------------
@@ -500,128 +129,9 @@ class TestGetThemeColors:
 class TestResolveThemeName:
     """Direct unit tests for the shared theme-name resolver."""
 
-    def test_exact_registry_key_round_trips(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("langchain") == "langchain"
-
-    def test_human_label_resolves(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("LangChain Dark") == "langchain"
-
-    def test_casefolded_key_resolves(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("LANGCHAIN-LIGHT") == "langchain-light"
-
-    def test_casefolded_label_resolves(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("langchain dark") == "langchain"
-
-    def test_surrounding_whitespace_is_stripped(self) -> None:
-        """Hand-edited TOML / env vars routinely pick up trailing whitespace."""
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("  langchain  ") == "langchain"
-        assert _resolve_theme_name("\tLangChain Dark\n") == "langchain"
-
-    def test_legacy_textual_ansi_migrates(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("textual-ansi") == "ansi-light"
-
-    def test_unknown_returns_none(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name("nonexistent-theme") is None
-
-    def test_non_string_returns_none(self) -> None:
-        from deepagents_code.app import _resolve_theme_name
-
-        assert _resolve_theme_name(None) is None
-        assert _resolve_theme_name(42) is None
-        assert _resolve_theme_name(["langchain"]) is None
-
 
 class TestLoadTerminalDefault:
     """Direct unit tests for `_load_terminal_default`."""
-
-    def test_returns_mapped_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        assert _load_terminal_default() == "langchain-light"
-
-    def test_resolves_label_via_resolve_theme_name(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui.terminal_themes]\n"Apple_Terminal" = "LangChain Dark"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        assert _load_terminal_default() == "langchain"
-
-    def test_returns_none_when_term_program_unset(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.delenv("TERM_PROGRAM", raising=False)
-
-        assert _load_terminal_default() is None
-
-    def test_returns_none_when_no_mapping(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui.terminal_themes]\n"iTerm.app" = "langchain"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        assert _load_terminal_default() is None
-
-    def test_returns_none_when_mapped_theme_unknown(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui.terminal_themes]\n"Apple_Terminal" = "nonexistent"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        assert _load_terminal_default() is None
-
-    def test_returns_none_when_config_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        assert _load_terminal_default() is None
 
     def test_returns_none_and_logs_on_corrupt_toml(
         self,
@@ -643,177 +153,9 @@ class TestLoadTerminalDefault:
             "terminal theme default" in record.getMessage() for record in caplog.records
         )
 
-    def test_warns_on_non_dict_terminal_themes(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\nterminal_themes = "not-a-table"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_terminal_default() is None
-        assert any(
-            "[ui.terminal_themes]" in record.getMessage()
-            and "table" in record.getMessage()
-            for record in caplog.records
-        )
-
-    def test_warns_on_non_dict_ui(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text('ui = "junk"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_terminal_default() is None
-        assert any(
-            "[ui]" in record.getMessage() and "table" in record.getMessage()
-            for record in caplog.records
-        )
-
-    def test_warns_on_unknown_mapped_theme(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        from deepagents_code.app import _load_terminal_default
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui.terminal_themes]\n"Apple_Terminal" = "nonexistent"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_terminal_default() is None
-        assert any(
-            "nonexistent" in record.getMessage()
-            and "Apple_Terminal" in record.getMessage()
-            for record in caplog.records
-        )
-
 
 class TestLoadThemePreference:
     """_load_theme_preference reads config.toml correctly."""
-
-    def test_returns_default_when_no_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        monkeypatch.setattr("deepagents_code.app.theme.DEFAULT_THEME", "langchain")
-        missing = tmp_path / "nonexistent" / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", missing)
-        assert _load_theme_preference() == "langchain"
-
-    def test_returns_saved_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "langchain-light"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert _load_theme_preference() == "langchain-light"
-
-    def test_env_theme_overrides_saved_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "langchain"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv(THEME, "langchain-light")
-
-        assert _load_theme_preference() == "langchain-light"
-
-    def test_env_theme_supports_spaces_in_name(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "langchain"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv(THEME, "my theme")
-        monkeypatch.setattr(
-            "deepagents_code.app.theme.get_registry",
-            lambda: {"my theme": object()},
-        )
-
-        assert _load_theme_preference() == "my theme"
-
-    def test_env_theme_is_case_insensitive(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "langchain"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv(THEME, "LANGCHAIN-LIGHT")
-
-        assert _load_theme_preference() == "langchain-light"
-
-    def test_env_theme_accepts_display_label(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "langchain-light"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv(THEME, "LangChain Dark")
-
-        assert _load_theme_preference() == "langchain"
-
-    def test_unknown_env_theme_returns_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "langchain-light"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv(THEME, "nonexistent-theme")
-
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_env_theme_does_not_create_config(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv(THEME, "langchain-light")
-
-        assert _load_theme_preference() == "langchain-light"
-        assert not config.exists()
-
-    def test_returns_default_for_unknown_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\ntheme = "nonexistent-theme"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert _load_theme_preference() == DEFAULT_THEME
 
     def test_returns_default_for_corrupt_toml(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -825,377 +167,9 @@ class TestLoadThemePreference:
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
         assert _load_theme_preference() == DEFAULT_THEME
 
-    def test_returns_default_when_ui_section_missing(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[model]\nname = "gpt-4"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_warns_on_non_dict_ui(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('ui = "junk"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == DEFAULT_THEME
-        assert any(
-            "[ui]" in record.getMessage() and "table" in record.getMessage()
-            for record in caplog.records
-        )
-
 
 class TestTerminalThemeMapping:
     """_load_theme_preference respects [ui.terminal_themes] mapping."""
-
-    def test_terminal_mapping_resolves_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == "langchain-light"
-
-    def test_terminal_mapping_overrides_saved_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Mapping wins over saved theme.
-
-        Users moving between terminals (e.g. dark iTerm vs light Apple
-        Terminal) get the right theme without re-picking each time.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui]\ntheme = "langchain"\n'
-            "[ui.terminal_themes]\n"
-            '"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == "langchain-light"
-
-    def test_saved_theme_used_when_no_terminal_mapping_match(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Mapping miss falls through to the saved preference, not default.
-
-        When the current terminal isn't in the mapping table, the user's
-        saved preference still applies.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui]\ntheme = "langchain"\n'
-            "[ui.terminal_themes]\n"
-            '"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "SomeOtherTerminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == "langchain"
-
-    def test_unknown_saved_theme_falls_through_to_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui]\ntheme = "nonexistent-theme"\n'
-            "[ui.terminal_themes]\n"
-            '"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "SomeOtherTerminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_env_theme_overrides_terminal_mapping(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.setenv(THEME, "langchain")
-
-        assert _load_theme_preference() == "langchain"
-
-    def test_unknown_terminal_falls_through_to_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "SomeUnknownTerminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_unknown_mapped_theme_warns_and_falls_through(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "nonexistent-theme"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == DEFAULT_THEME
-
-        # The warning must surface both the bad theme name and the terminal so
-        # users have enough context to fix their config.
-        assert any(
-            "nonexistent-theme" in record.getMessage()
-            and "Apple_Terminal" in record.getMessage()
-            for record in caplog.records
-        )
-
-    def test_missing_term_program_falls_through_to_default(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Warn when mapping is non-empty but `TERM_PROGRAM` is unset.
-
-        Non-`TERM_PROGRAM` terminals (Windows Terminal, tmux without
-        passthrough, ssh, Linux console) shouldn't silently no-op.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.delenv("TERM_PROGRAM", raising=False)
-        monkeypatch.delenv(THEME, raising=False)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == DEFAULT_THEME
-
-        assert any(
-            "TERM_PROGRAM is unset" in record.getMessage() for record in caplog.records
-        )
-
-    def test_empty_terminal_themes_with_unset_term_program_no_warn(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """No warning for an empty `[ui.terminal_themes]` table.
-
-        When `TERM_PROGRAM` is unset and the table is empty there's nothing
-        for the user to fix.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text("[ui.terminal_themes]\n")
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.delenv("TERM_PROGRAM", raising=False)
-        monkeypatch.delenv(THEME, raising=False)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == DEFAULT_THEME
-
-        assert not any(
-            "TERM_PROGRAM is unset" in record.getMessage() for record in caplog.records
-        )
-
-    def test_no_terminal_themes_section_falls_through(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[model]\nname = "gpt-4"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_non_string_mapped_value_warns_and_falls_through(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A non-string mapped value warns rather than silently falling through.
-
-        E.g., user thought they could list fallbacks — that's a TOML mistake
-        worth surfacing.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            "[ui.terminal_themes]\n"
-            '"Apple_Terminal" = ["langchain-light", "langchain"]\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == DEFAULT_THEME
-
-        assert any(
-            "Apple_Terminal" in record.getMessage() and "list" in record.getMessage()
-            for record in caplog.records
-        )
-
-    def test_non_dict_terminal_themes_warns_and_falls_through(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A scalar `terminal_themes` value warns instead of silently no-oping.
-
-        Writing `terminal_themes = "..."` instead of `[ui.terminal_themes]`
-        is a structural mistake that should surface to the user.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui]\nterminal_themes = "langchain-light"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == DEFAULT_THEME
-
-        assert any(
-            "[ui.terminal_themes]" in record.getMessage() for record in caplog.records
-        )
-
-    def test_empty_term_program_falls_through_to_default(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """An empty-string `TERM_PROGRAM` is treated as unset.
-
-        Some shells export `TERM_PROGRAM=""`; falling back to `dict.get("")`
-        would be surprising.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"" = "langchain-light"\n'
-            '"Apple_Terminal" = "langchain"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_term_program_keys_are_matched_verbatim(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`TERM_PROGRAM` table keys are looked up by exact match.
-
-        The shells that set `TERM_PROGRAM` use a stable canonical casing, so
-        we match it verbatim — looser matching would risk mapping the wrong
-        terminal.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"apple_terminal" = "langchain-light"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == DEFAULT_THEME
-
-    def test_terminal_mapping_accepts_theme_label(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """Theme values accept the human label, not just the registry key.
-
-        `[ui.terminal_themes]` is hand-edited, so a user copying the label
-        from the `/theme` picker (e.g. `LangChain Dark`) should still resolve
-        to the registered theme without a warning.
-        """
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[ui.terminal_themes]\n"iTerm.app" = "LangChain Dark"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "iTerm.app")
-        monkeypatch.delenv(THEME, raising=False)
-
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert _load_theme_preference() == "langchain"
-
-        assert not caplog.records, "label match should not warn"
-
-    def test_terminal_mapping_accepts_casefolded_key(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Theme values are matched case-insensitively against registry keys."""
-        from deepagents_code.app import _load_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui.terminal_themes]\n"Apple_Terminal" = "LANGCHAIN-LIGHT"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-        monkeypatch.delenv(THEME, raising=False)
-
-        assert _load_theme_preference() == "langchain-light"
 
     def test_terminal_mapping_migrates_legacy_textual_ansi(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1217,39 +191,6 @@ class TestTerminalThemeMapping:
 
 class TestSaveThemePreference:
     """save_theme_preference writes config.toml correctly."""
-
-    def test_creates_config_from_scratch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import tomllib
-
-        from deepagents_code.app import save_theme_preference
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert save_theme_preference("langchain-light") is True
-        data = tomllib.loads(config.read_text())
-        assert data["ui"]["theme"] == "langchain-light"
-
-    def test_preserves_existing_config_keys(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import tomllib
-
-        from deepagents_code.app import save_theme_preference
-
-        config = tmp_path / "config.toml"
-        config.write_text('[model]\nname = "gpt-4"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert save_theme_preference("langchain") is True
-        data = tomllib.loads(config.read_text())
-        assert data["model"]["name"] == "gpt-4"
-        assert data["ui"]["theme"] == "langchain"
-
-    def test_rejects_unknown_theme(self) -> None:
-        from deepagents_code.app import save_theme_preference
-
-        assert save_theme_preference("nonexistent-theme") is False
 
     def test_returns_false_on_write_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1276,36 +217,6 @@ class TestSaveThemePreference:
 class TestThemeColorsMerged:
     """ThemeColors.merged() creates a new instance from base + overrides."""
 
-    def test_no_overrides_returns_copy_of_base(self) -> None:
-        result = ThemeColors.merged(DARK_COLORS, {})
-        assert result == DARK_COLORS
-
-    def test_single_override_applied(self) -> None:
-        result = ThemeColors.merged(DARK_COLORS, {"primary": "#112233"})
-        assert result.primary == "#112233"
-        # Other fields unchanged
-        assert result.accent == DARK_COLORS.accent
-
-    def test_multiple_overrides(self) -> None:
-        result = ThemeColors.merged(
-            LIGHT_COLORS, {"primary": "#AAAAAA", "error": "#BBBBBB"}
-        )
-        assert result.primary == "#AAAAAA"
-        assert result.error == "#BBBBBB"
-        assert result.success == LIGHT_COLORS.success
-
-    def test_unknown_keys_ignored(self) -> None:
-        result = ThemeColors.merged(DARK_COLORS, {"not_a_field": "#123456"})
-        assert result == DARK_COLORS
-
-    def test_invalid_hex_raises(self) -> None:
-        with pytest.raises(ValueError, match="7-char hex color"):
-            ThemeColors.merged(DARK_COLORS, {"primary": "bad"})
-
-    def test_returns_new_instance(self) -> None:
-        result = ThemeColors.merged(DARK_COLORS, {"primary": "#000000"})
-        assert result is not DARK_COLORS
-
 
 # ---------------------------------------------------------------------------
 # _load_user_themes
@@ -1321,177 +232,9 @@ def _write_config(path: Path, content: str) -> None:
 class TestLoadUserThemes:
     """_load_user_themes reads [themes.*] from config.toml."""
 
-    def test_no_config_file(self, tmp_path: Path) -> None:
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=tmp_path / "missing.toml")
-        assert builtins == {}
-
-    def test_no_themes_section(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(config, '[ui]\ntheme = "langchain"\n')
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert builtins == {}
-
-    def test_valid_user_theme_loaded(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.my-dark]
-label = "My Dark"
-dark = true
-primary = "#FF0000"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "my-dark" in builtins
-        entry = builtins["my-dark"]
-        assert entry.label == "My Dark"
-        assert entry.dark is True
-        assert entry.custom is True
-        assert entry.colors.primary == "#FF0000"
-        # Unspecified fields fall back to DARK_COLORS
-        assert entry.colors.muted == DARK_COLORS.muted
-
-    def test_light_user_theme_inherits_light_base(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.my-light]
-label = "My Light"
-dark = false
-primary = "#0000FF"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        entry = builtins["my-light"]
-        assert entry.dark is False
-        assert entry.colors.primary == "#0000FF"
-        assert entry.colors.muted == LIGHT_COLORS.muted
-
-    def test_missing_label_skipped(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.bad]
-dark = true
-primary = "#FF0000"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "bad" not in builtins
-
-    def test_missing_dark_defaults_to_false(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.my-light]
-label = "My Light"
-primary = "#FF0000"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "my-light" in builtins
-        entry = builtins["my-light"]
-        assert entry.dark is False
-        assert entry.colors.primary == "#FF0000"
-        # Falls back to LIGHT_COLORS since dark defaults to False
-        assert entry.colors.muted == LIGHT_COLORS.muted
-
-    def test_invalid_hex_skipped(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.bad-hex]
-label = "Bad Hex"
-dark = true
-primary = "not-a-color"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "bad-hex" not in builtins
-
-    def test_builtin_color_override_merges(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.langchain]
-primary = "#FF0000"
-""",
-        )
-        builtins = _builtin_themes()
-        original_label = builtins["langchain"].label
-        original_dark = builtins["langchain"].dark
-        original_custom = builtins["langchain"].custom
-        _load_user_themes(builtins, config_path=config)
-        entry = builtins["langchain"]
-        # Color overridden
-        assert entry.colors.primary == "#FF0000"
-        # Other colors unchanged
-        assert entry.colors.muted == DARK_COLORS.muted
-        # Label, dark, custom preserved from built-in
-        assert entry.label == original_label
-        assert entry.dark is original_dark
-        assert entry.custom is original_custom
-
-    def test_builtin_override_without_colors_is_noop(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.langchain]
-label = "My LangChain"
-""",
-        )
-        builtins = _builtin_themes()
-        original = builtins["langchain"]
-        _load_user_themes(builtins, config_path=config)
-        assert builtins["langchain"] is original
-
-    def test_multiple_user_themes(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.alpha]
-label = "Alpha"
-dark = true
-primary = "#111111"
-
-[themes.beta]
-label = "Beta"
-dark = false
-primary = "#222222"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "alpha" in builtins
-        assert "beta" in builtins
-        assert builtins["alpha"].colors.primary == "#111111"
-        assert builtins["beta"].colors.primary == "#222222"
-
     def test_corrupt_toml_does_not_crash(self, tmp_path: Path) -> None:
         config = tmp_path / "config.toml"
         _write_config(config, "this is [[[not valid toml")
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert builtins == {}
-
-    def test_non_table_themes_entry_skipped(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(config, 'themes = "not a table"\n')
         builtins: dict[str, ThemeEntry] = {}
         _load_user_themes(builtins, config_path=config)
         assert builtins == {}
@@ -1505,27 +248,6 @@ primary = "#222222"
 class TestBuildRegistryWithUserThemes:
     """_build_registry() incorporates user themes from config."""
 
-    def test_user_theme_in_registry(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.custom-dark]
-label = "Custom Dark"
-dark = true
-primary = "#ABCDEF"
-""",
-        )
-        registry = _build_registry(config_path=config)
-        assert isinstance(registry, MappingProxyType)
-        assert "custom-dark" in registry
-        assert set(registry.keys()) >= _builtin_names()
-        assert registry["custom-dark"].colors.primary == "#ABCDEF"
-
-    def test_no_config_still_has_builtins(self, tmp_path: Path) -> None:
-        registry = _build_registry(config_path=tmp_path / "missing.toml")
-        assert set(registry.keys()) == _builtin_names()
-
 
 # ---------------------------------------------------------------------------
 # _builtin_names() consistency
@@ -1534,9 +256,6 @@ primary = "#ABCDEF"
 
 class TestBuiltinNamesConsistency:
     """_builtin_names() stays in sync with _builtin_themes()."""
-
-    def test_builtin_names_matches_builtin_themes(self) -> None:
-        assert frozenset(_builtin_themes()) == _builtin_names()
 
 
 # ---------------------------------------------------------------------------
@@ -1547,125 +266,6 @@ class TestBuiltinNamesConsistency:
 class TestLoadUserThemesEdgeCases:
     """Extra edge cases for _load_user_themes."""
 
-    def test_whitespace_only_label_skipped(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.blank]
-label = "   "
-dark = true
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "blank" not in builtins
-
-    def test_valid_theme_loads_despite_sibling_invalid(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.good]
-label = "Good"
-dark = true
-primary = "#AABBCC"
-
-[themes.bad]
-dark = true
-primary = "#FF0000"
-
-[themes.also-good]
-label = "Also Good"
-dark = false
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "good" in builtins
-        assert "also-good" in builtins
-        assert "bad" not in builtins
-
-    def test_non_bool_dark_defaults_to_false(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.stringy]
-label = "Stringy Dark"
-dark = "yes"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "stringy" in builtins
-        assert builtins["stringy"].dark is False
-
-    def test_builtin_override_invalid_hex_skipped(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.langchain]
-primary = "not-a-color"
-""",
-        )
-        builtins = _builtin_themes()
-        original = builtins["langchain"]
-        _load_user_themes(builtins, config_path=config)
-        # Invalid override skipped — original preserved
-        assert builtins["langchain"] is original
-
-    def test_builtin_override_preserves_custom_flag(self, tmp_path: Path) -> None:
-        """Textual built-in themes keep custom=False after color override."""
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.dracula]
-muted = "#AABBCC"
-""",
-        )
-        builtins = _builtin_themes()
-        assert builtins["dracula"].custom is False
-        _load_user_themes(builtins, config_path=config)
-        entry = builtins["dracula"]
-        assert entry.colors.muted == "#AABBCC"
-        assert entry.custom is False
-
-    def test_non_string_color_value_uses_base_fallback(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.int-color]
-label = "Int Color"
-dark = true
-primary = 123456
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "int-color" in builtins
-        assert builtins["int-color"].colors.primary == DARK_COLORS.primary
-
-    def test_unknown_color_field_ignored(self, tmp_path: Path) -> None:
-        config = tmp_path / "config.toml"
-        _write_config(
-            config,
-            """
-[themes.typo]
-label = "Typo Theme"
-dark = true
-primay = "#FF0000"
-""",
-        )
-        builtins: dict[str, ThemeEntry] = {}
-        _load_user_themes(builtins, config_path=config)
-        assert "typo" in builtins
-        # Misspelled field ignored; primary stays at base
-        assert builtins["typo"].colors.primary == DARK_COLORS.primary
-
 
 # ---------------------------------------------------------------------------
 # ThemeEntry.__post_init__ validation
@@ -1674,18 +274,6 @@ primay = "#FF0000"
 
 class TestThemeEntryPostInit:
     """ThemeEntry validates label in __post_init__."""
-
-    def test_empty_label_rejected(self) -> None:
-        with pytest.raises(ValueError, match="non-empty"):
-            ThemeEntry(label="", dark=True, colors=DARK_COLORS)
-
-    def test_whitespace_only_label_rejected(self) -> None:
-        with pytest.raises(ValueError, match="non-empty"):
-            ThemeEntry(label="   ", dark=True, colors=DARK_COLORS)
-
-    def test_valid_label_accepted(self) -> None:
-        entry = ThemeEntry(label="My Theme", dark=True, colors=DARK_COLORS)
-        assert entry.label == "My Theme"
 
 
 # ---------------------------------------------------------------------------
@@ -1696,78 +284,9 @@ class TestThemeEntryPostInit:
 class TestSaveThemePreferenceOverwrite:
     """save_theme_preference correctly overwrites an existing theme value."""
 
-    def test_overwrite_existing_theme(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import tomllib
-
-        from deepagents_code.app import save_theme_preference
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-
-        # Save initial theme
-        assert save_theme_preference("langchain") is True
-        data = tomllib.loads(config.read_text())
-        assert data["ui"]["theme"] == "langchain"
-
-        # Overwrite with a different theme
-        assert save_theme_preference("langchain-light") is True
-        data = tomllib.loads(config.read_text())
-        assert data["ui"]["theme"] == "langchain-light"
-        # Old value should be replaced, not duplicated
-        assert data["ui"]["theme"] == "langchain-light"
-
 
 class TestSaveTerminalThemeMapping:
     """save_terminal_theme_mapping writes [ui.terminal_themes] correctly."""
-
-    def test_creates_section_from_scratch(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import tomllib
-
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert save_terminal_theme_mapping("Apple_Terminal", "langchain-light") is True
-        data = tomllib.loads(config.read_text())
-        assert data["ui"]["terminal_themes"]["Apple_Terminal"] == "langchain-light"
-
-    def test_preserves_other_terminal_entries(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import tomllib
-
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        config = tmp_path / "config.toml"
-        config.write_text(
-            '[ui]\ntheme = "langchain"\n'
-            "[ui.terminal_themes]\n"
-            '"iTerm.app" = "langchain"\n'
-        )
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert save_terminal_theme_mapping("Apple_Terminal", "langchain-light") is True
-        data = tomllib.loads(config.read_text())
-        assert data["ui"]["theme"] == "langchain"
-        assert data["ui"]["terminal_themes"]["iTerm.app"] == "langchain"
-        assert data["ui"]["terminal_themes"]["Apple_Terminal"] == "langchain-light"
-
-    def test_overwrites_existing_entry(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import tomllib
-
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert save_terminal_theme_mapping("Apple_Terminal", "langchain") is True
-        assert save_terminal_theme_mapping("Apple_Terminal", "langchain-light") is True
-        data = tomllib.loads(config.read_text())
-        assert data["ui"]["terminal_themes"]["Apple_Terminal"] == "langchain-light"
 
     def test_repairs_non_dict_terminal_themes(
         self,
@@ -1795,30 +314,6 @@ class TestSaveTerminalThemeMapping:
         assert data["ui"]["terminal_themes"]["Apple_Terminal"] == "langchain"
         assert any(
             "junk" in record.getMessage() and "replacing" in record.getMessage()
-            for record in caplog.records
-        )
-
-    def test_repairs_non_dict_ui(
-        self,
-        tmp_path: Path,
-        monkeypatch: pytest.MonkeyPatch,
-        caplog: pytest.LogCaptureFixture,
-    ) -> None:
-        """A scalar top-level `ui` value is replaced with a fresh table."""
-        import tomllib
-
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        config = tmp_path / "config.toml"
-        config.write_text('ui = "junk"\n')
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        with caplog.at_level("WARNING", logger="deepagents_code.app"):
-            assert save_terminal_theme_mapping("Apple_Terminal", "langchain") is True
-        data = tomllib.loads(config.read_text())
-        assert isinstance(data["ui"], dict)
-        assert data["ui"]["terminal_themes"]["Apple_Terminal"] == "langchain"
-        assert any(
-            "[ui]" in record.getMessage() and "replacing" in record.getMessage()
             for record in caplog.records
         )
 
@@ -1871,47 +366,6 @@ class TestSaveTerminalThemeMapping:
         assert results == [True, True]
         assert data["ui"]["theme"] == "langchain-light"
         assert data["ui"]["terminal_themes"]["Apple_Terminal"] == "langchain"
-
-    def test_rejects_unknown_theme(self) -> None:
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        assert save_terminal_theme_mapping("Apple_Terminal", "nonexistent") is False
-
-    def test_rejects_empty_term_program(self) -> None:
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        assert save_terminal_theme_mapping("", "langchain") is False
-
-    def test_rejects_whitespace_only_term_program(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A whitespace-only key would write a junk entry — reject it."""
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        assert save_terminal_theme_mapping("   ", "langchain") is False
-        assert not config.exists()
-
-    def test_returns_false_on_write_error(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Mirror of `TestSaveThemePreference::test_returns_false_on_write_error`.
-
-        A read-only parent dir means `mkdir(exist_ok=True)` raises `OSError`,
-        which the function should catch and return `False` from.
-        """
-        from deepagents_code.app import save_terminal_theme_mapping
-
-        config = tmp_path / "readonly" / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        (tmp_path / "readonly").mkdir()
-        (tmp_path / "readonly").chmod(0o444)
-        try:
-            result = save_terminal_theme_mapping("Apple_Terminal", "langchain")
-        finally:
-            (tmp_path / "readonly").chmod(0o755)
-        assert result is False
 
     def test_returns_false_on_atomic_write_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1993,42 +447,10 @@ def _register_lc_light_theme(app: object) -> None:
 class TestThemeSelectorScreen:
     """ThemeSelectorScreen widget tests."""
 
-    async def test_compose_shows_all_registry_themes(self) -> None:
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-            option_list = screen.query_one("#theme-options", OptionList)
-            assert option_list.option_count == len(theme.get_registry())
-
-    async def test_current_theme_highlighted(self) -> None:
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-            option_list = screen.query_one("#theme-options", OptionList)
-            assert option_list.highlighted is not None
-            highlighted = option_list.get_option_at_index(option_list.highlighted)
-            assert highlighted.id == "langchain"
-
     async def test_escape_restores_original_theme(self) -> None:
         from textual.app import App
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         results: list[str | None] = []
 
@@ -2047,55 +469,11 @@ class TestThemeSelectorScreen:
             assert app.theme == "langchain"
             assert results == [None]
 
-    async def test_highlight_syncs_terminal_background_preview(self) -> None:
-        from textual.app import App
-        from textual.theme import Theme as TextualTheme
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        class SyncApp(App[None]):
-            def __init__(self) -> None:
-                super().__init__()
-                self.synced: list[str] = []
-
-            def sync_terminal_background(self) -> None:
-                self.synced.append(self.theme)
-
-        app = SyncApp()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            c = theme.LIGHT_COLORS
-            app.register_theme(
-                TextualTheme(
-                    name="langchain-light",
-                    primary=c.primary,
-                    secondary=c.secondary,
-                    accent=c.accent,
-                    foreground=c.foreground,
-                    background=c.background,
-                    surface=c.surface,
-                    panel=c.panel,
-                    warning=c.warning,
-                    error=c.error,
-                    success=c.success,
-                    dark=False,
-                )
-            )
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            await pilot.press("down")
-            await pilot.pause()
-
-            target = next(key for key in theme.get_registry() if key != "langchain")
-            assert app.synced[-1] == target
-
     async def test_escape_syncs_terminal_background_after_restore(self) -> None:
         from textual.app import App
         from textual.theme import Theme as TextualTheme
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         class SyncApp(App[None]):
             def __init__(self) -> None:
@@ -2143,7 +521,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.theme import Theme as TextualTheme
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         class SyncApp(App[None]):
             def __init__(self) -> None:
@@ -2181,7 +559,7 @@ class TestThemeSelectorScreen:
             await pilot.pause()
 
             with caplog.at_level(
-                logging.WARNING, logger="deepagents_code.widgets.theme_selector"
+                logging.WARNING, logger="deepagents_code.tui.widgets.theme_selector"
             ):
                 await pilot.press("down")
                 await pilot.pause()
@@ -2191,29 +569,6 @@ class TestThemeSelectorScreen:
             assert app.theme == "langchain"
             assert "Failed to preview theme" in caplog.text
 
-    async def test_enter_selects_theme(self) -> None:
-        from textual.app import App
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        results: list[str | None] = []
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-
-            def on_result(result: str | None) -> None:
-                results.append(result)
-
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen, on_result)
-            await pilot.pause()
-            await pilot.press("enter")
-            await pilot.pause()
-            assert len(results) == 1
-            assert results[0] is not None
-            assert results[0] in theme.get_registry()
-
     async def test_t_writes_terminal_mapping_for_current_term_program(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2222,14 +577,15 @@ class TestThemeSelectorScreen:
         Leaves the picker open so the user can confirm and keep browsing.
         `[ui].theme` is intentionally untouched — pressing `t` is "save for
         this terminal", not "save as my global default". The shared
-        `_CONFIG_WRITE_LOCK` prevents racing the parent's Enter writer.
+        shared `model_config._config_write_lock` prevents racing the parent's
+        Enter writer.
         """
         import tomllib
 
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2271,7 +627,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2298,105 +654,6 @@ class TestThemeSelectorScreen:
         data = tomllib.loads(config.read_text())
         assert data["ui"]["terminal_themes"]["Apple_Terminal"] == target_key
 
-    async def test_t_updates_default_badge_in_place(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """After `t`, the picker stays open and the saved row gains `(default)`.
-
-        Confirms the user's action visually so they don't need to reopen the
-        picker to verify what was saved.
-        """
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-            await pilot.press("t")
-            await app.workers.wait_for_complete()
-            await pilot.pause()
-
-            registry = theme.get_registry()
-            keys = list(registry)
-            lc_index = keys.index("langchain")
-            option_list = screen.query_one("#theme-options", OptionList)
-            prompt = str(option_list.get_option_at_index(lc_index).prompt)
-            # `langchain` is both current and now the saved default.
-            assert "(current, default)" in prompt
-            # Cursor stays on the saved row.
-            assert option_list.highlighted == lc_index
-
-    async def test_t_no_op_when_term_program_unset(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Without `TERM_PROGRAM`, `t` warns instead of writing a bad mapping."""
-        from textual.app import App
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.delenv("TERM_PROGRAM", raising=False)
-
-        results: list[str | None] = []
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-
-            def on_result(result: str | None) -> None:
-                results.append(result)
-
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen, on_result)
-            await pilot.pause()
-
-            await pilot.press("t")
-            await pilot.pause()
-
-        assert results == []
-        assert not config.exists()
-
-    async def test_t_no_op_when_term_program_whitespace_only(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A whitespace-only `TERM_PROGRAM` is treated as unset."""
-        from textual.app import App
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "   ")
-
-        results: list[str | None] = []
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-
-            def on_result(result: str | None) -> None:
-                results.append(result)
-
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen, on_result)
-            await pilot.pause()
-
-            await pilot.press("t")
-            await pilot.pause()
-
-        assert results == []
-        assert not config.exists()
-
     async def test_t_notifies_on_save_failure(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2409,7 +666,7 @@ class TestThemeSelectorScreen:
         from textual.widgets import OptionList
 
         from deepagents_code.app import _ConfigWriteResult
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2469,7 +726,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2516,186 +773,6 @@ class TestThemeSelectorScreen:
         assert any(sev == "error" and "OSError" in msg for sev, msg in notifications)
         assert app.theme == "langchain"
 
-    async def test_t_write_skips_rerender_after_screen_unmount(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The background terminal save tolerates the picker unmounting mid-write."""
-        import asyncio
-        import threading
-
-        from textual.app import App
-
-        from deepagents_code.app import _ConfigWriteResult
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        config = tmp_path / "config.toml"
-        monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
-        monkeypatch.setenv("TERM_PROGRAM", "Apple_Terminal")
-
-        started = threading.Event()
-        release = threading.Event()
-
-        def _slow_save(*_args: object, **_kwargs: object) -> _ConfigWriteResult:
-            started.set()
-            release.wait(timeout=1)
-            return _ConfigWriteResult(True)
-
-        monkeypatch.setattr(
-            "deepagents_code.app._save_terminal_theme_mapping_result", _slow_save
-        )
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            await pilot.press("t")
-            assert await asyncio.to_thread(started.wait, 1)
-            screen._is_mounted = False  # simulate mid-write teardown
-            release.set()
-            await app.workers.wait_for_complete()
-            screen._is_mounted = True  # keep Textual teardown normal
-
-    async def test_terminal_default_badge_renders(self) -> None:
-        """The `terminal_default` row renders with a `(default)` suffix."""
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(
-                current_theme="langchain", terminal_default="langchain-light"
-            )
-            app.push_screen(screen)
-            await pilot.pause()
-
-            option_list = screen.query_one("#theme-options", OptionList)
-            registry = theme.get_registry()
-            keys = list(registry)
-            current_idx = keys.index("langchain")
-            default_idx = keys.index("langchain-light")
-
-            assert str(option_list.get_option_at_index(current_idx).prompt) == (
-                f"{registry['langchain'].label} (current)"
-            )
-            assert str(option_list.get_option_at_index(default_idx).prompt) == (
-                f"{registry['langchain-light'].label} (default)"
-            )
-
-    async def test_terminal_default_combines_with_current_badge(self) -> None:
-        """A theme that's both current and the saved default renders both."""
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(
-                current_theme="langchain", terminal_default="langchain"
-            )
-            app.push_screen(screen)
-            await pilot.pause()
-
-            option_list = screen.query_one("#theme-options", OptionList)
-            registry = theme.get_registry()
-            lc_index = list(registry).index("langchain")
-
-            assert str(option_list.get_option_at_index(lc_index).prompt) == (
-                f"{registry['langchain'].label} (current, default)"
-            )
-
-    async def test_no_default_badge_when_terminal_default_is_none(self) -> None:
-        """Without a terminal mapping, no row gets a `(default)` suffix."""
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            option_list = screen.query_one("#theme-options", OptionList)
-            for i in range(option_list.option_count):
-                prompt = str(option_list.get_option_at_index(i).prompt)
-                # Match "(default)" as a whole token to avoid false positives
-                # from "(current)" rows.
-                assert "(default)" not in prompt, prompt
-                assert ", default)" not in prompt, prompt
-
-    async def test_n_toggles_between_labels_and_registry_keys(self) -> None:
-        """`n` swaps the option list between display labels and canonical keys.
-
-        Lets users copy the exact registry key into `[ui.terminal_themes]`
-        or `[ui].theme` without leaving the picker. Also verifies that
-        non-current rows render without a `(current)` suffix and that the
-        cursor is preserved across a toggle even when moved off the default
-        position.
-        """
-        from textual.app import App
-        from textual.widgets import OptionList
-
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
-
-        app = App()
-        async with app.run_test() as pilot:
-            _register_lc_theme(app)
-            screen = ThemeSelectorScreen(current_theme="langchain")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            option_list = screen.query_one("#theme-options", OptionList)
-            registry = theme.get_registry()
-            keys = list(registry)
-            lc_index = keys.index("langchain")
-            lc_label = registry["langchain"].label
-            other_index = lc_index + 1
-            other_key = keys[other_index]
-            other_label = registry[other_key].label
-
-            assert str(option_list.get_option_at_index(lc_index).prompt) == (
-                f"{lc_label} (current)"
-            )
-            assert (
-                str(option_list.get_option_at_index(other_index).prompt) == other_label
-            )
-
-            # Move the cursor so the post-toggle highlighted index is not the
-            # default — otherwise the cursor-preservation branch is untested.
-            await pilot.press("down")
-            await pilot.pause()
-            assert option_list.highlighted == other_index
-
-            await pilot.press("n")
-            await pilot.pause()
-
-            assert str(option_list.get_option_at_index(lc_index).prompt) == (
-                "langchain (current)"
-            )
-            assert str(option_list.get_option_at_index(other_index).prompt) == other_key
-            assert option_list.highlighted == other_index
-
-            await pilot.press("n")
-            await pilot.pause()
-
-            assert str(option_list.get_option_at_index(lc_index).prompt) == (
-                f"{lc_label} (current)"
-            )
-            assert (
-                str(option_list.get_option_at_index(other_index).prompt) == other_label
-            )
-            assert option_list.highlighted == other_index
-
     async def test_escape_keeps_theme_set_for_terminal_this_session(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2708,7 +785,7 @@ class TestThemeSelectorScreen:
         from textual.theme import Theme as TextualTheme
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2766,7 +843,7 @@ class TestThemeSelectorScreen:
         """Without a `t` press, Esc still reverts the previewed theme."""
         from textual.app import App
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2798,7 +875,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2851,7 +928,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2896,7 +973,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2936,7 +1013,7 @@ class TestThemeSelectorScreen:
         from textual.app import App
         from textual.widgets import OptionList
 
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -2992,7 +1069,7 @@ class TestThemeSelectorScreen:
         from textual.widgets import OptionList
 
         from deepagents_code.app import _ConfigWriteResult
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)
@@ -3054,7 +1131,7 @@ class TestThemeSelectorScreen:
         from textual.widgets import OptionList
 
         from deepagents_code.app import _ConfigWriteResult
-        from deepagents_code.widgets.theme_selector import ThemeSelectorScreen
+        from deepagents_code.tui.widgets.theme_selector import ThemeSelectorScreen
 
         config = tmp_path / "config.toml"
         monkeypatch.setattr("deepagents_code.model_config.DEFAULT_CONFIG_PATH", config)

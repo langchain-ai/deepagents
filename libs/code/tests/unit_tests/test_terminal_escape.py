@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import logging
 import pathlib
 from typing import TYPE_CHECKING
 
@@ -15,7 +14,6 @@ if TYPE_CHECKING:
 from deepagents_code import terminal_escape
 from deepagents_code.terminal_escape import (
     TerminalProgressState,
-    _validate_progress,
     clear_terminal_progress,
     reset_terminal_background,
     set_terminal_background,
@@ -164,44 +162,6 @@ class TestWriteOsc:
         assert fake.getvalue() == "\x1b]0\a"
 
 
-class TestValidateProgress:
-    """Tests for `_validate_progress`."""
-
-    def test_clear_state_normalizes_to_zero(self) -> None:
-        assert _validate_progress(50, TerminalProgressState.CLEAR) == 0
-
-    def test_indeterminate_normalizes_to_zero(self) -> None:
-        assert _validate_progress(50, TerminalProgressState.INDETERMINATE) == 0
-
-    def test_determinate_passthrough(self) -> None:
-        assert _validate_progress(42, TerminalProgressState.NORMAL) == 42
-
-    def test_determinate_clamps_low(self) -> None:
-        assert _validate_progress(-10, TerminalProgressState.NORMAL) == 0
-
-    def test_determinate_clamps_high(self) -> None:
-        assert _validate_progress(250, TerminalProgressState.ERROR) == 100
-
-    def test_none_progress_for_determinate_becomes_zero(self) -> None:
-        assert _validate_progress(None, TerminalProgressState.NORMAL) == 0
-
-    def test_non_numeric_progress_coerces_to_zero(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Bad types are logged + treated as zero, never raised."""
-        with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
-            assert _validate_progress("nope", TerminalProgressState.NORMAL) == 0  # ty: ignore
-        assert any("non-numeric" in record.message for record in caplog.records)
-
-    def test_clear_with_nonzero_progress_is_logged(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """Supplying progress to CLEAR/INDETERMINATE is observable misuse."""
-        with caplog.at_level(logging.DEBUG, logger=terminal_escape.__name__):
-            assert _validate_progress(42, TerminalProgressState.CLEAR) == 0
-        assert any("ignoring progress" in record.message for record in caplog.records)
-
-
 class TestSetTerminalProgress:
     """Tests for `set_terminal_progress` / `clear_terminal_progress`."""
 
@@ -295,6 +255,16 @@ class TestTerminalBackground:
         assert reset_terminal_background() is True
         assert fake.getvalue() == "\x1b]111\x1b\\"
         assert terminal_escape._terminal_background_active is False
+
+    def test_reset_background_is_no_op_when_never_set(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No `OSC 111` for a background this process never changed."""
+        fake = _FakeTTY()
+        monkeypatch.setattr(terminal_escape, "_open_tty", lambda: fake)
+        monkeypatch.setattr(terminal_escape, "_terminal_background_active", False)
+        assert reset_terminal_background() is False
+        assert fake.getvalue() == ""
 
     def test_empty_background_is_no_op(self, monkeypatch: pytest.MonkeyPatch) -> None:
         fake = _FakeTTY()

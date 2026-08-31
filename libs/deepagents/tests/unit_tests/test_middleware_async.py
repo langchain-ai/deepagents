@@ -10,6 +10,7 @@ from langgraph.store.memory import InMemoryStore
 import deepagents.middleware.filesystem as filesystem_middleware
 from deepagents.backends import StateBackend, StoreBackend
 from deepagents.backends.protocol import ExecuteResponse, GrepResult, SandboxBackendProtocol
+from deepagents.backends.utils import TOOL_RESULT_TOKEN_LIMIT, TRUNCATION_GUIDANCE
 from deepagents.middleware.filesystem import FileData, FilesystemMiddleware, FilesystemPermission, FilesystemState
 
 
@@ -43,12 +44,12 @@ class TestFilesystemMiddlewareAsync:
         """Test async ls tool with state backend."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test2.txt": FileData(
-                content=["Goodbye world"],
+                content="Goodbye world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -63,22 +64,22 @@ class TestFilesystemMiddlewareAsync:
         """Test async ls tool with specific path."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/test2.txt": FileData(
-                content=["Goodbye world"],
+                content="Goodbye world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/charmander.txt": FileData(
-                content=["Ember"],
+                content="Ember",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/water/squirtle.txt": FileData(
-                content=["Water"],
+                content="Water",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -102,22 +103,22 @@ class TestFilesystemMiddlewareAsync:
         """Test async ls lists directories with trailing /."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/charmander.txt": FileData(
-                content=["Ember"],
+                content="Ember",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/pokemon/water/squirtle.txt": FileData(
-                content=["Water"],
+                content="Water",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/docs/readme.md": FileData(
-                content=["Documentation"],
+                content="Documentation",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -150,22 +151,22 @@ class TestFilesystemMiddlewareAsync:
         """Test async glob with simple pattern."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-02",
                 created_at="2021-01-01",
             ),
             "/pokemon/charmander.py": FileData(
-                content=["Ember"],
+                content="Ember",
                 modified_at="2021-01-03",
                 created_at="2021-01-01",
             ),
             "/pokemon/squirtle.txt": FileData(
-                content=["Water"],
+                content="Water",
                 modified_at="2021-01-04",
                 created_at="2021-01-01",
             ),
@@ -179,24 +180,27 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
-        # Standard glob: *.py only matches files in root directory, not subdirectories
-        assert result.content == str(["/test.py"])
+        # Bare `*.py` matches the basename at any depth under the search root.
+        assert "/test.py" in result.content
+        assert "/pokemon/charmander.py" in result.content
+        assert "/test.txt" not in result.content
+        assert "/pokemon/squirtle.txt" not in result.content
 
     async def test_aglob_search_shortterm_wildcard_pattern(self):
         """Test async glob with wildcard pattern."""
         files = {
             "/src/main.py": FileData(
-                content=["main code"],
+                content="main code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/src/utils/helper.py": FileData(
-                content=["helper code"],
+                content="helper code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/tests/test_main.py": FileData(
-                content=["test code"],
+                content="test code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -218,17 +222,17 @@ class TestFilesystemMiddlewareAsync:
         """Test async glob with specific path."""
         files = {
             "/src/main.py": FileData(
-                content=["main code"],
+                content="main code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/src/utils/helper.py": FileData(
-                content=["helper code"],
+                content="helper code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/tests/test_main.py": FileData(
-                content=["test code"],
+                content="test code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -243,25 +247,26 @@ class TestFilesystemMiddlewareAsync:
                 "runtime": _runtime(),
             }
         )
+        # Path scopes the tree; bare patterns still match nested basenames under it.
         assert "/src/main.py" in result.content
-        assert "/src/utils/helper.py" not in result.content
+        assert "/src/utils/helper.py" in result.content
         assert "/tests/test_main.py" not in result.content
 
     async def test_aglob_search_shortterm_brace_expansion(self):
         """Test async glob with brace expansion."""
         files = {
             "/test.py": FileData(
-                content=["code"],
+                content="code",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.pyi": FileData(
-                content=["stubs"],
+                content="stubs",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.txt": FileData(
-                content=["text"],
+                content="text",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -283,7 +288,7 @@ class TestFilesystemMiddlewareAsync:
         """Test async glob with no matches."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world"],
+                content="Hello world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -303,7 +308,6 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         async def slow_aglob(*_args: object, **_kwargs: object) -> list[dict[str, str]]:
             await asyncio.sleep(2)
@@ -311,8 +315,7 @@ class TestFilesystemMiddlewareAsync:
 
         with (
             patch.object(filesystem_middleware, "GLOB_TIMEOUT", 0.5),
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", side_effect=slow_aglob),
+            patch.object(backend, "aglob", side_effect=slow_aglob),
         ):
             result = await glob_search_tool.ainvoke(
                 {
@@ -328,15 +331,13 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         async def boom(*_args: object, **_kwargs: object) -> object:
             msg = "path traversal not allowed"
             raise ValueError(msg)
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", side_effect=boom),
+            patch.object(backend, "aglob", side_effect=boom),
         ):
             result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
 
@@ -348,15 +349,13 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         glob_search_tool = next(tool for tool in middleware.tools if tool.name == "glob")
-        backend_obj = middleware._get_backend(_runtime())
 
         async def raise_timeout(*_args: object, **_kwargs: object) -> object:
             msg = "backend RPC timed out"
             raise TimeoutError(msg)
 
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "aglob", side_effect=raise_timeout),
+            patch.object(backend, "aglob", side_effect=raise_timeout),
         ):
             result = await glob_search_tool.ainvoke({"pattern": "**/*", "runtime": _runtime()})
 
@@ -368,17 +367,17 @@ class TestFilesystemMiddlewareAsync:
         """Test async grep with files_with_matches mode."""
         files = {
             "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
+                content="import os\nimport sys\nprint('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/main.py": FileData(
-                content=["def main():", "    pass"],
+                content="def main():\n    pass",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/helper.txt": FileData(
-                content=["import json"],
+                content="import json",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -400,15 +399,13 @@ class TestFilesystemMiddlewareAsync:
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
-        backend_obj = middleware._get_backend(_runtime())
 
         result_with_partial_matches = GrepResult(
             error="Grep timed out after 30s with 1 matching file(s)",
             matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
         )
         with (
-            patch.object(middleware, "_get_backend", return_value=backend_obj),
-            patch.object(backend_obj, "agrep", return_value=result_with_partial_matches),
+            patch.object(backend, "agrep", return_value=result_with_partial_matches),
         ):
             result = await grep_search_tool.ainvoke(
                 {
@@ -424,11 +421,36 @@ class TestFilesystemMiddlewareAsync:
         assert "/test.py" in result.content
         assert "1: import os" in result.content
 
+    async def test_agrep_partial_error_truncates_combined_output(self):
+        backend, _ = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+
+        error = "Grep failed on unreadable file\n" + ("x" * (TOOL_RESULT_TOKEN_LIMIT * 4 + 1000))
+        result_with_partial_matches = GrepResult(
+            error=error,
+            matches=[{"path": "/test.py", "line": 1, "text": "import os"}],
+        )
+        with (
+            patch.object(backend, "agrep", return_value=result_with_partial_matches),
+        ):
+            result = await grep_search_tool.ainvoke(
+                {
+                    "pattern": "import",
+                    "output_mode": "content",
+                    "runtime": _runtime(),
+                }
+            )
+
+        assert result.status == "error"
+        assert len(result.content) < len(error)
+        assert TRUNCATION_GUIDANCE in result.content
+
     async def test_agrep_search_shortterm_content_mode(self):
         """Test async grep with content mode."""
         files = {
             "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
+                content="import os\nimport sys\nprint('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -451,12 +473,12 @@ class TestFilesystemMiddlewareAsync:
         """Test async grep with count mode."""
         files = {
             "/test.py": FileData(
-                content=["import os", "import sys", "print('hello')"],
+                content="import os\nimport sys\nprint('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/main.py": FileData(
-                content=["import json", "data = {}"],
+                content="import json\ndata = {}",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -478,12 +500,12 @@ class TestFilesystemMiddlewareAsync:
         """Test async grep with glob filter."""
         files = {
             "/test.py": FileData(
-                content=["import os"],
+                content="import os",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/test.txt": FileData(
-                content=["import nothing"],
+                content="import nothing",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -505,12 +527,12 @@ class TestFilesystemMiddlewareAsync:
         """Test async grep with specific path."""
         files = {
             "/src/main.py": FileData(
-                content=["import os"],
+                content="import os",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
             "/tests/test.py": FileData(
-                content=["import pytest"],
+                content="import pytest",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -532,7 +554,7 @@ class TestFilesystemMiddlewareAsync:
         """Test async grep with literal pattern (not regex)."""
         files = {
             "/test.py": FileData(
-                content=["def hello():", "def world():", "x = 5"],
+                content="def hello():\ndef world():\nx = 5",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -556,7 +578,7 @@ class TestFilesystemMiddlewareAsync:
         """Test async grep with no matches."""
         files = {
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -572,11 +594,32 @@ class TestFilesystemMiddlewareAsync:
         )
         assert result.content == "No matches found"
 
+    async def test_agrep_regex_pattern_no_matches_adds_hint(self):
+        """A no-match pattern that looks like regex gets a literal-search hint (async path)."""
+        files = {
+            "/test.py": FileData(
+                content="def hello():",
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        grep_search_tool = next(tool for tool in middleware.tools if tool.name == "grep")
+        result = await grep_search_tool.ainvoke(
+            {
+                "pattern": "def hello|def world",
+                "runtime": _runtime(),
+            }
+        )
+        assert result.content.startswith("No matches found")
+        assert "literal text, not regex" in result.content
+
     async def test_agrep_search_shortterm_invalid_regex(self):
         """Test async grep with special characters (literal search, not regex)."""
         files = {
             "/test.py": FileData(
-                content=["print('hello')"],
+                content="print('hello')",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -598,7 +641,7 @@ class TestFilesystemMiddlewareAsync:
         """Test async read_file tool."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world", "Line 2", "Line 3"],
+                content="Hello world\nLine 2\nLine 3",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -616,11 +659,34 @@ class TestFilesystemMiddlewareAsync:
         assert "Line 2" in result.content
         assert "Line 3" in result.content
 
+    async def test_aread_file_degenerate_arguments(self):
+        """The async tool applies the same disclosure and no-lines reminder as the sync one."""
+        files = {
+            "/test.txt": FileData(
+                content="Line 1\nLine 2\nLine 3",
+                modified_at="2021-01-01",
+                created_at="2021-01-01",
+            ),
+        }
+        backend, _ = _make_backend(files)
+        middleware = FilesystemMiddleware(backend=backend)
+        read_file_tool = next(tool for tool in middleware.tools if tool.name == "read_file")
+
+        zero_limit = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": 0, "limit": 0, "runtime": _runtime()})
+        assert zero_limit.status == "success"
+        assert "empty contents" not in zero_limit.content
+        assert "`limit` was 0" in zero_limit.content
+
+        negative_offset = await read_file_tool.ainvoke({"file_path": "/test.txt", "offset": -1, "limit": 100, "runtime": _runtime()})
+        assert negative_offset.status == "success"
+        assert negative_offset.content.startswith("1  Line 1")
+        assert "before the start of the file" in negative_offset.content
+
     async def test_aread_file_with_offset(self):
         """Test async read_file tool with offset."""
         files = {
             "/test.txt": FileData(
-                content=["Line 1", "Line 2", "Line 3", "Line 4"],
+                content="Line 1\nLine 2\nLine 3\nLine 4",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -660,7 +726,7 @@ class TestFilesystemMiddlewareAsync:
         """Test async edit_file tool."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world", "Goodbye world"],
+                content="Hello world\nGoodbye world",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -683,7 +749,7 @@ class TestFilesystemMiddlewareAsync:
         """Test async edit_file tool with replace_all."""
         files = {
             "/test.txt": FileData(
-                content=["Hello world", "Hello again"],
+                content="Hello world\nHello again",
                 modified_at="2021-01-01",
                 created_at="2021-01-01",
             ),
@@ -705,7 +771,7 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_adelete(self):
         """Async delete removes the file and reports success."""
-        files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
+        files = {"/test.txt": FileData(content="bye", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, mem_store = _make_backend(files)
         middleware = FilesystemMiddleware(backend=backend)
         delete_tool = next(tool for tool in middleware.tools if tool.name == "delete")
@@ -750,7 +816,7 @@ class TestFilesystemMiddlewareAsync:
 
     async def test_adelete_permission_denied(self):
         """Async delete is blocked by a deny write permission."""
-        files = {"/test.txt": FileData(content=["bye"], modified_at="2021-01-01", created_at="2021-01-01")}
+        files = {"/test.txt": FileData(content="bye", modified_at="2021-01-01", created_at="2021-01-01")}
         backend, mem_store = _make_backend(files)
         middleware = FilesystemMiddleware(
             backend=backend,
@@ -875,6 +941,7 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Hello world\nAsync Line 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     async def test_aexecute_tool_output_formatting_with_failure(self):
         """Test async execute tool formats failure output correctly."""
@@ -918,6 +985,76 @@ class TestFilesystemMiddlewareAsync:
         assert "Async Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
+
+    async def test_aexecute_tool_omits_artifact_exit_code_when_unknown(self):
+        """Test async execute tool omits `exit_code` when the backend reports none."""
+
+        # See the sync twin: None is falsy like a successful 0 but unequal to it, so
+        # publishing it as a value would misclassify under either comparison.
+        class UnknownExitCodeMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="sync output")
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                return ExecuteResponse(output="async output")
+
+            @property
+            def id(self):
+                return "unknown-exit-code-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_unknown_ec",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=UnknownExitCodeMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
+
+        assert "async output" in result.content
+        assert "exit code" not in result.content
+        assert result.artifact == {}
+
+    async def test_aexecute_tool_error_paths_carry_no_artifact(self):
+        """Test async execute tool returns no artifact when no command ran."""
+
+        class ErrorPathMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            async def aexecute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:  # noqa: ASYNC109
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            @property
+            def id(self):
+                return "error-path-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_err_artifact",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=ErrorPathMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        rejected = await execute_tool.ainvoke({"command": "echo test", "timeout": -1, "runtime": rt})
+        assert rejected.status == "error"
+        assert rejected.artifact is None
+
+        raised = await execute_tool.ainvoke({"command": "echo test", "runtime": rt})
+        assert raised.status == "error"
+        assert raised.artifact is None
 
     async def test_aexecute_tool_output_formatting_with_truncation(self):
         """Test async execute tool formats truncated output correctly."""

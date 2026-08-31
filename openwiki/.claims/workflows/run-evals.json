@@ -1,0 +1,372 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:e61314301028aff6bd57bf4381419d63a7132883c6cb581e05b009b525374faf",
+  "claims": [
+    {
+      "id": "claim_b860017fa5f346a49d6b77c4a8615a9c",
+      "statement": "libs/evals is an end-to-end behavioral evaluation suite for the Deep Agents SDK: each eval runs an agent against a real LLM, captures the full trajectory (tool calls, file mutations, final response), and scores it on correctness and efficiency.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/README.md#L1-L8",
+          "version": "repo-lines-v1:sha256:93400fda4e778c601bba64b213e8883ebca8ea4c1fee989f661ee59d812f1a1b:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODI5MWY4Y2ZjM2RjNDJiY2U4M2EzY2JiN2M2YWU1MDlkNmQyYzgyNjYzYjdhNWM4YzU3YTFiNTk3OGM5ZjkxNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTNjNjAyZTY2NDU5ZDJlMjI1NDI2NzM3ZWQ1NDY2NTJjM2QzMWQyM2Q0OTdjYjU1YWM2ODQ1MWU4MmU4ZjU0ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_6503b50f82a147c9a67a813f73b84373",
+      "statement": "Evals score the agent trajectory with a two-tier assertion model: TrajectoryScorer.success(...) assertions are correctness checks that hard-fail the test, while .expect(...) assertions are trajectory-shape efficiency expectations that are logged but never fail the test.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/CONTRIBUTING.md#L32-L49",
+          "version": "repo-lines-v1:sha256:7dd54cc5fa97eb403cd44ef55f827bd7eed17f035b28745f4b469f3c5a4f36ae:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ2Y2YzMzYzNjM5MTViMmNhZjBkYzNkZDk3MDJlZTRhMmFjMjc3N2QyOGM5OTRmMzNlNDRmNGZkZmRhNDVlZWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE3YTc1Nzk5NzNmYjA2ZGRhM2Y3MGMyMjM4YzQyMWExZTAwZGYxNjIxMGRlMzI2N2RiYWE4MmQ0YWU2ZjYyZGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImY0NTlhMjdjYTE5ZDAzMWQwY2U4NWEyNTExNTliODdhMTI5NjE3YmQ3MjI2MzcwMzJiZTdmYTg0YTY5MzJiZjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_3759478f493f4482b4f77e52e7ea8edc",
+      "statement": "Each eval is a @pytest.mark.langsmith test function that accepts a model fixture, builds the agent with create_deep_agent(...), and drives it via run_agent(...) passing a TrajectoryScorer.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/CONTRIBUTING.md#L86-L108",
+          "version": "repo-lines-v1:sha256:c034fcee5c5fb30bbddd1d4071696fa12fd24fcb9b0f231bdd00921e41546ab7:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFiMWYwZjU1OTY5YjVmZDQ5Yjc0ODBiOTI5N2NiOGQ3ZmI0YzFhMGMzY2RhZDIxNWFiMzRiZGU3OTI1OWVjYzkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhlYjhhZWQ5ZWY5ZGJhZTY0MjAyY2EwNDEwNDlkMzUzYTYwNWE2Yjg4NzIwNmJmZjQ4MjNkNmNiZmM4NmM2MTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0ZmNkYzA0MDA0ZmZlNTU2OGE4ZTM2ZjhkYjcyYWFmNzYwZGI3ODcyYjg3ZTY1ZThiNzM4NWZkNzA1MGRlYmMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_229b16f5ca0548b5beb9e74c8d3fb1d0",
+      "statement": "EVAL_CATALOG.md is auto-generated from tests/evals/ by scripts/generate_eval_catalog.py and lists every eval grouped by category; it must not be edited by hand.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/EVAL_CATALOG.md#L1-L14",
+          "version": "repo-lines-v1:sha256:9914e976c3685d047b458f4e4c4bf76666f40d1c9c66ce1cee6c787ff23d0bca:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI4NzdhMmQ0ZWEyMDAxMDNkNDJjM2UyNDk3YzhjMjZjM2M5N2MxNTJkZmU2ODViZDcwYjU0ZWYyNjVlYjkzNTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjVmMjI5MTU4MmQ5YjhkMTE3N2JiNmE5YmE1MGIxZWRhODIxMWNiNjUzZmJkYzMzNmEwYjgzNTQxMjdmZTMwNzAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_c7d3c8cc001a417ebb538eb90fd3d00d",
+      "statement": "The canonical operator interface is the deepagents-evals console script, registered as deepagents_evals.cli:main in pyproject.toml, with subcommands run, trials, aggregate, radar, catalog, model-groups, and list.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L6-L23",
+          "version": "repo-lines-v1:sha256:4e149e987305e91ce9aded5f4e150f01d4b2f42bde01031d3fd941a7c9e44cbb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdmMWNlODlkZjFmYWIzOTcyMGY1ZTgxODg4M2Y5ZDA3OGM0YWU1MDYzYzM5YzQyOWU5ODhkZDYyM2I3YWM0ZTgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRiNjhiNDdkMzNiOWJhYTU1ZDA4Yjg1MGQzNjBkYmQ0NWMxNWVhNTlkYzdkNzFjODBkOGQwMThjNjY0OTI0NWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5NzU3YTEyZmU2ZWU0MGQxZjg5NzdlOTMyOWRlN2UzOTA2OGQ3NzNlY2NjMjJiNjA2OTFlYmEzN2EzMjIzMmUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZhNTExMzY5YmY3YjBkZjM3NjFmMTY3NmUxN2EyMWFmODI2MzJiMDllNmQ5M2E0NzUwMDRjODgxZmVlY2NiMGUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L7-L14",
+          "version": "repo-lines-v1:sha256:4891eb8df796ab3b230f6731dd9ec0409445c2f0b23c9c88bbe5268617f1464b:eyJzZWxlY3RlZExpbmVDb3VudCI6OCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZDc4MGFiMTk5ZmExNDJlNmY4ODM1YWNiOTdhNTViMmUxMjljOTQ0MzFlODExYjc4YTc2MDAzMDAzYWVhNmUxYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjlkMmI2ZDQ2ZDViZGIwYTBlZjJlMGQxZGRmM2YyZjUwN2MzOGFkMzcxNzVjY2Y0ZTZkNWVlODk2ZjRlYzY3NiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDA2ZjM4ZDc1NDIxYzYwZGQwMTA0ZmNkOWZmMDdmYjE0NzA5NDdiNDllOTA3NzQyNTM5YzdjMjcyNGZmZDNkNSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNWU4OWE0NmZmNWVhYzU5NjFiNmYzZjE4M2M4ZTYwMDExZTIwMWUyYjcxODhiYTQ3NGM0NTUzMzA0MWY3ZTBhMSJ9"
+        },
+        {
+          "resource": "repo://libs/evals/pyproject.toml#L57-L57",
+          "version": "repo-lines-v1:sha256:c89220ed3a6d9fa59b6f138d581e68782ef580ac6250663443f67e3356df71ed:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg5MjIwZWQzYTZkOWZhNTliNmYxMzhkNTgxZTY4NzgyZWY1ODBhYzYyNTA2NjM0NDNmNjdlMzM1NmRmNzFlZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYzg5MjIwZWQzYTZkOWZhNTliNmYxMzhkNTgxZTY4NzgyZWY1ODBhYzYyNTA2NjM0NDNmNjdlMzM1NmRmNzFlZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiOTQ4MTY0NTEyN2U0MTFhYWQ2ODkxMzZmMGEzODJmMzYwODAxMTM2ZjlmZjczNzJiNmMzNjFkYTk5NmI0ODM3MyIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiOGU1ZTRhOTFlZjI4MWQ0ODExNDUyNmZjOTliMWVmZWU3ZmQwMjgxNDc3ODlhNDVkZDgwYTM5MjQ1ZTlhZWRlZCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_ab22edcb4506449190816b8183d36405",
+      "statement": "Most deepagents-evals subcommands accept --json for machine-readable stdout and --dry-run to print the underlying invocation without executing it.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L25-L28",
+          "version": "repo-lines-v1:sha256:7e558af5e5f412ae66883c1f597671ce6ce6823f42364a590f26b62952e323fc:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiM2VjZDIxYTUyMDIzMTZlZjExZDMzNzEwZDFkZTdmZmI4OGRiYWI2OGZhYTQ4MzI4NThhNDlhOWZmZjIzMTZjMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYmJkZTk1NDgyYjZlYmRmMjdkYmIxNGM1NjY5YmE4NWM0NGJhYTYyZGQ1MGNkMTBlNGIwZWNjNDQ5NzljNThkYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2VhODdkN2Q1ZTkzY2NmNmFkYmVjYmJhOGQyYzNjNDg5ZWQ2NzU3ZjgyOTJhYTE1OGMxMWIzZWIyNjZhMDVmNiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjJlZmRjZjA4MDc3NGU4ZjdlZGJjZDBlNjNmYTk2M2MwZWNiYmY1MzZmMjliZDRiMzNmYWI5ZTkxOTBiYmIzMSJ9"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L604-L605",
+          "version": "repo-lines-v1:sha256:14775812ccfa24ed53e3e847872edff3fd982aaed70e6210b340206104bc12b0:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODRmMTA4NzVhYjQ0NjI0NjE4OTlhYzA5NTRkMWM2MjQ4MWEwNWFjNmMzZjA0ODYwNDZkNTZhMGE5NzVjYTZjMyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTM0Y2QzMWYzYTFiNjk1ZGMxZTk5YjJiM2JiNjQ4NmYxYTQwM2M4ODZkNDZkYTE1Njg0Yjc4M2VkNzhkNDRiYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDdkYmVlZTk5ZTE1MWQ1YzVjNjk2ZGMwNjY2M2U0MjI4NDdlOGYxNDEwNDVlOGU0NzgxODlkMzAzZWRjMzVkZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGRhZGQyYjA1N2ZiZmVlNTg0Yjg0ZWIzZjY5MDY5NTQyZTc1MDNiMTZiNDM2ZTIwZDZkYjU1NjU0MTYwODQ2MSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_84343930b62c4d3aa59557180f2f58b4",
+      "statement": "deepagents-evals list resolves its answers from data rather than by importing the test modules: categories from deepagents_evals/categories.json, the fixed tiers baseline and hillclimb, models from the registry at .github/scripts/evals/models.py, and evals via the AST walker in scripts/generate_eval_catalog.py.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L115-L170",
+          "version": "repo-lines-v1:sha256:0934570f039b146b1e0231c47e81320870ab896007aa199ad5ce6446f7bf5e5a:eyJzZWxlY3RlZExpbmVDb3VudCI6NTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM3MTEzZTE2NzM1MTEwNzViNmNmMzkyOGE3ZjViN2JmZGVkZDVjNTk1OTg0MDViNDMzYWRkZTQ4Y2I4NDVkMDQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU0NTI2YWZkNzhlMmJiZGM0N2QwODZmNjliOTdhZjYwZTQ5MjAzZDNjNDlhMTAwMDNmNTQxNzEyODlmOTYxZTQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImM4ZTc2NWEzODJiYzJmZjNkNWRjNjIzY2ExNDA5ZTM2NDExM2Y4NTU3ZjA4ZTA3ZGE3MTAwYmZlMDAwODZmZjkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjdjZjc0ODA4YmU3MjhhY2FkYmIxNzM3OGVjZDMxMjk3ZWVhZGE2MDU2NjQzZDEwNzE2YTQ4ZjkzNWQxYzEwOTUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L73-L74",
+          "version": "repo-lines-v1:sha256:007b992f84c74bfbe257310c395ac29ad6416feabb59c65697c97348dd430fab:eyJzZWxlY3RlZExpbmVDb3VudCI6MiwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiY2JlZmQzMDFjNjIxZmYzYzNkYmFiYmU3ODJmMGQ1YWQ2NjRhNGQwOWJiNWM0NTQ3OTNiMzhlMzdmNTU4ZjlmZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZDFjMGYyMGM3ZGJhMDE3ZmQxOTYwZjdiY2U3NTVlMDNkOGI3MWRkYmY1OTIyYzk1MWY3OWFlOWY2ZDJhMjRjMCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMTQzZWJmOGM2NTUwYTVlNjZiMTI2MWJiNWY2Y2FlMDkxY2QwYjU3YTI1ZmQzZTVhNTVmMzBhYzcwMmRiNTg3ZSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYjNlMDdiMjgwOWQ2YThhNWViYmQxY2Q3Y2U3ZTljM2FhNzFlODIxYmZiNDA2MWU1YjA3ZDU4ODgwOWRjN2YwMyJ9"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L80-L83",
+          "version": "repo-lines-v1:sha256:59b474cc936db3016f1fd25f8a9c0587179502478d1ce2f5750a3dce6f194aab:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjNmMzU0OGM2ZjU1YWFiNWIwYjRjNTk0YzczODFlOWE2OWI4NjliOTk4ZWIzNmI4NDAxYTE0ZjMzMjM4OWE1ZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDcwNDYxYTQzMGY3YTYxYzhhNjkwNzIxNTQ3MzE2ZjE5ZTdjMjBlNjVkZDAwNDBiMTI4MDNlMzkzM2IyZGRlYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZDcwNjRiNDcxOTRkNzk2ZDdlNzcwY2YxOTQ2YzI3OGM1YmUxNjg3NWE5OWJhY2IzNWI4MWYxYjg3MTljOWViZCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmNiOTExNDkwNTI0Y2NlYjQxZmMyZjJmNzVhYzYxYmI4NzdjODFjMWFhODU5NzdmYTdhOWFmYmZkODRhZmIyMCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_71a866b6ee244d5a94f3c30ef6a7ea7b",
+      "statement": "deepagents-evals run shells out to `uv run --group test pytest tests/evals` from libs/evals, forwarding --model and every category/tier/provider flag through to tests/evals/conftest.py.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L247-L282",
+          "version": "repo-lines-v1:sha256:f90887c72888791ec4d76cff9bed61d2829775b99dcf7b8d12fa499df00191a3:eyJzZWxlY3RlZExpbmVDb3VudCI6MzYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQxZDY3YjJkMGEyZWQ0YmJjMWY1YzYwZjljZGZlNjQyNmJjYjc4MDhiMmIyMDkzZDA3MWM5NjMzMjAyMTUxMjAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM1NTJlNDAyNzg3YWY0ZDg2OGQwNjEyYmNmYzI5MTU4MzQxZmQ3MzI2OTg3MTY5MzhkNTU3MTgzNGYxZjVmYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImVhNzQ3YzUxNTdmZGE4MTAyYzJiNGM0Mzg1NTVmNzFjYzQwNjkzYTE5NjgzM2M4NzBmZjQyZDc5NmUyZWQzMzQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM2NDllY2U3YmYyMzQyNWQyOTM2MmNmYWY5MjQ1ZTU3NmZkMjBkMjFlMjA5YzhkOWJhZDVhYWNmZTBlYmM1MzcifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L319-L342",
+          "version": "repo-lines-v1:sha256:045e15b11c33904cf824864cb2527752d9563db651bfee24a2887d7956a96ad1:eyJzZWxlY3RlZExpbmVDb3VudCI6MjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjViZDI0OWJiZjZkY2FmYjUxMWEwZmI5MGRiMjY1ZDhkZGIzODcxZDk2MDg0ZWMzOTYyMTlmMGY5ZTUxMWE1ZjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE2MWMwNzQzZDUzNmE4MzBlZmJmZWJlZWFkMmE3NTRmNDQwNzBkYWM5YmE4MjUwOWU3NWY5OGRhMWVkYzVjYTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhjYzRhN2QxY2M3OTZhYmEzZTQ2NzIzMzI3ZjUxN2U5ZjgxMTk4MmQyNTBmMDcwMjk4NmU0YjU3NjRhZDk1ODkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM1NWQxNTk2MWJjZDBiZTU5MmYzMzdlOTZjZmU1N2JmNDY5Mzc5YTZkYTg5YWQ4YzA2NDhmZTE0MDdiNjAwMGEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8b2d83dd99734cffb050a806f62b34a1",
+      "statement": "deepagents-evals trials delegates to scripts/run_trials.py to run N trials and aggregate, and deepagents-evals aggregate re-runs the same script in --aggregate-only mode over a directory of existing reports.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L393-L456",
+          "version": "repo-lines-v1:sha256:79953426a2c56c757376f465ec61fdf576b11eb5cdcdd10400a3af50f7ace7fd:eyJzZWxlY3RlZExpbmVDb3VudCI6NjQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjlmZDkyNmMwMDlmNjlkY2NhMDM1NDZkMGJiY2Y1YmIxMWRiMDRmNDA4NWJkMzk5MGNmMzY5MmI0OTA4ZTJiODAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjNmIwYTc3YzFiM2YwOWNmZWIxZGIzNjFlZmUwYjRkM2Y3Y2Q2NzkzMjZmNmFiZjQ4OTIyMzNmZmQwMmI3NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImMwODYzM2U3Y2E4MWVmNjMwZDU5YjcyNWYxMjdkNmI4YTFjZGUxNGE5MzU2MDRlMGJjMjM4OTlmZmQxMWQyNzkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImJkYzlkNGFlOTkwNmIwN2NkYTdjMzgzOTRhNGRkNDIyMGI3NjA1ZjVlYjM1YjY5MjgzNzQ2ODhiMTIzZTBlYmMifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L459-L471",
+          "version": "repo-lines-v1:sha256:c3cc794bbe9ca34c3c324c48067cb52b4584a9eb8e963939365da33e46fe12fb:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFlNWI0MTQ4MmQ5ZDNjNTFhN2M2MjhmMzQyN2FkM2FjZDJjZjk3NTgxNzdhOWU2ZmY3MmU0ZDNjMDZlY2I2NjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFjNmIwYTc3YzFiM2YwOWNmZWIxZGIzNjFlZmUwYjRkM2Y3Y2Q2NzkzMjZmNmFiZjQ4OTIyMzNmZmQwMmI3NTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjJhMWMyYjhkYzM2NGNkMTQ1ZTg0YjQ4YzUwN2U2Yzg0MmVlMTM0MzdlMjk5YWQ0NmJjYTdlYjNjYWM4NjliOGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjhkOWQ2NDA2MDYzZmM1YTk2ZGRiMjk5ZTI1MDM1ZWJmNTg1YWNhNjEwOTlmYjUwNzYwYmFlYzZiOGU5Y2Q1ZGUifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4bb2fdd76754cd792c747aa22f39944",
+      "statement": "The --model value may be omitted when the DEEPAGENTS_EVALS_MODEL environment variable is set; the explicit flag wins when both are set, and if neither resolves the CLI exits with a configuration error listing known model groups.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L69-L77",
+          "version": "repo-lines-v1:sha256:afd779f1c1791b5c9b057ea8b153ae427de1a0ddf5f823aeca8bca18afc5de8b:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMGFjNjRiMjQ1ZmZjODhhNmVmYzY2NzU0MTI4YjgyMzM3NjcyOThhZGJmNzMxM2QyNTdhZWM1YTVhNGI3ZDQwOSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDdjMDZjNTYxZDVjMzI3MzQzNjg1MjY4YTQ2YjMzOTFmMzk5OGVlZTg5MGQyYmU1MWYwZDIxY2M0YTUzYWU2ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTIzOTJlZDhkMDkxOTVkNGJlNDVkZmVhOWVkNTFmYmYzYWJlNmVmZWU5MDgwN2M4YjAzMTM1OWU5NTIzMzhjMCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGU4ZmIzNDIxMDNmYTVjMjQ4YjkwYjMyMTdhNmMxNDIwNzEzMGNkYWYyNTU3YzJhYjIwMDZhMTM3N2FiYjI3OCJ9"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L285-L316",
+          "version": "repo-lines-v1:sha256:bbad40463aec477ec1250d2c5e6f2f1c13fd2b41e5465b2eef92af9b984ddd55:eyJzZWxlY3RlZExpbmVDb3VudCI6MzIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkOWJiMjE5YjJlN2IwNjllNjcyYjk3OWVmNWQyYTE3NWFkYTRhY2YyMjI3YjEzMzYwNTI5NzQ1ODQ1YzdkZWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMwYzFmMTg4ZjE0MmVkN2E4MjQ2ODBiMjA3MTcyYzU1MTliYzYxNGE0OGZkYTdjZjE2N2VkYjhkZGY3OTk1NmMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0MzIzMDFmNjdhYWVlZjQyMTcyZjg0MzUwMGI2NGYyZmJkOTNmYTJiYjQwOTI3MGM0ODNlMTAwZmI0ZDZiODQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU5ZTZmODkwZDY4YzVmNDhmNTdhYjQ4ODEzOWVmN2UyMTVlNjg0MDkyOWI4YjEzODU1NjI0OTljNGIwMjdmNjcifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_2bfd40f72166498ba457296091ad3216",
+      "statement": "deepagents-evals uses four exit codes: 0 success, 1 eval failures, 2 configuration error (missing --model, registry-load failure, argparse usage error, or --check drift), and 3 no usable reports.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L82-L91",
+          "version": "repo-lines-v1:sha256:ca3d15b101c5989613109f841e609aebc91ba0d3bcb5e933d5ff9dd42bb28f1f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNmYTE2ZTRjYWM0MGIzOTRmYmI1YWFjOTc2MWU2NTljMDllMjZmZDZlNjQzMDVkNjU3NGU4NDk2NjEyNjljZDMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg1MjY5ZWIyZjBkNTg1ZDIzYTM0YjEwMDQ5MGUzZmVhMjc2YjI0YWFhMWJmM2FmOWI3NzMzOTM2ODgwOWNkODYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjYyYWJjNDYyZjY5NjM4YjNmZDMzNTc3NDRkNDBjNGE5NzE5OGZhOGQ0M2NlMDQ2MGNhZDU1MDk0YmI0N2ExZGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU4NWQxNTRjYzk3MDVjMzYwMjk1ZmM3YWU3MTc2MGJjMmRlZGYxYWY2MmNmZDIxODI5MTliM2VhZjMyMzNlN2MifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L43-L59",
+          "version": "repo-lines-v1:sha256:4432071da2cb1d3528408f70e188bce4b208ecc7238eaac0c08520b90c928648:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjJjNTg1ZmI5NjEyMDc3NTY4Nzg5OTE2YTMyMjAxYTc1ZTYzYzk4Zjk2MGFlMDE5Y2U0MGQzNzkzMjMyMmVlNGMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI0ZmQ4YjUzODAzNWFjZmI2OGM3MThiOWIwMGU3OGY5ZjAyZjk0Nzg3NThmYjc2ZDlkYWQzZjAyNmE3ZGIyYmUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjllMTMwNDkxMmU3MWI2MTdhNGI4MDZhYmMzZDYxYjgzZTM1MDY3NThmZjBiYmVlYmQzZWY2MDAzMDRlOWQ3OGIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImVmOGE1OTAzOWNkMTVkNjY1ZTY3NzZiODE0YmI2MjY4ODUyZjg0YzVjY2E3YjQ4ZTg4OWQ3MzIzMzk4ODhlMTIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a87d1ef56da14684ac3660c30b53cb65",
+      "statement": "Because the pytest_reporter plugin rewrites pytest's session exit status to 0 even when individual evals fail, the CLI determines trial/aggregate failure from the aggregated counts.failed.mean in trials_summary.json rather than from the per-trial pytest_returncode.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L93-L93",
+          "version": "repo-lines-v1:sha256:a935535bdd16e786e10cca724627d91228257d0c97ccdc65f985259398cf4ad5:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiYTkzNTUzNWJkZDE2ZTc4NmUxMGNjYTcyNDYyN2Q5MTIyODI1N2QwYzk3Y2NkYzY1Zjk4NTI1OTM5OGNmNGFkNSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTkzNTUzNWJkZDE2ZTc4NmUxMGNjYTcyNDYyN2Q5MTIyODI1N2QwYzk3Y2NkYzY1Zjk4NTI1OTM5OGNmNGFkNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNDJiYzg5MWRjNjY0NTU1YzUwNmIyMzgzZjQ4MTljNDkzMDVmNjc5ZDNjMjliODNkZGFlZmQwNmUwYjQwMjhiMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTFmZjVmMTZjYWM1NTRkZWQ0MTM3MGQ1MDVmYzVlZTg0ZDlmMTk5NDQ5YTA0Njk4MWIzN2M2ZDhiMTNkNzBlOCJ9"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L487-L505",
+          "version": "repo-lines-v1:sha256:cdf3d805ef59dc9954c91c8b3517cf06cf2aab712f0473e0821f3740cbd7ce2e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3NGE4NWU2YWM1MzE5ZjgxMGE1ZGIwYTNlYjJkZjViOGY3MzRiMTU0MmMzZGNiNmI1ZmEyODhlZDNlYmQxOTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkzZTZlODNjMzUxNTgyMTJlMjE1ODg1ZTJiODJkMTk4ZDBlNjA2Y2Y5NTA4NjFlM2U2OTRiMWFkMTJkMTNhMTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImQ0M2U0Nzg0ZmFkM2U2MDg0ZTM0ZjRiODQwNmUxNWU2ODNjZTVlNDk1YjVmOGY0YjQyMTY1YWJhZmU1M2MxMDYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1MmY3ZTA4NjIwMzIwZjcyMjE3ZWRhNjk2ZGE3ZDVjMDAzODBjNDcyYjliMDQwNjYyZDE1NjNkNTk2YWZmY2MifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_47847630853f418ba8c8ec97a585bf0e",
+      "statement": "The Makefile targets `make evals MODEL=...` and `make evals-trials MODEL=... TRIALS=...` remain the form CI invokes, fail fast when required variables are unset, and are a subset of the console script whose flags they mirror.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L190-L192",
+          "version": "repo-lines-v1:sha256:dc458b4a76282f62fc29e74f794872d79e3fad33be5b2dd352ddcf8372a9f639:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNWRmZDg3MDBjNjM5MDM5NDMzMTZjZjg0NTBhYmVmYzUxMzc3Yzg2YmNhNzdjZWRhZmJjOGNhOGRmMWUzNjI2OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMjRhYmU4ZTQ3OTY1ZWFkMDQyZmJlYWUyNTAzYmFlN2MwOWRmNjZhYzVlY2VkMjU5MjM2N2YwMmEwZTRjY2NhYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNmY5MDUzZmMyNjE0MWFjYzNiNGM5YWFiYTNkMmZmMzAzZTVlMDBhMWQxMTFhMmJjNzhmMzBlNTdhMDQ2MmUwYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjAsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSJ9"
+        },
+        {
+          "resource": "repo://libs/evals/Makefile#L16-L36",
+          "version": "repo-lines-v1:sha256:7f54d0101db22ef051c8039cbf82c416b1ff7af62c450d68fa167a5beb8f3056:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjliYWM0ZGIyNTY0ZjYwOTRmMWVmODg5MDJhNzNiZDFiOWMzNjcyMjg3MjA4MjE3ZjZlYmE1YzYyN2RjOTM4MzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI3ZjMxODYxMTE3NzQxNGJjYTc0ODNmYWQwMmViNDFlZDk2ZDliODA0MGI4ODQ0NmRlZTg1ZTA0ZjBjZGI0NWMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjM1MjVjYTIxYmE4YjFmMjExMjllNTA0NGU3Y2NjM2U3YTIwOTk3NTBmNTM4ZGU5NDYzZDExZDIzODZjMTQ1MjEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjBiZGQ2ODEwMjRlZDhkZjcyOTU4N2JkZDdiMTZmYzI3YWVjMDk2NGJlZTE0Nzc3NDg3ZTg2NGQ0ZTg3ZjkwOWQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d3e2051f443849e68b0faa243b0f012c",
+      "statement": "Model specs are curated into named model groups (e.g. set0, set1, frontier, fast, open, docs) plus per-provider groups; the source of truth is .github/scripts/evals/models.py and MODEL_GROUPS.md is auto-generated from it.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/MODEL_GROUPS.md#L1-L11",
+          "version": "repo-lines-v1:sha256:49ed022d3bf9bbf463c9e38807a6d6ba74ba43dcfa97f558dfd31be08026aede:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlNWU5NzJmZmY1NDVhNTljMTIwYTQwODJlZWZjNDM0NTg3ODkyZDkwZjc3OTgxMWIzNGZiMGEwYmZiOGI2ZjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjQ5ZDIxYmQ2YmFkY2UyZTI2NDA2OGU0NTgxZGU1OGNiMjQxNDQ0ODQwMTk2ZGYyMmYwMjFkMzVlZWNiMWJlZTgifQ"
+        },
+        {
+          "resource": "repo://libs/evals/MODEL_GROUPS.md#L106-L116",
+          "version": "repo-lines-v1:sha256:cfa772bea172acc2ce5eb010db71b69db202c2d33eca417111ae88006417992b:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ4NDU1ZWY3OTYyOWQ0YzIyM2Y3NzcwMzQ0ZWM5NmEwMjdlNmM1YTMwYzZjZDI5Y2FlYjBmNzJiNDM4MWJlODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjlmNGQ2OGQyYzhiZDUwODhlNDdhOTAzMjExN2I4ODNjNzRkNDY4N2JlNTVhZDFjOWRiYTVjMzZmMTgxYmFiMzIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijk0YzczYjNlMmUxZWRkZWQ1NjI5MGQ2Y2RiY2MxMTkyZDVlYjM0NDNmYWIyYjQ5OTVmODQ1ODQxNDNjM2Q4MzQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6394ad8a52f14826b582dfb192c3f807",
+      "statement": "deepagents-evals model-groups --check and catalog --check are drift detectors whose non-zero exit is mapped to the configuration exit code (2) meaning the generated file is stale, distinct from an eval-failure exit.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L508-L529",
+          "version": "repo-lines-v1:sha256:dae505070ab1a4c6d1dbd824742d66a4ae811126fcfe54d3348696f46191fad9:eyJzZWxlY3RlZExpbmVDb3VudCI6MjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyMGVjMzk4Yzk0ZmVhODc2ODM3ZjhkMjIzMTZkY2UzYzI2ZjAzNzYxNzdlYmQ4ZDQ4OTkwNTIyNWUwOGJhNjEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxNDQzNmY1NmYwMzU3MGQ0YzExOTkyMDg5ZjYxNWE0YmExMzY3ODgzMjM0Zjc4N2UzMDBmNmJhNTA5NDM3NzIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFkZDFhNDkwY2NhYjFjNzQ0ZjhiNDE3YzU2YjI0MTMyYzMxMmMyZjA3NTc3Y2NkMzEyY2UyMmEzNWY0NmQ4ZTQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjY0OGEzZGQ5YzUxYTEyOGFhOTU0ZmVjYjJlMzlkZDFkNGE4MTJlMTVmZWNjNGM0ZTQxYzY2ZWI5Nzc3ZGE3OGQifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L547-L564",
+          "version": "repo-lines-v1:sha256:1ac1333ef5bab904e77fd94afa503df2ee2f4a31648a1619b2fb67c7837519e9:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRkOWY3MmQ2MDM1ZTk4MDkwMzk0N2Y2MWU2ODYzZWI3ZTU5ZWI2NDU2YWQzMjZmZmJlMDU1NjdiNWMwOWQyYzAiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUzZDVkZjk4ZjJlZDYyMGI1NzA3NTlhNThjZDY0ZGYzZTQ4YzhkOTRiZTgwYmU1YTk3MjExZmVjNTc0MjYyM2YiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijk2ZGY1ODM5MDE4NmI1ODA4NGQ0MzdlMmIxNjNmMGRjODk4YWE0ZmYyZjU0ZWUyYTk2MDJjZThhZTkxYTkxNTgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiZmU5YjQ0MDkxZDAxYzc3ZGU5M2ZjMjE5OTJhZjFjMDViNGFlNmRjZWYzY2YwYjUzMzdlYjFiMGQ5YjBkY2YifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4acbdc47ca3c423193a3ef7c0297954c",
+      "statement": "The eval suite refuses to start unless LANGSMITH_TRACING=true and LANGSMITH_API_KEY are set, because conftest.py aborts the run when they are missing and every eval logs inputs, outputs, and feedback via langsmith.testing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L95-L104",
+          "version": "repo-lines-v1:sha256:43015bbb925a8dea2bbfdf6ad17c02d0bb7c4d91384d5c1141165c7ac01fafab:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjkxYjcyZTI3Yjc2MDhhMjhiNTA5MDQyMGMwMWIzMzg5ZDM3Y2MzNzU0ZDNkNGVmY2EzZGE0ZDVjYzQ0MmZjN2YiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImMzNjM3NDRmMzU1Mjk5NWEzMjVmMDcyYjEzZTM3YTUyMGVhN2U2NDc2OTY2ZTU1YTZkODJiZTQwYmM2ODUwNDEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImU4NWQxNTRjYzk3MDVjMzYwMjk1ZmM3YWU3MTc2MGJjMmRlZGYxYWY2MmNmZDIxODI5MTliM2VhZjMyMzNlN2MiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImFhMzY5ZWM3MzJiNWJhNTVlMzk5YTcwZDU0YTUyOTFmNDcyNWYwMzhhY2JmNzI3M2M3ZDY5NjJhMzNlYjBiMzYifQ"
+        },
+        {
+          "resource": "repo://libs/evals/CONTRIBUTING.md#L88-L88",
+          "version": "repo-lines-v1:sha256:5350546ef24f00f312b13da6e11b3b57b078b1c4d58a0db30f03d43e42eae147:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTM1MDU0NmVmMjRmMDBmMzEyYjEzZGE2ZTExYjNiNTdiMDc4YjFjNGQ1OGEwZGIzMGYwM2Q0M2U0MmVhZTE0NyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTM1MDU0NmVmMjRmMDBmMzEyYjEzZGE2ZTExYjNiNTdiMDc4YjFjNGQ1OGEwZGIzMGYwM2Q0M2U0MmVhZTE0NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiODZmNGY1ZjQyN2IxNThlN2E0MzgwNTQ1NmRjZWFhN2U0M2Y4ZGY0OTNhYTgyMmJmYzI4YzM0NjU4ZDc4ZGU1MCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMzZmZTZiMDYxZGYxMDc3YTU1MzllOGFkZDk1NDBhZWU5YWRhZWEzODRlOGQwNjE1ZDIyYWFjYTg2YmM2Y2ExZSJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_895736cc8131404fb85104763a1756bd",
+      "statement": "A trials run writes per-trial evals_report_trial_NNN.json files (metrics plus a failures array) and an aggregated trials_summary.json carrying mean/median/stdev/min/max for correctness, solve rate, step/tool-call ratios, duration, pass-fail counts, and per-category scores.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L106-L174",
+          "version": "repo-lines-v1:sha256:9ad58dda21c0648a1cf99a9d1f84d45624586e2b1203d0ff8e90036986228d58:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVmMTdhYjEyNGIxYTUzNzk5YWRmZDU2ZTE4MGQyYzBkOTRmNzY4NTQ1YzYwMTY2NDUwODk5MjkzNjE1M2ZlOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjQ3YzA2YzU2MWQ1YzMyNzM0MzY4NTI2OGE0NmIzMzkxZjM5OThlZWU4OTBkMmJlNTFmMGQyMWNjNGE1M2FlNmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjhhNmE0ODczMjgzOGMzNWRhM2JkMjNhOTI1NWM3OTE0MjU1ZDA1ZTAwNjhjNmFlYTAxYmUyYWI4MTIxNjQ4NDIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE2ZjE2OWJhMjY2OTE3NjI0NGU0Y2I2NGE3YzRmYjEyYzFiZmI3ZDFlOGU0NTkxY2U1NjM1MzFjZGZlNzA4NWEifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_e90a25b7d17c42348d1eef5aa3914448",
+      "statement": "deepagents-evals trials --retry-failed accepts a trials_summary.json file or a directory of per-trial reports, reads the failures[].test_name node IDs, dedupes them across trials so a flake that failed once is retried once, and exits 3 when reports are found but none parse.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L350-L390",
+          "version": "repo-lines-v1:sha256:5b79b8c6d449ca647c53f9d6dc0ce2bb3516246a4bc6c4e4f8cfd7897d834fc3:eyJzZWxlY3RlZExpbmVDb3VudCI6NDEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVjYjcwZjVjMTc1N2Y5MTY0NzFmZjFkZmZhMWVlOGNiYjA0NjNjNzM4NzVmN2VhYjk1NGJjYmQ3YzI2MDg1NjQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY3NGI5NmVjYzUzY2ZhZTdlY2FlOTM4NmJmNmYxZTAzZDcyYzA4OTEyMmMwNjBlMTI3NDViZTI1NWM4NTEwMjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZjMzUzM2UxYzQxYmY3ZGIzMzkxMDgxNzY3ZjVlMzg2YmFkMDE4YWQxOGQ1ZDBlMjI4MWNmZjlkOWEwMTM2OGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwN2RhYWY2ZDY3NTI5NjM2ZjE0MzRmNjg0YWQyNzQ2MWFmMGU3NTEwMzAwMzA2NmUwYzIxNzY3ZjFlZGU4YzUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L416-L438",
+          "version": "repo-lines-v1:sha256:5f791bf039dd4f97ac8f5e983f3778a3cc9fb70202b1145be9651352b0179d2f:eyJzZWxlY3RlZExpbmVDb3VudCI6MjMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFlMmE1MjlkYzE2Y2UzNWU5ZmJhZjUxMWM1NGFlMzgxNmEzODlhNmJmNTdlZDFjMmFmZjFiODhlYjYwYzhhMTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkYzIyNDU3NzcwNjYyNzM3YjA3NDNjMzBhN2MzZjM5ZDhjOWYwYTVjZTY5ODM2YTVhZGU4MjVlZjY0YzlmOWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA5MjNlNDc1ODJmNGQwZWFhYTNjNzk4YjdiOTQwZGI3MjZiNjE3ZThiOGJiZjgxNGU3MDkxZDA5OTg1ZTIxMTIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjZhNzI0OTA1OTAxY2RjODkxYmIyZmNkZWYwY2VhODRiYzdiZTYxNWRlMDAyYzJjY2MwMzkxOGE3NTk3NmQxZDAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_1cf3e7965edd40fb9b5f008a296fc795",
+      "statement": "libs/evals is organized into cooperating pieces: deepagents_evals (the CLI plus radar/tau3_subset/trial_summary modules), deepagents_clbench, deepagents_harbor, harbor_adapters, and datasets.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_evals/cli.py#L532-L544",
+          "version": "repo-lines-v1:sha256:fd4fef85fa20cff44884128c7c58dbf6e11ca3d98ca35ef7e8864ecca8e2f25e:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjgxZWMzMTVlODUwZDVkZTJiZDc3ODIyYmQwZWVhZDVhNDY5YjhkNTc2NzUyNDE0NzNhYzJmMGI1ZDlkZTczNTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjllZWRmZWNhZmU4MDNmZDRhODM0ZjA1OTRlZDJiZjE3ZDVkMmY2NWViZmFmMjA1YzlmMzk1OTRlMGQzYjE3YjEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUwMGQ4MDU5ZWZiOGIyYjcwMDA4NjY5MmE2NGRmMmViZTVlMTlhMzdkNDJjNWI3N2E4YTEwOGM4NWFkZTUzN2YiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzZWY5NzZmYzMyYjg4NDk5MWM3NzVmODc5YjcwYTJkMzNjZDVjN2Q0MDhmMjFiOWY3NWFkNThhZWQzNDgxMGEifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/tau3_subset.py#L1-L18",
+          "version": "repo-lines-v1:sha256:1feef31da66d5c591b0f653204d7feec71b7bbb5d880402625dce3f268f361f8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJiZmUyYzFlYTE0MWVmZjI0NTYzN2Y3Yzg0ZjJkYTIyNDIwZmM4OTEzMzYwOWRkZTk5OGMxN2I3Njc0NjliYjgiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImEzMDNlY2RkNGE0ZDEwZjE5YzczZmQ0MmZkMTI0MzdmZDMzNTRhODI2ODE2MDVkYTUyNTVhOTdhMzkwNjhkYmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjU1YjZlODcwNmI0MzA0N2YyYTZkYjY3ZjEzMjYzODU5NTYwNGU2N2YzNjk2Njg3NmNlMDE1OGYwMDUzZTZiZDEifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_evals/trial_summary.py#L1-L1",
+          "version": "repo-lines-v1:sha256:1f1ebb3f119183610b37e61126414101921b7610a90a56159339ddc5b4e7a8ac:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYxZWJiM2YxMTkxODM2MTBiMzdlNjExMjY0MTQxMDE5MjFiNzYxMGE5MGE1NjE1OTMzOWRkYzViNGU3YThhYyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYxZWJiM2YxMTkxODM2MTBiMzdlNjExMjY0MTQxMDE5MjFiNzYxMGE5MGE1NjE1OTMzOWRkYzViNGU3YThhYyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiNTViNmU4NzA2YjQzMDQ3ZjJhNmRiNjdmMTMyNjM4NTk1NjA0ZTY3ZjM2OTY2ODc2Y2UwMTU4ZjAwNTNlNmJkMSJ9"
+        },
+        {
+          "resource": "repo://libs/evals/harbor_adapters/contextbench/adapter.py",
+          "version": "repo-file-v1:sha256:565498d79afd864c2c38809d6955b2f77e1afddf20251ab4645e76ab7587e995"
+        }
+      ]
+    },
+    {
+      "id": "claim_52315c99f7d84eec9e02692d82685a0e",
+      "statement": "deepagents_clbench is the version-controlled source of truth for the deepagents system in continual-learning-bench and must be deployed into a clbench checkout to run, because clbench discovers systems by scanning its own src/systems tree.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_clbench/README.md#L1-L18",
+          "version": "repo-lines-v1:sha256:ce09af2b105f001affc92bb1f7946d19a9dab1e628d42b02e15f92d212feede0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImM0MjRhODQxZjJkZGVhN2NlMjEzMjdiYmQ0YjJjNTBjOTM4YTI1ZDZjNzA3ZGMzNjcxMjRlYmMxZjlhZWI3OWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijc4Y2JlMDY2MGEyNTRkMjg5OGYxNWMwZTY1YTkwMmJiNjRkZTE3MTQ3ZjVhZTYwMTBlN2UxMjA0NDYxYmQ1YzgifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_d213b0fc11a44a2db7ad3b34c01c01cd",
+      "statement": "deepagents_harbor owns the deepagents-side Harbor integration: LangSmith dataset/experiment/feedback plumbing in langsmith.py and trial failure classification in failure.py.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/__init__.py#L1-L19",
+          "version": "repo-lines-v1:sha256:154bbd5fa3a751d8e8dcf3d4ed2c257a3f125739a6d7371058ac3dbe62bf63e8:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ3NzllYTI3Mjc4NTlmMGQ1ZGNkOTU5NDkzNmExYzhmZDVkZTU1NGFjMDI2YTBmMDVkYmExZmRjMzBmZjRiYWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/langsmith.py#L1-L9",
+          "version": "repo-lines-v1:sha256:cbdca62dd1922271b52b5c44842de8cb6254ff836f7be662dcc6fd92b3a37580:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2M2OTVlNTkyNmVhMmUzZDZkZDk1MjI4YzdmODhmZGI2ZDlkMDBiYTgwMDIyMDc3ZWJkOTRlM2I3ZmE1YjY2YyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYTMwM2VjZGQ0YTRkMTBmMTljNzNmZDQyZmQxMjQzN2ZkMzM1NGE4MjY4MTYwNWRhNTI1NWE5N2EzOTA2OGRiYiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiY2Q4OTAzYzAxNjdmY2JhZWU1ZDFlYzYwODY5ZWYzZjRhOWRkNGQzYzMwYzQ3OWY2MTY5NWU0OTc3ZWQzMTE2NCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_99edcee805474d629fef66801dc33816",
+      "statement": "deepagents_harbor.FailureCategory classifies each trial failure as model CAPABILITY versus infrastructure (INFRA_OOM exit 137, INFRA_TIMEOUT exit 124, INFRA_SANDBOX), so infrastructure flakes are not read as model regressions.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/deepagents_harbor/failure.py#L1-L40",
+          "version": "repo-lines-v1:sha256:5aa23be06d331ee82e6683a74544e107c87ded81f45b8dca022ddff8a93057e9:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1M2EzYjZkNjFhMDU0YmJmZWZiNTdkZWE4Y2RmNzVjMTY2Mzk5YjkwYWFmM2YzN2IyNDBkZDQ5YTdmYjczZDEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY5Y2I3NzAzYjU5ZDg4Zjg3ZGNiYjg3M2ZmOTQ3ZTRlNGRkMmUzMzJmMjZmOTcwZjI5ODg0MzlhYzg5NzJmYjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjczZDVhMGY1ZWFkOTA4ZTRiYmMxNmEyMDhlY2YzZTJhNWJkYjAwNmU1OGY2ZDE0OTZlZDljMzU4YmYxYWQ4MzkifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8d4b9359a657477598ca57e126c361d1",
+      "statement": "deepagents_harbor/langgraph_project/langgraph.json is the source of truth for the packages the Harbor agent environment installs, and Makefile targets (run-hello-world, run-terminal-bench-*) drive Harbor across backends after make stage-harbor-local-deps stages checked-out packages for the sandbox install.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/AGENTS.md#L180-L188",
+          "version": "repo-lines-v1:sha256:3708e50db302740c108aaa16fd9b84573461938dd6ee5d227b468521ab6daf4e:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNzg3Yjg2YTMzMjVlOTA3OGQ1MGJjMTE3N2JkNjZiZmNmNTExODg0ODEwNTQyMmU0MGUwOGM5N2YxMzdiNmRkMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNDM0MDJjYmJjOWE0NDRjYzYxOTVlZjJkNGIwODRiMjMyZTBkZTkwZDJlNTZhNGY3OTk1YjI4ZWVlMzAwYTFmNSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTVkNGIzZmI1MTU3OTA2ODc5MTYzYWI3NTE1OGZlNzNmYzMwMDBmNTE1YjZjMzA3YzkzNGM5MzNjOGFkNTMxMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDY3NjgxYjM4Zjk3ZTI0YjNhNWU4Y2ZkZTJjNzUxMzAxZjMyMmVmZmMzOGYwMGVhMzc5ZTg0MDM3NGU2YjRiMCJ9"
+        },
+        {
+          "resource": "repo://libs/evals/Makefile#L41-L80",
+          "version": "repo-lines-v1:sha256:756b7ec1bd6faa3397c2a3cb9aa81f747cd644d4e5f3e56339ca3c63e2cafaba:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNkZGVlM2ExZDhhMWE3Nzg0NTBlZGRhMmI4NzIzMDkxYmU5NWQyYzFkMjYyMDJlYjMyODIwMTllMDk2ZTNkOWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNlZTljYjQ2NmU5MDdkNTQ3YTgwODFmODU5YWE1NzQ0NTkzMjUzOGYyODk5ODI4MDg1MzI4MmI0MmRkZGJjYWEiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFiNzIzMTVlYmEwODdjZWIzNGFlNTVmNjA5OWE3YjI2NmUyNDcyY2Q2NWU2ZWZiZjhhMjA5MzgwMWMxYTE3MGYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg0NjQ1ZmJhMzhkMjNlN2YxMjc4ZWU1Zjk3ZGM1ZjM0ZGI3MTYwNzA2NmJhMDYzNjQyMjM3YmFjYmIxOTU2MGQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_dff35d2160cc4dfda74dbe80f173e912",
+      "statement": "The unified evals workflow runs one or more models through a fixed battery mapped to capability axes — autonomous (harbor-index), conversation (tau3-subset), context (context-retrieval), and research (drbench) — and publishes one cross-model comparison (leaderboard plus, when at least three axes run, a radar chart).",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/UNIFIED_EVALS.md#L1-L3",
+          "version": "repo-lines-v1:sha256:bc6f56bbe96ef77afec7378f4b639e764ddf209ecbc318ee07820d462d101b74:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMjAxMWNlMGUyMTBmNDhjNmFiNjAwZDFjOWEyOGE0ZmEyODgyZTY1M2M2OGFjMGM5MTU1YjdiNGI1YzExZjI2MyIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzg3YTMxM2ZjODBjMjI1NGZiMThmZDU0ZTNlMGMyZTEyMmNjM2YzNjA0YjY5NTRmZTFiN2RlOGJjM2MzNDM4ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjAsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiZTNiMGM0NDI5OGZjMWMxNDlhZmJmNGM4OTk2ZmI5MjQyN2FlNDFlNDY0OWI5MzRjYTQ5NTk5MWI3ODUyYjg1NSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYzA1YTI4ZmY5NWRlYzE5YWM1MTFkMDg0NThiYzlkZTk0MmNjZGM5YmVjMzJkZmRjYmJjMjdlYjhhZjQyZTBlNCJ9"
+        },
+        {
+          "resource": "repo://libs/evals/UNIFIED_EVALS.md#L105-L114",
+          "version": "repo-lines-v1:sha256:d1f8d553c9883ee2533f0524ad3d102a9c7ea456b418d61471ba3b1cfb77773f:eyJzZWxlY3RlZExpbmVDb3VudCI6MTAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjZhNWE4MzczYWMwNGFhMjM2NzQzNjE4ZjI3OWI5MjY2ZTI3ZGI5M2I3OWVjZjNhMDY0MDhmMTFjMjAyMzYzNWEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg5Y2JlNmM1NTAzZDk1YzhmMjgwM2E4OTkwY2VkYTY0N2E0ZTg2ZTJmMTQyNGU3MTVmM2Q0Yzc2NTBkOWEwNTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjY3ZTFlMDhmZDgxOWVkYmU0YTY1MDhlOTFiM2YwODMxNGJlYWI4ZWI0OTQwZDQ2N2VhNWNlNTJlMjA3ZDk4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQ1MWY4YzY2NWYzZWUzYTU0N2FmNWViNDliM2Q4ZmI1ZGI1NGQwNWYyYzFlNjIyNTI4MWRiZDhhY2MwYTY2MTYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_0d76445e918a42c5898944467a267a42",
+      "statement": "In the unified battery the conversation axis is bound to the tau3 runtime because that runtime hosts the user simulator the agent must converse with, while autonomous/context/research run either the neutral bare create_deep_agent or the dcode product agent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/UNIFIED_EVALS.md#L126-L126",
+          "version": "repo-lines-v1:sha256:f45c6bba0bda1bc2a797d99e3146cbfa0401a7460c0cc16c9b42e1d122d1c77d:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiZjQ1YzZiYmEwYmRhMWJjMmE3OTdkOTllMzE0NmNiZmEwNDAxYTc0NjBjMGNjMTZjOWI0MmUxZDEyMmQxYzc3ZCIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZjQ1YzZiYmEwYmRhMWJjMmE3OTdkOTllMzE0NmNiZmEwNDAxYTc0NjBjMGNjMTZjOWI0MmUxZDEyMmQxYzc3ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiYzc5MjkwYzQ1MTYxNDE3NTAxN2VjMjA5OTg4YjcyYjJmYjM4ZGRkODRjNmUyYjUzYWNlYWQwNDEyZjU3ZDZlMSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZGQzNTBiZjE2Mjk3ODlkYTdiOWMyODA4MzkxYWE3ZWM2Y2VjM2E0ZTA0OTBlNjg0ZTYxNzg0MDg2NWYwYzZiMyJ9"
+        },
+        {
+          "resource": "repo://libs/evals/UNIFIED_EVALS.md#L13-L13",
+          "version": "repo-lines-v1:sha256:5608e561df7f3c4c1950ba9aca80ff7003a2242175adb3ce4859b6881241e2e6:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTYwOGU1NjFkZjdmM2M0YzE5NTBiYTlhY2E4MGZmNzAwM2EyMjQyMTc1YWRiM2NlNDg1OWI2ODgxMjQxZTJlNiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiNTYwOGU1NjFkZjdmM2M0YzE5NTBiYTlhY2E4MGZmNzAwM2EyMjQyMTc1YWRiM2NlNDg1OWI2ODgxMjQxZTJlNiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiM2M2NzYzYWE1ZWQ4NDg2ZTFiNTQyNzEzMjVmYzJiY2QzYTlmNjQwYjE1MTJjY2FiY2ZhY2I1NTYwOTA5NjA1MSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMDg5ODNhNTkwYzRhZTU1ZjNmMmFlZDUxYTExODY2ZDVmMmY1MmFhMTc3NzIzNjM5YjE5NmExZjk0Yzc5MGI5ZiJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_89934176cee34962904e6d9ffb141195",
+      "statement": "Unified evals score each axis on pass@K (fraction of tasks passing in at least one of K rollouts) except graded axes such as research, which report avg@K because their pass@K is 0 by construction.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/UNIFIED_EVALS.md#L114-L114",
+          "version": "repo-lines-v1:sha256:89cbe6c5503d95c8f2803a8990ceda647a4e86e2f1424e715f3d4c7650d9a059:eyJzZWxlY3RlZExpbmVDb3VudCI6MSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiODljYmU2YzU1MDNkOTVjOGYyODAzYTg5OTBjZWRhNjQ3YTRlODZlMmYxNDI0ZTcxNWYzZDRjNzY1MGQ5YTA1OSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiODljYmU2YzU1MDNkOTVjOGYyODAzYTg5OTBjZWRhNjQ3YTRlODZlMmYxNDI0ZTcxNWYzZDRjNzY1MGQ5YTA1OSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiN2JjZjQ1NDU0NWE0ZmY3ZjQwYjc1MTBjOGY0ZWM0ZDcyYWY1NzM4NzVkOGNjMjdiODY5MDEzY2JmOTM0OTNlYSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZDUxZjhjNjY1ZjNlZTNhNTQ3YWY1ZWI0OWIzZDhmYjVkYjU0ZDA1ZjJjMWU2MjI1MjgxZGJkOGFjYzBhNjYxNiJ9"
+        },
+        {
+          "resource": "repo://libs/evals/UNIFIED_EVALS.md#L14-L16",
+          "version": "repo-lines-v1:sha256:08983a590c4ae55f3f2aed51a11866d5f2f52aa177723639b196a1f94c790b9f:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMTE0MmI0NzUzOWU2ZWE4YmQyYTIxNjIwMDlkNjY1ZGVkM2RlZjgxNjViODQxYjk4MTgwYTQ4ZGRlMzI3MjNlYiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOWM4YzY4MDlhMTBlMzVjNmMwMzE4NjAwMjE0OWEzYjFhMTBkNzQ5Zjc2MzkzYmVjNWMxNmU4MDE3OWE5MjQ0MiIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMzA4ZTRjYzljOGVhNjM2ZDAyN2M5YTk2MGE1NmViMDkxNTNlYmViODA3YTQ0NDA1ZDcyMjIwYWU4MjFlMDdhOCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTJhMTVkM2Y2Y2E5YzdkYzJiNTQwYzA1YjRmZTdiY2U1OTUwOWMzMTFkZTc1MWU5NGQ0NTY5MGMwMmYyYTdkMCJ9"
+        }
+      ]
+    },
+    {
+      "id": "claim_47109929270f47af90d61c7145356dcf",
+      "statement": "UNIFIED_SCORECARD.md collects published cross-model results, reporting per-model pass@k / avg@k by category for both the full profile and a frozen high-signal lite subset.",
+      "evidence": [
+        {
+          "resource": "repo://libs/evals/UNIFIED_SCORECARD.md#L1-L19",
+          "version": "repo-lines-v1:sha256:1e381a42bd184350870a68e5f52434bbb74e19f6a909f98f8995c6d962b351f1:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImRjYWUxYjZiMjIzYWJlMzc2NmUxZmE5OTg5MmMxOGM0MjQwYTZiOTdlMjQxMjAxY2IwOTQxYWRhMDUyNDI4ZjYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImVhYWI5ODliYmRjZjNmYjE2YzRlMGNjNzE1Nzc4Mjk1ZTlkYjMwOTk0YzBiZDhmYmE0ZTE1YzA4ZmNiNjdmYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiZWYzMmJiMzRiMjhiZWJiNTlmYjYzMDk0Y2NiYjVlOGFmMDgzNGMzNTI2YWRlYTQyYjg3MTRmMWFjZmE0MTUifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.0",
+    "at": "2026-08-26T21:35:57.774Z"
+  }
+}

@@ -1,0 +1,897 @@
+"""Tests for shared inline-prompt primitives."""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import TYPE_CHECKING
+
+import pytest
+from textual.app import App
+from textual.events import Key, Paste
+
+from deepagents_code import input as input_module
+from deepagents_code.tui.widgets import (
+    _inline_prompt as inline_prompt_module,
+    _paste_textarea as paste_textarea_module,
+)
+from deepagents_code.tui.widgets._inline_prompt import (
+    MEDIA_UNSUPPORTED_TOAST_PREFIX,
+    InlinePromptTextArea,
+    _media_unsupported_toast,
+)
+
+if TYPE_CHECKING:
+    from textual.app import ComposeResult
+    from textual.pilot import Pilot
+
+
+class _PromptApp(App[None]):
+    """Minimal host that records inline-prompt submissions."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.submissions: list[str] = []
+
+    def compose(self) -> ComposeResult:
+        yield InlinePromptTextArea(id="prompt")
+
+    def on_inline_prompt_text_area_submitted(
+        self, event: InlinePromptTextArea.Submitted
+    ) -> None:
+        self.submissions.append(event.value)
+
+
+async def _paste(pilot: Pilot[None], payload: str) -> None:
+    """Deliver a bracketed paste the way a terminal does, through the App.
+
+    Posting to the App is what makes these tests meaningful: `App.on_event`
+    forwards `Paste` to the focused widget, and Textual's MRO dispatch then runs
+    every ancestor's `_on_paste` — including `TextArea._on_paste`, which performs
+    the actual insert. Calling `widget._on_paste(...)` directly skips that walk,
+    so the text never lands and assertions on it pass no matter what the
+    override does (notably whether it calls `prevent_default()`).
+
+    Args:
+        pilot: Pilot driving the running test app.
+        payload: Raw paste payload to deliver.
+    """
+    pilot.app.post_message(Paste(payload))
+    await pilot.pause()
+
+
+class TestInlinePromptPaste:
+    """Paste handling on the inline free-text field matches the chat input."""
+
+    async def test_large_bracketed_paste_collapses_and_expands_on_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A big paste collapses to a placeholder that expands on submit."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            big = "line\n" * 10
+            await _paste(pilot, big)
+
+            assert ta.text == "[Pasted text #1 +10 lines]"
+            assert ta.submitted_value == big
+
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.submissions == [big]
+
+    async def test_unquoted_key_event_paste_collapses_and_expands(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A large unquoted key-event paste reaches collapse handling."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        # Promotion now happens on the first suppressed Enter, so the
+        # suppression window is load-bearing here: without widening it, a slow
+        # runner can spend more than the default 0.12s between the third
+        # character and the Enter and the paste would submit instead.
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        payload = "alpha\nbeta\ngamma\ndelta"
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in payload:
+                event = Key("enter", None) if char == "\n" else Key(char, char)
+                await ta._on_key(event)
+
+            assert ta.text == ""
+            await pilot.pause(0.35)
+
+            assert ta.text == "[Pasted text #1 +3 lines]"
+            assert ta.submitted_value == payload
+
+    async def test_backspace_deletes_collapsed_placeholder_atomically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backspace removes a whole collapsed-paste token in one keypress."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, "a\nb\nc\nd")
+            assert ta.text == "[Pasted text #1 +3 lines]"
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert ta.text == ""
+
+    async def test_modified_backspace_deletes_collapsed_placeholder_atomically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Modified Backspace removes a whole collapsed-paste token."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+
+        for key in ("ctrl+backspace", "alt+backspace"):
+            app = _PromptApp()
+            async with app.run_test() as pilot:
+                ta = app.query_one(InlinePromptTextArea)
+                ta.focus()
+                await pilot.pause()
+
+                await _paste(pilot, "a\nb\nc\nd")
+                assert ta.text == "[Pasted text #1 +3 lines]"
+
+                await pilot.press(key)
+                await pilot.pause()
+
+                assert ta.text == ""
+
+    async def test_modified_backspace_after_tab_deletes_placeholder_atomically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Modified Backspace preserves token integrity after a tab."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+
+        for key in ("ctrl+backspace", "alt+backspace"):
+            app = _PromptApp()
+            async with app.run_test() as pilot:
+                ta = app.query_one(InlinePromptTextArea)
+                ta.focus()
+                await pilot.pause()
+
+                await _paste(pilot, "a\nb\nc\nd")
+                ta.insert("\t")
+                await pilot.pause()
+                assert ta.text == "[Pasted text #1 +3 lines]\t"
+
+                await pilot.press(key)
+                await pilot.pause()
+
+                assert ta.text == ""
+
+    async def test_key_burst_with_newline_does_not_submit(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rapid key-event text stays visible and inserts a newline, no submit."""
+        # Widen the burst gap/window so wall-clock delays on slow runners still
+        # register as one rapid burst.
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_ENTER_SUPPRESS_WINDOW_SECONDS", 60.0
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in "hello":
+                await pilot.press(char)
+            assert ta.text == "hello"
+            assert ta._paste_burst_buffer == ""
+
+            await pilot.press("enter")
+            await pilot.press("w")
+            await pilot.pause(0.15)
+
+            assert app.submissions == []
+            assert "\n" in ta.text
+
+    @pytest.mark.parametrize("payload", ["hello", '"hello"'])
+    async def test_rapid_typing_stays_visible(
+        self, monkeypatch: pytest.MonkeyPatch, payload: str
+    ) -> None:
+        """Rapid ordinary typing, including quoted text, stays visible."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in payload:
+                await pilot.press(char)
+            await pilot.pause()
+
+            assert ta.text == payload
+            assert ta._paste_burst_buffer == ""
+            assert not list(app._notifications)
+
+    async def test_deliberate_enter_submits(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Slow typing (no burst) keeps Enter as submit."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 0.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in "hello":
+                await pilot.press(char)
+            await pilot.press("enter")
+            await pilot.pause()
+
+            assert app.submissions == ["hello"]
+
+    async def test_backslash_then_enter_inserts_newline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Rapid backslash + enter inserts a newline instead of submitting.
+
+        Some terminals (e.g. VSCode built-in) emit a literal backslash followed
+        by enter for shift+enter; the inline prompt must collapse that pair into
+        a newline like the chat input does.
+        """
+        # Widen the gap so wall-clock timing between pilot.press calls on slow
+        # CI runners cannot trip the submit path.
+        monkeypatch.setattr(paste_textarea_module, "_BACKSLASH_ENTER_GAP_SECONDS", 60.0)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press("backslash")
+            await pilot.press("enter")
+            await pilot.pause()
+
+            # Exact match: the backslash is gone and exactly one newline was
+            # inserted (guards against a double-fire re-adding the char or a
+            # second newline).
+            assert ta.text == "hello\n"
+            assert app.submissions == []
+
+    @pytest.mark.parametrize(
+        "key",
+        [
+            pytest.param("shift+enter", id="shift_enter"),
+            pytest.param("ctrl+j", id="ctrl_j"),
+        ],
+    )
+    async def test_modifier_enter_inserts_newline(self, key: str) -> None:
+        """Modifier+Enter (and Ctrl+J) insert a newline instead of submitting.
+
+        This is the headline affordance the inline prompt inherits from
+        `PasteBurstTextArea`; without it these keys would not insert a newline
+        (and a bare-`enter` variant would submit). Regression guard for the
+        shared `BINDINGS` / `_consume_modifier_newline` wiring.
+        """
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello")
+            await pilot.pause()
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            # Exact match guards against both keys double-firing (inherited
+            # priority binding + explicit `_consume_modifier_newline` handler).
+            assert ta.text == "hello\n"
+            assert app.submissions == []
+
+    async def test_identical_second_paste_expands_placeholder(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Re-pasting identical content expands the placeholder in place."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            big = "line\n" * 10
+            await _paste(pilot, big)
+            assert ta.text == "[Pasted text #1 +10 lines]"
+
+            # Pasting the same content again is treated as a request to see it in
+            # full: the existing placeholder expands in place rather than a
+            # second `#2` placeholder being added.
+            await _paste(pilot, big)
+            assert ta.text == big
+            assert "[Pasted text #2" not in ta.text
+            assert ta.submitted_value == big
+
+    async def test_delete_key_deletes_collapsed_placeholder_atomically(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Forward-delete removes a whole collapsed-paste token in one keypress."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, "a\nb\nc\nd")
+            assert ta.text == "[Pasted text #1 +3 lines]"
+
+            ta.move_cursor((0, 0))
+            await pilot.press("delete")
+            await pilot.pause()
+
+            assert ta.text == ""
+
+    async def test_backspace_from_line_below_placeholder_keeps_it(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Backspace on the line below a placeholder rejoins lines, keeps token.
+
+        Regression: a newline right after a `[Pasted text #N]` placeholder was
+        treated as an auto-inserted trailing separator, so backspacing from the
+        start of the next line deleted the whole placeholder instead of only the
+        line break.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, "a\nb\nc\nd")
+            assert ta.text == "[Pasted text #1 +3 lines]"
+
+            ta.insert("\n")
+            await pilot.pause()
+            assert ta.cursor_location == (1, 0)
+
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert ta.text == "[Pasted text #1 +3 lines]"
+            assert ta.cursor_location == (0, len("[Pasted text #1 +3 lines]"))
+
+    async def test_typed_placeholder_shape_is_not_atomic(self) -> None:
+        """Hand-typed placeholder-shaped text deletes one char, not the token."""
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            # No paste occurred, so `_pasted_contents` is empty and this text is
+            # not a bound token — backspace must edit it character by character.
+            typed = "[Pasted text #1]"
+            ta.text = typed
+            ta.move_cursor((0, len(typed)))
+            await pilot.press("backspace")
+            await pilot.pause()
+
+            assert ta.text == typed[:-1]
+
+    async def test_small_burst_payload_inserts_verbatim(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A flushed burst below the collapse threshold inserts as plain text."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: True
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta._paste_burst_buffer = "short text"
+            await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == "short text"
+            assert ta.submitted_value == "short text"
+            assert ta._pasted_contents == {}
+
+    async def test_collapse_disabled_inserts_full_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With collapsing disabled, a large paste is inserted verbatim.
+
+        The preference is cached at construction, so it is patched before the
+        widget is created.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            big = "line\n" * 10
+            # Flush path inserts directly, so the full text is observable here
+            # (the `_on_paste` fall-through defers its insert to Textual's base
+            # handler via MRO dispatch).
+            ta._paste_burst_buffer = big
+            await ta._flush_paste_burst()
+            await pilot.pause()
+
+            assert ta.text == big
+            assert "[Pasted text #1" not in ta.text
+            assert ta._pasted_contents == {}
+            assert ta.submitted_value == big
+
+    async def test_bracketed_paste_not_collapsed_when_disabled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With collapsing disabled, `_on_paste` defers instead of collapsing."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, "line\n" * 10)
+
+            # Only the deferral branch is asserted: no placeholder, no stored
+            # content. The verbatim insert is Textual's base handler's job.
+            assert "[Pasted text #1" not in ta.text
+            assert ta._pasted_contents == {}
+
+
+class TestInlinePromptMediaDrop:
+    """Dragging a media file into a text-only prompt is rejected with a toast."""
+
+    async def test_bracketed_paste_of_image_is_rejected(self, tmp_path: Path) -> None:
+        """A dropped image path toasts and is not inserted as text."""
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, str(img))
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "shot.png" in latest.message
+            assert latest.severity == "warning"
+
+    async def test_key_burst_of_video_is_rejected(self, tmp_path: Path) -> None:
+        """A dropped video path replayed as a burst toasts and is not inserted."""
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"vid")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            # `_dispatch_burst_payload` takes a payload rather than an event, so
+            # its whole contract is the early return; a direct call is faithful.
+            await ta._dispatch_burst_payload(str(clip))
+            await pilot.pause()
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "clip.mp4" in latest.message
+
+    async def test_unquoted_media_key_burst_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unquoted media path replayed as rapid keys is rejected, not typed."""
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        clip = tmp_path / "clip.mp4"
+        clip.write_bytes(b"vid")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in str(clip):
+                event = Key(char, char)
+                await ta._on_key(event)
+
+            await pilot.pause(0.35)
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "clip.mp4" in latest.message
+
+    async def test_non_media_path_burst_is_inserted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dropped non-media file path falls through and inserts as text."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await ta._dispatch_burst_payload(str(doc))
+            await pilot.pause()
+
+            assert ta.text == str(doc)
+            assert not list(app._notifications)
+
+    async def test_non_media_path_bracketed_paste_is_inserted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-media path delivered as a real paste still inserts as text."""
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, str(doc))
+
+            assert ta.text == str(doc)
+            assert not list(app._notifications)
+
+    async def test_mixed_drop_is_rejected_and_names_every_file(
+        self, tmp_path: Path
+    ) -> None:
+        """A drop mixing media and non-media names both discarded files."""
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        doc = tmp_path / "notes.txt"
+        doc.write_text("hello")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, f"{img} {doc}")
+
+            # The whole payload is swallowed, so the toast has to account for the
+            # non-media path too or it silently disappears.
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert "shot.png" in latest.message
+            assert "notes.txt" in latest.message
+
+    async def test_relative_media_path_is_inserted_as_text(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A typed relative media path is text, not a drop, so it is kept.
+
+        Regression guard: resolving relative tokens against the working
+        directory meant a user answering a free-text prompt could not paste
+        `assets/logo.png` as their answer — it was swallowed by the toast.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        (tmp_path / "assets").mkdir()
+        (tmp_path / "assets" / "logo.png").write_bytes(b"img")
+        monkeypatch.chdir(tmp_path)
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, "assets/logo.png")
+
+            assert ta.text == "assets/logo.png"
+            assert not list(app._notifications)
+
+    async def test_detection_failure_inserts_text_and_logs_warning(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """A parser regression falls back to text and surfaces at warning level.
+
+        The fallback re-inserts the path this feature exists to reject, so the
+        log level is the only signal that it happened — pin it, not just the
+        fall-through.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+
+        def _boom(_text: str) -> list[Path]:
+            msg = "simulated parser regression"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(input_module, "dropped_payload_paths", _boom)
+
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            with caplog.at_level(logging.WARNING, logger=inline_prompt_module.__name__):
+                await _paste(pilot, str(img))
+
+            assert ta.text == str(img)
+            assert not list(app._notifications)
+            failures = [
+                record
+                for record in caplog.records
+                if "Media-payload detection failed" in record.getMessage()
+            ]
+            assert failures, "expected a breadcrumb for the detection failure"
+            assert failures[0].levelno == logging.WARNING
+
+    async def test_quoted_image_drop_via_real_key_events_is_rejected(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A quoted media drop replayed as real keystrokes reaches the rejection.
+
+        Drives the production route end to end — `_on_key` -> burst promotion ->
+        flush timer -> `_dispatch_burst_payload` — rather than calling the
+        dispatcher directly. The leading quote stays visible until the rapid
+        run contains enough of the absolute path to confirm a dropped payload.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 0.25
+        )
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            for char in f"'{img}'":
+                await ta._on_key(Key(char, char))
+
+            assert ta.text == ""
+            await pilot.pause(0.35)
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+            assert "shot.png" in latest.message
+
+    async def test_pending_burst_is_flushed_before_a_media_paste_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Buffered keystrokes land even though the following paste is refused.
+
+        Regression guard for the flush-first branch: a refusal returns early, so
+        leaving a burst pending would let its timer insert the buffered text
+        *after* the paste was already rejected.
+        """
+        monkeypatch.setattr(
+            paste_textarea_module, "_collapse_pastes_enabled", lambda: False
+        )
+        monkeypatch.setattr(paste_textarea_module, "PASTE_BURST_CHAR_GAP_SECONDS", 60.0)
+        monkeypatch.setattr(
+            paste_textarea_module, "PASTE_BURST_FLUSH_DELAY_SECONDS", 30.0
+        )
+        img = tmp_path / "shot.png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            pending = f"'{tmp_path / 'draft.txt'}'"
+            for char in pending:
+                await ta._on_key(Key(char, char))
+            assert ta._paste_burst_buffer, "expected a pending burst to flush"
+
+            await _paste(pilot, str(img))
+
+            assert ta.text == pending
+            assert not ta._paste_burst_buffer
+            latest = list(app._notifications)[-1]
+            assert latest.message.startswith(MEDIA_UNSUPPORTED_TOAST_PREFIX)
+
+    async def test_toast_is_not_interpreted_as_markup(self, tmp_path: Path) -> None:
+        """A filename containing Rich markup renders literally in the toast.
+
+        `shot[1].png` is the standard browser-download shape and `[1]` is a valid
+        Rich tag, so the toast has to opt out of markup. The flag is asserted on
+        the `Notification` rather than the message text: markup is applied when
+        the toast renders, so a message-only assertion passes either way.
+        """
+        img = tmp_path / "shot[1].png"
+        img.write_bytes(b"img")
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            await _paste(pilot, str(img))
+
+            assert ta.text == ""
+            latest = list(app._notifications)[-1]
+            assert "shot[1].png" in latest.message
+            assert latest.markup is False
+
+
+class TestMediaUnsupportedToast:
+    """The toast text accounts for exactly the files it discards."""
+
+    def test_single_file_is_singular_and_named(self) -> None:
+        """One discarded file reads as singular."""
+        assert _media_unsupported_toast([Path("/a/shot.png")]) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; file not inserted: shot.png."
+        )
+
+    def test_distinct_names_are_listed_and_pluralized(self) -> None:
+        """Two differently-named files read as plural and both appear."""
+        assert _media_unsupported_toast(
+            [Path("/a/shot.png"), Path("/a/notes.txt")]
+        ) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; "
+            "files not inserted: shot.png, notes.txt."
+        )
+
+    def test_colliding_basenames_fall_back_to_full_paths(self) -> None:
+        """Same-named files from different directories stay distinguishable.
+
+        Deduping by basename alone would print one name under a plural noun,
+        telling the user two files vanished while naming only one of them —
+        which defeats the point of listing them at all.
+        """
+        assert _media_unsupported_toast([Path("/a/shot.png"), Path("/b/shot.png")]) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; "
+            "files not inserted: /a/shot.png, /b/shot.png."
+        )
+
+    def test_repeated_identical_path_is_counted_once(self) -> None:
+        """The same path twice is one discarded file, not two."""
+        assert _media_unsupported_toast([Path("/a/shot.png"), Path("/a/shot.png")]) == (
+            f"{MEDIA_UNSUPPORTED_TOAST_PREFIX}; file not inserted: shot.png."
+        )
+
+
+class TestSharedBindings:
+    """The newline/word-delete bindings live on the base and reach subclasses."""
+
+    @pytest.mark.parametrize("key", ["ctrl+backspace", "alt+backspace"])
+    async def test_modified_backspace_deletes_word_on_ordinary_text(
+        self, key: str
+    ) -> None:
+        """The inherited word-delete binding removes the previous word.
+
+        The other inline-prompt backspace tests only cover atomic deletion of a
+        collapsed-paste placeholder; this one exercises the inherited
+        `delete_word_left` binding on ordinary text.
+        """
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            ta.focus()
+            await pilot.pause()
+
+            ta.insert("hello world")
+            await pilot.pause()
+
+            await pilot.press(key)
+            await pilot.pause()
+
+            assert ta.text == "hello "
+
+
+class TestInlinePromptCompletion:
+    """Resolve-at-most-once semantics, independent of call ordering."""
+
+
+class TestCursorHiddenWhileUnfocused:
+    """The unfocused-cursor fix lives on the shared `PasteBurstTextArea` base.
+
+    `test_chat_input.py` covers the chat input; this pins the same guarantee for
+    inline prompts, so moving `_restart_blink` down into `ChatTextArea` cannot
+    silently reintroduce the phantom cursor here.
+    """
+
+    async def test_programmatic_insert_while_unfocused_shows_no_cursor(self) -> None:
+        """Text inserted into an unfocused inline prompt must not raise a cursor."""
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            app.set_focus(None)
+            await pilot.pause()
+
+            ta.insert("dropped path")
+            await pilot.pause()
+
+            assert ta._draw_cursor is False
+            # The parked timer, not just the drawn state: a regression that
+            # leaves the blink running reads False for half of every cycle.
+            assert ta.blink_timer._active.is_set() is False
+
+    async def test_refocus_restores_cursor(self) -> None:
+        """Focus returning to an inline prompt brings the blinking cursor back."""
+        app = _PromptApp()
+        async with app.run_test() as pilot:
+            ta = app.query_one(InlinePromptTextArea)
+            app.set_focus(None)
+            await pilot.pause()
+            assert ta._draw_cursor is False
+
+            ta.focus()
+            await pilot.pause()
+
+            assert ta.has_focus is True
+            # `_draw_cursor` oscillates once the timer is re-armed; assert the
+            # timer instead, which also catches a cursor frozen solid.
+            assert ta.blink_timer._active.is_set() is True

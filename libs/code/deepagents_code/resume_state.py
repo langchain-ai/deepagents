@@ -3,43 +3,55 @@
 `ResumeState` declares several checkpointed, schema-private channels. They fall
 into two groups with *different* write paths:
 
-Written by `ResumeStateMiddleware.after_model`, from inside the graph:
+Written from inside the graph on successful model turns:
 
 - `_context_tokens` — total context tokens from the latest
-    `AIMessage.usage_metadata`. Powers `/tokens` and the status bar.
-- `_model_spec` — the `provider:model` spec that was effectively in use for
-    the turn, read from `runtime.context["effective_model"]`. Lets `dcode -r`
-    restore the model the resumed thread was actually using instead of falling
-    back to the user's global default.
+    `AIMessage.usage_metadata`, written by `ResumeStateMiddleware.after_model`.
+    Powers `/tokens` and the status bar.
+- `_model_spec` / `_model_params` — the model and invocation params effectively
+    in use for the turn, written by `ConfigurableModelMiddleware` after a
+    successful model call. Lets `dcode -r` restore the model the resumed thread
+    was actually using instead of falling back to the user's global default.
+- `_last_model_request_at` / `_last_cache_model_spec` — UTC request-start time
+    and requested model identity captured by `ConfigurableModelMiddleware` and
+    committed only after that call succeeds. Lets the TUI detect when the
+    provider's reusable prompt prefix may be cold.
 
-Written primarily by the TUI client, via `aupdate_state` (see
-`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Most
-have no model-node write site; the two exceptions are called out below:
+Written through the main graph or by the TUI client via `aupdate_state` (see
+`DeepAgentsApp._persist_goal_rubric_state`) — these are user/agent-owned. Their
+write sites are called out below:
 
 - `_goal_objective` / `_goal_status` / `_goal_rubric` / `_goal_status_note` —
     the accepted goal and its lifecycle status. `_goal_objective`/`_goal_rubric`
     are client-only, but `_goal_status`/`_goal_status_note` are *also* written
     from inside the graph by the agent's `update_goal` tool.
-- `_pending_goal_completion_note` — an agent-requested completion awaiting the
-    post-turn rubric result and, when needed, user approval.
+- `_pending_goal_completion_note` — optional agent-provided completion evidence
+    awaiting the post-turn rubric result.
 - `_sticky_rubric` — the TUI-owned persistent rubric. This is separate from
     the public `rubric` graph input so one-shot rubric turns can be checkpointed
     without being restored as sticky state.
-- `_pending_goal_objective` / `_pending_goal_rubric` — a proposed goal awaiting
-    user acceptance of its criteria.
+- `_rubric_model_spec` — the thread-scoped rubric-grader model selection,
+    written by the TUI client. It is a tri-state: absent means the thread has
+    recorded no selection, so the grader keeps its construction-time default;
+    `INHERIT_RUBRIC_MODEL` means the grader follows the active main model; any
+    other value is a dedicated model spec.
+- `_pending_goal_objective` / `_pending_goal_rubric` / `_pending_goal_kind` /
+    `_pending_goal_request_id` — a proposed goal or amendment and its originating
+    request, written by `GoalCriteriaMiddleware` inside the main graph, then
+    cleared by the TUI when the user accepts or rejects it.
 
 All of these are facts the CLI reads back from `state_values` on thread resume
 so it can rehydrate the session without replaying or re-tokenizing history.
 
-The `after_model` channels are persisted from inside the graph (rather than via
-a separate client-side `aupdate_state` call) so the write rides the same
-checkpoint as the model response and avoids creating a standalone `UpdateState`
-run in LangSmith. Because they are versioned channel state, resuming a specific
+The model-turn channels are persisted from inside the graph (rather than via a
+separate client-side `aupdate_state` call) so the write rides the same checkpoint
+as the model response and avoids creating a standalone `UpdateState` run in
+LangSmith. Because they are versioned channel state, resuming a specific
 checkpoint yields the values as of *that* checkpoint — not a thread-level
-aggregate. The goal/rubric channels are client-written because the user sets
-them outside any model turn (except `_goal_status`/`_goal_status_note`, which the
-`update_goal` tool also writes from inside the graph). Both paths work
-identically against local and remote (HTTP) graphs.
+aggregate. Accepted goal/rubric state is client-written because the user sets it
+outside any model turn; pending criteria proposals and agent-driven status
+updates are graph-written. Both paths work identically against local and remote
+(HTTP) graphs.
 """
 
 from __future__ import annotations
@@ -54,27 +66,106 @@ from typing import (
     get_args,
 )
 
+from deepagents.middleware.rubric import RubricResult
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
     PrivateStateAttr,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_core.messages import AIMessage
 
-from deepagents_code._cli_context import CLIContextSchema
+from deepagents_code.goal_state_limits import GOAL_STATUS_VALUES, GoalStatus
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
-GoalStatus = Literal["active", "blocked", "complete"]
-"""Lifecycle status of a TUI-owned goal.
 
-`active` and `blocked` are unfinished states; `complete` is terminal. A blocked
-goal is still considered active (unfinished) by `get_goal`.
+INHERIT_RUBRIC_MODEL = "__dcode_inherit_rubric__"
+"""Checkpoint value meaning the rubric grader follows the active main model.
+
+`None` cannot carry this: checkpoint reads go through `state_values.get()`,
+which cannot tell an absent key from a key holding `None`. Absence has to keep
+meaning "this thread never chose", because that is what falls back to the
+startup grader model. `/rubric model clear` needs the stronger statement that
+grading follows the active model, which this sentinel carries.
+
+It cannot collide with a real spec: `create_model` resolves `provider:model`
+(or a bare model name) and has no provider or model named `__dcode_...`. The
+value stays plain ASCII for the same reason as `INHERIT_CLASSIFIER_MODEL` in
+`_cli_context` — it is serialized to JSON and persisted, and Postgres
+`text`/`jsonb` rejects NUL outright.
 """
 
-_GOAL_STATUS_VALUES: frozenset[str] = frozenset(get_args(GoalStatus))
+
+GoalProposalKind = Literal["create", "amend"]
+"""Whether a pending review creates a goal or amends the current one."""
+
+_GOAL_PROPOSAL_KIND_VALUES: frozenset[str] = frozenset(get_args(GoalProposalKind))
+
+
+def _flatten_literal_values(tp: object) -> frozenset[str]:
+    """Collect every string value from a (possibly unioned) `Literal` type.
+
+    Args:
+        tp: A `Literal` type, or a union of `Literal`s, to inspect.
+
+    Returns:
+        Every string member across the (possibly nested) `Literal` args.
+    """
+    values: set[str] = set()
+    for arg in get_args(tp):
+        if isinstance(arg, str):
+            values.add(arg)
+        else:
+            values |= _flatten_literal_values(arg)
+    return frozenset(values)
+
+
+RUBRIC_RESULT_VALUES: frozenset[str] = _flatten_literal_values(RubricResult)
+"""Every verdict `RubricMiddleware` can emit for a completed grading run.
+
+Derived from the SDK's `RubricResult` `Literal` so it cannot drift out of sync
+with the grader vocabulary: if the SDK renames or adds a verdict, this set
+follows automatically. Consumers that branch on a rubric result (goal
+auto-completion in `app.py`, the rubric-event formatters in `textual_adapter`)
+treat any value outside this set as an unrecognized grade rather than silently
+mishandling it.
+"""
+
+
+def coerce_model_spec(value: object) -> str | None:
+    """Narrow a persisted model-spec channel to a usable value.
+
+    Shared by `_rubric_model_spec` and `_model_spec`. `INHERIT_RUBRIC_MODEL`
+    passes through unchanged; callers compare the result against it themselves.
+    Every reader of these channels must go through this, so the TUI display and
+    the grader cannot disagree about a malformed checkpoint value.
+
+    Args:
+        value: Raw value read from checkpoint state.
+
+    Returns:
+        The stripped spec or sentinel, otherwise `None` when the channel is
+        absent, blank, or not a string.
+    """
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def coerce_goal_proposal_kind(value: object) -> GoalProposalKind | None:
+    """Narrow a persisted proposal kind to a known value.
+
+    Args:
+        value: Raw value read from checkpoint state.
+
+    Returns:
+        The recognized proposal kind, otherwise `None`.
+    """
+    if isinstance(value, str) and value in _GOAL_PROPOSAL_KIND_VALUES:
+        return cast("GoalProposalKind", value)
+    return None
 
 
 def coerce_goal_status(value: object) -> GoalStatus | None:
@@ -84,10 +175,16 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     string (or a non-string). Coercing to `None` rather than passing the raw
     value through keeps the `GoalStatus` `Literal` load-bearing on the read
     path, so an unknown status is treated as "no goal status" instead of a
-    silently active goal. Resume/restore callers should log the discard
-    separately so it is surfaced rather than dropped; the model-read path
-    (`_goal_snapshot`) intentionally treats an unknown status as `active`
-    without logging.
+    silently active goal. Resume/restore callers should log the discard separately
+    so it is surfaced rather than dropped.
+
+    The goal-state notice path does not use this helper: `project_goal_state`
+    normalizes separately, to keep `goal_state_notice` off this module's heavy
+    import chain. It fails closed the same way, degrading an unrecognized status
+    to `paused` so the notice cannot present a corrupt status as an actionable
+    goal, and logging the discard. Both read the vocabulary from
+    `GOAL_STATUS_VALUES` in `goal_state_limits`, so adding a member cannot make it
+    actionable in one place and unknown in the other.
 
     Args:
         value: Raw value read from checkpoint state.
@@ -95,7 +192,7 @@ def coerce_goal_status(value: object) -> GoalStatus | None:
     Returns:
         The value when it is a recognized `GoalStatus`, otherwise `None`.
     """
-    if isinstance(value, str) and value in _GOAL_STATUS_VALUES:
+    if isinstance(value, str) and value in GOAL_STATUS_VALUES:
         return cast("GoalStatus", value)
     return None
 
@@ -116,19 +213,23 @@ class GoalRubricChannels(AgentState):
     """Accepted goal objective restored by the TUI on resume."""
 
     _goal_status: Annotated[NotRequired[GoalStatus | None], PrivateStateAttr]
-    """Goal lifecycle status (`active`, `blocked`, `complete`, or `None`)."""
+    """Goal lifecycle status (`active`, `paused`, `blocked`, `complete`, or `None`)."""
 
     _goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Accepted rubric associated with `_goal_objective`."""
 
     _goal_status_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    """Evidence or blocker note recorded by `update_goal`."""
+    """Persisted completion evidence or blocker note for the goal."""
 
     _pending_goal_completion_note: Annotated[NotRequired[str | None], PrivateStateAttr]
-    """Completion evidence awaiting rubric and user approval."""
+    """Optional agent-provided completion evidence awaiting final grading."""
 
     _sticky_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Persistent rubric owned by the TUI, distinct from graph input `rubric`."""
+
+    _rubric_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Thread-scoped rubric model selection. Tri-state: absent, the
+    `INHERIT_RUBRIC_MODEL` sentinel, or a model spec. See the module docstring."""
 
 
 class ResumeState(GoalRubricChannels):
@@ -145,11 +246,43 @@ class ResumeState(GoalRubricChannels):
     _model_spec: Annotated[NotRequired[str], PrivateStateAttr]
     """`provider:model` spec effectively in use for the latest turn."""
 
+    _model_params: Annotated[NotRequired[dict[str, Any] | None], PrivateStateAttr]
+    """Invocation params effectively in use for the latest turn."""
+
+    _last_model_request_at: Annotated[NotRequired[str], PrivateStateAttr]
+    """UTC request-start timestamp for the latest successful main-model call.
+
+    Must be written together with `_last_cache_model_spec` -- see that key. The
+    TypedDict cannot express the pairing, so `_checkpoint_command` is the only
+    writer and guards both behind one condition.
+    """
+
+    _last_cache_model_spec: Annotated[NotRequired[str], PrivateStateAttr]
+    """Requested model spec associated with `_last_model_request_at`.
+
+    Paired with the timestamp above: a timestamp with no identity reads back as
+    a permanent "model changed", and an identity with no timestamp reads back
+    as an unknown age. Duplicates `_model_spec` on every current write; it
+    exists separately so the cold-cache comparison is not coupled to whatever
+    else `_model_spec` comes to mean.
+    """
+
+    _last_cache_endpoint: Annotated[NotRequired[str], PrivateStateAttr]
+    """Normalized endpoint identity associated with `_last_model_request_at`."""
+
     _pending_goal_objective: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Goal objective awaiting acceptance of proposed criteria."""
 
     _pending_goal_rubric: Annotated[NotRequired[str | None], PrivateStateAttr]
     """Proposed criteria awaiting user acceptance."""
+
+    _pending_goal_kind: Annotated[
+        NotRequired[GoalProposalKind | None], PrivateStateAttr
+    ]
+    """Whether the pending review creates or amends a goal."""
+
+    _pending_goal_request_id: Annotated[NotRequired[str | None], PrivateStateAttr]
+    """Request that produced the pending proposal."""
 
 
 def _extract_context_tokens(message: AIMessage) -> int | None:
@@ -169,25 +302,6 @@ def _extract_context_tokens(message: AIMessage) -> int | None:
     return total or None
 
 
-def _extract_model_spec(runtime: Runtime[ContextT]) -> str | None:
-    """Return the effective `provider:model` spec from the runtime context.
-
-    The CLI passes the resolved spec in `context["effective_model"]` on every
-    invocation. Returns `None` when no context is present (e.g. non-CLI
-    callers) or the field is unset/blank.
-    """
-    ctx = getattr(runtime, "context", None)
-    if isinstance(ctx, CLIContextSchema):
-        spec = ctx.effective_model
-    elif isinstance(ctx, dict):
-        spec = ctx.get("effective_model")
-    else:
-        return None
-    if isinstance(spec, str) and spec:
-        return spec
-    return None
-
-
 class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     """Persists per-checkpoint resume facts after each model call.
 
@@ -196,25 +310,29 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
     run in LangSmith and works identically against remote graphs).
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = ResumeState
 
     def after_model(  # noqa: PLR6301  # AgentMiddleware hook must be an instance method.
         self,
         state: ResumeState,
-        runtime: Runtime[ContextT],
+        runtime: Runtime[ContextT],  # noqa: ARG002
     ) -> dict[str, Any] | None:
-        """Write `_context_tokens` and `_model_spec` for the latest turn.
+        """Write `_context_tokens` for the latest turn.
 
-        Token count comes from the most recent `AIMessage.usage_metadata`; the
-        model spec comes from `runtime.context["effective_model"]`.
+        Model metadata is written by `ConfigurableModelMiddleware` from the
+        actual request that completed successfully; this hook only records token
+        usage from the most recent `AIMessage.usage_metadata`.
 
         Args:
             state: Current agent state; only `messages` is inspected.
-            runtime: LangGraph runtime; `context["effective_model"]` is read.
+            runtime: LangGraph runtime required by the middleware interface.
 
         Returns:
-            State update with whichever of `_context_tokens` / `_model_spec`
-            could be resolved, or `None` when neither is available.
+            State update with `_context_tokens`, or `None` when no token count is
+            available.
         """
         update: dict[str, Any] = {}
 
@@ -224,9 +342,5 @@ class ResumeStateMiddleware(AgentMiddleware[ResumeState, ContextT]):
                 if tokens is not None:
                     update["_context_tokens"] = tokens
                 break
-
-        spec = _extract_model_spec(runtime)
-        if spec is not None:
-            update["_model_spec"] = spec
 
         return update or None

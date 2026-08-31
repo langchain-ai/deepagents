@@ -1,5 +1,6 @@
 """`FilesystemBackend`: Read and write files directly from the filesystem."""
 
+import asyncio
 import base64
 import errno
 import functools
@@ -8,20 +9,21 @@ import logging
 import os
 import shutil
 import subprocess
+import threading
 import time
+from bisect import bisect_left, bisect_right
 from datetime import datetime
 from pathlib import Path
 
-import wcmatch.glob as wcglob
-
-from deepagents._api.deprecation import warn_deprecated
 from deepagents.backends.protocol import (
+    ASYNC_GREP_TIMEOUT,
     DEFAULT_GREP_TIMEOUT,
     FILE_NOT_FOUND,
     INVALID_PATH,
     IS_DIRECTORY,
     PERMISSION_DENIED,
     BackendProtocol,
+    ContextLine,
     DeleteResult,
     EditResult,
     FileData,
@@ -37,12 +39,33 @@ from deepagents.backends.protocol import (
     WriteResult,
 )
 from deepagents.backends.utils import (
-    _get_file_type,
+    MAX_VIDEO_INPUT_BYTES,
+    InvalidGlobPatternError,
+    _get_backend_read_file_type,
     check_empty_content,
+    compile_grep_include_glob,
     perform_string_replacement,
+    slice_read_response,
 )
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_GLOB_TIMEOUT = 5
+"""Wall-clock budget in seconds for a single local `glob` walk.
+
+A fixed bound keeps `glob` from hanging on huge or slow trees; when it elapses
+the walk returns whatever it found so far with `GlobResult.truncated=True`
+rather than erroring. Kept below the middleware's `GLOB_TIMEOUT`
+(`deepagents.middleware.filesystem.GLOB_TIMEOUT`, currently 10s) so the backend
+returns partial results before that outer net abandons the call; the ordering is
+guarded by `test_glob_backend_budget_below_middleware_deadline`.
+"""
+
+_RIPGREP_STDERR_CAPTURE_LIMIT = 500
+"""Maximum stderr characters retained for ripgrep error diagnostics."""
+
+_RIPGREP_STDERR_READ_SIZE = 8192
+"""Number of stderr characters read per chunk while draining ripgrep."""
 
 
 @functools.cache
@@ -109,14 +132,14 @@ class FilesystemBackend(BackendProtocol):
             `virtual_mode=True` is primarily for virtual path semantics (for example with
             `CompositeBackend`). It can also provide path-based guardrails by blocking
             traversal (`..`, `~`) and absolute paths outside `root_dir`, but it does not
-            provide sandboxing or process isolation. The default (`virtual_mode=False`)
-            provides no security even with `root_dir` set.
+            provide sandboxing or process isolation. Set `virtual_mode=False` only for
+            trusted local development workflows that require unrestricted host paths.
     """
 
     def __init__(
         self,
         root_dir: str | Path | None = None,
-        virtual_mode: bool | None = None,  # noqa: FBT001
+        virtual_mode: bool = True,  # noqa: FBT001, FBT002
         max_file_size_mb: int = 10,
     ) -> None:
         """Initialize filesystem backend.
@@ -126,8 +149,8 @@ class FilesystemBackend(BackendProtocol):
 
                 Defaults to the current working directory.
 
-                - When `virtual_mode=False` (default): Only affects relative path resolution.
-                - When `virtual_mode=True`: Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=True` (default): Acts as a virtual root for filesystem operations.
+                - When `virtual_mode=False`: Only affects relative path resolution.
 
             virtual_mode: Enable virtual path mode.
 
@@ -135,11 +158,11 @@ class FilesystemBackend(BackendProtocol):
                 used with `CompositeBackend`, which strips route prefixes and forwards
                 normalized paths to the routed backend.
 
-                When `True`, all paths are treated as virtual paths anchored to
-                `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved paths
-                are verified to remain within `root_dir`.
+                When `True` (default), all paths are treated as virtual paths anchored
+                to `root_dir`. Path traversal (`..`, `~`) is blocked and all resolved
+                paths are verified to remain within `root_dir`.
 
-                When `False` (default), absolute paths are used as-is and relative paths
+                When `False`, absolute paths are used as-is and relative paths
                 are resolved under `root_dir`. This provides no security against an agent
                 choosing paths outside `root_dir`.
 
@@ -153,24 +176,6 @@ class FilesystemBackend(BackendProtocol):
                 Files exceeding this limit are skipped during search. Defaults to 10 MB.
         """
         self.cwd = Path(root_dir).resolve() if root_dir else Path.cwd()
-        if virtual_mode is None:
-            warn_deprecated(
-                since="0.5.0",
-                removal="0.6.0",
-                message=(
-                    "`FilesystemBackend` `virtual_mode` default will change "
-                    "in deepagents==0.6.0; please specify `virtual_mode` "
-                    "explicitly. Note: `virtual_mode` is for virtual path "
-                    "semantics (e.g., `CompositeBackend` routing) and "
-                    "optional path-based guardrails; it does not provide "
-                    "sandboxing or process isolation. Security note: leaving "
-                    "`virtual_mode=False` allows absolute paths and `'..'` "
-                    "to bypass `root_dir`. Consult the API reference for "
-                    "details."
-                ),
-                package="deepagents",
-            )
-            virtual_mode = False
         self.virtual_mode = virtual_mode
         self.max_file_size_bytes = max_file_size_mb * 1024 * 1024
 
@@ -417,7 +422,15 @@ class FilesystemBackend(BackendProtocol):
         Args:
             file_path: Absolute or relative file path.
             offset: Line offset to start reading from (0-indexed).
+
+                Only applied to text files, and clamped to the start of the file
+                when negative.
             limit: Maximum number of lines to read.
+
+                Only applied to text files with content: a non-positive value
+                returns empty content with no pagination metadata. Empty and
+                whitespace-only files return the empty-file reminder regardless
+                of `limit`, and binary files return their full payload.
 
         Returns:
             `ReadResult` with raw (unformatted) content for the requested window.
@@ -434,31 +447,35 @@ class FilesystemBackend(BackendProtocol):
                 return ReadResult(error=f"File '{file_path}' not found")
 
             fd = os.open(resolved_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
-            if _get_file_type(file_path) != "text":
-                with os.fdopen(fd, "rb") as f:
-                    raw = f.read()
-                encoded = base64.standard_b64encode(raw).decode("ascii")
-                file_data = FileData(content=encoded, encoding="base64")
-            else:
-                with os.fdopen(fd, "r", encoding="utf-8") as f:
-                    content = f.read()
+            try:
+                file_type = _get_backend_read_file_type(file_path)
+                if file_type != "text":
+                    if file_type == "video" and os.fstat(fd).st_size > MAX_VIDEO_INPUT_BYTES:
+                        return ReadResult(error=f"Video file exceeds maximum input size of {MAX_VIDEO_INPUT_BYTES} bytes")
+                    with os.fdopen(fd, "rb") as f:
+                        fd = -1
+                        raw = f.read()
+                    encoded = base64.standard_b64encode(raw).decode("ascii")
+                    file_data = FileData(content=encoded, encoding="base64")
+                else:
+                    with os.fdopen(fd, "r", encoding="utf-8") as f:
+                        fd = -1
+                        content = f.read()
+            finally:
+                if fd >= 0:
+                    os.close(fd)
 
+            if file_type == "text":
                 empty_msg = check_empty_content(content)
                 if empty_msg:
                     file_data = FileData(content=empty_msg, encoding="utf-8")
                 else:
-                    # `splitlines(keepends=True)` preserves whether the final line
-                    # has a terminator; joining with `""` round-trips the file's
-                    # trailing-newline state. Required so `edit()` can detect
-                    # EOF-newline mismatches in the model's `old_string`.
-                    lines = content.splitlines(keepends=True)
-                    start_idx = offset
-                    end_idx = min(start_idx + limit, len(lines))
-
-                    if start_idx >= len(lines):
-                        return ReadResult(error=f"Line offset {offset} exceeds file length ({len(lines)} lines)")
-
-                    file_data = FileData(content="".join(lines[start_idx:end_idx]), encoding="utf-8")
+                    # Reuse the shared slicer so local reads paginate, clamp
+                    # degenerate bounds, and preserve trailing-newline state
+                    # exactly like the state and store backends. `edit()`
+                    # depends on that last property to detect EOF-newline
+                    # mismatches in the model's `old_string`.
+                    return slice_read_response(FileData(content=content, encoding="utf-8"), offset, limit)
 
             return ReadResult(file_data=file_data)
         except (OSError, UnicodeDecodeError) as e:
@@ -597,11 +614,14 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
-    def grep(
+    def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,
         pattern: str,
         path: str | None = None,
         glob: str | None = None,
+        *,
+        max_count: int | None = None,
+        context_lines: int = 0,
     ) -> GrepResult:
         """Search for a literal text pattern in files.
 
@@ -611,10 +631,37 @@ class FilesystemBackend(BackendProtocol):
             pattern: Literal string to search for (NOT regex).
             path: Directory or file path to search in. Defaults to current directory.
             glob: Optional glob pattern to filter which files to search.
+            max_count: Optional total cap on returned matches across all files.
+                `None` returns every match; an int stops the search once the cap
+                is reached and flags the result with `truncated=True`.
+            context_lines: Number of lines to include before and after each match.
+
+                This is a backend-level API. It is deliberately not exposed
+                through the agent-facing `grep` tool (`GrepSchema`), so matches
+                returned via that tool never carry context.
 
         Returns:
-            `GrepResult` with matches or error.
+            `GrepResult` with matches or error. When `context_lines > 0` and some
+            matched files cannot be re-read for context, the matches are still
+            returned and the failure is reported in `GrepResult.error`.
+
+        Raises:
+            ValueError: If `context_lines` is negative.
         """
+        if context_lines < 0:
+            msg = "context_lines must be non-negative"
+            raise ValueError(msg)
+
+        # Validate the include glob before choosing a search path: the shared
+        # matcher refuses some patterns (e.g. any `..` segment) by raising, and
+        # the Python fallback compiles it outside any error handling. Reporting
+        # a refusal here keeps `grep` non-throwing on both paths -- and
+        # consistent, since ripgrep would otherwise treat it as a silent
+        # no-match.
+        glob_refusal = self._refused_grep_glob_error(glob)
+        if glob_refusal is not None:
+            return GrepResult(error=glob_refusal, matches=[])
+
         # Resolve base path
         try:
             base_full = self._resolve_path(path or ".")
@@ -632,39 +679,266 @@ class FilesystemBackend(BackendProtocol):
             return GrepResult(error=f"Error searching path '{search_path}': {e}", matches=[])
 
         # Try ripgrep first (with -F flag for literal search)
-        results = self._ripgrep_search(pattern, base_full, glob)
+        results, truncated = self._ripgrep_search(pattern, base_full, glob, max_count)
+        context_newline = "\n"
         partial_error: str | None = None
         if results is None:
             # Python fallback does literal substring matching on the raw pattern.
-            results, partial_error = self._python_search(pattern, base_full, glob)
+            results, truncated, partial_error = self._python_search(pattern, base_full, glob, max_count=max_count)
+            context_newline = None
 
         matches: list[GrepMatch] = []
         for fpath, items in results.items():
             for line_num, line_text in items:
                 matches.append({"path": fpath, "line": int(line_num), "text": line_text})
-        return GrepResult(error=partial_error, matches=matches)
+        if context_lines:
+            partial_error = self._apply_grep_context(
+                matches,
+                context_lines,
+                partial_error,
+                pattern,
+                newline=context_newline,
+            )
+        return GrepResult(error=partial_error, matches=matches, truncated=truncated)
 
-    def _ripgrep_search(self, pattern: str, base_full: Path, include_glob: str | None) -> dict[str, list[tuple[int, str]]] | None:  # noqa: C901, PLR0912, PLR0915  # except clauses split per-exception for targeted logging (timeout vs exec-race vs ripgrep hard-error)
+    @staticmethod
+    def _refused_grep_glob_error(glob: str | None) -> str | None:
+        """Return the refusal message for an include glob the shared matcher rejects.
+
+        `grep` validates the glob before choosing a search path: the shared
+        matcher refuses some patterns (e.g. any `..` segment) by raising
+        `InvalidGlobPatternError`, and the Python fallback compiles it outside
+        any error handling. Reporting a refusal up front keeps `grep`
+        non-throwing on both paths -- and consistent, since ripgrep would
+        otherwise treat the same glob as a silent no-match.
+        """
+        if glob is None:
+            return None
+        try:
+            compile_grep_include_glob(glob)
+        except InvalidGlobPatternError as e:
+            return str(e)
+        return None
+
+    def _apply_grep_context(
+        self,
+        matches: list[GrepMatch],
+        context_lines: int,
+        partial_error: str | None,
+        pattern: str,
+        *,
+        newline: str | None,
+    ) -> str | None:
+        """Attach context to matches, folding any unreadable-file failures into `partial_error`.
+
+        The search engines (ripgrep and the Python fallback) return only matching
+        lines, so surrounding context must be re-read from disk afterward rather
+        than captured during the search itself.
+        """
+        unreadable = self._add_grep_context(matches, context_lines, pattern, newline=newline)
+        if not unreadable:
+            return partial_error
+        joined = ", ".join(sorted(unreadable))
+        context_error = f"Error: could not read context for {len(unreadable)} file(s) (non-UTF-8 or unreadable): {joined}"
+        return f"{partial_error}\n{context_error}" if partial_error else context_error
+
+    @staticmethod
+    def _grep_context_ranges(file_matches: list[GrepMatch], context_lines: int) -> list[tuple[int, int]]:
+        """Return merged line ranges needed for a file's grep context."""
+        line_ranges: list[tuple[int, int]] = []
+        for line_num in sorted(match["line"] for match in file_matches):
+            start = max(1, line_num - context_lines)
+            end = line_num + context_lines
+            if line_ranges and start <= line_ranges[-1][1] + 1:
+                line_ranges[-1] = (line_ranges[-1][0], max(line_ranges[-1][1], end))
+            else:
+                line_ranges.append((start, end))
+        return line_ranges
+
+    def _read_grep_context(
+        self,
+        file_path: str,
+        line_ranges: list[tuple[int, int]],
+        *,
+        newline: str | None = None,
+    ) -> tuple[dict[int, str], bool]:
+        """Return text for the merged line ranges needed for grep context.
+
+        The file is scanned sequentially from line 1 up to the last requested
+        range; only lines inside a range are retained. `line_ranges` must be
+        sorted ascending and non-overlapping (as produced by
+        `_grep_context_ranges`): the scan advances through them monotonically
+        and never revisits an earlier range.
+
+        Returns:
+            `(context, ok)` where `context` maps line number to text and `ok` is
+            `False` if the file could not be read (a file the search engine just
+            matched should normally be readable, so a failure is surfaced by the
+            caller rather than silently dropped).
+        """
+        context: dict[int, str] = {}
+        try:
+            resolved_path = self._resolve_path(file_path)
+            with resolved_path.open(encoding="utf-8", errors="strict", newline=newline) as handle:
+                range_index = 0
+                for line_num, raw_line in enumerate(handle, 1):
+                    while range_index < len(line_ranges) and line_num > line_ranges[range_index][1]:
+                        range_index += 1
+                    if range_index == len(line_ranges):
+                        break
+                    if line_num >= line_ranges[range_index][0]:
+                        text = raw_line[:-2] if raw_line.endswith("\r\n") else raw_line.removesuffix("\n")
+                        context[line_num] = text
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError) as e:
+            # A matched file that cannot be re-read (e.g. non-UTF-8 bytes ripgrep
+            # tolerated, a symlink loop, a mid-search deletion, or a path that no
+            # longer resolves) is surfaced to the caller via `GrepResult.error`.
+            # Log at debug for diagnostics, matching `_python_search`'s handling
+            # of unreadable files, rather than spamming warnings for benign binaries.
+            logger.debug("Could not read grep context for %s: %s", file_path, e)
+            return {}, False
+        return context, True
+
+    def _add_grep_context(
+        self,
+        matches: list[GrepMatch],
+        context_lines: int,
+        pattern: str,
+        *,
+        newline: str | None,
+    ) -> list[str]:
+        """Attach requested surrounding lines to grep matches in place.
+
+        Returns the paths of matched files whose context could not be read.
+        """
+        matches_by_path: dict[str, list[GrepMatch]] = {}
+        for match in matches:
+            matches_by_path.setdefault(match["path"], []).append(match)
+
+        unreadable: list[str] = []
+        for file_path, file_matches in matches_by_path.items():
+            context, ok = self._read_grep_context(
+                file_path,
+                self._grep_context_ranges(file_matches, context_lines),
+                newline=newline,
+            )
+            if not ok:
+                unreadable.append(file_path)
+            match_numbers = {match["line"] for match in file_matches}
+            # `bisect_*` below require ascending `context_numbers`; sort here so
+            # correctness never depends on `_read_grep_context`'s insertion order.
+            sorted_context = sorted(context.items())
+            context_items: list[ContextLine] = [
+                {"line": number, "text": text} for number, text in sorted_context if number not in match_numbers and pattern not in text
+            ]
+            context_numbers = [item["line"] for item in context_items]
+            for match in file_matches:
+                line_num = match["line"]
+                before_start = bisect_left(context_numbers, max(1, line_num - context_lines))
+                before_end = bisect_left(context_numbers, line_num)
+                after_start = bisect_right(context_numbers, line_num)
+                after_end = bisect_right(context_numbers, line_num + context_lines)
+                match["context_before"] = context_items[before_start:before_end]
+                match["context_after"] = context_items[after_start:after_end]
+        return unreadable
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+        context_lines: int = 0,
+    ) -> GrepResult:
+        """Async version of `grep`, with optional surrounding context lines.
+
+        As in the base `agrep`, the async timeout bounds how long the caller
+        waits; it does not stop the worker thread spawned by `asyncio.to_thread`.
+
+        Raises:
+            ValueError: If `context_lines` is negative.
+        """
+        # Validate eagerly rather than letting `self.grep` raise inside the
+        # worker thread, mirroring the sync path and avoiding a pointless
+        # `to_thread` hop just to surface a programming error.
+        if context_lines < 0:
+            msg = "context_lines must be non-negative"
+            raise ValueError(msg)
+        if context_lines == 0:
+            return await super().agrep(pattern, path, glob, max_count=max_count)
+        try:
+            return await asyncio.wait_for(
+                asyncio.to_thread(
+                    self.grep,
+                    pattern,
+                    path,
+                    glob,
+                    max_count=max_count,
+                    context_lines=context_lines,
+                ),
+                timeout=ASYNC_GREP_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "agrep timed out after %ds (pattern=%r, path=%r, glob=%r)",
+                ASYNC_GREP_TIMEOUT,
+                pattern,
+                path,
+                glob,
+            )
+            return GrepResult(
+                error=f"Error: grep timed out after {ASYNC_GREP_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
+
+    def _ripgrep_search(  # noqa: C901, PLR0911, PLR0912, PLR0915  # single streaming loop + watchdog + per-branch fallback logging; splitting it would scatter the cap/timeout bookkeeping
+        self,
+        pattern: str,
+        base_full: Path,
+        include_glob: str | None,
+        max_count: int | None = None,
+    ) -> tuple[dict[str, list[tuple[int, str]]] | None, bool]:
         """Search using ripgrep with fixed-string (literal) mode.
+
+        Streams ripgrep's newline-delimited `--json` output line-by-line via
+        `subprocess.Popen` instead of buffering all of stdout, so it holds only
+        parsed matches rather than the full JSON output. When `max_count` is set,
+        memory is additionally bounded: once more than `max_count` matches are
+        found the process is terminated and the search stops early, returning
+        exactly `max_count` matches flagged truncated. With no cap, `results`
+        still grows with the total match count.
 
         Args:
             pattern: Literal string to search for (unescaped).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files.
+            max_count: Optional total cap on collected matches across all files.
+                `None` disables the cap.
 
         Returns:
-            Dict mapping file paths to list of `(line_number, line_text)` tuples.
-
-                Returns `None` if ripgrep is unavailable or times out.
-
-                Results whose resolved path lies outside `base_full` are silently
-                filtered regardless of `virtual_mode`.
+            A `(results, truncated)` tuple. `results` maps file paths to a list
+                of `(line_number, line_text)` tuples, or is `None` when ripgrep
+                is unavailable, hard-errored, or timed out before emitting any
+                output — in each case the caller should fall back to the Python
+                search. `truncated` is `True` when ripgrep hit the `max_count`
+                cap, or timed out but had already emitted partial output
+                (returned here instead of falling back). Results whose resolved
+                path lies outside `base_full` are silently filtered regardless
+                of `virtual_mode`.
         """
         rg_path = _resolve_ripgrep_path()
         if rg_path is None:
-            return None
+            return None, False
 
         cmd = [rg_path, "--json", "-F"]  # -F enables fixed-string (literal) mode
+        if max_count is not None:
+            # Per-file guard set to `max_count + 1`, not `max_count`. `rg -m` is
+            # per file, so it can't bound the total on its own — the streaming
+            # total cap below is what actually stops the search. The `+ 1` lets a
+            # single file emit one match past the cap, which is the signal the
+            # loop needs to distinguish "exactly at the cap" (complete) from
+            # "more exist" (truncated) without scanning the whole file.
+            cmd.extend(["-m", str(max_count + 1)])
         if include_glob:
             cmd.extend(["--glob", include_glob])
         # When rg is given an absolute search path, directory-component
@@ -672,8 +946,8 @@ class FilesystemBackend(BackendProtocol):
         # != search root (#2732). For a directory, set `cwd=base_full` and
         # use `.` as the search path so `--glob` resolves correctly. For a
         # single file, leave `cwd` unset and keep the absolute path —
-        # `subprocess.run` would raise `NotADirectoryError` if passed a file
-        # path as `cwd`, and globs are irrelevant for single-file searches.
+        # passing a file path as `cwd` raises `NotADirectoryError`, and globs
+        # are irrelevant for single-file searches.
         rg_cwd: str | None = None
         if base_full.is_dir():
             cmd.extend(["--", pattern, "."])
@@ -682,17 +956,13 @@ class FilesystemBackend(BackendProtocol):
             cmd.extend(["--", pattern, str(base_full)])
 
         try:
-            proc = subprocess.run(  # noqa: S603
+            proc = subprocess.Popen(  # noqa: S603
                 cmd,
-                capture_output=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
-                timeout=DEFAULT_GREP_TIMEOUT,
-                check=False,
                 cwd=rg_cwd,
             )
-        except subprocess.TimeoutExpired:
-            logger.warning("ripgrep timed out after %ds; using Python grep fallback", DEFAULT_GREP_TIMEOUT)
-            return None
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
             # `rg` resolved at cache time but failed at exec — treat as a
             # runtime anomaly (uninstall, permission change, or `which`-vs-exec
@@ -701,74 +971,179 @@ class FilesystemBackend(BackendProtocol):
             # so the next call re-probes `PATH`.
             logger.warning("ripgrep subprocess failed (%s: %s); using Python grep fallback", type(e).__name__, e)
             _resolve_ripgrep_path.cache_clear()
-            return None
+            return None, False
 
-        # Ripgrep exits 0 on match, 1 on no-match (both expected), 2+ on a hard
-        # error (invalid pattern, unreadable directory, malformed glob, etc.).
-        # Silently parsing stdout on a hard error reports zero matches to the
-        # agent — exactly the silent failure this resolver is meant to avoid.
-        if proc.returncode not in (0, 1):
-            stderr = proc.stderr.strip()[:500] if proc.stderr else ""
-            logger.warning("ripgrep exited %d (stderr=%r); using Python grep fallback", proc.returncode, stderr)
-            return None
+        stderr_chunks: list[str] = []
+        stderr_thread = threading.Thread(
+            target=self._drain_ripgrep_stderr,
+            args=(proc, stderr_chunks),
+            daemon=True,
+        )
+        stderr_thread.start()
 
         results: dict[str, list[tuple[int, str]]] = {}
         base_resolved = base_full.resolve()
-        for line in proc.stdout.splitlines():
-            try:
-                data = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            data_type = data.get("type")
-            if data_type == "error":
-                # Per-file errors in `--json` mode (e.g., non-UTF-8 file
-                # ripgrep refused to read). Surface at DEBUG so debugging is
-                # possible without spamming WARNING for every binary file.
-                logger.debug("ripgrep per-file error frame: %s", data.get("data"))
-                continue
-            if data_type != "match":
-                continue
-            pdata = data.get("data", {})
-            ftext = pdata.get("path", {}).get("text")
-            if not ftext:
-                continue
-            # When rg ran from cwd=base_full it emits paths relative to that
-            # cwd; join (don't `.resolve()`) so symlink form is preserved for
-            # callers. When rg searched a single file it emits the absolute
-            # path we passed in.
-            raw = Path(ftext)
-            p = raw if raw.is_absolute() else (base_full / raw)
-            # Defensive containment check: resolve both sides only for the
-            # comparison so symlinks that resolve to paths outside `base_full`
-            # can't leak results, while `p` itself keeps its original shape.
-            # OSError guards against unresolvable symlink targets.
-            try:
-                p.resolve().relative_to(base_resolved)
-            except (ValueError, OSError):
-                logger.warning(
-                    "Skipping ripgrep result outside search root: path=%s root=%s",
-                    p,
-                    base_full,
-                )
-                continue
-            if self.virtual_mode:
-                try:
-                    virt = self._to_virtual_path(p)
-                except ValueError:
-                    logger.debug("Skipping grep result outside root: %s", p)
-                    continue
-                except (OSError, RuntimeError):
-                    logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
-                    continue
-            else:
-                virt = str(p)
-            ln = pdata.get("line_number")
-            lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
-            if ln is None:
-                continue
-            results.setdefault(virt, []).append((int(ln), lt))
+        total = 0
+        truncated = False
+        # A watchdog kills ripgrep if it outruns the time budget; a blocking
+        # read on `proc.stdout` cannot honor a deadline on its own, so the timer
+        # is what bounds a hang that never reaches the cap.
+        timed_out = threading.Event()
 
-        return results
+        def _kill_on_timeout() -> None:
+            timed_out.set()
+            proc.kill()
+
+        timer = threading.Timer(DEFAULT_GREP_TIMEOUT, _kill_on_timeout)
+        timer.start()
+        try:
+            # `proc.stdout` is a text stream because `text=True`; iterating it
+            # yields one `--json` frame per line as ripgrep emits them.
+            # `stdout=PIPE` guarantees a stream; narrow it for the type checker.
+            assert proc.stdout is not None  # noqa: S101
+            for line in proc.stdout:
+                parsed = self._parse_rg_match(line, base_full, base_resolved)
+                if parsed is None:
+                    continue
+                virt, ln, lt = parsed
+                if max_count is not None and total >= max_count:
+                    # We already hold `max_count` matches and ripgrep emitted
+                    # another (we asked for one past the cap via `-m`), proving
+                    # more exist than requested. Stop without keeping the extra
+                    # so the result is exactly `max_count`, flagged truncated.
+                    truncated = True
+                    proc.terminate()
+                    break
+                results.setdefault(virt, []).append((ln, lt))
+                total += 1
+        finally:
+            timer.cancel()
+            self._reap_ripgrep(proc)
+            stderr_thread.join()
+            if proc.stderr is not None:
+                proc.stderr.close()
+            stderr = "".join(stderr_chunks)
+
+        if timed_out.is_set():
+            if results:
+                logger.warning("ripgrep timed out after %ds; returning partial results", DEFAULT_GREP_TIMEOUT)
+                return results, True
+            logger.warning("ripgrep timed out after %ds with no output; using Python grep fallback", DEFAULT_GREP_TIMEOUT)
+            return None, False
+
+        if truncated:
+            # Hit the total match cap; `results` is intentionally incomplete.
+            return results, True
+
+        # Ripgrep exits 0 on match, 1 on no-match (both expected), 2+ on a hard
+        # error (invalid pattern, unreadable directory, malformed glob, etc.).
+        # Returning matches gathered before a hard error would present an
+        # incomplete search as complete, so fall back to the Python search.
+        if proc.returncode not in (0, 1):
+            logger.warning("ripgrep exited %d (stderr=%r); using Python grep fallback", proc.returncode, stderr.strip()[:500])
+            return None, False
+
+        return results, truncated
+
+    def _parse_rg_match(  # noqa: PLR0911  # one early return per skip reason reads clearer than nesting the checks
+        self,
+        line: str,
+        base_full: Path,
+        base_resolved: Path,
+    ) -> tuple[str, int, str] | None:
+        """Parse one ripgrep `--json` line into `(virtual_path, line_no, text)`.
+
+        Returns `None` for non-match frames, unparseable lines, and matches
+        missing a path or line number (all skipped silently), as well as for
+        matches whose resolved path escapes `base_full` and per-file `error`
+        frames (both logged, then skipped). Extracted from the streaming loop so
+        the cap/watchdog bookkeeping there stays readable.
+        """
+        try:
+            data = json.loads(line)
+        except json.JSONDecodeError:
+            return None
+        data_type = data.get("type")
+        if data_type == "error":
+            # Per-file errors in `--json` mode (e.g., non-UTF-8 file ripgrep
+            # refused to read). Surface at DEBUG so debugging is possible
+            # without spamming WARNING for every binary file.
+            logger.debug("ripgrep per-file error frame: %s", data.get("data"))
+            return None
+        if data_type != "match":
+            return None
+        pdata = data.get("data", {})
+        ftext = pdata.get("path", {}).get("text")
+        if not ftext:
+            return None
+        # When rg ran from cwd=base_full it emits paths relative to that cwd;
+        # join (don't `.resolve()`) so symlink form is preserved for callers.
+        # When rg searched a single file it emits the absolute path we passed in.
+        raw = Path(ftext)
+        p = raw if raw.is_absolute() else (base_full / raw)
+        # Defensive containment check: resolve both sides only for the comparison
+        # so symlinks that resolve to paths outside `base_full` can't leak
+        # results, while `p` itself keeps its original shape. OSError guards
+        # against unresolvable symlink targets.
+        try:
+            p.resolve().relative_to(base_resolved)
+        except (ValueError, OSError):
+            logger.warning(
+                "Skipping ripgrep result outside search root: path=%s root=%s",
+                p,
+                base_full,
+            )
+            return None
+        if self.virtual_mode:
+            try:
+                virt = self._to_virtual_path(p)
+            except ValueError:
+                logger.debug("Skipping grep result outside root: %s", p)
+                return None
+            except (OSError, RuntimeError):
+                logger.warning("Could not resolve grep result path: %s", p, exc_info=True)
+                return None
+        else:
+            virt = str(p)
+        ln = pdata.get("line_number")
+        if ln is None:
+            return None
+        lt = pdata.get("lines", {}).get("text", "").rstrip("\n")
+        return virt, int(ln), lt
+
+    @staticmethod
+    def _drain_ripgrep_stderr(proc: "subprocess.Popen[str]", chunks: list[str]) -> None:
+        """Drain ripgrep stderr while retaining bounded error diagnostics."""
+        remaining = _RIPGREP_STDERR_CAPTURE_LIMIT
+        try:
+            assert proc.stderr is not None  # noqa: S101  # `stderr=PIPE` guarantees a stream
+            while chunk := proc.stderr.read(_RIPGREP_STDERR_READ_SIZE):
+                if remaining > 0:
+                    captured = chunk[:remaining]
+                    chunks.append(captured)
+                    remaining -= len(captured)
+        except (OSError, ValueError):
+            logger.debug("Failed to read ripgrep stderr", exc_info=True)
+
+    @staticmethod
+    def _reap_ripgrep(proc: "subprocess.Popen[str]") -> None:
+        """Close stdout and reap ripgrep after EOF, termination, or timeout."""
+        if proc.stdout is not None:
+            proc.stdout.close()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                # Bound the post-SIGKILL wait too. A process wedged in
+                # uninterruptible I/O (e.g. a dead NFS mount) can ignore even
+                # SIGKILL until the I/O returns; an unbounded wait here would
+                # hang the grep call past its deadline — the exact hang the
+                # watchdog exists to prevent. Abandon the handle after a grace
+                # period rather than block the caller forever.
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning("ripgrep did not exit after SIGKILL; abandoning process handle")
 
     def _python_search(  # noqa: C901, PLR0912, PLR0915
         self,
@@ -776,8 +1151,9 @@ class FilesystemBackend(BackendProtocol):
         base_full: Path,
         include_glob: str | None,
         *,
+        max_count: int | None = None,
         timeout: int = DEFAULT_GREP_TIMEOUT,
-    ) -> tuple[dict[str, list[tuple[int, str]]], str | None]:
+    ) -> tuple[dict[str, list[tuple[int, str]]], bool, str | None]:
         """Fallback search using Python when ripgrep is unavailable.
 
         Recursively searches files, respecting `max_file_size_bytes` limit
@@ -787,33 +1163,35 @@ class FilesystemBackend(BackendProtocol):
             pattern: Literal string to search for (substring match, not regex).
             base_full: Resolved base path to search in.
             include_glob: Optional glob pattern to filter files by name.
+            max_count: Optional total cap on collected matches across all files.
+                `None` disables the cap; when set, the walk stops once the cap
+                is reached and the result is flagged `truncated=True`.
             timeout: Maximum wall-clock seconds before the search is aborted.
 
         Returns:
-            `results` contains every match found before iteration completed.
-
-                `partial_error` is `None` on a clean walk, otherwise a
-                human-readable message indicating the walk was incomplete:
-                either the wall-clock `timeout` elapsed, at least one file
-                could not be opened or fully read, or the walk aborted early
-                (e.g., a directory entry was removed mid-walk). Callers
-                should treat such results as incomplete.
+            A `(results, truncated, error)` tuple. `results` contains every
+                match found before iteration stopped. `truncated` is `True` when
+                the wall-clock `timeout` elapsed or the `max_count` cap was
+                reached, leaving `results` valid but incomplete. `error` is
+                `None` on a clean walk, otherwise a human-readable message when
+                at least one file could not be opened or fully read, or the walk
+                aborted early (e.g., a directory entry was removed mid-walk).
         """
         deadline = time.monotonic() + timeout
-        glob_matcher = wcglob.compile(include_glob, flags=wcglob.BRACE | wcglob.GLOBSTAR) if include_glob else None
+        glob_matcher = compile_grep_include_glob(include_glob) if include_glob else None
+        total = 0
 
         results: dict[str, list[tuple[int, str]]] = {}
         file_errors: list[str] = []
         root = base_full if base_full.is_dir() else base_full.parent
 
-        def _timed_out_msg() -> str:
-            msg = (
-                f"Grep of '{self._display_path(base_full)}' timed out after {timeout}s "
-                f"with {len(results)} matching file(s); try a more "
-                f"specific pattern or a narrower path."
+        def _log_timeout() -> None:
+            logger.warning(
+                "Grep of '%s' timed out after %ss with %d matching file(s); returning partial results",
+                self._display_path(base_full),
+                timeout,
+                len(results),
             )
-            logger.warning("%s", msg)
-            return msg
 
         def _file_errors_msg() -> str | None:
             if not file_errors:
@@ -838,15 +1216,16 @@ class FilesystemBackend(BackendProtocol):
         try:
             for fp in root.rglob("*"):
                 if time.monotonic() > deadline:
-                    return results, _timed_out_msg()
+                    _log_timeout()
+                    return results, True, None
                 try:
                     if not fp.is_file():
                         continue
                 except (PermissionError, OSError, RuntimeError):
                     continue
                 if glob_matcher is not None:
-                    rel_path = str(fp.relative_to(root))
-                    if not glob_matcher.match(rel_path):
+                    rel_path = fp.relative_to(root).as_posix()
+                    if not glob_matcher(rel_path):
                         continue
                 try:
                     if fp.stat().st_size > self.max_file_size_bytes:
@@ -872,11 +1251,20 @@ class FilesystemBackend(BackendProtocol):
                         for line_num, raw_line in enumerate(handle, 1):
                             scanned_lines = line_num
                             if line_num % 2048 == 0 and time.monotonic() > deadline:
-                                return results, _timed_out_msg()
+                                _log_timeout()
+                                return results, True, None
                             if pattern not in raw_line:
                                 continue
+                            if max_count is not None and total >= max_count:
+                                # Already collected `max_count` and found another
+                                # match, so more exist than requested: stop and
+                                # report the partial result as truncated. Checked
+                                # before appending so exactly `max_count` matches
+                                # is reported complete, not truncated.
+                                return results, True, _file_errors_msg()
                             line = raw_line.rstrip("\n")
                             results.setdefault(virt_path, []).append((line_num, line))
+                            total += 1
                 except UnicodeDecodeError as e:
                     # A file that fails to decode before any line is scanned is
                     # treated as binary and skipped silently, mirroring ripgrep's
@@ -906,28 +1294,47 @@ class FilesystemBackend(BackendProtocol):
             # agent-visible error (the raw `rglob` exception can embed it too).
             msg = f"Grep of '{self._display_path(base_full)}' aborted after {len(results)} matching file(s): {_safe_detail(e)}"
             logger.warning("%s", msg, exc_info=True)
-            return results, msg
+            return results, False, msg
 
-        return results, _file_errors_msg()
+        return results, False, _file_errors_msg()
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:  # noqa: C901, PLR0912, PLR0915  # Complex virtual_mode logic
         """Find files matching a glob pattern.
 
+        Pattern matching uses the shared backend contract (same as grep
+        include-glob):
+
+        - Patterns without `/` match the basename at any depth under `path`
+          (e.g. `'*.py'` matches nested files).
+        - Patterns containing `/` match paths relative to `path`, with `**`
+          support. A leading `/` anchors to the search root.
+        - Leading-dot names need an explicit leading `.` in the pattern segment.
+          `**` does not descend into dot-directories, so `'*.yml'` matches
+          `.github/workflows/ci.yml` while `'**/*.yml'` does not.
+
         Args:
-            pattern: Glob pattern to match files against (e.g., `'*.py'`, `'**/*.txt'`).
+            pattern: Glob pattern to match files against (e.g., `'*.py'`,
+                `'**/*.txt'`, `'src/**/*.py'`).
             path: Base directory to search from.
 
                 Defaults to `root_dir` / `cwd`.
 
         Returns:
-            `GlobResult` with matching files or error.
+            `GlobResult` with matching files. `truncated` is `True` (and
+            `matches` is partial) when the walk exceeded its wall-clock budget;
+            `truncation_reason` is then `"budget"`. A pattern the matcher
+            refuses (including one containing `..`) is returned as
+            `GlobResult(error=..., matches=None)`, never raised.
         """
-        if pattern.startswith("/"):
-            pattern = pattern.lstrip("/")
-
-        if self.virtual_mode and ".." in Path(pattern).parts:
-            msg = "Path traversal not allowed in glob pattern"
-            raise ValueError(msg)
+        # Compile before touching the filesystem: a refused pattern -- brace
+        # expansion past its limit, or a `..` segment -- is a property of the
+        # pattern alone, and reporting it here keeps it distinguishable from the
+        # mid-walk aborts handled far below. `..` rejection lives in the shared
+        # matcher so every backend agrees; see `compile_grep_include_glob`.
+        try:
+            matches_pattern = compile_grep_include_glob(pattern)
+        except InvalidGlobPatternError as e:
+            return GlobResult(error=str(e), matches=None)
 
         try:
             search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
@@ -937,10 +1344,36 @@ class FilesystemBackend(BackendProtocol):
             display_path = path if path is not None else "<default>"
             return GlobResult(error=f"Error globbing path '{display_path}': {e}", matches=[])
 
+        # A fixed wall-clock budget keeps a glob over a huge or slow tree from
+        # hanging; on expiry we return the matches gathered so far flagged as
+        # truncated rather than blocking or erroring.
+        deadline = time.monotonic() + _DEFAULT_GLOB_TIMEOUT
+        truncated = False
         results: list[FileInfo] = []
+        # Walk every entry (`rglob("*")`) and apply the pattern ourselves rather
+        # than `rglob(pattern)`: `rglob(pattern)` only surfaces matches, so a
+        # sparse or zero-match search over a huge tree traverses the whole tree
+        # without ever checking the deadline. `rglob("*")` yields on every entry,
+        # letting us honour the deadline while applying the shared glob contract
+        # ourselves -- which is deliberately *not* `rglob` semantics: bare
+        # patterns are basename-scoped and dotfiles need an explicit leading `.`.
         try:
-            # Use recursive globbing to match files in subdirectories as tests expect
-            for matched_path in search_path.rglob(pattern):
+            for matched_path in search_path.rglob("*"):
+                if time.monotonic() > deadline:
+                    logger.warning(
+                        "Glob of '%s' timed out after %ss with %d match(es); returning partial results",
+                        path if path is not None else "<default>",
+                        _DEFAULT_GLOB_TIMEOUT,
+                        len(results),
+                    )
+                    truncated = True
+                    break
+                try:
+                    rel_path = matched_path.relative_to(search_path).as_posix()
+                except ValueError:
+                    continue
+                if not matches_pattern(rel_path):
+                    continue
                 try:
                     is_file = matched_path.is_file()
                 except (PermissionError, OSError, RuntimeError):
@@ -989,8 +1422,10 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
         except (OSError, RuntimeError, ValueError) as e:
-            # rglob() raised mid-iteration. Return whatever was accumulated
-            # but flag the partial result so callers don't trust it as complete.
+            # `rglob()` raised mid-iteration. Return whatever was accumulated but
+            # as an error so callers don't trust it as complete. Pattern refusals
+            # are handled before the walk starts, so "aborted partway" is now
+            # only ever said about a genuine mid-walk failure.
             display_path = path if path is not None else "<default>"
             msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)
@@ -998,7 +1433,11 @@ class FilesystemBackend(BackendProtocol):
             return GlobResult(error=msg, matches=results)
 
         results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results)
+        return GlobResult(
+            matches=results,
+            truncated=truncated,
+            truncation_reason="budget" if truncated else None,
+        )
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.

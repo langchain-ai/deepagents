@@ -5,45 +5,12 @@ from pathlib import Path
 import pytest
 
 from deepagents_code.input import (
-    extract_leading_pasted_file_path,
-    normalize_pasted_path,
+    ParsedPastedPathPayload,
+    dropped_payload_paths,
     parse_file_mentions,
     parse_pasted_file_paths,
     parse_pasted_path_payload,
-    parse_single_pasted_file_path,
 )
-
-
-def test_parse_file_mentions_with_chinese_sentence(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Ensure `@file` parsing terminates at non-path characters such as CJK text."""
-    file_path = tmp_path / "input.py"
-    file_path.write_text("print('hello')")
-
-    monkeypatch.chdir(tmp_path)
-    text = f"你分析@{file_path.name}的代码就懂了"
-
-    _, files = parse_file_mentions(text)
-
-    assert files == [file_path.resolve()]
-
-
-def test_parse_file_mentions_handles_multiple_mentions(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Ensure multiple `@file` mentions are extracted from a single input."""
-    first = tmp_path / "a.txt"
-    second = tmp_path / "b.txt"
-    first.write_text("1")
-    second.write_text("2")
-
-    monkeypatch.chdir(tmp_path)
-    text = f"读一下@{first.name}，然后看看@{second.name}。"
-
-    _, files = parse_file_mentions(text)
-
-    assert files == [first.resolve(), second.resolve()]
 
 
 def test_parse_file_mentions_with_escaped_spaces(
@@ -61,42 +28,6 @@ def test_parse_file_mentions_with_escaped_spaces(
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_warns_for_nonexistent_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
-) -> None:
-    """Ensure non-existent files are excluded and warning is printed."""
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
-
-    _, files = parse_file_mentions("@nonexistent.py")
-
-    assert files == []
-    mock_console.print.assert_called_once()
-    assert "nonexistent.py" in mock_console.print.call_args[0][0]
-
-
-def test_parse_file_mentions_ignores_directories(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
-) -> None:
-    """Ensure directories are not included in file list."""
-    dir_path = tmp_path / "mydir"
-    dir_path.mkdir()
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
-
-    _, files = parse_file_mentions("@mydir")
-
-    assert files == []
-    mock_console.print.assert_called_once()
-    assert "mydir" in mock_console.print.call_args[0][0]
-
-
-def test_parse_file_mentions_with_no_mentions() -> None:
-    """Ensure text without mentions returns empty file list."""
-    _, files = parse_file_mentions("just some text without mentions")
-    assert files == []
-
-
 def test_parse_file_mentions_handles_path_traversal(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -112,306 +43,175 @@ def test_parse_file_mentions_handles_path_traversal(
     assert files == [file_path.resolve()]
 
 
-def test_parse_file_mentions_with_absolute_path(tmp_path: Path) -> None:
-    """Ensure absolute paths are resolved correctly without cwd changes."""
-    file_path = tmp_path / "test.py"
-    file_path.write_text("content")
+def test_dropped_payload_paths_resolves_non_media(tmp_path: Path) -> None:
+    """Classification is left to the caller, so non-media paths resolve too."""
+    doc = tmp_path / "notes.txt"
+    doc.write_text("hello")
 
-    _, files = parse_file_mentions(f"@{file_path}")
-
-    assert files == [file_path.resolve()]
+    assert dropped_payload_paths(str(doc)) == [doc.resolve()]
 
 
-def test_parse_file_mentions_handles_multiple_in_sentence(
+def test_dropped_payload_paths_resolves_multiple(tmp_path: Path) -> None:
+    """A multi-file drop returns every resolved path."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+    doc = tmp_path / "notes.txt"
+    doc.write_text("hello")
+
+    assert dropped_payload_paths(f"{img} {doc}") == [img.resolve(), doc.resolve()]
+
+
+def test_dropped_payload_paths_resolves_file_url(tmp_path: Path) -> None:
+    """A `file://` drop payload resolves like a plain path."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert dropped_payload_paths(img.as_uri()) == [img.resolve()]
+
+
+@pytest.mark.parametrize("wrap", ["'{}'", '"{}"', "<{}>"])
+def test_dropped_payload_paths_resolves_quoted_payload(
+    tmp_path: Path, wrap: str
+) -> None:
+    """Quoted and bracketed drops resolve, since terminals wrap paths that way.
+
+    The shape guard strips leading `<`, `'`, and `"` for exactly this reason;
+    without that strip every quoted drop would look like typed text.
+    """
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
+
+    assert dropped_payload_paths(wrap.format(img)) == [img.resolve()]
+
+
+@pytest.mark.parametrize("template", ["{}", "'{}'", '"{}"'])
+def test_dropped_payload_paths_resolves_space_bearing_filename(
+    tmp_path: Path, template: str
+) -> None:
+    """A filename containing spaces resolves escaped or quoted.
+
+    This is the modal real-world drop: macOS screenshots are named
+    `Screenshot ... at ....png`.
+    """
+    img = tmp_path / "my shot.png"
+    img.write_bytes(b"img")
+    raw = str(img)
+    payload = template.format(raw if template != "{}" else raw.replace(" ", r"\ "))
+
+    assert dropped_payload_paths(payload) == [img.resolve()]
+
+
+def test_dropped_payload_paths_resolves_home_relative_path(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ensure multiple `@mentions` within a sentence are each parsed separately."""
-    first = tmp_path / "a.py"
-    second = tmp_path / "b.py"
-    first.write_text("1")
-    second.write_text("2")
-    monkeypatch.chdir(tmp_path)
+    """A `~/`-shaped drop resolves, matching the shape guard's `~/` arm."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
 
-    _, files = parse_file_mentions("compare @a.py and @b.py")
-
-    assert files == [first.resolve(), second.resolve()]
+    assert dropped_payload_paths("~/shot.png") == [img.resolve()]
 
 
-def test_parse_file_mentions_adjacent_looks_like_email(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "/usr/local is where it lives",
+        "/ is the root directory",
+        "~/ is my home",
+    ],
+)
+def test_dropped_payload_paths_ignores_prose_that_passes_shape_guard(
+    payload: str,
 ) -> None:
-    """Adjacent `@mentions` without space look like emails and are skipped.
+    """Prose starting with a path-shaped token is still text, not a drop.
 
-    `@a.py@b.py` - the second `@` is preceded by `y` which looks like
-    an email username, so `@b.py` is skipped. This is expected behavior
-    to avoid false positives on email addresses.
+    The shape guard only inspects the leading token, so rejection here depends
+    on the parser refusing directories and multi-token text. Free-text prompts
+    rely on this: a swallowed answer is worse than an inserted path.
     """
-    first = tmp_path / "a.py"
-    second = tmp_path / "b.py"
-    first.write_text("1")
-    second.write_text("2")
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
-
-    _, files = parse_file_mentions("@a.py@b.py")
-
-    # Only first file is parsed; second looks like email and is skipped
-    assert files == [first.resolve()]
-    mock_console.print.assert_not_called()
+    assert dropped_payload_paths(payload) == []
 
 
-def test_parse_file_mentions_handles_oserror(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+def test_dropped_payload_paths_accepts_windows_drive_shape(mocker) -> None:
+    """Windows drive-letter drops pass the shape guard and get parsed."""
+    resolved = Path(r"C:\Users\Alice\shot.png")
+    mocker.patch(
+        "deepagents_code.input.parse_pasted_path_payload",
+        return_value=ParsedPastedPathPayload(paths=[resolved]),
+    )
+
+    assert dropped_payload_paths(r"C:\Users\Alice\shot.png") == [resolved]
+
+
+def test_dropped_payload_paths_accepts_windows_unc_shape(mocker) -> None:
+    """Windows UNC drops pass the shape guard and get parsed."""
+    resolved = Path(r"\\server\share\shot.png")
+    mocker.patch(
+        "deepagents_code.input.parse_pasted_path_payload",
+        return_value=ParsedPastedPathPayload(paths=[resolved]),
+    )
+
+    assert dropped_payload_paths(r"\\server\share\shot.png") == [resolved]
+
+
+def test_dropped_payload_paths_ignores_plain_text() -> None:
+    """Ordinary typed text that is not an existing path yields nothing."""
+    assert dropped_payload_paths("just some words") == []
+
+
+def test_dropped_payload_paths_ignores_relative_path(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ensure `OSError` during path resolution is handled gracefully."""
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
-    mocker.patch("pathlib.Path.resolve", side_effect=OSError("Permission denied"))
+    """A relative path is typed text, not a drop, so it is not resolved.
 
-    _, files = parse_file_mentions("@somefile.py")
-
-    assert files == []
-    mock_console.print.assert_called_once()
-    call_arg = mock_console.print.call_args[0][0]
-    assert "somefile.py" in call_arg
-    assert "Invalid path" in call_arg
-
-
-def test_parse_file_mentions_skips_email_addresses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
-) -> None:
-    """Ensure email addresses are not parsed as file mentions.
-
-    Email addresses like `user@example.com` should be silently skipped
-    because the `@` is preceded by email-like characters.
+    Terminals deliver a dragged file as an absolute path, so accepting relative
+    tokens here only misfires: it would swallow a hand-typed `assets/logo.png`
+    that resolves against the working directory.
     """
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "assets" / "logo.png").write_bytes(b"img")
     monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
 
-    _, files = parse_file_mentions("contact me at user@example.com")
-
-    # Email addresses should be silently skipped (no warning, no files)
-    assert files == []
-    mock_console.print.assert_not_called()
+    assert dropped_payload_paths("assets/logo.png") == []
 
 
-def test_parse_file_mentions_skips_various_email_formats(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
+def test_dropped_payload_paths_ignores_leading_path_with_suffix(
+    tmp_path: Path,
 ) -> None:
-    """Ensure various email formats are all skipped."""
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
+    """`<path> <question>` is out of scope, matching drop-time chat-input calls."""
+    img = tmp_path / "shot.png"
+    img.write_bytes(b"img")
 
-    emails = [
-        "test@domain.com",
-        "user.name@company.org",
-        "first+tag@example.io",
-        "name_123@test.co",
-        "a@b.c",
-    ]
-
-    for email in emails:
-        _, files = parse_file_mentions(f"Email: {email}")
-        assert files == [], f"Expected {email} to be skipped"
-
-    mock_console.print.assert_not_called()
+    assert dropped_payload_paths(f"{img} what's in this image?") == []
 
 
-def test_parse_file_mentions_works_after_cjk_text(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
-) -> None:
-    """Ensure `@file` mentions work after CJK text (not email-like)."""
-    file_path = tmp_path / "test.py"
-    file_path.write_text("content")
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "/tmp/a\x00b.png",
+        "file://[::1/x.png",
+        "file://[bad",
+    ],
+)
+def test_dropped_payload_paths_tolerates_unparseable_payloads(payload: str) -> None:
+    """Payloads the OS or URL parser rejects fall back to text, never raise.
 
-    # CJK character before @ is not email-like, so this should parse
-    _, files = parse_file_mentions("查看@test.py")
-
-    assert files == [file_path.resolve()]
-    mock_console.print.assert_not_called()
-
-
-def test_parse_file_mentions_handles_bad_tilde_user(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mocker
-) -> None:
-    """Ensure `~nonexistentuser` paths produce a warning instead of crashing.
-
-    `Path.expanduser()` raises `RuntimeError` when the username does not
-    exist. This must be caught gracefully rather than propagating up.
+    `Path.resolve` raises `ValueError` on an embedded NUL and `urlparse` raises
+    on a malformed authority, neither of which is an `OSError`.
     """
-    monkeypatch.chdir(tmp_path)
-    mock_console = mocker.patch("deepagents_code.input.console")
-
-    _, files = parse_file_mentions("@~nonexistentuser12345/file.py")
-
-    assert files == []
-    mock_console.print.assert_called_once()
-    call_arg = mock_console.print.call_args[0][0]
-    assert "nonexistentuser12345" in call_arg
+    assert dropped_payload_paths(payload) == []
 
 
-def test_parse_pasted_file_paths_with_quoted_paths(tmp_path: Path) -> None:
-    """Quoted dropped paths should resolve correctly."""
-    img = tmp_path / "my image.png"
-    img.write_bytes(b"img")
-
-    result = parse_pasted_file_paths(f'"{img}"')
-
-    assert result == [img.resolve()]
-
-
-def test_parse_pasted_file_paths_with_file_url(tmp_path: Path) -> None:
-    """`file://` dropped paths should be URL-decoded and resolved."""
-    img = tmp_path / "space name.png"
-    img.write_bytes(b"img")
-
-    result = parse_pasted_file_paths(f"file://{str(img).replace(' ', '%20')}")
-
-    assert result == [img.resolve()]
-
-
-def test_parse_pasted_file_paths_with_multiple_lines(tmp_path: Path) -> None:
-    """Multiple dropped paths separated by newlines should all resolve."""
-    first = tmp_path / "a.png"
-    second = tmp_path / "b.png"
-    first.write_bytes(b"a")
-    second.write_bytes(b"b")
-
-    result = parse_pasted_file_paths(f"{first}\n{second}")
-
-    assert result == [first.resolve(), second.resolve()]
-
-
-def test_parse_pasted_file_paths_returns_empty_for_text_payload() -> None:
-    """Normal prose should not be interpreted as dropped file paths."""
-    assert parse_pasted_file_paths("please inspect this image") == []
-
-
-def test_parse_pasted_file_paths_returns_empty_for_missing_file(tmp_path: Path) -> None:
-    """Missing dropped files should fall back to regular text paste."""
-    missing = tmp_path / "missing.png"
-    assert parse_pasted_file_paths(str(missing)) == []
-
-
-def test_parse_pasted_file_paths_returns_empty_for_empty_string() -> None:
-    """Empty string should return an empty list."""
-    assert parse_pasted_file_paths("") == []
-
-
-def test_parse_pasted_file_paths_returns_empty_for_whitespace() -> None:
-    """Whitespace-only payloads should return an empty list."""
-    assert parse_pasted_file_paths("   \n\t  ") == []
-
-
-def test_parse_pasted_file_paths_handles_angle_bracket_wrapped_path(
-    tmp_path: Path,
-) -> None:
-    """Angle-bracket wrapped paths (e.g. from some terminals) should resolve."""
-    img = tmp_path / "bracketed.png"
-    img.write_bytes(b"img")
-
-    result = parse_pasted_file_paths(f"<{img}>")
-
-    assert result == [img.resolve()]
-
-
-def test_normalize_pasted_path_rejects_mixed_payload() -> None:
-    """Single-path normalizer should reject path+prose mixed payloads."""
-    assert normalize_pasted_path("'/tmp/a.png' what's this") is None
-
-
-def test_normalize_pasted_path_accepts_windows_drive_payload() -> None:
-    """Unquoted Windows drive path with spaces should parse as one path token."""
-    payload = r"C:\Users\Alice\My Pictures\example image.png"
-    result = normalize_pasted_path(payload)
-    assert result == Path(payload)
-
-
-def test_parse_single_pasted_file_path_resolves_unicode_space_variant(
-    tmp_path: Path,
-) -> None:
-    """ASCII-space paste should resolve files with lookalike Unicode spaces."""
-    unicode_name = "Screenshot 2026-02-26 at 2.02.42\u202fAM.png"
-    img = tmp_path / unicode_name
-    img.write_bytes(b"img")
-
-    pasted_path = str(img).replace("\u202f", " ")
-    pasted = f"'{pasted_path}'"
-    resolved = parse_single_pasted_file_path(pasted)
-
-    assert resolved == img.resolve()
-
-
-def test_parse_single_pasted_file_path_unquoted_posix_path_with_spaces(
-    tmp_path: Path,
-) -> None:
-    """Raw POSIX absolute paths with spaces should resolve as one file path."""
-    img = tmp_path / "Screenshot 1.png"
-    img.write_bytes(b"img")
-
-    resolved = parse_single_pasted_file_path(str(img))
-
-    assert resolved == img.resolve()
-
-
-def test_parse_pasted_path_payload_single_path(tmp_path: Path) -> None:
-    """Payload parser should resolve path-only payloads."""
-    img = tmp_path / "one.png"
-    img.write_bytes(b"img")
-
-    parsed = parse_pasted_path_payload(str(img))
-
-    assert parsed is not None
-    assert parsed.paths == [img.resolve()]
-    assert parsed.token_end is None
-
-
-def test_parse_pasted_path_payload_leading_path_with_suffix(tmp_path: Path) -> None:
-    """Payload parser should extract leading path when enabled."""
-    img = tmp_path / "my image.png"
-    img.write_bytes(b"img")
-    payload = f"'{img}' what's in this image?"
-
-    assert parse_pasted_path_payload(payload) is None
-
-    parsed = parse_pasted_path_payload(payload, allow_leading_path=True)
-
-    assert parsed is not None
-    assert parsed.paths == [img.resolve()]
-    assert parsed.token_end is not None
-    assert payload[parsed.token_end :] == " what's in this image?"
-
-
-def test_extract_leading_pasted_file_path_with_trailing_text(tmp_path: Path) -> None:
-    """Leading path token should be extracted while preserving trailing text."""
-    img = tmp_path / "my image.png"
-    img.write_bytes(b"img")
-    payload = f"'{img}' what's in this image?"
-
-    result = extract_leading_pasted_file_path(payload)
-
-    assert result is not None
-    resolved, end = result
-    assert resolved == img.resolve()
-    assert payload[end:] == " what's in this image?"
-
-
-def test_extract_leading_pasted_file_path_unquoted_path_with_spaces(
-    tmp_path: Path,
-) -> None:
-    """Unquoted absolute paths with spaces should be extracted from leading text."""
-    img = tmp_path / "Screenshot 1.png"
-    img.write_bytes(b"img")
-    payload = f"{img} what's in this"
-
-    result = extract_leading_pasted_file_path(payload)
-
-    assert result is not None
-    resolved, end = result
-    assert resolved == img.resolve()
-    assert payload[end:] == " what's in this"
+@pytest.mark.parametrize(
+    "payload",
+    [
+        "/tmp/a\x00b.png",
+        "file://[::1/x.png",
+    ],
+)
+def test_parse_pasted_file_paths_tolerates_unparseable_payloads(payload: str) -> None:
+    """The strict parser's documented "returns an empty list" contract holds."""
+    assert parse_pasted_file_paths(payload) == []
 
 
 def test_parse_pasted_file_paths_handles_overlong_component(

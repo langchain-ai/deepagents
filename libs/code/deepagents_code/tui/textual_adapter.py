@@ -1,0 +1,4441 @@
+"""Textual UI adapter for agent execution."""
+
+from __future__ import annotations
+
+import asyncio
+import contextlib
+import inspect
+import logging
+import math
+import time
+import uuid
+from typing import TYPE_CHECKING, Any, NamedTuple, cast
+
+import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Iterable,
+        Mapping,
+        Sequence,
+    )
+    from pathlib import Path
+    from typing import Literal, Protocol
+
+    from langchain.agents.middleware.human_in_the_loop import (
+        ActionRequest,
+        ApproveDecision,
+        EditDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import AIMessage
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.types import Command, Interrupt
+    from pydantic import TypeAdapter
+
+    from deepagents_code._ask_user_types import AskUserWidgetResult, Question
+    from deepagents_code.hooks.models.domain import ToolCallData
+    from deepagents_code.resume_state import RubricResult
+
+    # Type alias matching HITLResponse["decisions"] element type
+    HITLDecision = ApproveDecision | EditDecision | RejectDecision
+
+    class _TokensUpdateCallback(Protocol):
+        """Callback signature for `_on_tokens_update`."""
+
+        def __call__(self, count: int, *, approximate: bool = False) -> None: ...
+
+    class _TokensShowCallback(Protocol):
+        """Callback signature for `_on_tokens_show`."""
+
+        def __call__(self, *, approximate: bool = False) -> None: ...
+
+    class _SessionCostCallback(Protocol):
+        """Callback signature for `_on_session_cost`.
+
+        Positional-only: the total is always passed positionally, so a consumer
+        is free to name the parameter for its own domain (a restored checkpoint
+        total, say) rather than matching this one. `thread_id` is keyword-only
+        and may be `""` when the event did not name a thread. `pricing_ok` is
+        `None` when the event did not report pricing health.
+        """
+
+        def __call__(
+            self,
+            total_usd: float,
+            /,
+            *,
+            thread_id: str = "",
+            pricing_ok: bool | None = None,
+        ) -> None: ...
+
+    class _ProvisionalCostCallback(Protocol):
+        """Callback signature for `_on_provisional_cost`.
+
+        Positional-only for the same reason as `_SessionCostCallback`.
+        """
+
+        def __call__(self, cost_usd: float, /) -> None: ...
+
+
+from deepagents_code import _session_stats
+from deepagents_code._ask_user_types import (
+    ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+    ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
+    ASK_USER_ANSWERED_SUMMARY,
+    ASK_USER_CANCELLED_SUMMARY,
+    ASK_USER_FAILED_SUMMARY,
+    AskUserRequest,
+    AskUserRowSummary,
+)
+from deepagents_code._cli_context import CLIContext
+from deepagents_code._constants import SYSTEM_MESSAGE_PREFIX
+from deepagents_code._content_blocks import reasoning_text
+from deepagents_code._tool_stream import (
+    UNRENDERABLE_TOOL_OUTPUT,
+    ToolCallBuffer,
+    ToolCallBufferKey,
+    ToolStatus,
+    build_tool_error_payload,
+    build_tool_result_payload,
+    build_tool_use_payload,
+    count_unemitted_tool_calls,
+    normalize_tool_status,
+    tool_call_buffer_key,
+)
+from deepagents_code._tracing import stream_trace_config
+from deepagents_code.config import build_stream_config, get_glyphs
+from deepagents_code.file_ops import FileOpTracker, record_display_caveat
+from deepagents_code.hooks import (
+    dispatch_hook,
+    dispatch_hook_fire_and_forget,
+)
+from deepagents_code.hooks.manager import PromptOutcome
+from deepagents_code.hooks.permissions import merge_permission_decisions
+from deepagents_code.hooks.transcript import SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
+from deepagents_code.input import MediaTracker, parse_file_mentions
+from deepagents_code.media_utils import create_multimodal_content
+from deepagents_code.model_retry import (
+    INTERRUPTED_TOOL_OUTPUT,
+    RETRY_MARKER_FALLBACK,
+    TERMINAL_ATTEMPT_MARKER,
+    legacy_retry_index,
+    model_attempt_from_event,
+    model_retry_from_event,
+    retry_marker_from_event,
+    retry_status_from_event,
+)
+from deepagents_code.tool_display import format_tool_message_content
+from deepagents_code.tui.widgets.messages import (
+    AppMessage,
+    AssistantMessage,
+    DiffMessage,
+    ReasoningMessage,
+    RubricResultMessage,
+    SummarizationMessage,
+    ToolCallMessage,
+)
+
+logger = logging.getLogger(__name__)
+
+_MAX_COMPLETED_AUTO_REVIEWS = 64
+
+_hitl_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the HITL request validator."""
+
+_ASK_USER_UNSUPPORTED_ERROR = "ask_user not supported by this UI"
+
+
+def _permission_tool_calls(
+    interrupt_id: str,
+    action_requests: Sequence[ActionRequest],
+    current_tool_messages: Mapping[str, ToolCallMessage],
+) -> list[ToolCallData | None]:
+    """Pair each gated action request with the tool id its row already carries.
+
+    HITL action requests do not expose tool-call ids, so a mounted row whose
+    name and arguments match is claimed at most once to recover the real id.
+    Unmatched requests fall back to a positional id derived from the interrupt.
+
+    Args:
+        interrupt_id: LangGraph interrupt owning this batch.
+        action_requests: Gated tool calls, in request order.
+        current_tool_messages: Mounted tool rows keyed by tool-call id.
+
+    Returns:
+        One hook tool call per action request, in the same order. `None` marks
+        a request the graph did not describe well enough to hand to a hook.
+    """
+    from deepagents_code.hooks.models.domain import ToolCallData
+
+    candidates = list(current_tool_messages.items())
+    claimed: set[str] = set()
+    calls: list[ToolCallData | None] = []
+    for index, request in enumerate(action_requests):
+        name = request.get("name")
+        args = request.get("args")
+        if not isinstance(name, str) or not isinstance(args, dict):
+            calls.append(None)
+            continue
+        tool_id = f"{interrupt_id}:{index}"
+        for candidate_id, tool_message in candidates:
+            if candidate_id in claimed:
+                continue
+            if tool_message.tool_name == name and tool_message.args == args:
+                tool_id = candidate_id
+                claimed.add(candidate_id)
+                break
+        calls.append(ToolCallData(id=tool_id, name=name, args=args))
+    return calls
+
+
+def _dispatch_tool_use_hook(
+    tool_name: str, tool_id: str, tool_args: dict[str, Any]
+) -> None:
+    """Dispatch a `tool.use` hook with the payload documented in `hooks`."""
+    dispatch_hook_fire_and_forget(
+        "tool.use", build_tool_use_payload(tool_name, tool_id, tool_args)
+    )
+
+
+def _dispatch_tool_error_hook(tool_name: str) -> None:
+    """Dispatch a `tool.error` hook with the payload documented in `hooks`."""
+    dispatch_hook_fire_and_forget("tool.error", build_tool_error_payload(tool_name))
+
+
+def _is_ask_user_transcript(body: str) -> bool:
+    """Whether a string is a `Q:`/`A:` transcript carrying user-typed answers.
+
+    Matches the exact shape `format_ask_user_transcript` generates, rather than
+    allow-listing the permitted bodies: several legitimate `ask_user` hook bodies
+    are free-text widget-failure messages (`_ASK_USER_UNSUPPORTED_ERROR`, the
+    invalid-payload text), and an allowlist would silently rewrite the next one
+    someone adds. The transcript is the one thing that must never be sent, and it
+    is machine-generated, so its shape is reliable.
+
+    This is a send-side refusal, not a parse: it never interprets answer content,
+    and a false positive costs a summary in a hook body rather than leaking one.
+
+    Args:
+        body: Candidate `tool.result` body.
+
+    Returns:
+        True if `body` looks like a generated Q&A transcript.
+    """
+    return body.startswith("Q: ") and "\nA: " in body
+
+
+def _dispatch_tool_result_hook(
+    tool_name: str,
+    tool_id: str | None,
+    tool_args: dict[str, Any],
+    tool_status: ToolStatus,
+    tool_output: str,
+) -> None:
+    """Dispatch a `tool.result` hook with the payload documented in `hooks`.
+
+    `tool_output` is truncated to `HOOK_TOOL_OUTPUT_LIMIT` inside the shared
+    payload builder.
+
+    For `ask_user`, a body that is a Q&A transcript is replaced with a summary.
+    Each call site already passes a summary, but that correctness is positional —
+    it depends on a live `deferred_tool_result_hooks` entry, which is turn-local, so
+    a `ToolMessage` arriving on a later turn (or via a future branch) would
+    otherwise fall through to a path that dispatches the raw transcript. Enforcing
+    it here by tool name makes "user-typed answers never reach `tool.result`" hold
+    structurally rather than per-branch.
+    """
+    if tool_name == "ask_user" and _is_ask_user_transcript(tool_output):
+        logger.error(
+            "Refusing to send an ask_user answer transcript to hooks "
+            "(tool_id=%s, status=%s); substituting a summary",
+            tool_id,
+            tool_status,
+        )
+        tool_output = (
+            ASK_USER_FAILED_SUMMARY
+            if tool_status == "error"
+            else ASK_USER_ANSWERED_SUMMARY
+        )
+    dispatch_hook_fire_and_forget(
+        "tool.result",
+        build_tool_result_payload(
+            tool_name, tool_id, tool_args, tool_status, tool_output
+        ),
+    )
+
+
+class DeferredToolResultHook(NamedTuple):
+    """A `tool.result` payload held back until the authoritative result arrives.
+
+    Used for an answered `ask_user`: the middleware owns the final status, and the
+    hook body must be the sanitized summary rather than the transcript of the
+    user's answers.
+    """
+
+    tool_args: dict[str, Any]
+    """Args from the interrupt, since the streamed message carries none."""
+
+    tool_output: AskUserRowSummary
+    """Sanitized `tool_output`; never the answers.
+
+    Typed as `AskUserRowSummary` rather than `str` so the "never the transcript"
+    constraint in the class docstring is checked rather than merely documented.
+    """
+
+
+def _dispatch_terminal_tool_result_hooks(
+    tool_messages: dict[str, ToolCallMessage],
+    tool_output: str,
+) -> list[str]:
+    """Emit terminal `tool.error`/`tool.result` for still-pending tool widgets.
+
+    Every widget in `tool_messages` already had its `tool.use` dispatched (that
+    is when the widget is mounted), so any tool that reaches a terminal outcome
+    *without* a streamed `ToolMessage` — a HITL rejection, a cancelled turn, or
+    an aborted stream — would otherwise leave its `tool.use` unterminated. This
+    closes each one with a `tool_status="error"` result carrying the widget's
+    real `tool_name`/`args`, so the "every `tool.use` is closed by a matching
+    terminal event" guarantee holds on those paths too.
+
+    A row carrying a deferred success (`ToolCallMessage.defer_success`) is the
+    exception: it already reached a successful outcome, so it is reported as
+    `tool_status="success"` with `ASK_USER_ANSWERED_NO_RESULT_SUMMARY` instead of
+    `tool_output`, and no `tool.error` is emitted for it. This matches a row that
+    has already fallen back to its summary as well as one still awaiting its
+    result — see `ToolCallMessage.deferred_success_output`.
+
+    TUI-only: the headless surface reaches the equivalent state through
+    `_run_agent_loop`'s orphan drain rather than widgets.
+
+    Args:
+        tool_messages: Map of tool-call id to its widget for the pending tools.
+        tool_output: Terminal output string recorded on each `tool.result`, except
+            for rows with a deferred success (see above).
+
+    Returns:
+        The tool-call ids that received terminal hooks. Callers track these
+            (via `completed_tool_result_ids`) so a later synthetic `ToolMessage`
+            — when the turn still resumes, e.g. alongside an answered `ask_user`
+            — does not double-dispatch.
+    """
+    dispatched: list[str] = []
+    for tool_id, tool_msg in list(tool_messages.items()):
+        if tool_msg.deferred_success_output is not None:
+            # The tool already succeeded (an answered `ask_user`). Reporting the
+            # generic failure here would tell audit hooks a question errored that
+            # the user answered normally — and `ask_user` results double as
+            # authorization records. But every caller that gets here is a teardown
+            # (crash, torn stream, cancel), so the result never arrived: report a
+            # body that says so rather than the plain answered summary, and never
+            # the answers themselves.
+            #
+            # The answers did reach the graph on these paths. Where they provably
+            # did not, the caller settles the row itself with
+            # `ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY` before this sweep runs.
+            _dispatch_tool_result_hook(
+                tool_msg.tool_name,
+                tool_id,
+                tool_msg.args,
+                "success",
+                ASK_USER_ANSWERED_NO_RESULT_SUMMARY,
+            )
+            dispatched.append(tool_id)
+            continue
+        _dispatch_tool_error_hook(tool_msg.tool_name)
+        _dispatch_tool_result_hook(
+            tool_msg.tool_name,
+            tool_id,
+            tool_msg.args,
+            "error",
+            tool_output,
+        )
+        dispatched.append(tool_id)
+    return dispatched
+
+
+def _pop_rows_not_awaiting_deferred_result(
+    tool_messages: dict[str, ToolCallMessage],
+) -> dict[str, ToolCallMessage]:
+    """Remove rows a rejection sweep may terminate immediately.
+
+    An answered `ask_user` remains tracked while the resumed graph produces its
+    authoritative `ToolMessage`. A co-occurring bare HITL rejection still resumes
+    when an answer is pending, so consuming that row here would discard the full
+    transcript or a validation error that arrives on the resumed stream.
+
+    Gates on `is_awaiting_deferred_result`, deliberately *not* the
+    `deferred_success_output is not None` used by
+    `_dispatch_terminal_tool_result_hooks`: an already-settled row has nothing left
+    to wait for, so a rejection sweep may consume it.
+
+    Args:
+        tool_messages: Mutable map of currently tracked tool rows.
+
+    Returns:
+        Rows not awaiting a deferred result, removed from `tool_messages`.
+    """
+    popped: dict[str, ToolCallMessage] = {}
+    for tool_id in list(tool_messages):
+        if not tool_messages[tool_id].is_awaiting_deferred_result:
+            popped[tool_id] = tool_messages.pop(tool_id)
+    return popped
+
+
+def _pop_rows_awaiting_deferred_result(
+    tool_messages: dict[str, ToolCallMessage],
+) -> dict[str, ToolCallMessage]:
+    """Remove the rows still waiting on a deferred result.
+
+    The complement of `_pop_rows_not_awaiting_deferred_result`, for the one caller
+    that must terminate exactly those rows: an abort that discards the resume
+    payload, so the `ToolMessage` they wait for provably never comes.
+
+    Args:
+        tool_messages: Mutable map of currently tracked tool rows.
+
+    Returns:
+        Rows awaiting a deferred result, removed from `tool_messages`.
+    """
+    popped: dict[str, ToolCallMessage] = {}
+    for tool_id in list(tool_messages):
+        if tool_messages[tool_id].is_awaiting_deferred_result:
+            popped[tool_id] = tool_messages.pop(tool_id)
+    return popped
+
+
+def _set_running_unless_deferred(tool_msg: ToolCallMessage) -> None:
+    """Show the running spinner, unless the row already has its own outcome.
+
+    An answered `ask_user` is not an ungated sibling waiting to run: it is tracked
+    only until its `ToolMessage` lands, and a spinner would visibly un-answer the
+    row in the meantime. Every `set_running` sweep over `_current_tool_messages`
+    must go through here, because those sweeps run *after* the `ask_user`
+    resolution loop in the same `pending_interrupts` pass and are not namespace
+    scoped for the main agent — so a batch mixing a question with a gated or
+    hook-resolved tool reaches the answered row.
+
+    Args:
+        tool_msg: Row to move into the running state.
+    """
+    if tool_msg.is_awaiting_deferred_result:
+        return
+    tool_msg.set_running()
+
+
+def _reject_tracked_rows(
+    adapter: TextualUIAdapter,
+    *,
+    reason: str | None = None,
+) -> list[str]:
+    """Terminally reject every tracked row a rejection sweep may consume.
+
+    Gives each row a terminal state before teardown so none is left frozen on a
+    stale "Running...", then closes its `tool.use` with a terminal hook. Rows
+    awaiting a deferred result are left tracked: an answered `ask_user` makes the
+    turn resume, so it still expects its authoritative `ToolMessage` — see
+    `_pop_rows_not_awaiting_deferred_result`.
+
+    Args:
+        adapter: Adapter owning the tracked rows.
+        reason: Optional free-text rejection reason rendered on each row.
+
+    Returns:
+        The tool-call ids that received terminal hooks, for the caller's
+            `completed_tool_result_ids` tracking.
+    """
+    rejected = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
+    for tool_msg in rejected.values():
+        # DOM teardown may fail; cleanup must not mask the originating exception.
+        with contextlib.suppress(Exception):
+            tool_msg.set_rejected(reason=reason)
+            adapter._sync_tool_widget(tool_msg)
+    return _dispatch_terminal_tool_result_hooks(rejected, "Tool approval rejected")
+
+
+class _ModelAttemptScope(NamedTuple):
+    """Active model-attempt correlation, per stream namespace.
+
+    `attempt` is the zero-based value the lifecycle events carry; it is passed
+    straight into the transcript recorder, which treats it as an opaque
+    per-`call_id` index. The same triple doubles as the usage-accounting
+    `attempt_scope`, so a retried attempt's replayed token chunks never
+    double-count under the provider's reused message id.
+    """
+
+    namespace: tuple[str, ...]
+    call_id: str
+    attempt: int
+
+
+async def _settle_attempt_for_retry(  # turn-local state threaded explicitly
+    adapter: TextualUIAdapter,
+    *,
+    preserve_partial: bool,
+    pending_text_by_namespace: dict[tuple, str],
+    assistant_message_by_namespace: dict[tuple, Any],
+    completed_tool_result_ids: set[str],
+    displayed_tool_ids: set[str],
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer],
+) -> None:
+    """Finalize visible root output from a superseded attempt.
+
+    The retried attempt may have streamed text and tool calls before the
+    connection dropped. Its tool rows are given a terminal error state and
+    settled with terminal hooks, and its tool buffers are dropped.
+
+    Args:
+        adapter: Adapter owning the tracked rows and stream widgets.
+        preserve_partial: Whether output escaped to the user. When true the
+            partial reply is detached from the stream and finalized in place, and
+            the per-turn parse maps are cleared so the replay starts a fresh
+            `AssistantMessage` -- the caller then marks the seam. When false
+            nothing escaped, so the replay keeps streaming into the same bubble
+            and only the tool state is settled.
+        pending_text_by_namespace: Per-namespace streamed-text accumulator.
+        assistant_message_by_namespace: Per-namespace live reply widget.
+        completed_tool_result_ids: Ids whose terminal hooks have fired, so a
+            middleware synthetic `ToolMessage` cannot re-dispatch them.
+        displayed_tool_ids: Monotonic mounted-row ids, from which the settled
+            ids are retired. Everywhere else this set is append-only, and
+            deliberately so: a provider redelivering a *completed* call's chunks
+            must not mount a second row. An attempt boundary inverts that -- the
+            replay is a genuinely new call, and a provider that reuses the
+            tool-call id would otherwise have its row suppressed while the tool
+            really runs, so the real `ToolMessage` would be swallowed as an
+            already-settled id and the successful tool would be recorded to
+            hooks as interrupted.
+        tool_call_buffers: Per-turn tool-argument fragment buffers.
+    """
+    root_ns: tuple = ()
+    current_msg = (
+        assistant_message_by_namespace.pop(root_ns, None) if preserve_partial else None
+    )
+    if current_msg is not None:
+        try:
+            await current_msg.stop_stream()
+        except Exception:
+            logger.warning(
+                "Failed to stop interrupted assistant stream on retry",
+                exc_info=True,
+            )
+        else:
+            if adapter._sync_message_content and current_msg.id:
+                adapter._sync_message_content(current_msg.id, current_msg._content)
+    if preserve_partial:
+        pending_text_by_namespace.pop(root_ns, None)
+        # Clears the per-turn refs only; the widget itself stays mounted and now
+        # belongs to the message store, so the replay mounts its own bubble.
+        if adapter._set_active_message:
+            adapter._set_active_message(None)
+
+    # Rows awaiting a deferred result are left tracked: an answered `ask_user`
+    # made the turn resume, so it still expects its authoritative `ToolMessage`
+    # — consuming it here would strand that hook and trip the contradiction
+    # check in the `ToolMessage` handler. Same rule as `_reject_tracked_rows`.
+    settled = _pop_rows_not_awaiting_deferred_result(adapter._current_tool_messages)
+    if settled:
+        completed_tool_result_ids.update(
+            _dispatch_terminal_tool_result_hooks(settled, INTERRUPTED_TOOL_OUTPUT)
+        )
+        for tool_msg in settled.values():
+            try:
+                tool_msg.set_error(INTERRUPTED_TOOL_OUTPUT)
+            except Exception:
+                logger.exception(
+                    "Failed to mark interrupted %s row as an error",
+                    tool_msg.tool_name,
+                )
+            adapter._sync_tool_widget(tool_msg)
+        displayed_tool_ids.difference_update(settled)
+    # Buffers hold unparsed fragments of the interrupted attempt's tool calls;
+    # they never mounted and never fired `tool.use`, so they are dropped
+    # outright rather than counted by the end-of-stream diagnostic.
+    tool_call_buffers.clear()
+
+
+def _get_hitl_request_adapter(hitl_request_type: type) -> TypeAdapter:
+    """Return a cached `TypeAdapter(HITLRequest)`.
+
+    Avoids re-compiling the pydantic schema on every `execute_task_textual` call.
+
+    Args:
+        hitl_request_type: The `HITLRequest` class (passed in because
+            it is imported locally by the caller).
+
+    Returns:
+        Shared `TypeAdapter` instance.
+    """
+    global _hitl_adapter_cache  # noqa: PLW0603
+    if _hitl_adapter_cache is None:
+        from pydantic import TypeAdapter
+
+        _hitl_adapter_cache = TypeAdapter(hitl_request_type)
+    return _hitl_adapter_cache
+
+
+_ask_user_adapter_cache: TypeAdapter | None = None
+"""Lazy singleton for the `ask_user` interrupt validator."""
+
+
+def _get_ask_user_adapter() -> TypeAdapter:
+    """Return a cached `TypeAdapter(AskUserRequest)`.
+
+    Returns:
+        Shared `TypeAdapter` instance.
+    """
+    global _ask_user_adapter_cache  # noqa: PLW0603
+    if _ask_user_adapter_cache is None:
+        from pydantic import TypeAdapter
+
+        _ask_user_adapter_cache = TypeAdapter(AskUserRequest)
+    return _ask_user_adapter_cache
+
+
+def _is_summarization_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is from summarization middleware.
+
+    The summarization model is invoked with
+    `config={"metadata": {"lc_source": "summarization"}}`
+    (see `langchain.agents.middleware.summarization`), which
+    LangChain's callback system merges into the stream metadata dict.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
+
+    Returns:
+        Whether the chunk is from summarization and should be filtered.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "summarization"
+
+
+def _is_auto_mode_classifier_chunk(metadata: dict | None) -> bool:
+    """Check if a message chunk is internal Auto mode classifier output.
+
+    The Auto mode authorization classifier is invoked with
+    `config={"metadata": {"lc_source": "auto_mode_classifier"}}`
+    (see `AutoModeHITLMiddleware` in `deepagents_code.auto_mode`), which
+    LangChain's callback system merges into the stream metadata dict.
+
+    Args:
+        metadata: The metadata dict from the stream chunk.
+
+    Returns:
+        Whether the chunk should be hidden from the conversation transcript.
+    """
+    if metadata is None:
+        return False
+    return metadata.get("lc_source") == "auto_mode_classifier"
+
+
+class RubricEvaluationEnd(NamedTuple):
+    """A validated `rubric_evaluation_end` event forwarded to the caller.
+
+    Bundling the two fields as named attributes (rather than two positional
+    strings) makes the grading-run correlation self-documenting and removes the
+    risk of transposing the run ID and the verdict at a call site.
+    """
+
+    grading_run_id: str
+    """Correlation ID minted by `RubricMiddleware` for this grading run."""
+
+    result: RubricResult
+    """Terminal/loop verdict carried by the event."""
+
+
+def _format_rubric_event(data: dict[str, Any]) -> str | None:
+    """Format a concise rubric custom-stream event for the transcript.
+
+    Args:
+        data: Custom-stream rubric event payload.
+
+    Returns:
+        A user-visible summary for rubric events, or `None` for custom-stream
+        events that are not rubric events.
+    """
+    glyphs = get_glyphs()
+    event_type = data.get("type")
+    if event_type == "rubric_evaluation_start":
+        iteration = data.get("iteration", 0)
+        show_iteration = data.get("show_iteration") is True
+        label = (
+            f" (iteration {iteration + 1})"
+            if show_iteration and isinstance(iteration, int)
+            else ""
+        )
+        return (
+            f"{glyphs.hourglass} Checking acceptance criteria{label}{glyphs.ellipsis}"
+        )
+    if event_type != "rubric_evaluation_end":
+        return None
+
+    result = data.get("result")
+    if result is None:
+        return None
+    if result == "satisfied":
+        return f"{glyphs.checkmark} Acceptance criteria satisfied"
+    # `unverified` marks a grader that could not account for every criterion, so
+    # the verdict is a verification gap rather than a list of confirmed defects.
+    unverified = data.get("unverified") is True
+    if result == "needs_revision":
+        if unverified:
+            return f"{glyphs.retry} Acceptance criteria could not be verified"
+        return f"{glyphs.retry} Acceptance criteria not yet satisfied"
+    if result == "max_iterations_reached":
+        summary = (
+            "Acceptance criteria could not be verified"
+            if unverified
+            else "Acceptance criteria not yet satisfied"
+        )
+        return f"{glyphs.warning} {summary} (iteration limit reached)"
+    if result == "failed":
+        return f"{glyphs.warning} Rubric is invalid or cannot be evaluated"
+    if result == "grader_error":
+        return f"{glyphs.warning} Acceptance criteria check failed"
+    # A `rubric_evaluation_end` with an unrecognized result is still a terminal
+    # grading event; surface it rather than silently dropping it (e.g. if the
+    # SDK adds a new verdict the chat would otherwise go quiet mid-turn).
+    return f"{glyphs.warning} Acceptance criteria check ended"
+
+
+def _format_rubric_details(data: dict[str, Any], *, goal_active: bool = False) -> str:
+    """Format complete grader details without serializing or truncating payloads.
+
+    Args:
+        data: Custom-stream rubric event payload.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
+
+    Returns:
+        Plain text containing the full explanation, unmet criteria, and next step.
+    """
+    result = data.get("result")
+    if result in {None, "satisfied"}:
+        return ""
+
+    sections: list[str] = []
+    explanation = str(data.get("explanation") or "").strip()
+    if explanation:
+        sections.append(f"Explanation\n{explanation}")
+
+    criteria = data.get("criteria")
+    failing: list[tuple[str, str]] = []
+    passing: list[str] = []
+    if isinstance(criteria, list):
+        for criterion in criteria:
+            if not isinstance(criterion, dict):
+                continue
+            verdict = criterion.get("passed")
+            # Strict identity keeps a missing or non-boolean verdict out of both
+            # lists rather than guessing which way it should count.
+            if verdict is False:
+                name = str(criterion.get("name") or "Unnamed criterion").strip()
+                gap = str(criterion.get("gap") or "").strip()
+                failing.append((name, gap))
+            elif verdict is True:
+                passing.append(
+                    str(criterion.get("name") or "Unnamed criterion").strip()
+                )
+    if passing:
+        # Shown so the panel reports the grader's full accounting; without it a
+        # partial evaluation is indistinguishable from a complete one.
+        sections.append(
+            "\n".join(["Satisfied criteria", *(f"- {name}" for name in passing)])
+        )
+    if failing:
+        lines = ["Unmet criteria"]
+        for name, gap in failing:
+            lines.append(f"- {name}" + (f"\n  {gap}" if gap else ""))
+        sections.append("\n".join(lines))
+
+    unverified = data.get("unverified") is True
+
+    if result == "max_iterations_reached" and goal_active:
+        next_step = (
+            "The goal remains active. Continue with another prompt to resume or "
+            "retry, use `/goal <objective>` to amend it, or `/goal clear` to clear it."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"} and unverified:
+        # The gap is in coverage, not in the criteria the grader did report, so
+        # the next step is to re-verify rather than to fix a listed failure.
+        next_step = (
+            "The grader could not account for every criterion, so the full "
+            "rubric was not verified. Retry the check to re-verify the work."
+        )
+    elif result in {"needs_revision", "max_iterations_reached"}:
+        next_step = "Address every unmet criterion, then retry the check."
+    elif result == "failed":
+        next_step = "Review or replace the rubric before grading again."
+    elif result == "grader_error":
+        next_step = "Retry the check, or choose a different grader model."
+    else:
+        next_step = "Review the grader details before continuing."
+    sections.append(f"Next step\n{next_step}")
+    return "\n\n".join(sections)
+
+
+class TextualUIAdapter:
+    """Adapter for rendering agent output to Textual widgets.
+
+    This adapter provides an abstraction layer between the agent execution and the
+    Textual UI, allowing streaming output to be rendered as widgets.
+    """
+
+    def __init__(
+        self,
+        # Returns whether the widget reached the screen; most callers ignore it,
+        # but the diff path needs it to tell a rendered caveat from one dropped
+        # by a torn-down transcript.
+        mount_message: Callable[..., Awaitable[bool]],
+        update_status: Callable[[str], None],
+        request_approval: Callable[..., Awaitable[Any]],
+        on_auto_approve_enabled: Callable[[], Awaitable[bool] | bool | None]
+        | None = None,
+        on_switch_to_manual: Callable[[], Awaitable[bool] | bool] | None = None,
+        set_spinner: Callable[[_session_stats.SpinnerStatus], Awaitable[None]]
+        | None = None,
+        set_active_message: Callable[[str | None], None] | None = None,
+        on_user_visible_output_started: Callable[[], None] | None = None,
+        sync_message_content: Callable[[str, str], None] | None = None,
+        sync_tool_message: Callable[[ToolCallMessage], None] | None = None,
+        request_ask_user: (
+            Callable[
+                [list[Question]],
+                Awaitable[asyncio.Future[AskUserWidgetResult] | None],
+            ]
+            | None
+        ) = None,
+        on_tool_complete: Callable[[], None] | None = None,
+        on_subagent_event: Callable[[dict[str, Any]], None] | None = None,
+        on_auto_mode_event: (
+            Callable[[dict[str, Any]], Awaitable[None] | None] | None
+        ) = None,
+        on_approval_mode_fallback: Callable[[str], None] | None = None,
+        *,
+        show_diff_line_numbers: bool = True,
+    ) -> None:
+        """Initialize the adapter."""
+        self._mount_message = mount_message
+        """Async callback to mount a message widget to the chat."""
+
+        self._update_status = update_status
+        """Callback to update the status bar text."""
+
+        self._request_approval = request_approval
+        """Async callback that returns a Future for HITL approval."""
+
+        self._on_auto_approve_enabled = on_auto_approve_enabled
+        """Callback invoked before a Manual approval enables Auto."""
+
+        self._on_switch_to_manual = on_switch_to_manual
+        """Callback that persists Manual before an Auto fallback resumes."""
+
+        self._set_spinner = set_spinner
+        """Callback to show/hide loading spinner."""
+
+        self._set_active_message = set_active_message
+        """Callback to set the active streaming message ID (pass `None` to clear)."""
+
+        self._on_user_visible_output_started = on_user_visible_output_started
+        """Callback fired after the first model text or tool-call widget renders.
+
+        Hidden model and subagent output does not trigger it. A turn interrupted
+        before any user-visible model output produces zero firings.
+        """
+
+        self._sync_message_content = sync_message_content
+        """Callback to sync final message content back to the store after streaming."""
+
+        self._sync_tool_message = sync_tool_message
+        """Callback to sync a tool widget's mutable state back to the store."""
+
+        self._request_ask_user = request_ask_user
+        """Async callback for `ask_user` interrupts.
+
+        When awaited, returns a `Future` that resolves to user answers.
+        """
+
+        self._on_tool_complete = on_tool_complete
+        """Sync callback fired after each `ToolMessage` is processed.
+
+        The app uses this to refresh the footer's git branch as soon as an
+        agent-executed tool (e.g. `git checkout`) returns, instead of waiting
+        for the full turn to finish.
+        """
+
+        self._on_subagent_event = on_subagent_event
+        """Sync callback fired for each validated `subagent` custom-stream event."""
+
+        self._on_auto_mode_event = on_auto_mode_event
+        """Callback for compact sanitized Auto denial and fallback events."""
+
+        self._on_approval_mode_fallback = on_approval_mode_fallback
+        """Callback that synchronizes a fail-closed startup fallback to Manual."""
+
+        self._show_diff_line_numbers = show_diff_line_numbers
+        """Whether file-relative line numbers are shown in diff hunks."""
+
+        # State tracking
+        self._current_tool_messages: dict[str, ToolCallMessage] = {}
+        """Map of tool call IDs to their message widgets."""
+
+        self._active_auto_reviews: dict[str, frozenset[str]] = {}
+        """Reviewed tool IDs keyed by active Auto classifier batch."""
+
+        self._completed_auto_reviews: dict[str, None] = {}
+        """Recently completed batches used to reject late lifecycle events.
+
+        An insertion-ordered mapping, not a set: the cap evicts oldest-first.
+        """
+
+        # Token display callbacks (set by the app after construction)
+        self._on_tokens_update: _TokensUpdateCallback | None = None
+        """Called with total context tokens after each LLM response."""
+
+        self._on_tokens_pending: Callable[[], None] | None = None
+        """Called to show an unknown token count during streaming."""
+
+        self._on_tokens_show: _TokensShowCallback | None = None
+        """Called to restore the token display with the cached value."""
+
+        self._on_session_cost: _SessionCostCallback | None = None
+        """Called with the graph's absolute cumulative thread cost.
+
+        The graph owns the durable total and streams it after each step, so this
+        is the only input the displayed lifetime figure is built from.
+        """
+
+        self._on_provisional_cost: _ProvisionalCostCallback | None = None
+        """Called with a streamed request's estimate for the live display only.
+
+        Keeps the status bar moving during work whose cost the graph has not
+        checkpointed yet — a long subagent run, say — without making the client
+        a second authority: every server total replaces what this accumulated.
+        """
+
+        self._on_usage_update: Callable[[], None] | None = None
+        """Called after streamed request usage changes."""
+
+        self._on_stream_complete: Callable[[], None] | None = None
+        """Called only after the agent stream reaches a clean end."""
+
+    def _reset_auto_mode_review_tracking(self) -> None:
+        """Start each user turn with no in-flight batch and no replay guard.
+
+        This runs once per turn, not per `astream` iteration. An interrupt
+        resume re-runs the producer's routing node and replays its completion,
+        so the replay guard has to outlive a single iteration.
+
+        Rows paused by a batch that never completed are left alone: their own
+        `ToolMessage` still resolves them, and this runs before the new turn has
+        any lifecycle event to act on.
+        """
+        self._active_auto_reviews.clear()
+        self._completed_auto_reviews.clear()
+
+    async def _handle_auto_mode_review_event(self, event: _AutoModeReviewEvent) -> None:
+        """Apply one validated Auto classifier lifecycle event."""
+        if event.phase == "review_started":
+            await self._start_auto_mode_review(event)
+        else:
+            await self._complete_auto_mode_review(event)
+
+    async def _start_auto_mode_review(self, event: _AutoModeReviewEvent) -> None:
+        """Pause reviewed tool rows and show classifier progress."""
+        if (
+            event.batch_id in self._active_auto_reviews
+            or event.batch_id in self._completed_auto_reviews
+        ):
+            return
+        self._active_auto_reviews[event.batch_id] = frozenset(event.tool_call_ids)
+        for tool_call_id in event.tool_call_ids:
+            self._move_reviewed_row(tool_call_id, running=False)
+        if self._set_spinner is not None:
+            await self._set_spinner("Reviewing approval request")
+
+    def _move_reviewed_row(self, tool_call_id: str, *, running: bool) -> None:
+        """Pause or resume one reviewed row.
+
+        Swallow a widget failure so the caller's sweep still reaches the rest of
+        the batch, and sync either way: a mutation that raised part-way through
+        has still changed the widget, and skipping the sync would leave the
+        store disagreeing with it until the next full redraw.
+        """
+        tool_msg = self._current_tool_messages.get(tool_call_id)
+        if tool_msg is None:
+            return
+        try:
+            if running:
+                _set_running_unless_deferred(tool_msg)
+            else:
+                tool_msg.pause_running()
+        except Exception:
+            logger.exception("Could not move Auto reviewed row %s", tool_call_id)
+        finally:
+            self._sync_tool_widget(tool_msg)
+
+    def _remember_completed_auto_review(self, batch_id: str) -> None:
+        """Bound the replay guard for a turn that runs many classifier batches."""
+        self._completed_auto_reviews[batch_id] = None
+        if len(self._completed_auto_reviews) > _MAX_COMPLETED_AUTO_REVIEWS:
+            oldest_batch_id = next(iter(self._completed_auto_reviews))
+            del self._completed_auto_reviews[oldest_batch_id]
+            logger.debug(
+                "Auto review batch %s left the completion cap; a late replay of "
+                "it may re-pause its rows",
+                oldest_batch_id,
+            )
+
+    async def _complete_auto_mode_review(self, event: _AutoModeReviewEvent) -> None:
+        """Resume the rows this batch may still run, then release the spinner.
+
+        Releasing means back to `Thinking`, or staying on the review status
+        while another batch is still active. There is no saved prior value.
+
+        Anything other than an exact match between the start's tool IDs and the
+        completion's means the two sides disagree, so the approval list cannot be
+        trusted. Resume every row the batch paused instead: a row that turns out
+        to be denied corrects itself when its `ToolMessage` lands, while a row
+        left paused stays frozen with no recovery path.
+        """
+        self._remember_completed_auto_review(event.batch_id)
+        reviewed_ids = self._active_auto_reviews.pop(event.batch_id, None)
+        if reviewed_ids is None:
+            # Expected for a replayed completion, and the only trace left by a
+            # start that the validator rejected or the writer dropped. Leave the
+            # spinner alone: this batch never claimed it.
+            logger.debug(
+                "Auto review completion for batch %s matched no active batch",
+                event.batch_id,
+            )
+            return
+        try:
+            if event.recovered:
+                resumed_ids: Iterable[str] = reviewed_ids
+            elif reviewed_ids == frozenset(event.tool_call_ids):
+                resumed_ids = event.approved_tool_call_ids
+            else:
+                logger.warning(
+                    "Auto review completion for batch %s covers a different tool "
+                    "set than its start (started=%d, completed=%d); resuming "
+                    "every reviewed row",
+                    event.batch_id,
+                    len(reviewed_ids),
+                    len(event.tool_call_ids),
+                )
+                resumed_ids = reviewed_ids
+            for tool_call_id in resumed_ids:
+                self._move_reviewed_row(tool_call_id, running=True)
+        finally:
+            status: _session_stats.SpinnerStatus = (
+                "Reviewing approval request"
+                if self._active_auto_reviews
+                else "Thinking"
+            )
+            if self._set_spinner is not None:
+                await self._set_spinner(status)
+
+    def _sync_tool_widget(self, tool_msg: ToolCallMessage) -> None:
+        """Sync a tool widget when the app provided a store callback.
+
+        Total by contract: never raises. Call sites are scattered across the
+        turn loop, some outside try/except, so a sync failure must not abort
+        the turn — it is logged and swallowed here.
+        """
+        if self._sync_tool_message is None:
+            return
+        try:
+            self._sync_tool_message(tool_msg)
+        except Exception:
+            logger.exception("Failed to sync tool widget state to store")
+
+    def finalize_pending_tools_with_error(self, error: str) -> None:
+        """Mark all pending/running tool widgets as error and clear tracking.
+
+        This is used as a safety net when an unexpected exception aborts
+        streaming before matching `ToolMessage` results are received.
+
+        Args:
+            error: Error text to display in each pending tool widget.
+        """
+        # Each pending widget already had its `tool.use` dispatched at mount, so
+        # emit terminal hooks before dropping them — otherwise an aborted stream
+        # leaves those `tool.use` events unterminated for audit consumers. Runs
+        # before the widget updates so a `set_error` failure can't skip it.
+        _dispatch_terminal_tool_result_hooks(self._current_tool_messages, error)
+        for tool_msg in list(self._current_tool_messages.values()):
+            # Guarded per row: this is the last-resort backstop, so one widget
+            # failing to render must not abort the sweep and leave the remaining
+            # rows tracked across turns (the `clear()` below would be skipped too).
+            try:
+                tool_msg.set_error(error)
+                self._sync_tool_widget(tool_msg)
+            except Exception:
+                logger.exception(
+                    "Failed to finalize pending %s row with an error",
+                    tool_msg.tool_name,
+                )
+        self._current_tool_messages.clear()
+
+        # Clear active streaming message to avoid stale "active" state in the store.
+        if self._set_active_message:
+            self._set_active_message(None)
+
+
+def _build_interrupted_ai_message(
+    pending_text_by_namespace: dict[tuple, str],
+    current_tool_messages: dict[str, Any],
+) -> AIMessage | None:
+    """Build an AIMessage capturing interrupted state (text + tool calls).
+
+    Args:
+        pending_text_by_namespace: Dict of accumulated text by namespace
+        current_tool_messages: Dict of tool_id -> ToolCallMessage widget
+
+    Returns:
+        AIMessage with accumulated content and tool calls, or None if empty.
+    """
+    from langchain_core.messages import AIMessage
+
+    main_ns_key = ()
+    accumulated_text = pending_text_by_namespace.get(main_ns_key, "").strip()
+
+    # Reconstruct tool_calls from displayed tool messages
+    tool_calls = []
+    for tool_id, tool_widget in list(current_tool_messages.items()):
+        if tool_widget.deferred_success_output is not None:
+            # An answered `ask_user` stays tracked until its `ToolMessage`
+            # arrives, so a cancel lands here with the row still present. The
+            # graph already owns this tool call in its checkpoint, so adding it
+            # would append a second `tool_use` with no matching `tool_result` —
+            # which the provider rejects, surfacing turns later as an opaque 400
+            # with nothing pointing back to the cancelled question.
+            #
+            # Gated on `deferred_success_output`, not `is_awaiting_deferred_result`:
+            # the hazard is that the graph owns the call, which stays true once the
+            # row has fallen back to its summary. A settled row can still be
+            # tracked here (a permission hook returning `plan.interrupted` settles
+            # it without popping it), and it must be omitted too.
+            logger.info(
+                "Omitting tool call %s from interrupted AIMessage; the graph "
+                "already owns it via its deferred result",
+                tool_id,
+            )
+            continue
+        tool_calls.append(
+            {
+                "id": tool_id,
+                "name": tool_widget._tool_name,
+                "args": tool_widget._args,
+            }
+        )
+
+    if not accumulated_text and not tool_calls:
+        return None
+
+    return AIMessage(
+        content=accumulated_text,
+        tool_calls=tool_calls or [],
+    )
+
+
+def _interrupt_owned_tool_rows(
+    action_requests: Iterable[Mapping[str, Any]],
+    current_tool_messages: Mapping[str, ToolCallMessage],
+) -> list[ToolCallMessage]:
+    """Return the tracked tool rows a nested interrupt's action requests own.
+
+    Used by `_interrupt_tool_rows` for a nested (non-main-agent) checkpoint,
+    whose pause/resume must touch only the specific tool calls it carries so
+    unrelated outer `task` rows keep running. Because a `HITLRequest`'s
+    `ActionRequest` carries no tool-call id, ownership is matched by tool name
+    plus argument value-equality (order-independent `dict` comparison). Each
+    candidate row is claimed at most once, so two identical calls map to two
+    distinct rows.
+
+    Two caveats follow from matching on args value rather than an id:
+
+    - It relies on the human-in-the-loop middleware surfacing the tool call's
+        `args` unchanged in the action request (true as of the pinned
+        `langchain` middleware). If that ever diverges — normalization, a JSON
+        round-trip, redaction — the match degrades silently to returning fewer
+        rows; `test_matches_row_by_name_and_args` guards the current contract.
+    - A nested action request that happens to share a name and args with a
+        concurrently tracked row (e.g. an identical `execute` call at another
+        nesting level) can misattribute that row. This is strictly rarer than
+        pausing every row and self-corrects, since the same helper drives both
+        pause and resume.
+
+    A nested subagent's own child tool call is not tracked in
+    `current_tool_messages` — message-stream tool rows are gated to the main
+    agent (see the `is_main_agent` check) — so a purely nested interrupt
+    normally matches nothing and leaves every outer row untouched, keeping the
+    still-running `task` timers monotonic across the checkpoint.
+
+    Args:
+        action_requests: The interrupt's action requests (`name` + `args`).
+        current_tool_messages: Live map of tool-call id to tracked tool row.
+
+    Returns:
+        The subset of tracked rows owned by these action requests, in
+            request order.
+    """
+    candidates = list(current_tool_messages.values())
+    claimed_ids: set[int] = set()
+    owned: list[ToolCallMessage] = []
+    for request in action_requests:
+        name = request.get("name")
+        args = request.get("args", {})
+        for tool_msg in candidates:
+            if id(tool_msg) in claimed_ids:
+                continue
+            if tool_msg.tool_name == name and tool_msg.args == args:
+                owned.append(tool_msg)
+                claimed_ids.add(id(tool_msg))
+                break
+    return owned
+
+
+def _interrupt_tool_rows(
+    namespace: tuple[Any, ...],
+    action_requests: Iterable[Mapping[str, Any]],
+    current_tool_messages: Mapping[str, ToolCallMessage],
+) -> list[ToolCallMessage]:
+    """Return rows blocked by an interrupt at `namespace`.
+
+    A main-agent checkpoint prevents its entire parallel tool batch from
+    reaching the tool node, including ungated siblings omitted from the HITL
+    action requests. Nested checkpoints must remain scoped to their own action
+    requests so unrelated outer `task` rows keep running.
+
+    Args:
+        namespace: Stream namespace that emitted the interrupt.
+        action_requests: The interrupt's reviewed tool calls.
+        current_tool_messages: Live map of tool-call id to tracked tool row.
+
+    Returns:
+        Every tracked row for a main-agent interrupt, otherwise only rows owned
+            by the nested interrupt's action requests.
+    """
+    if not namespace:
+        return list(current_tool_messages.values())
+    return _interrupt_owned_tool_rows(action_requests, current_tool_messages)
+
+
+def _read_mentioned_file(file_path: Path, max_embed_bytes: int) -> str:
+    """Read a mentioned file for inline embedding (sync, for use with to_thread).
+
+    Args:
+        file_path: Resolved path to the file.
+        max_embed_bytes: Size threshold; larger files get a reference only.
+
+    Returns:
+        Markdown snippet with the file content or a size-exceeded reference.
+    """
+    file_size = file_path.stat().st_size
+    if file_size > max_embed_bytes:
+        size_kb = file_size // 1024
+        return (
+            f"\n### {file_path.name}\n"
+            f"Path: `{file_path}`\n"
+            f"Size: {size_kb}KB (too large to embed, "
+            "use read_file tool to view)"
+        )
+    content = file_path.read_text(encoding="utf-8")
+    return f"\n### {file_path.name}\nPath: `{file_path}`\n```text\n{content}\n```"
+
+
+def _is_renderable_subagent_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Whether a `custom` payload is a subagent event this UI can render.
+
+    Guards the live panel against unrelated/malformed custom events and against
+    nested (subagent-to-subagent) emissions.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the event came from the main agent's namespace
+            (the empty namespace). Nested emissions are ignored.
+
+    Returns:
+        True only for a well-formed subagent event from the main agent.
+    """
+    return is_main_agent and isinstance(data, dict) and data.get("type") == "subagent"
+
+
+def _session_cost_total(data: Any, *, is_main_agent: bool) -> float | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the absolute thread cost carried by a session-cost event.
+
+    Args:
+        data: The `custom` stream payload.
+        is_main_agent: Whether the payload came from the top-level namespace.
+            Only the main agent owns the cost channel, so a nested emit is
+            treated as malformed rather than applied to the displayed total.
+
+    Returns:
+        The finite non-negative total in US dollars, or `None` when the payload
+            is not a well-formed session-cost event from the main agent.
+    """
+    from deepagents_code.cost_tracking import SESSION_COST_EVENT_TYPE
+
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != SESSION_COST_EVENT_TYPE
+    ):
+        return None
+    total = data.get("total")
+    if isinstance(total, bool) or not isinstance(total, int | float):
+        return None
+    total_usd = float(total)
+    if not math.isfinite(total_usd) or total_usd < 0:
+        return None
+    return total_usd
+
+
+def _session_cost_thread_id(data: Any) -> str:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return the thread a session-cost event belongs to.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's thread ID, or `""` when the payload omits one. An empty
+            result means the total cannot be attributed, so the client applies
+            it rather than discarding a legitimate update.
+    """
+    if not isinstance(data, dict):
+        return ""
+    thread_id = data.get("thread_id")
+    return thread_id if isinstance(thread_id, str) else ""
+
+
+def _session_cost_pricing_ok(data: Any) -> bool | None:  # noqa: ANN401  # custom-stream payload is dynamic
+    """Return whether the pricing process reported healthy price data.
+
+    Args:
+        data: The `custom` stream payload, already validated as a cost event.
+
+    Returns:
+        The event's `pricing_ok` flag, or `None` when the payload omits it or
+            states a non-boolean. `None` means "unknown", which leaves the
+            client's own view of pricing health untouched rather than
+            overriding it with a guess.
+    """
+    if not isinstance(data, dict):
+        return None
+    pricing_ok = data.get("pricing_ok")
+    return pricing_ok if isinstance(pricing_ok, bool) else None
+
+
+def _require_approval_mode_key(value: str | None) -> str:
+    """Return a written Store key for fail-closed startup.
+
+    Raises:
+        RuntimeError: If the remote agent has no Store writer.
+    """
+    if value is None:
+        msg = "Approval-mode Store writer is unavailable"
+        raise RuntimeError(msg)
+    return value
+
+
+class _AutoModeReviewEvent(NamedTuple):
+    """Validated lifecycle event for one Auto classifier review."""
+
+    phase: Literal["review_started", "review_completed"]
+    batch_id: str
+    tool_call_ids: tuple[str, ...]
+    approved_tool_call_ids: tuple[str, ...]
+    recovered: bool = False
+    """Synthesized from a rejected completion, so its ID lists carry no meaning."""
+
+
+def _opaque_ids(value: object, *, allow_empty: bool = False) -> tuple[str, ...] | None:
+    """Validate an ordered list of unique opaque identifiers.
+
+    Empty strings are rejected along with non-strings: an ID that cannot key a
+    tool row is malformed, not merely unusable.
+
+    Returns:
+        The validated identifiers, or `None` for an invalid value.
+    """
+    if not isinstance(value, list) or (not value and not allow_empty):
+        return None
+    if any(not isinstance(item, str) or not item for item in value):
+        return None
+    # The check above proved every item is a non-empty `str`.
+    identifiers = cast("tuple[str, ...]", tuple(value))
+    return identifiers if len(set(identifiers)) == len(identifiers) else None
+
+
+def _validated_auto_mode_review_event(
+    data: Any,  # noqa: ANN401
+    *,
+    phase: Literal["review_started", "review_completed"],
+) -> _AutoModeReviewEvent | None:
+    """Validate the body of a lifecycle payload with a known phase.
+
+    Args:
+        data: Payload already confirmed to be an Auto mode event dict.
+        phase: Lifecycle phase parsed from the payload.
+
+    Returns:
+        The validated lifecycle event, or `None` when the body is malformed.
+    """
+    expected_keys = {"type", "event", "batch_id", "tool_call_ids"}
+    if phase == "review_completed":
+        expected_keys.add("approved_tool_call_ids")
+    if set(data) != expected_keys:
+        return None
+    batch_id = data.get("batch_id")
+    tool_call_ids = _opaque_ids(data.get("tool_call_ids"))
+    if not isinstance(batch_id, str) or not batch_id or tool_call_ids is None:
+        return None
+    if phase == "review_started":
+        # The key-set check above already rejected `approved_tool_call_ids`
+        # here, because `expected_keys` omits it for this phase.
+        approved_tool_call_ids: tuple[str, ...] = ()
+    else:
+        approved_tool_call_ids = _opaque_ids(
+            data.get("approved_tool_call_ids"), allow_empty=True
+        )
+        if approved_tool_call_ids is None:
+            return None
+        if not set(approved_tool_call_ids).issubset(tool_call_ids):
+            return None
+    return _AutoModeReviewEvent(phase, batch_id, tool_call_ids, approved_tool_call_ids)
+
+
+def _parse_auto_mode_review_event(
+    data: object, *, is_main_agent: bool
+) -> _AutoModeReviewEvent | None:
+    """Validate an Auto classifier lifecycle event from the main agent.
+
+    Returns:
+        The validated lifecycle event, or `None` when the payload is not trusted.
+    """
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != "auto_mode"
+    ):
+        return None
+    phase = data.get("event")
+    if not isinstance(phase, str) or phase not in {
+        "review_started",
+        "review_completed",
+    }:
+        return None
+    event = _validated_auto_mode_review_event(data, phase=phase)
+    if event is not None:
+        return event
+    # `auto_mode` builds this payload by hand, and
+    # `_validated_auto_mode_review_event` re-derives its exact key set. Producer
+    # drift is therefore rejected rather than degraded. Past the phase check the
+    # payload is meant to be a lifecycle event, so a rejection is a defect, not
+    # a foreign event, and this warning is the only signal that the payload
+    # shapes have diverged.
+    batch_id = data.get("batch_id")
+    logger.warning(
+        "Rejected malformed Auto review event: event=%s batch_id=%s keys=%s",
+        phase,
+        batch_id,
+        list(data),
+    )
+    if phase == "review_started" or not isinstance(batch_id, str) or not batch_id:
+        return None
+    # Dropping a rejected completion is the unsafe direction: rows paused by a
+    # valid start would never resume. Recover the batch instead, and let the ID
+    # lists stay empty because nothing in this payload can be trusted.
+    return _AutoModeReviewEvent(phase, batch_id, (), (), recovered=True)
+
+
+def _is_renderable_auto_mode_event(data: Any, *, is_main_agent: bool) -> bool:  # noqa: ANN401
+    """Return whether a custom event is a sanitized Auto control-state notice."""
+    if (
+        not is_main_agent
+        or not isinstance(data, dict)
+        or data.get("type") != "auto_mode"
+    ):
+        return False
+    event = data.get("event")
+    reason = data.get("reason")
+    mode = data.get("mode")
+    return (
+        event in {"fallback", "warning"}
+        and (reason is None or isinstance(reason, str))
+        and (mode is None or (event == "fallback" and mode == "manual"))
+    )
+
+
+async def _finalize_usage_round(
+    stream: AsyncIterator[Any],
+    recorded_requests: dict[
+        _session_stats.UsageLedgerKey, _session_stats.RecordedRequest
+    ],
+) -> AsyncIterator[Any]:
+    """Close streamed usage records when one graph stream pass ends.
+
+    Args:
+        stream: One invocation of the graph's event stream.
+        recorded_requests: Turn ledger shared across resume passes.
+
+    Yields:
+        Each graph event from the wrapped stream.
+    """
+    try:
+        async for chunk in stream:
+            yield chunk
+    finally:
+        _session_stats.finalize_recorded_requests(recorded_requests)
+
+
+def _apply_recorded_usage(
+    adapter: Any,  # noqa: ANN401  # adapter type is the TUI callback bundle
+    recorded_usage: _session_stats.RecordedUsage | None,
+) -> None:
+    """Refresh the usage display and provisional cost for one recorded request.
+
+    Args:
+        adapter: The stream adapter holding the display callbacks.
+        recorded_usage: What the request added to the turn's stats, or `None`
+            when nothing was recorded and there is nothing to show.
+    """
+    if recorded_usage is None:
+        return
+    if adapter._on_usage_update:
+        adapter._on_usage_update()
+    if recorded_usage.cost_usd is None or not adapter._on_provisional_cost:
+        return
+    # Display-only: the graph checkpoints the same spend and streams the
+    # authoritative total, which supersedes this estimate.
+    try:
+        adapter._on_provisional_cost(recorded_usage.cost_usd)
+    except Exception:
+        logger.warning("on_provisional_cost callback failed", exc_info=True)
+
+
+async def _mount_diff_note(adapter: Any, text: str) -> None:  # noqa: ANN401  # adapter type is the TUI callback bundle
+    """Mount a standalone transcript note about a diff that could not be shown.
+
+    A last resort for the cases where no tool row and no diff body survived to
+    carry the message. The transcript is the surface these statements were
+    written for; a log line reaches only a user who already suspects something
+    is wrong and knows to open the Debug Console.
+
+    Guarded because it runs on the turn loop: failing to render a note about a
+    rendering failure must not abort the turn and drop the remaining tools'
+    hooks.
+
+    Args:
+        adapter: The stream adapter holding the mount callback.
+        text: The sentence to display.
+    """
+    try:
+        await adapter._mount_message(AppMessage(text))
+    except Exception:
+        logger.exception("Failed to mount diff note: %s", text)
+
+
+async def execute_task_textual(
+    user_input: str,
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    assistant_id: str | None,
+    session_state: Any,  # noqa: ANN401  # Dynamic session state type
+    adapter: TextualUIAdapter,
+    backend: Any = None,  # noqa: ANN401  # Dynamic backend type
+    image_tracker: MediaTracker | None = None,
+    context: CLIContext | None = None,
+    *,
+    show_reasoning: bool = False,
+    sandbox_type: str | None = None,
+    message_kwargs: dict[str, Any] | None = None,
+    skill_name: str | None = None,
+    graph_input: dict[str, Any] | None = None,
+    rubric: str | None = None,
+    goal_active: bool = False,
+    on_rubric_evaluation_end: Callable[[RubricEvaluationEnd], None] | None = None,
+    turn_stats: _session_stats.SessionStats | None = None,
+) -> _session_stats.SessionStats:
+    """Execute a task with output directed to Textual UI.
+
+    This is the Textual-compatible version of execute_task() that uses
+    the TextualUIAdapter for all UI operations.
+
+    Args:
+        user_input: The user's input message
+        agent: The LangGraph agent to execute
+        assistant_id: The agent identifier
+        session_state: Session state with a typed approval mode.
+        adapter: The TextualUIAdapter for UI operations.
+        backend: Optional backend for file operations.
+        show_reasoning: Show provider-visible reasoning in the transcript.
+        image_tracker: Optional tracker for images.
+        context: Optional `CLIContext` with model override and params. The current
+            mode is persisted and copied into runtime context before every stream
+            iteration.
+        sandbox_type: Sandbox provider name for trace metadata, or `None`
+            if no sandbox is active.
+        message_kwargs: Extra fields merged into the stream input message
+            dict (e.g., `additional_kwargs` for persisting skill metadata
+            in the checkpoint).
+        skill_name: Invoked skill name for trace attribution, or `None`.
+        graph_input: Prepared non-conversation input for a server-side graph
+            operation. When provided, no user message or media is constructed.
+        rubric: Acceptance criteria supplied to `RubricMiddleware` via graph
+            input state.
+        goal_active: Whether the rubric belongs to an unfinished `/goal`.
+        on_rubric_evaluation_end: Optional callback receiving a validated
+            `RubricEvaluationEnd` (grading run ID and verdict) for each
+            main-agent `rubric_evaluation_end` event.
+        turn_stats: Pre-created `SessionStats` to accumulate into.
+
+            When the caller holds a reference to the same object, stats are
+            available even if this coroutine is cancelled before it can return.
+
+            If `None`, a new instance is created internally.
+
+    Returns:
+        Stats accumulated over this turn (request count, token counts,
+            wall-clock time).
+
+    Raises:
+        ClientHookStopError: If a compact lifecycle hook stops processing.
+        ValidationError: If HITL request validation fails (re-raised).
+        RuntimeError: If Manual cannot be persisted before graph execution.
+    """
+    from langchain.agents.middleware.human_in_the_loop import (
+        ApproveDecision,
+        HITLRequest,
+        RejectDecision,
+    )
+    from langchain_core.messages import HumanMessage, ToolMessage
+    from langgraph.types import Command
+    from pydantic import ValidationError
+
+    from deepagents_code.approval_mode import ApprovalMode, awrite_approval_mode
+    from deepagents_code.auto_mode import (
+        AUTO_DENIED_METADATA_KEY,
+        USER_PROMPT_METADATA_KEY,
+        user_prompt_metadata,
+    )
+    from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+    from deepagents_code.hooks.models.domain import HookEvent
+
+    hitl_request_adapter = _get_hitl_request_adapter(HITLRequest)
+    ask_user_adapter = _get_ask_user_adapter()
+    adapter._reset_auto_mode_review_tracking()
+
+    message_content: str | list[dict[str, Any]] | None = None
+    if graph_input is None:
+        prompt_text, mentioned_files = await asyncio.to_thread(
+            parse_file_mentions, user_input
+        )
+        max_embed_bytes = 256 * 1024
+
+        if mentioned_files:
+            context_parts = [prompt_text, "\n\n## Referenced Files\n"]
+            for file_path in mentioned_files:
+                try:
+                    part = await asyncio.to_thread(
+                        _read_mentioned_file, file_path, max_embed_bytes
+                    )
+                    context_parts.append(part)
+                except Exception as e:  # noqa: BLE001  # Resilient adapter error handling
+                    context_parts.append(
+                        f"\n### {file_path.name}\n[Error reading file: {e}]"
+                    )
+            final_input = "\n".join(context_parts)
+        else:
+            final_input = prompt_text
+
+        images_to_send = []
+        videos_to_send = []
+        if image_tracker:
+            images_to_send = image_tracker.get_images()
+            videos_to_send = image_tracker.get_videos()
+        if images_to_send or videos_to_send:
+            message_content = create_multimodal_content(
+                final_input, images_to_send, videos_to_send
+            )
+        else:
+            message_content = final_input
+
+    thread_id = session_state.thread_id
+    # Advance the per-thread turn markers (coding-agent-v1 turn_id/turn_number)
+    # once per user prompt, before building the stream config. `session_state`
+    # is duck-typed (`Any`): the production `TextualSessionState` always has
+    # `advance_turn`, but lightweight callers/test doubles may not, so probe for
+    # it and degrade to no turn markers rather than raising.
+    advance_turn = getattr(session_state, "advance_turn", None)
+    if graph_input is None and callable(advance_turn):
+        turn_id, turn_number = advance_turn()
+    else:
+        turn_id, turn_number = None, None
+    # `build_stream_config` does blocking git filesystem reads and may shell out
+    # to `git`; offload it so the Textual event loop stays responsive. Advancing
+    # the turn markers above is pure/cheap and stays on the loop.
+    #
+    # `auto_approve` is sampled once here, at turn start, so it labels the trace
+    # with the mode the turn began in. A mid-turn Shift+Tab toggle still changes
+    # execution behavior (via `context`) but does not relabel this turn's trace.
+    config = await asyncio.to_thread(
+        build_stream_config,
+        thread_id,
+        assistant_id,
+        sandbox_type=sandbox_type,
+        turn_id=turn_id,
+        turn_number=turn_number,
+        auto_approve=bool(session_state.auto_approve),
+        skill_name=skill_name,
+    )
+
+    captured_input_tokens = 0
+    captured_output_tokens = 0
+    recorded_usage_requests: dict[
+        _session_stats.UsageLedgerKey, _session_stats.RecordedRequest
+    ] = {}
+    if turn_stats is None:
+        turn_stats = _session_stats.SessionStats()
+    start_time = time.monotonic()
+
+    # Warn if token display callbacks are only partially wired — all three
+    # should be set together to avoid inconsistent status-bar behavior.
+    token_cbs = (
+        adapter._on_tokens_update,
+        adapter._on_tokens_pending,
+        adapter._on_tokens_show,
+    )
+    if any(token_cbs) and not all(token_cbs):
+        logger.warning(
+            "Token callbacks partially wired (update=%s, pending=%s, show=%s); "
+            "token display may behave inconsistently",
+            adapter._on_tokens_update is not None,
+            adapter._on_tokens_pending is not None,
+            adapter._on_tokens_show is not None,
+        )
+
+    # Show unknown token count during streaming; the accurate count arrives at turn end.
+    if adapter._on_tokens_pending:
+        adapter._on_tokens_pending()
+
+    file_op_tracker = FileOpTracker(assistant_id=assistant_id, backend=backend)
+    # Fires at most once per turn, after the first main-agent text or tool-call
+    # widget becomes visible, so hidden model activity cannot block prompt restore.
+    user_visible_output_started = False
+
+    def _notify_user_visible_output_started() -> None:
+        """Fire the output-started callback once, on the first visible output.
+
+        Call only from main-agent, post-filter paths: the "hidden output does
+        not count" guarantee lives in the placement of the call sites (all sit
+        after the subagent and summarization `continue`s), not in any check
+        here — this helper only dedupes.
+        """
+        nonlocal user_visible_output_started
+        if user_visible_output_started:
+            return
+        user_visible_output_started = True
+        if adapter._on_user_visible_output_started:
+            try:
+                adapter._on_user_visible_output_started()
+            except Exception:
+                # A prompt-restore gate update must never abort agent
+                # streaming — log and keep going (mirrors `_on_tool_complete`).
+                logger.warning(
+                    "on_user_visible_output_started callback failed",
+                    exc_info=True,
+                )
+
+    displayed_tool_ids: set[str] = set()
+    tool_call_buffers: dict[ToolCallBufferKey, ToolCallBuffer] = {}
+    # Tool-call ids that already received terminal hooks before a resumed
+    # `ToolMessage` can stream. When the turn still resumes, middleware
+    # synthetic messages would otherwise re-dispatch `tool.result`; this set
+    # suppresses those duplicates.
+    completed_tool_result_ids: set[str] = set()
+    # `ask_user` answers are private user input, so its terminal hook carries a
+    # sanitized summary rather than the transcript. Wait for the authoritative
+    # ToolMessage before dispatching it so the hook status matches the result
+    # persisted to the thread and sent to the model.
+    #
+    # Popped only when that ToolMessage arrives; an entry here is simply abandoned
+    # if it never does. Abandoning it does not leave the `tool.use` unterminated:
+    # the teardown sweeps close the row out, reading the outcome `defer_success`
+    # recorded on the widget itself.
+    #
+    # Turn-local, so nothing leaks across turns. The intent is that this dict and
+    # that widget flag stay in step — set both when deferring, and let the same
+    # ToolMessage clear both — but they can legitimately diverge: the entry is
+    # added unconditionally while `defer_success` needs a mounted row, so a torn-
+    # down DOM leaves an entry with no flag (logged at the deferral site, and
+    # handled by the no-widget branch in the `ToolMessage` handler).
+    deferred_tool_result_hooks: dict[str, DeferredToolResultHook] = {}
+
+    # Track pending text and assistant messages PER NAMESPACE to avoid interleaving
+    # when multiple subagents stream in parallel
+    pending_text_by_namespace: dict[tuple, str] = {}
+    assistant_message_by_namespace: dict[tuple, Any] = {}
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] = {}
+    # Active model-attempt scope per stream namespace, opened/closed by the
+    # `model_attempt` lifecycle events on the custom stream. It scopes usage
+    # accounting so a retried attempt's replayed chunks don't double-count, and
+    # a valid `model_retry` matches its failed attempt against the root scope.
+    active_attempt_by_namespace: dict[tuple, _ModelAttemptScope] = {}
+    # Attempts already reconciled as superseded, by `(call_id, failed_attempt)`.
+    # Reconciliation runs even when no scope matches, because a lifecycle event
+    # lost to a writer fault must not leave half the state rolled back — which
+    # makes a *repeated* `model_retry` indistinguishable from a first one by
+    # scope alone. Identity is tracked here so a duplicate is a no-op instead of
+    # a second marker row and a second settle of the same tool rows.
+    settled_attempts: set[tuple[str, int]] = set()
+    transcript_agent_by_namespace: dict[tuple[str, ...], str] = {}
+    # A legacy producer emits no lifecycle events, so a namespace with no entry
+    # in `active_attempt_by_namespace` falls back to provider message-id
+    # dedupe with a `None` usage scope.
+
+    hooks = session_state.hooks
+    transcript = hooks.recorder(thread_id)
+
+    if image_tracker and graph_input is None:
+        image_tracker.clear()
+
+    if graph_input is None:
+        user_msg: dict[str, Any] = {"role": "user", "content": message_content}
+        if message_kwargs:
+            user_msg.update(message_kwargs)
+        additional_kwargs = user_msg.get("additional_kwargs")
+        trusted_kwargs = (
+            dict(additional_kwargs) if isinstance(additional_kwargs, dict) else {}
+        )
+        trusted_kwargs[USER_PROMPT_METADATA_KEY] = user_prompt_metadata(
+            user_input,
+            [str(path) for path in mentioned_files],
+            turn_id=turn_id,
+        )
+        user_msg["additional_kwargs"] = trusted_kwargs
+        messages: list[dict[str, Any]] = []
+        transcript.append([HumanMessage(content=message_content or "")])
+        if hooks.has_handlers(HookEvent.USER_PROMPT_SUBMIT):
+            prompt_outcome = await hooks.on_user_prompt(user_input)
+            if not prompt_outcome.ok:
+                from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+
+                raise ClientHookStopError(
+                    prompt_outcome.stop_reason
+                    or "User prompt submission stopped by hook"
+                )
+        else:
+            prompt_outcome = PromptOutcome()
+            await dispatch_hook("session.start", {"thread_id": thread_id})
+            await dispatch_hook("user.prompt", {})
+        session_context = hooks.take_pending_context(thread_id=thread_id)
+        if session_context:
+            messages.append({"role": "system", "content": "\n\n".join(session_context)})
+        if prompt_outcome.context:
+            messages.append(
+                {"role": "system", "content": "\n\n".join(prompt_outcome.context)}
+            )
+        if not prompt_outcome.suppress_original_prompt:
+            messages.append(user_msg)
+        stream_input: dict | Command = {
+            "messages": messages,
+            "goal_criteria_request": None,
+        }
+        if rubric:
+            stream_input["rubric"] = rubric
+    else:
+        stream_input = dict(graph_input)
+    recover_interrupted_turn = not (
+        graph_input is not None and graph_input.get("goal_criteria_request") is not None
+    )
+
+    # Track summarization lifecycle so spinner status and notification stay in sync.
+    summarization_in_progress = False
+    completed_compaction_ids: set[str] = set()
+
+    async def _after_automatic_compact() -> None:
+        from deepagents_code.config import runtime_state
+        from deepagents_code.hooks.client_lifecycle import ClientHookStopError
+        from deepagents_code.hooks.models.domain import SessionStartCause
+
+        outcome = await hooks.on_session_start(
+            SessionStartCause.COMPACT,
+            model=runtime_state.model_name or None,
+        )
+        if not outcome.ok:
+            raise ClientHookStopError(
+                outcome.stop_reason or "Compact session start stopped by hook"
+            )
+
+    stream_completed = False
+    try:
+        while True:
+            interrupt_occurred = False
+            suppress_resumed_output = False
+            pending_interrupts: dict[str, tuple[tuple[Any, ...], HITLRequest]] = {}
+            pending_ask_user: dict[str, AskUserRequest] = {}
+            pending_hook_resumes: dict[str, dict[str, Any]] = {}
+
+            if context is None:
+                context = CLIContext()
+            context["thread_id"] = thread_id
+            if turn_id is not None:
+                context["turn_id"] = turn_id
+            else:
+                context.pop("turn_id", None)
+            raw_mode = getattr(session_state, "approval_mode", None)
+            if raw_mode is None:
+                raw_mode = (
+                    ApprovalMode.YOLO
+                    if getattr(session_state, "auto_approve", False)
+                    else ApprovalMode.MANUAL
+                )
+            try:
+                selected_mode = ApprovalMode(raw_mode)
+            except (TypeError, ValueError):
+                selected_mode = ApprovalMode.MANUAL
+            context["approval_mode"] = selected_mode.value
+            context["auto_approve"] = selected_mode is not ApprovalMode.MANUAL
+            try:
+                live_key = _require_approval_mode_key(
+                    await awrite_approval_mode(
+                        agent,
+                        thread_id,
+                        mode=selected_mode,
+                    )
+                )
+            except Exception:
+                logger.warning(
+                    "Failed to persist selected approval mode; forcing Manual",
+                    exc_info=True,
+                )
+                try:
+                    live_key = _require_approval_mode_key(
+                        await awrite_approval_mode(
+                            agent,
+                            thread_id,
+                            mode=ApprovalMode.MANUAL,
+                        )
+                    )
+                except Exception as exc:
+                    context["approval_mode"] = ApprovalMode.MANUAL.value
+                    context["auto_approve"] = False
+                    context.pop("approval_mode_key", None)
+                    session_state.approval_mode = ApprovalMode.MANUAL
+                    session_state.approval_mode_key = None
+                    if adapter._on_approval_mode_fallback is not None:
+                        adapter._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                    adapter._update_status("Approval mode fell back to Manual")
+                    msg = (
+                        "Manual approval mode could not be persisted; graph execution "
+                        "is blocked until the Store is available."
+                    )
+                    raise RuntimeError(msg) from exc
+                selected_mode = ApprovalMode.MANUAL
+                session_state.approval_mode = ApprovalMode.MANUAL
+                context["approval_mode"] = ApprovalMode.MANUAL.value
+                context["auto_approve"] = False
+                if adapter._on_approval_mode_fallback is not None:
+                    adapter._on_approval_mode_fallback(ApprovalMode.MANUAL.value)
+                adapter._update_status("Approval mode fell back to Manual")
+            context["approval_mode_key"] = live_key
+            session_state.approval_mode_key = live_key
+
+            from deepagents_code.hooks.interrupt import is_hook_interrupt_payload
+            from deepagents_code.hooks.models.domain import HookEvent
+
+            hooks.apply_graph_context(context)
+
+            # Show the Thinking spinner before each astream iteration so
+            # both the first turn and HITL/ask_user resumes surface feedback
+            # while the model processes input. Skip when
+            # `_current_tool_messages` is non-empty so running-tool
+            # indicators remain the dominant signal.
+            if adapter._set_spinner and not adapter._current_tool_messages:
+                await adapter._set_spinner("Thinking")
+
+            stream = agent.astream(
+                stream_input,
+                stream_mode=["messages", "updates", "custom"],
+                subgraphs=True,
+                config=stream_trace_config(config, stream_input),
+                context=context,
+                durability="exit",
+            )
+            async for chunk in _finalize_usage_round(
+                stream,
+                recorded_usage_requests,
+            ):
+                if not isinstance(chunk, tuple) or len(chunk) != 3:  # noqa: PLR2004  # stream chunk is a 3-tuple (namespace, mode, data)
+                    logger.debug("Skipping non-3-tuple chunk: %s", type(chunk).__name__)
+                    continue
+
+                namespace, current_stream_mode, data = chunk
+
+                # LangGraph always supplies a `tuple[str, ...]` namespace, so a
+                # cast gives the type checker what it needs without rebuilding
+                # the tuple on every chunk of this hot loop.
+                ns_key = cast("tuple[str, ...]", namespace) if namespace else ()
+
+                # Filter out subagent outputs - only show main agent (empty
+                # namespace). Subagents run via Task tool and should only
+                # report back to the main agent
+                is_main_agent = ns_key == ()
+
+                # Handle CUSTOM stream - live subagent fan-out events emitted by
+                # the QuickJS task() bridge during a js_eval call. Validate at
+                # this boundary before forwarding so unrelated/malformed or
+                # nested custom events never reach the panel; forwarding must
+                # never raise into the stream loop.
+                if current_stream_mode == "custom":
+                    # A nested request's usage arrives as soon as it completes,
+                    # so a long subagent shows its spend while it runs rather
+                    # than only once it returns. Consume the event whatever came
+                    # of it: a duplicate of a request the message stream already
+                    # recorded is still ours, not input for the handlers below.
+                    if not is_main_agent and _session_stats.is_model_usage_event(data):
+                        try:
+                            from deepagents_code.config import runtime_state
+
+                            recorded_usage = _session_stats.record_model_usage_event(
+                                turn_stats,
+                                data,
+                                active_thread_id=thread_id,
+                                fallback_model=runtime_state.model_name or "",
+                                fallback_provider=runtime_state.model_provider or "",
+                                recorded_requests=recorded_usage_requests,
+                                attempt_scope=active_attempt_by_namespace.get(ns_key),
+                            )
+                        except Exception:
+                            logger.warning(
+                                "Nested model usage event handling failed",
+                                exc_info=True,
+                            )
+                            recorded_usage = None
+                        _apply_recorded_usage(adapter, recorded_usage)
+                        continue
+
+                    # The graph owns the cumulative thread cost and streams the
+                    # new absolute total after each step it charges, because the
+                    # channel is schema-private and never reaches the state
+                    # stream. Applying it outright keeps the client a reader.
+                    session_cost_total = _session_cost_total(
+                        data, is_main_agent=is_main_agent
+                    )
+                    if session_cost_total is not None:
+                        if adapter._on_session_cost is not None:
+                            try:
+                                adapter._on_session_cost(
+                                    session_cost_total,
+                                    thread_id=_session_cost_thread_id(data),
+                                    pricing_ok=_session_cost_pricing_ok(data),
+                                )
+                            except Exception:
+                                logger.warning(
+                                    "on_session_cost callback failed", exc_info=True
+                                )
+                        continue
+
+                    if isinstance(data, dict) and data.get("type") == "model_attempt":
+                        attempt_event = model_attempt_from_event(data)
+                        if attempt_event is not None:
+                            attempt_scope = _ModelAttemptScope(
+                                ns_key,
+                                cast("str", attempt_event["call_id"]),
+                                cast("int", attempt_event["attempt"]),
+                            )
+                            transcript_agent_id = (
+                                None
+                                if is_main_agent
+                                else transcript_agent_by_namespace.get(ns_key)
+                            )
+                            if attempt_event["phase"] == "start":
+                                # A duplicate start for the same scope is
+                                # idempotent. A different attempt for the same
+                                # call means `model_retry` was lost; a different
+                                # call means the prior completion event was lost.
+                                existing_scope = active_attempt_by_namespace.get(ns_key)
+                                stale = (
+                                    existing_scope is not None
+                                    and existing_scope != attempt_scope
+                                    and (
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                    )
+                                    not in settled_attempts
+                                )
+                                if (
+                                    stale
+                                    and existing_scope is not None
+                                    and existing_scope.call_id != attempt_scope.call_id
+                                ):
+                                    logger.warning(
+                                        "Model attempt %s/%d did not receive a "
+                                        "completion event; committing before "
+                                        "model call %s",
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                        attempt_scope.call_id,
+                                    )
+                                    if is_main_agent or transcript_agent_id is not None:
+                                        transcript.complete_attempt(
+                                            agent_id=transcript_agent_id,
+                                            call_id=existing_scope.call_id,
+                                            attempt=existing_scope.attempt,
+                                        )
+                                elif stale and existing_scope is not None:
+                                    settled_attempts.add(
+                                        (existing_scope.call_id, existing_scope.attempt)
+                                    )
+                                    logger.warning(
+                                        "Model attempt %s/%d superseded without "
+                                        "a model_retry event; reconciling as a "
+                                        "lost retry",
+                                        existing_scope.call_id,
+                                        existing_scope.attempt,
+                                    )
+                                    if is_main_agent or transcript_agent_id is not None:
+                                        transcript.discard_attempt(
+                                            agent_id=transcript_agent_id,
+                                            call_id=existing_scope.call_id,
+                                            attempt=existing_scope.attempt,
+                                        )
+                                    if is_main_agent:
+                                        # Whether output escaped is unknowable
+                                        # here, so assume it did: a redundant
+                                        # seam beats an unmarked one.
+                                        await _settle_attempt_for_retry(
+                                            adapter,
+                                            preserve_partial=True,
+                                            pending_text_by_namespace=pending_text_by_namespace,
+                                            assistant_message_by_namespace=assistant_message_by_namespace,
+                                            completed_tool_result_ids=completed_tool_result_ids,
+                                            displayed_tool_ids=displayed_tool_ids,
+                                            tool_call_buffers=tool_call_buffers,
+                                        )
+                                        with contextlib.suppress(Exception):
+                                            await adapter._mount_message(
+                                                AppMessage(RETRY_MARKER_FALLBACK)
+                                            )
+                                active_attempt_by_namespace[ns_key] = attempt_scope
+                                if (
+                                    is_main_agent or transcript_agent_id is not None
+                                ) and existing_scope != attempt_scope:
+                                    transcript.start_attempt(
+                                        agent_id=transcript_agent_id,
+                                        call_id=attempt_scope.call_id,
+                                        attempt=attempt_scope.attempt,
+                                    )
+                            else:
+                                if active_attempt_by_namespace.get(ns_key) == (
+                                    attempt_scope
+                                ):
+                                    del active_attempt_by_namespace[ns_key]
+                                if is_main_agent or transcript_agent_id is not None:
+                                    transcript.complete_attempt(
+                                        agent_id=transcript_agent_id,
+                                        call_id=attempt_scope.call_id,
+                                        attempt=attempt_scope.attempt,
+                                    )
+                        continue
+
+                    if isinstance(data, dict) and data.get("type") == "model_retry":
+                        retry_correlation = model_retry_from_event(data)
+                        if is_main_agent and adapter._set_spinner is not None:
+                            # Runs for valid, malformed, and legacy (uncorrelated)
+                            # retries alike: the spinner status predates attempt
+                            # reconciliation and stays the fallback surface.
+                            await adapter._set_spinner(retry_status_from_event(data))
+                        retry_scope = (
+                            _ModelAttemptScope(
+                                ns_key,
+                                cast("str", retry_correlation["call_id"]),
+                                cast("int", retry_correlation["failed_attempt"]),
+                            )
+                            if retry_correlation is not None
+                            else None
+                        )
+                        scope_matches = (
+                            retry_scope is not None
+                            and active_attempt_by_namespace.get(ns_key) == retry_scope
+                        )
+                        if scope_matches and retry_scope is not None:
+                            # Discard whatever the superseded attempt staged. A
+                            # duplicate retry or a scope the recorder never opened
+                            # is ignored idempotently.
+                            transcript_agent_id = (
+                                None
+                                if is_main_agent
+                                else transcript_agent_by_namespace.get(ns_key)
+                            )
+                            if is_main_agent or transcript_agent_id is not None:
+                                transcript.discard_attempt(
+                                    agent_id=transcript_agent_id,
+                                    call_id=retry_scope.call_id,
+                                    attempt=retry_scope.attempt,
+                                )
+                            del active_attempt_by_namespace[ns_key]
+                        retry_attempt_id = (
+                            (
+                                cast("str", retry_correlation["call_id"]),
+                                cast("int", retry_correlation["failed_attempt"]),
+                            )
+                            if retry_correlation is not None
+                            # A legacy payload names no attempt, so identity
+                            # falls back to the retry counter it does carry.
+                            else ("", legacy_retry_index(data))
+                        )
+                        first_settle = retry_attempt_id not in settled_attempts
+                        if is_main_agent and first_settle:
+                            settled_attempts.add(retry_attempt_id)
+                            # Deliberately not gated on `scope_matches`.
+                            # `_emit_stream_event` logs and swallows writer
+                            # faults, so a `model_attempt` start can be lost in
+                            # flight; reconciling only on a match would then let
+                            # the replay stream into the same bubble with stale
+                            # tool rows and no seam — exactly the corruption
+                            # this path exists to prevent. Tool presentation and
+                            # hooks are attempt-local even when no text escaped,
+                            # so a pre-output retry still drops incomplete
+                            # arguments and closes any fired use.
+                            if retry_correlation is not None and not scope_matches:
+                                logger.warning(
+                                    "Model retry names attempt %s/%s which is "
+                                    "not the open root scope; reconciling "
+                                    "without it",
+                                    retry_correlation["call_id"],
+                                    retry_correlation["failed_attempt"],
+                                )
+                            output_may_have_started = bool(
+                                retry_correlation
+                                and retry_correlation["output_may_have_started"]
+                            )
+                            await _settle_attempt_for_retry(
+                                adapter,
+                                preserve_partial=output_may_have_started,
+                                pending_text_by_namespace=pending_text_by_namespace,
+                                assistant_message_by_namespace=assistant_message_by_namespace,
+                                completed_tool_result_ids=completed_tool_result_ids,
+                                displayed_tool_ids=displayed_tool_ids,
+                                tool_call_buffers=tool_call_buffers,
+                            )
+                            if output_may_have_started:
+                                # The partial reply is already detached and
+                                # finalized, so the marker is the only thing
+                                # left that can say it was cut off. Falling back
+                                # to the spinner keeps that visible when the
+                                # mount fails.
+                                marker = retry_marker_from_event(data)
+                                try:
+                                    await adapter._mount_message(AppMessage(marker))
+                                except Exception:
+                                    logger.exception("Failed to mount retry marker")
+                                    if adapter._set_spinner is not None:
+                                        with contextlib.suppress(Exception):
+                                            await adapter._set_spinner(marker)
+                        continue
+
+                    auto_review_event = _parse_auto_mode_review_event(
+                        data, is_main_agent=is_main_agent
+                    )
+                    if auto_review_event is not None:
+                        try:
+                            await adapter._handle_auto_mode_review_event(
+                                auto_review_event
+                            )
+                        except Exception:
+                            logger.exception(
+                                "Auto review event handler failed: phase=%s "
+                                "batch_id=%s tools=%d",
+                                auto_review_event.phase,
+                                auto_review_event.batch_id,
+                                len(auto_review_event.tool_call_ids),
+                            )
+                        continue
+
+                    rubric_message = data if isinstance(data, dict) else None
+                    formatted_rubric_event = (
+                        _format_rubric_event(rubric_message) if rubric_message else None
+                    )
+                    if (
+                        formatted_rubric_event is not None
+                        and rubric_message is not None
+                        and is_main_agent
+                    ):
+                        details = (
+                            _format_rubric_details(
+                                rubric_message,
+                                goal_active=goal_active,
+                            )
+                            if rubric_message.get("type") == "rubric_evaluation_end"
+                            else ""
+                        )
+                        message = (
+                            RubricResultMessage(formatted_rubric_event, details)
+                            if details
+                            else AppMessage(formatted_rubric_event)
+                        )
+                        await adapter._mount_message(message)
+                        if (
+                            on_rubric_evaluation_end is not None
+                            and rubric_message.get("type") == "rubric_evaluation_end"
+                        ):
+                            grading_run_id = rubric_message.get("grading_run_id")
+                            result = rubric_message.get("result")
+                            if (
+                                isinstance(grading_run_id, str)
+                                and grading_run_id.strip()
+                                and isinstance(result, str)
+                            ):
+                                # Structurally validated here; the verdict is
+                                # cast to `RubricResult` at this boundary and the
+                                # consumer re-checks it against the known set.
+                                try:
+                                    on_rubric_evaluation_end(
+                                        RubricEvaluationEnd(
+                                            grading_run_id=grading_run_id.strip(),
+                                            result=cast("RubricResult", result),
+                                        )
+                                    )
+                                except Exception:
+                                    logger.warning(
+                                        "on_rubric_evaluation_end callback failed",
+                                        exc_info=True,
+                                    )
+                        continue
+                    if formatted_rubric_event is not None:
+                        # Rubric events come from the main agent today; a
+                        # non-main namespace would be dropped by the gate above,
+                        # so leave a breadcrumb if that ever changes.
+                        logger.debug(
+                            "Dropping rubric event from non-main namespace %r",
+                            ns_key,
+                        )
+                    if (
+                        adapter._on_subagent_event is not None
+                        and _is_renderable_subagent_event(
+                            data, is_main_agent=is_main_agent
+                        )
+                    ):
+                        try:
+                            adapter._on_subagent_event(data)
+                        except Exception:
+                            logger.exception("subagent panel event handler failed")
+                    if (
+                        adapter._on_auto_mode_event is not None
+                        and _is_renderable_auto_mode_event(
+                            data, is_main_agent=is_main_agent
+                        )
+                    ):
+                        try:
+                            callback_result = adapter._on_auto_mode_event(data)
+                            if callback_result is not None:
+                                await callback_result
+                        except Exception:
+                            logger.exception("Auto mode event handler failed")
+                    continue
+
+                # Handle UPDATES stream - for interrupts and todos
+                if current_stream_mode == "updates":
+                    if not isinstance(data, dict):
+                        continue
+
+                    # Check for interrupts
+                    if "__interrupt__" in data:
+                        interrupts: list[Interrupt] = data["__interrupt__"]
+                        if interrupts:
+                            for interrupt_obj in interrupts:
+                                iv = interrupt_obj.value
+                                if is_hook_interrupt_payload(iv):
+                                    resume_value = await hooks.fulfill_interrupt(iv)
+                                    pending_hook_resumes[interrupt_obj.id] = (
+                                        resume_value
+                                    )
+                                    interrupt_occurred = True
+                                    continue
+                                if (
+                                    isinstance(iv, dict)
+                                    and iv.get("type") == "ask_user"
+                                ):
+                                    try:
+                                        validated_ask_user = (
+                                            ask_user_adapter.validate_python(iv)
+                                        )
+                                        pending_ask_user[interrupt_obj.id] = (
+                                            validated_ask_user
+                                        )
+                                        tool_id = validated_ask_user["tool_call_id"]
+                                        if tool_id not in displayed_tool_ids:
+                                            if adapter._set_spinner:
+                                                await adapter._set_spinner(None)
+                                            tool_args = {
+                                                "questions": validated_ask_user[
+                                                    "questions"
+                                                ]
+                                            }
+                                            tool_msg = ToolCallMessage(
+                                                "ask_user",
+                                                tool_args,
+                                            )
+                                            try:
+                                                await adapter._mount_message(tool_msg)
+                                            except Exception:
+                                                # Mount failed (e.g. a torn-down
+                                                # DOM during shutdown). tool.use
+                                                # is dispatched only on mount
+                                                # success (below), so a failed
+                                                # mount leaves no unterminated
+                                                # tool.use to orphan if the turn
+                                                # is then cancelled before the
+                                                # ask_user resolution loop runs.
+                                                # The id is left unlatched so a
+                                                # re-observed interrupt can retry
+                                                # the mount; the question is still
+                                                # asked and closed by the
+                                                # resolution loop, which
+                                                # dispatches the terminal
+                                                # tool.result independently of
+                                                # this widget.
+                                                logger.exception(
+                                                    "Failed to mount ask_user "
+                                                    "tool row for %s",
+                                                    tool_id,
+                                                )
+                                            else:
+                                                _notify_user_visible_output_started()
+                                                # Fire tool.use and latch the id
+                                                # together, only once the widget
+                                                # is mounted, so the "every
+                                                # tool.use is closed" guarantee
+                                                # holds with no widget-less orphan
+                                                # on the mount-failure path.
+                                                # Gating on mount success also
+                                                # keeps tool.use fire-once: a
+                                                # failed mount never fires it, and
+                                                # a successful mount latches the
+                                                # id so a re-observed interrupt is
+                                                # skipped.
+                                                _dispatch_tool_use_hook(
+                                                    "ask_user", tool_id, tool_args
+                                                )
+                                                displayed_tool_ids.add(tool_id)
+                                                adapter._current_tool_messages[
+                                                    tool_id
+                                                ] = tool_msg
+                                        interrupt_occurred = True
+                                        if not hooks.has_handlers(
+                                            HookEvent.NOTIFICATION
+                                        ):
+                                            await dispatch_hook("input.required", {})
+                                    except ValidationError:
+                                        logger.exception(
+                                            "Invalid ask_user interrupt payload"
+                                        )
+                                        raise
+                                else:
+                                    try:
+                                        validated_request = (
+                                            hitl_request_adapter.validate_python(iv)
+                                        )
+                                        pending_interrupts[interrupt_obj.id] = (
+                                            ns_key,
+                                            validated_request,
+                                        )
+                                        interrupt_occurred = True
+                                        if not hooks.has_handlers(
+                                            HookEvent.NOTIFICATION
+                                        ):
+                                            await dispatch_hook("input.required", {})
+                                    except ValidationError:  # noqa: TRY203  # Re-raise preserves exception context in handler
+                                        raise
+
+                    # Check for todo updates (not yet implemented in Textual UI)
+                    chunk_data = next(iter(data.values())) if data else None
+                    if (
+                        chunk_data
+                        and isinstance(chunk_data, dict)
+                        and "todos" in chunk_data
+                    ):
+                        pass  # Future: render todo list widget
+
+                # Handle MESSAGES stream - for content and tool calls
+                elif current_stream_mode == "messages":
+                    if not isinstance(data, tuple) or len(data) != 2:  # noqa: PLR2004  # message stream data is a 2-tuple (message, metadata)
+                        logger.debug(
+                            "Skipping non-2-tuple message data: type=%s",
+                            type(data).__name__,
+                        )
+                        continue
+
+                    message, metadata = data
+                    if (
+                        not is_main_agent
+                        and ns_key not in transcript_agent_by_namespace
+                        and isinstance(metadata, dict)
+                    ):
+                        # Only the first message of a namespace can teach us its
+                        # transcript identity; later chunks would re-resolve the
+                        # same id and re-open the same staging scope.
+                        transcript_agent_id = metadata.get(
+                            SUBAGENT_TRANSCRIPT_ID_METADATA_KEY
+                        )
+                        if isinstance(transcript_agent_id, str) and transcript_agent_id:
+                            known_agent_id = transcript_agent_by_namespace.setdefault(
+                                ns_key, transcript_agent_id
+                            )
+                            active_scope = active_attempt_by_namespace.get(ns_key)
+                            if active_scope is not None:
+                                transcript.start_attempt(
+                                    agent_id=known_agent_id,
+                                    call_id=active_scope.call_id,
+                                    attempt=active_scope.attempt,
+                                )
+                    if transcript is not None:
+                        transcript.record(
+                            message,
+                            metadata if isinstance(metadata, dict) else None,
+                            main_agent=is_main_agent,
+                        )
+                    logger.debug(
+                        "Processing message: type=%s id=%s has_content_blocks=%s",
+                        type(message).__name__,
+                        getattr(message, "id", None),
+                        hasattr(message, "content_blocks"),
+                    )
+
+                    # Account cost/tokens before render filters. Subagent
+                    # namespaces and summarization/auto-classifier calls still
+                    # spend money even though their text stays out of the chat.
+                    recorded_usage = None
+                    if getattr(message, "usage_metadata", None):
+                        from deepagents_code.config import runtime_state
+
+                        recorded_usage = _session_stats.record_message_usage(
+                            turn_stats,
+                            message,
+                            fallback_model=runtime_state.model_name or "",
+                            fallback_provider=runtime_state.model_provider or "",
+                            request_metadata=(
+                                metadata if isinstance(metadata, dict) else None
+                            ),
+                            kind=_session_stats.classify_usage_kind(
+                                is_main_agent=is_main_agent,
+                                metadata=(
+                                    metadata if isinstance(metadata, dict) else None
+                                ),
+                            ),
+                            recorded_requests=recorded_usage_requests,
+                            attempt_scope=active_attempt_by_namespace.get(ns_key),
+                        )
+                    _apply_recorded_usage(adapter, recorded_usage)
+
+                    # Skip subagent outputs - only render main agent content in chat
+                    if not is_main_agent:
+                        logger.debug("Skipping subagent message ns=%s", ns_key)
+                        continue
+
+                    # Filter out summarization model output, but keep UI feedback.
+                    # The summarization model streams AIMessage chunks tagged
+                    # with lc_source="summarization" in the callback metadata.
+                    # These are hidden from the user; only the spinner and a
+                    # notification widget provide feedback.
+                    if _is_summarization_chunk(metadata):
+                        if not summarization_in_progress:
+                            summarization_in_progress = True
+                            if adapter._set_spinner:
+                                await adapter._set_spinner("Offloading")
+                        continue
+
+                    # The Auto mode authorization classifier is a nested model
+                    # call. Its structured JSON is internal policy machinery,
+                    # not assistant output for the conversation transcript.
+                    if _is_auto_mode_classifier_chunk(metadata):
+                        continue
+
+                    # Only a visible top-level model call represents the active
+                    # conversation context. Hidden usage was still recorded above.
+                    if recorded_usage is not None:
+                        captured_input_tokens = max(
+                            captured_input_tokens,
+                            recorded_usage.request_tokens,
+                        )
+
+                    # Regular (non-summarization) chunks resumed — summarization
+                    # has finished. Mount the notification and reset the spinner.
+                    if summarization_in_progress:
+                        summarization_in_progress = False
+                        if isinstance(message, ToolMessage):
+                            raw_id = getattr(message, "tool_call_id", None)
+                            if (
+                                isinstance(raw_id, str)
+                                and raw_id
+                                and getattr(message, "name", None)
+                                == "compact_conversation"
+                                and str(message.content).startswith(
+                                    "Conversation compacted."
+                                )
+                            ):
+                                completed_compaction_ids.add(raw_id)
+                        await _after_automatic_compact()
+                        try:
+                            await adapter._mount_message(SummarizationMessage())
+                        except Exception:
+                            logger.debug(
+                                "Failed to mount summarization notification",
+                                exc_info=True,
+                            )
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
+
+                    if isinstance(message, HumanMessage):
+                        content = message.text
+                        # Flush pending text for this namespace
+                        pending_text = pending_text_by_namespace.get(ns_key, "")
+                        if content and pending_text:
+                            await _flush_assistant_text_ns(
+                                adapter,
+                                pending_text,
+                                ns_key,
+                                assistant_message_by_namespace,
+                            )
+                            pending_text_by_namespace[ns_key] = ""
+                            # Drop the cached assistant bubble too, not just the
+                            # pending text: a mid-turn HumanMessage (e.g. the
+                            # rubric revision loop re-prompting the agent) means
+                            # the next assistant text is a fresh response and
+                            # must start a new bubble rather than appending to
+                            # the pre-revision one.
+                            assistant_message_by_namespace.pop(ns_key, None)
+                        continue
+
+                    if isinstance(message, ToolMessage):
+                        tool_name = getattr(message, "name", "")
+                        # Normalize to the two-value hook domain, fail-closed: an
+                        # unexpected provider status is logged and treated as an
+                        # error (see `normalize_tool_status`) rather than silently
+                        # reported as success.
+                        tool_status: ToolStatus = normalize_tool_status(
+                            getattr(message, "status", "success"), tool_name
+                        )
+                        # Guard formatting *and* the str() coercion so a
+                        # pathological __str__ on the content can't re-raise and
+                        # skip the tool.result dispatch below. On failure use a
+                        # sentinel rather than re-touching the offending content,
+                        # so the terminal dispatch is genuinely unconditional.
+                        try:
+                            tool_content = format_tool_message_content(message.content)
+                            output_str = str(tool_content) if tool_content else ""
+                        except Exception:
+                            logger.exception("Failed to format tool output")
+                            output_str = UNRENDERABLE_TOOL_OUTPUT
+                        compaction_id = getattr(message, "tool_call_id", None)
+                        if (
+                            isinstance(compaction_id, str)
+                            and compaction_id
+                            and compaction_id not in completed_compaction_ids
+                            and tool_name == "compact_conversation"
+                            and output_str.startswith("Conversation compacted.")
+                        ):
+                            completed_compaction_ids.add(compaction_id)
+                            await _after_automatic_compact()
+                        record = file_op_tracker.complete_with_message(message)
+                        # Computed once, ahead of the four branches below, so a
+                        # caveat cannot depend on which of them this result takes
+                        # — the diff mounts outside all four, so a torn-down row
+                        # used to yield a `DiffMessage` and no explanation.
+                        caveat = record_display_caveat(record)
+                        caveat_shown = False
+
+                        # Update tool call status with output
+                        tool_id = getattr(message, "tool_call_id", None)
+                        deferred_hook = (
+                            deferred_tool_result_hooks.pop(tool_id, None)
+                            if tool_id
+                            else None
+                        )
+                        # This streamed result owns the status; the deferral only
+                        # replaces the hook body to keep answers out of hook
+                        # scripts. A failure reports the constant failure summary
+                        # rather than the `(error: ...)` transcript.
+                        hook_output: str
+                        if deferred_hook is None:
+                            hook_output = output_str
+                        elif tool_status == "error":
+                            hook_output = ASK_USER_FAILED_SUMMARY
+                        else:
+                            hook_output = deferred_hook.tool_output
+                        tool_msg: ToolCallMessage | None = None
+                        if tool_id and tool_id in adapter._current_tool_messages:
+                            # Pop before the widget calls so the dict drains even
+                            # if set_success/set_error raises.
+                            tool_msg = adapter._current_tool_messages.pop(tool_id)
+                            # This result is authoritative, so it supersedes any
+                            # deferred outcome — including with an error, which
+                            # `set_error` would otherwise redirect back to the
+                            # deferred success.
+                            tool_msg.clear_deferred_success()
+                            # Dispatch the terminal hooks *before* touching the
+                            # widget: a render failure must never drop this tool's
+                            # tool.result/tool.error (which would leave its
+                            # tool.use unterminated). The headless path likewise
+                            # dispatches without depending on any widget.
+                            if tool_status == "error":
+                                _dispatch_tool_error_hook(tool_msg.tool_name)
+                            _dispatch_tool_result_hook(
+                                tool_msg.tool_name,
+                                tool_id,
+                                tool_msg.args,
+                                tool_status,
+                                hook_output,
+                            )
+                            # Update the widget last, guarded: a set_success/
+                            # set_error failure must not abort the turn and drop
+                            # the remaining tools' hooks.
+                            try:
+                                if tool_status == "success":
+                                    # One call so the caveat text and the flag
+                                    # that keeps this row out of a group summary
+                                    # cannot be set apart — see
+                                    # `set_success_with_caveat`.
+                                    caveat_shown = tool_msg.set_success_with_caveat(
+                                        caveat, output_str
+                                    )
+                                else:
+                                    tool_msg.set_error(output_str or "Error")
+                                adapter._sync_tool_widget(tool_msg)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to update tool row for %s", tool_id
+                                )
+                        elif tool_id and tool_id in completed_tool_result_ids:
+                            # This is a middleware synthetic ToolMessage for a
+                            # tool whose terminal hooks already fired while the
+                            # turn was resolving interrupts. Its widget was
+                            # cleared, so it lands here — consume the id and skip
+                            # re-dispatch to avoid a duplicate tool.result (with
+                            # mismatched `{}` args).
+                            if deferred_hook is not None:
+                                # Contradictory: a deferred row is kept out of the
+                                # sweeps that populate `completed_tool_result_ids`,
+                                # so its terminal hook cannot already have fired.
+                                # Skipping is still right (a second dispatch would
+                                # duplicate), but the invariant broke — say so
+                                # rather than dropping the popped hook in silence.
+                                logger.error(
+                                    "ask_user tool_id %s had both a deferred hook "
+                                    "and an already-dispatched terminal result; "
+                                    "skipping re-dispatch",
+                                    tool_id,
+                                )
+                            completed_tool_result_ids.discard(tool_id)
+                        elif tool_id and deferred_hook is not None:
+                            # No widget: the row never mounted (a torn-down DOM),
+                            # so `tool_msg.args` is unavailable and the generic
+                            # `else` below would report `{}` args plus the raw
+                            # transcript. Use the interrupt's own args and the
+                            # sanitized output instead.
+                            if tool_status == "error":
+                                _dispatch_tool_error_hook(tool_name)
+                            _dispatch_tool_result_hook(
+                                tool_name,
+                                tool_id,
+                                deferred_hook.tool_args,
+                                tool_status,
+                                hook_output,
+                            )
+                        else:
+                            # The tool call was never mounted — either it has no
+                            # tool_call_id, or its streamed args never parsed so
+                            # no tool.use fired and no widget exists. Still emit
+                            # tool.result (with {} args, since without a widget
+                            # we lack the parsed args) so audit hooks observe
+                            # every executed tool, matching the headless path.
+                            # tool_id may be None here, mirroring headless.
+                            # Reciprocal: headless always dispatches tool.result
+                            # from `_process_message_chunk` since it has no
+                            # widget concept; see `non_interactive.py`. The
+                            # parity contract is documented in `_tool_stream`.
+                            if tool_id:
+                                # An auto-mode denial is stamped at the source in
+                                # `auto_mode`. For a no-argument call no widget
+                                # ever mounts, so the denial result lands here as
+                                # a matter of course. That is a routine path, not
+                                # degraded audit fidelity, so skip the warning.
+                                # The tool.result hook below still fires with
+                                # empty args. The headless twin in
+                                # `non_interactive.py` keeps its warning: auto
+                                # mode is never installed on that surface, so it
+                                # cannot see a denial.
+                                metadata = message.additional_kwargs
+                                is_auto_denied = isinstance(metadata, dict) and bool(
+                                    metadata.get(AUTO_DENIED_METADATA_KEY)
+                                )
+                                if not is_auto_denied:
+                                    # Warning, not info/debug: a real-id result
+                                    # with no mounted widget (its args never
+                                    # parsed, so no tool.use fired) means a hook
+                                    # consumer sees a `tool.result` with empty
+                                    # args for a tool that actually executed —
+                                    # degraded audit fidelity worth surfacing at
+                                    # default log levels, matching the headless
+                                    # path.
+                                    logger.warning(
+                                        "ToolMessage tool_call_id=%s not in "
+                                        "_current_tool_messages; no correlated "
+                                        "tool.use, sending empty tool_args",
+                                        tool_id,
+                                    )
+                            if tool_status == "error":
+                                _dispatch_tool_error_hook(tool_name)
+                            _dispatch_tool_result_hook(
+                                tool_name, tool_id, {}, tool_status, output_str
+                            )
+
+                        # Show file operation results - always show diffs in
+                        # chat.
+                        if record:
+                            pending_text = pending_text_by_namespace.get(ns_key, "")
+                            if pending_text:
+                                await _flush_assistant_text_ns(
+                                    adapter,
+                                    pending_text,
+                                    ns_key,
+                                    assistant_message_by_namespace,
+                                )
+                                pending_text_by_namespace[ns_key] = ""
+                            # Hiding the row makes the diff the sole record of
+                            # the edit, so only a diff that can stand in for it
+                            # earns that — `shown` is the only outcome that
+                            # qualifies, for the reasons in `DiffOutcome`. An
+                            # empty body never qualifies either: with nothing to
+                            # show, nothing needs hiding, and a widget asserting
+                            # "no changes" would leave any inaccuracy in the
+                            # read-back as the only surviving account.
+                            replaces_row = (
+                                ToolCallMessage.can_be_superseded(record.tool_name)
+                                and record.status == "success"
+                                and record.diff_outcome == "shown"
+                                and bool(record.diff)
+                            )
+                            if record.diff:
+                                # Guarded for the same reason as the row update
+                                # above: mounting and highlighting a diff is
+                                # cosmetic, and a failure here must not abort the
+                                # turn and drop the remaining tools' hooks.
+                                try:
+                                    diff_msg = DiffMessage(
+                                        record.diff,
+                                        record.display_path,
+                                        tool_name=record.tool_name,
+                                        before=record.before_content or "",
+                                        after=record.after_content or "",
+                                        stats=record.diff_stats,
+                                        outcome=record.diff_outcome,
+                                        # Skip the caveat only when the row
+                                        # already displays the identical
+                                        # sentence and cannot be folded away.
+                                        # For `edit_file` both are guaranteed
+                                        # on screen — it is excluded from
+                                        # grouping, and a non-`shown` outcome
+                                        # blocks supersession — so without this
+                                        # the same sentence renders twice,
+                                        # adjacent.
+                                        show_caveat=not caveat_shown,
+                                        show_numbers=adapter._show_diff_line_numbers,
+                                    )
+                                    mounted = await adapter._mount_message(diff_msg)
+                                    # Read from the widget rather than assuming
+                                    # a non-`shown` outcome put the caveat on
+                                    # screen: it also suppresses its own caveat
+                                    # when told the row has it. Conjoined with
+                                    # the mount result because `renders_caveat`
+                                    # describes how the widget was built, not
+                                    # where it ended up — a transcript torn down
+                                    # mid-stream makes the mount a silent no-op,
+                                    # and crediting it here would skip the
+                                    # fallback below and leave the caveat on no
+                                    # surface at all.
+                                    caveat_shown = caveat_shown or (
+                                        mounted and diff_msg.renders_caveat
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to mount diff for %s",
+                                        record.display_path,
+                                    )
+                                    # The diff was expected and never appeared.
+                                    # Say so on screen — a silently absent diff
+                                    # reads as "nothing changed", and under
+                                    # `shown` there is no caveat to fall back
+                                    # on.
+                                    await _mount_diff_note(
+                                        adapter,
+                                        f"The diff for {record.display_path} "
+                                        "could not be rendered.",
+                                    )
+                                else:
+                                    # Hiding the row is a separate step with its
+                                    # own failure: the diff is already on screen,
+                                    # so reporting "could not be rendered" here
+                                    # would contradict what the user can see.
+                                    # Only the row stayed visible, which is the
+                                    # safe direction and needs no transcript
+                                    # note.
+                                    if tool_msg is not None and replaces_row:
+                                        try:
+                                            tool_msg.mark_superseded_by_diff()
+                                            adapter._sync_tool_widget(tool_msg)
+                                        except Exception:
+                                            logger.exception(
+                                                "Failed to hide superseded row for %s",
+                                                record.display_path,
+                                            )
+                            if caveat and not caveat_shown:
+                                # No row took the caveat (its widget was torn
+                                # down) and no diff mounted to carry it — a
+                                # `delete` with a lost pre-image is the live
+                                # case. Put it in the transcript, which is the
+                                # surface the caveat was written for; a log line
+                                # alone leaves a destructive change looking
+                                # routine to anyone not watching the Debug
+                                # Console.
+                                logger.warning(
+                                    "No surface carried the display caveat for %s: %s",
+                                    record.display_path,
+                                    caveat,
+                                )
+                                await _mount_diff_note(adapter, caveat)
+
+                        # Reshow spinner only when all in-flight tools have
+                        # completed (avoids premature "Thinking..." when
+                        # parallel tool calls are active). Must happen after
+                        # the diff is mounted so the spinner stays at the
+                        # bottom of the messages container.
+                        if adapter._set_spinner and not adapter._current_tool_messages:
+                            await adapter._set_spinner("Thinking")
+
+                        if adapter._on_tool_complete is not None:
+                            try:
+                                adapter._on_tool_complete()
+                            except Exception:
+                                # A footer refresh failure must never abort
+                                # agent streaming — log and keep going.
+                                logger.warning(
+                                    "on_tool_complete callback failed",
+                                    exc_info=True,
+                                )
+                        continue
+
+                    # Check if this is an AIMessageChunk with content
+                    if not hasattr(message, "content_blocks"):
+                        logger.debug(
+                            "Message has no content_blocks: type=%s",
+                            type(message).__name__,
+                        )
+                        continue
+
+                    # Process content blocks
+                    blocks = message.content_blocks
+                    if logger.isEnabledFor(logging.DEBUG):
+                        logger.debug(
+                            "content_blocks count=%d blocks=%s",
+                            len(blocks),
+                            repr(blocks)[:500],
+                        )
+                    for block in blocks:
+                        block_type = block.get("type")
+
+                        if block_type == "text":
+                            text = block.get("text", "")
+                            if text:
+                                if reasoning_message_by_namespace:
+                                    await _flush_reasoning_ns(
+                                        adapter, ns_key, reasoning_message_by_namespace
+                                    )
+                                # Track accumulated text for reference
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                pending_text += text
+                                pending_text_by_namespace[ns_key] = pending_text
+
+                                # Get or create assistant message for this namespace
+                                current_msg = assistant_message_by_namespace.get(ns_key)
+                                if current_msg is None:
+                                    msg_id = f"asst-{uuid.uuid4().hex}"
+                                    # Mark active BEFORE mounting so pruning
+                                    # (triggered by mount) won't remove it
+                                    # (_mount_message can trigger
+                                    # _prune_old_messages if the window exceeds
+                                    # WINDOW_SIZE.)
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_msg = AssistantMessage(id=msg_id)
+                                    await adapter._mount_message(current_msg)
+                                    assistant_message_by_namespace[ns_key] = current_msg
+                                    # Keep the Thinking spinner visible after
+                                    # the streaming message so the user still
+                                    # sees activity if the model pauses between
+                                    # finishing text and emitting its next
+                                    # action (e.g. a tool call). The mount
+                                    # above placed the new message at the end
+                                    # of the container; this re-anchors the
+                                    # spinner after it.
+                                    if (
+                                        adapter._set_spinner
+                                        and not adapter._current_tool_messages
+                                    ):
+                                        await adapter._set_spinner("Thinking")
+
+                                # Append just the new text chunk for smoother
+                                # streaming (uses MarkdownStream internally for
+                                # better performance)
+                                await current_msg.append_content(text)
+                                _notify_user_visible_output_started()
+
+                        elif block_type == "reasoning" and show_reasoning:
+                            reasoning = reasoning_text(block)
+                            if reasoning is not None:
+                                pending_text = pending_text_by_namespace.get(ns_key, "")
+                                if pending_text:
+                                    await _flush_assistant_text_ns(
+                                        adapter,
+                                        pending_text,
+                                        ns_key,
+                                        assistant_message_by_namespace,
+                                    )
+                                    pending_text_by_namespace[ns_key] = ""
+                                    assistant_message_by_namespace.pop(ns_key, None)
+                                current_reasoning = reasoning_message_by_namespace.get(
+                                    ns_key
+                                )
+                                if current_reasoning is None:
+                                    msg_id = f"reason-{uuid.uuid4().hex}"
+                                    if adapter._set_active_message:
+                                        adapter._set_active_message(msg_id)
+                                    current_reasoning = ReasoningMessage(id=msg_id)
+                                    await adapter._mount_message(current_reasoning)
+                                    reasoning_message_by_namespace[ns_key] = (
+                                        current_reasoning
+                                    )
+                                await current_reasoning.append_content(reasoning)
+                                _notify_user_visible_output_started()
+
+                        elif block_type in {"tool_call_chunk", "tool_call"}:
+                            if reasoning_message_by_namespace:
+                                await _flush_reasoning_ns(
+                                    adapter, ns_key, reasoning_message_by_namespace
+                                )
+                            chunk_name = block.get("name")
+                            chunk_args = block.get("args")
+                            chunk_id = block.get("id")
+                            chunk_index = block.get("index")
+
+                            buffer_key = tool_call_buffer_key(
+                                chunk_index, chunk_id, len(tool_call_buffers)
+                            )
+                            buffer = tool_call_buffers.setdefault(
+                                buffer_key, ToolCallBuffer()
+                            )
+                            buffer.ingest(
+                                name=chunk_name, tool_id=chunk_id, args=chunk_args
+                            )
+
+                            buffer_name = buffer.name
+                            buffer_id = buffer.tool_id
+                            if buffer_name is None:
+                                continue
+
+                            # `parse_args` reassembles streamed JSON string
+                            # fragments, deferring the parse until the value
+                            # looks complete — which avoids re-parsing the whole
+                            # prefix on every fragment (costly on the UI event
+                            # loop for large `edit_file` blobs) — and returns
+                            # None while still incomplete. Each `continue` leaves
+                            # the buffer in `tool_call_buffers` so the next
+                            # fragment keeps accumulating; it is popped only after
+                            # a successful parse + mount below.
+                            parsed_args = buffer.parse_args()
+                            if parsed_args is None:
+                                continue
+
+                            # Flush pending text before tool call
+                            pending_text = pending_text_by_namespace.get(ns_key, "")
+                            if pending_text:
+                                await _flush_assistant_text_ns(
+                                    adapter,
+                                    pending_text,
+                                    ns_key,
+                                    assistant_message_by_namespace,
+                                )
+                                pending_text_by_namespace[ns_key] = ""
+                                assistant_message_by_namespace.pop(ns_key, None)
+
+                            logger.debug(
+                                "Tool call buffer: name=%s id=%s args=%s",
+                                buffer_name,
+                                buffer_id,
+                                repr(parsed_args)[:200],
+                            )
+                            if (
+                                buffer_id is not None
+                                and buffer_id not in displayed_tool_ids
+                            ):
+                                displayed_tool_ids.add(buffer_id)
+                                file_op_tracker.start_operation(
+                                    buffer_name, parsed_args, buffer_id
+                                )
+
+                                # Keep the global "Thinking" spinner visible
+                                # across tool calls rather than hiding it per
+                                # tool: it's a stable turn-level indicator, and
+                                # the tool's own progress now shows in its
+                                # collapsed group row. Re-assert it so it stays
+                                # pinned at the bottom as the new row mounts
+                                # above it.
+                                if adapter._set_spinner:
+                                    await adapter._set_spinner("Thinking")
+
+                                # Mount tool call message
+                                logger.debug(
+                                    "Mounting ToolCallMessage: %s(%s)",
+                                    buffer_name,
+                                    repr(parsed_args)[:200],
+                                )
+                                # Dispatch tool.use once the streamed call has a
+                                # resolved id and parsed args. The headless
+                                # surface dispatches from the stream loop
+                                # instead; see the "Gate tool.use" comment in
+                                # `non_interactive._process_ai_message`. Both
+                                # gate on a resolved tool-call id and fire at
+                                # most once per id — the parity contract is
+                                # documented in `_tool_stream`.
+                                _dispatch_tool_use_hook(
+                                    buffer_name, buffer_id, parsed_args
+                                )
+                                tool_msg = ToolCallMessage(buffer_name, parsed_args)
+                                try:
+                                    await adapter._mount_message(tool_msg)
+                                except Exception:
+                                    # tool.use already fired. If the mount raises
+                                    # (e.g. mounting into a torn-down DOM during
+                                    # shutdown), still track the pending call so
+                                    # the later real ToolMessage remains
+                                    # authoritative for tool.result status/output.
+                                    # If the stream ends first, the terminal
+                                    # drains close this tool.use from the same
+                                    # pending map.
+                                    logger.exception(
+                                        "Failed to mount tool widget for %s",
+                                        buffer_id,
+                                    )
+                                else:
+                                    _notify_user_visible_output_started()
+                                    # Mark running so the group row reflects live
+                                    # progress; the row itself is hidden inside
+                                    # the group, so this drives state, not a
+                                    # visible per-tool spinner.
+                                    tool_msg.set_running()
+                                    adapter._sync_tool_widget(tool_msg)
+                                adapter._current_tool_messages[buffer_id] = tool_msg
+
+                            if buffer_id is not None:
+                                tool_call_buffers.pop(buffer_key, None)
+
+                    if getattr(message, "chunk_position", None) == "last":
+                        pending_text = pending_text_by_namespace.get(ns_key, "")
+                        if pending_text:
+                            await _flush_assistant_text_ns(
+                                adapter,
+                                pending_text,
+                                ns_key,
+                                assistant_message_by_namespace,
+                            )
+                            pending_text_by_namespace[ns_key] = ""
+                            assistant_message_by_namespace.pop(ns_key, None)
+
+            # Reset summarization state if stream ended mid-summarization
+            # (e.g. middleware error, stream exhausted before regular chunks).
+            if summarization_in_progress:
+                summarization_in_progress = False
+                await _after_automatic_compact()
+                try:
+                    await adapter._mount_message(SummarizationMessage())
+                except Exception:
+                    logger.debug(
+                        "Failed to mount summarization notification",
+                        exc_info=True,
+                    )
+                if adapter._set_spinner and not adapter._current_tool_messages:
+                    await adapter._set_spinner("Thinking")
+            # Flush any remaining text from all namespaces
+            for ns_key, pending_text in list(pending_text_by_namespace.items()):
+                if pending_text:
+                    await _flush_assistant_text_ns(
+                        adapter, pending_text, ns_key, assistant_message_by_namespace
+                    )
+            pending_text_by_namespace.clear()
+            assistant_message_by_namespace.clear()
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
+
+            # Handle HITL after stream completes
+            if interrupt_occurred:
+                any_rejected = False
+                ask_user_cancelled = False
+                dismissed_question_count = 0
+                resume_payload: dict[str, Any] = dict(pending_hook_resumes)
+
+                # Tools mounted above start their spinner immediately, but a
+                # tool blocked on HITL approval or `ask_user` input is not
+                # actually running. A main-agent checkpoint blocks its complete
+                # parallel batch, including ungated siblings absent from the
+                # action requests. Nested interrupts remain scoped so unrelated
+                # outer or sibling `task` rows keep running. The approve branches
+                # below call `set_running` on the same rows to resume them.
+                # Crucially, an unrelated in-flight row — a still-running outer
+                # `task`, or a sibling subagent's `task` whose child did not
+                # interrupt — is left running so its elapsed timer stays
+                # monotonic across the nested checkpoint. Guard each row
+                # individually so a single bad widget can't abort the whole
+                # interrupt handler (mirrors `clear_awaiting_approval` below).
+                paused_tool_msgs: list[ToolCallMessage] = []
+                paused_ids: set[int] = set()
+                for namespace, hitl_request in pending_interrupts.values():
+                    for tool_msg in _interrupt_tool_rows(
+                        namespace,
+                        hitl_request["action_requests"],
+                        adapter._current_tool_messages,
+                    ):
+                        if id(tool_msg) not in paused_ids:
+                            paused_ids.add(id(tool_msg))
+                            paused_tool_msgs.append(tool_msg)
+                for ask_req in pending_ask_user.values():
+                    ask_tool_msg = adapter._current_tool_messages.get(
+                        ask_req["tool_call_id"]
+                    )
+                    if ask_tool_msg is not None and id(ask_tool_msg) not in paused_ids:
+                        paused_ids.add(id(ask_tool_msg))
+                        paused_tool_msgs.append(ask_tool_msg)
+                for tool_msg in paused_tool_msgs:
+                    try:
+                        tool_msg.pause_running()
+                        adapter._sync_tool_widget(tool_msg)
+                    except Exception:
+                        logger.exception(
+                            "Failed to pause running state on tool widget %s",
+                            tool_msg.tool_name,
+                        )
+
+                for interrupt_id, ask_req in list(pending_ask_user.items()):
+                    questions = ask_req["questions"]
+                    tool_args = {"questions": questions}
+
+                    if adapter._request_ask_user:
+                        from deepagents_code.hooks.models.domain import (
+                            DcodeNotificationKind,
+                        )
+
+                        await hooks.notify(
+                            DcodeNotificationKind.AGENT_NEEDS_INPUT,
+                            "Agent needs input",
+                        )
+                        if adapter._set_spinner:
+                            await adapter._set_spinner(None)
+                        result: AskUserWidgetResult | dict[str, str] = {
+                            "type": "error",
+                            "error": "ask_user callback returned no response",
+                        }
+                        try:
+                            future = await adapter._request_ask_user(questions)
+                        except Exception:
+                            logger.exception("Failed to mount ask_user widget")
+                            result = {
+                                "type": "error",
+                                "error": "failed to display ask_user prompt",
+                            }
+                            future = None
+
+                        if future is None:
+                            logger.error(
+                                "ask_user callback returned no Future; "
+                                "reporting as error"
+                            )
+                        else:
+                            try:
+                                future_result = await future
+                                if isinstance(future_result, dict):
+                                    result = future_result
+                                else:
+                                    logger.error(
+                                        "ask_user future returned non-dict result: %s",
+                                        type(future_result).__name__,
+                                    )
+                                    result = {
+                                        "type": "error",
+                                        "error": "invalid ask_user widget result",
+                                    }
+                            except Exception:
+                                logger.exception(
+                                    "ask_user future resolution failed; "
+                                    "reporting as error"
+                                )
+                                result = {
+                                    "type": "error",
+                                    "error": "failed to receive ask_user response",
+                                }
+
+                        result_type = result.get("type")
+                        tool_id = ask_req["tool_call_id"]
+                        if result_type == "answered":
+                            answers = result.get("answers", [])
+                            if isinstance(answers, list):
+                                resume_payload[interrupt_id] = {"answers": answers}
+                                # Keep the row alive until the middleware emits
+                                # the ToolMessage that is persisted and sent to
+                                # the model. It owns validation and final status;
+                                # only the hook body is replaced to keep answers
+                                # out of hook scripts.
+                                deferred_tool_result_hooks[tool_id] = (
+                                    DeferredToolResultHook(
+                                        tool_args=tool_args,
+                                        tool_output=ASK_USER_ANSWERED_SUMMARY,
+                                    )
+                                )
+                                ask_row = adapter._current_tool_messages.get(tool_id)
+                                if ask_row is not None:
+                                    # Record the outcome on the row too, so the
+                                    # teardown sweeps — which treat any tracked
+                                    # row as a failure, and which this deferral
+                                    # newly exposes it to — settle it as the
+                                    # success it earned. Only the constant
+                                    # summary, never the answers.
+                                    ask_row.defer_success(ASK_USER_ANSWERED_SUMMARY)
+                                else:
+                                    logger.warning(
+                                        "ask_user tool_id %s missing from "
+                                        "_current_tool_messages on answered",
+                                        tool_id,
+                                    )
+                            else:
+                                output = "invalid ask_user answers payload"
+                                logger.error(
+                                    "ask_user answered payload had non-list "
+                                    "answers: %s",
+                                    type(answers).__name__,
+                                )
+                                resume_payload[interrupt_id] = {
+                                    "status": "error",
+                                    "error": output,
+                                    "answers": ["" for _ in questions],
+                                }
+                                any_rejected = True
+                                tool_msg = adapter._current_tool_messages.pop(
+                                    tool_id, None
+                                )
+                                _dispatch_tool_error_hook("ask_user")
+                                _dispatch_tool_result_hook(
+                                    "ask_user", tool_id, tool_args, "error", output
+                                )
+                                completed_tool_result_ids.add(tool_id)
+                                if tool_msg is not None:
+                                    try:
+                                        tool_msg.set_error(output)
+                                        adapter._sync_tool_widget(tool_msg)
+                                    except Exception:
+                                        logger.exception(
+                                            "Failed to update ask_user row for %s",
+                                            tool_id,
+                                        )
+                        elif result_type == "cancelled":
+                            resume_payload[interrupt_id] = {
+                                "status": "cancelled",
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                            # Halt the turn on cancel; error branches still
+                            # resume so the agent can react to the failure.
+                            ask_user_cancelled = True
+                            # Counts questions, not calls, purely so the banner
+                            # below can pick a singular or plural subject — the
+                            # halt reads the flag above, never this. A widget
+                            # dismisses its whole prompt, so every question in a
+                            # cancelled call went with it.
+                            dismissed_question_count += len(questions)
+                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            output = ASK_USER_CANCELLED_SUMMARY
+                            _dispatch_tool_error_hook("ask_user")
+                            _dispatch_tool_result_hook(
+                                "ask_user", tool_id, tool_args, "error", output
+                            )
+                            completed_tool_result_ids.add(tool_id)
+                            if tool_msg is not None:
+                                try:
+                                    tool_msg.set_rejected()
+                                    adapter._sync_tool_widget(tool_msg)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update ask_user row for %s",
+                                        tool_id,
+                                    )
+                            else:
+                                logger.warning(
+                                    "ask_user tool_id %s missing from "
+                                    "_current_tool_messages on cancelled",
+                                    tool_id,
+                                )
+                        else:
+                            error_text = result.get("error")
+                            if not isinstance(error_text, str) or not error_text:
+                                error_text = "ask_user interaction failed"
+                            resume_payload[interrupt_id] = {
+                                "status": "error",
+                                "error": error_text,
+                                "answers": ["" for _ in questions],
+                            }
+                            any_rejected = True
+                            tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                            _dispatch_tool_error_hook("ask_user")
+                            _dispatch_tool_result_hook(
+                                "ask_user", tool_id, tool_args, "error", error_text
+                            )
+                            completed_tool_result_ids.add(tool_id)
+                            if tool_msg is not None:
+                                try:
+                                    tool_msg.set_error(error_text)
+                                    adapter._sync_tool_widget(tool_msg)
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to update ask_user row for %s",
+                                        tool_id,
+                                    )
+                    else:
+                        logger.warning(
+                            "ask_user interrupt received but no UI callback is "
+                            "registered; reporting as error"
+                        )
+                        resume_payload[interrupt_id] = {
+                            "status": "error",
+                            "error": _ASK_USER_UNSUPPORTED_ERROR,
+                            "answers": ["" for _ in questions],
+                        }
+                        tool_id = ask_req["tool_call_id"]
+                        tool_msg = adapter._current_tool_messages.pop(tool_id, None)
+                        _dispatch_tool_error_hook("ask_user")
+                        _dispatch_tool_result_hook(
+                            "ask_user",
+                            tool_id,
+                            tool_args,
+                            "error",
+                            _ASK_USER_UNSUPPORTED_ERROR,
+                        )
+                        completed_tool_result_ids.add(tool_id)
+                        if tool_msg is not None:
+                            try:
+                                tool_msg.set_error(_ASK_USER_UNSUPPORTED_ERROR)
+                                adapter._sync_tool_widget(tool_msg)
+                            except Exception:
+                                logger.exception(
+                                    "Failed to update ask_user row for %s", tool_id
+                                )
+
+                for interrupt_id, (namespace, hitl_request) in list(
+                    pending_interrupts.items()
+                ):
+                    action_requests = hitl_request["action_requests"]
+
+                    if session_state.approval_mode is ApprovalMode.YOLO and (
+                        not hooks.has_handlers(HookEvent.PERMISSION_REQUEST)
+                    ):
+                        decisions: list[HITLDecision] = [
+                            ApproveDecision(type="approve") for _ in action_requests
+                        ]
+                        resume_payload[interrupt_id] = {"decisions": decisions}
+                        for tool_msg in _interrupt_tool_rows(
+                            namespace,
+                            action_requests,
+                            adapter._current_tool_messages,
+                        ):
+                            _set_running_unless_deferred(tool_msg)
+                            adapter._sync_tool_widget(tool_msg)
+                    else:
+                        all_action_requests = action_requests
+                        plan = await hooks.on_permission_request(
+                            _permission_tool_calls(
+                                interrupt_id,
+                                all_action_requests,
+                                adapter._current_tool_messages,
+                            )
+                        )
+                        if plan.interrupted:
+                            decisions = merge_permission_decisions(
+                                plan.as_interrupted(),
+                                [],
+                            )
+                            for tool_msg in _interrupt_tool_rows(
+                                namespace,
+                                all_action_requests,
+                                adapter._current_tool_messages,
+                            ):
+                                tool_msg.set_rejected(reason="Permission interrupted")
+                                adapter._sync_tool_widget(tool_msg)
+                            resume_payload[interrupt_id] = {"decisions": decisions}
+                            any_rejected = True
+                            break
+
+                        action_requests = [
+                            all_action_requests[index]
+                            for index in plan.unresolved_indices
+                        ]
+                        resolved_row_ids: set[int] = set()
+                        for request, outcome in zip(
+                            all_action_requests,
+                            plan.outcomes,
+                            strict=True,
+                        ):
+                            hook_decision = outcome.decision
+                            if hook_decision is None:
+                                continue
+                            rows = _interrupt_owned_tool_rows(
+                                [request],
+                                adapter._current_tool_messages,
+                            )
+                            for tool_msg in rows:
+                                resolved_row_ids.add(id(tool_msg))
+                                if hook_decision["type"] == "approve":
+                                    _set_running_unless_deferred(tool_msg)
+                                    tool_name = request.get("name")
+                                    args = request.get("args")
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                        "delete",
+                                    } and isinstance(args, dict):
+                                        file_op_tracker.mark_hitl_approved(
+                                            tool_name,
+                                            args,
+                                        )
+                                else:
+                                    tool_msg.set_rejected(
+                                        reason=hook_decision.get("message")
+                                    )
+                                adapter._sync_tool_widget(tool_msg)
+
+                        if plan.fully_resolved:
+                            decisions = merge_permission_decisions(plan, [])
+                            for tool_msg in adapter._current_tool_messages.values():
+                                if id(tool_msg) not in resolved_row_ids:
+                                    _set_running_unless_deferred(tool_msg)
+                                    adapter._sync_tool_widget(tool_msg)
+                            resume_payload[interrupt_id] = {"decisions": decisions}
+                            continue
+
+                        if session_state.approval_mode is ApprovalMode.YOLO:
+                            reviewed = [
+                                ApproveDecision(type="approve") for _ in action_requests
+                            ]
+                            decisions = merge_permission_decisions(plan, reviewed)
+                            resume_payload[interrupt_id] = {"decisions": decisions}
+                            for tool_msg in _interrupt_tool_rows(
+                                namespace,
+                                action_requests,
+                                adapter._current_tool_messages,
+                            ):
+                                if id(tool_msg) in resolved_row_ids:
+                                    continue
+                                _set_running_unless_deferred(tool_msg)
+                                adapter._sync_tool_widget(tool_msg)
+                            continue
+
+                        review_namespace = (
+                            namespace
+                            if len(action_requests) == len(all_action_requests)
+                            else ("permission_hook",)
+                        )
+                        from deepagents_code.hooks.models.domain import (
+                            DcodeNotificationKind,
+                        )
+
+                        await hooks.notify(
+                            DcodeNotificationKind.PERMISSION_REQUIRED,
+                            "Permission required",
+                        )
+                        # Batch approval - one dialog for all parallel tool calls
+                        await dispatch_hook(
+                            "permission.request",
+                            {
+                                "tool_names": [
+                                    r.get("name", "") for r in action_requests
+                                ]
+                            },
+                        )
+                        # Hide shell tool widgets while the approval renders
+                        # the same command; restore before processing the
+                        # decision so subsequent status updates render on the
+                        # visible widget. Only applies to single-tool
+                        # approvals — the batch dialog doesn't render
+                        # per-tool commands, so hiding the rows would leave
+                        # the user with no preview of what's being approved.
+                        suppressed_tool_msgs = (
+                            [
+                                tool_msg
+                                for tool_msg in _interrupt_owned_tool_rows(
+                                    action_requests, adapter._current_tool_messages
+                                )
+                                if tool_msg.tool_name == "execute"
+                            ]
+                            if len(action_requests) == 1
+                            else []
+                        )
+                        for tool_msg in suppressed_tool_msgs:
+                            tool_msg.set_awaiting_approval()
+                        try:
+                            while True:
+                                future = await adapter._request_approval(
+                                    action_requests, assistant_id
+                                )
+                                decision = await future
+                                if (
+                                    isinstance(decision, dict)
+                                    and decision.get("type") == "auto_approve_all"
+                                    and adapter._on_auto_approve_enabled is not None
+                                ):
+                                    callback_result = adapter._on_auto_approve_enabled()
+                                    enabled = (
+                                        await callback_result
+                                        if inspect.isawaitable(callback_result)
+                                        else callback_result
+                                    )
+                                    if enabled is None:
+                                        enabled = True
+                                    if enabled is False:
+                                        continue
+                                break
+                        finally:
+                            for tool_msg in suppressed_tool_msgs:
+                                try:
+                                    tool_msg.clear_awaiting_approval()
+                                except Exception:
+                                    logger.exception(
+                                        "Failed to clear awaiting-approval "
+                                        "state on tool widget %s",
+                                        tool_msg.tool_name,
+                                    )
+
+                        if isinstance(decision, dict):
+                            decision_type = decision.get("type")
+
+                            if decision_type == "auto_approve_all":
+                                decisions = [
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
+                                ]
+                                tool_msgs = _interrupt_tool_rows(
+                                    review_namespace,
+                                    action_requests,
+                                    adapter._current_tool_messages,
+                                )
+                                for tool_msg in tool_msgs:
+                                    _set_running_unless_deferred(tool_msg)
+                                    adapter._sync_tool_widget(tool_msg)
+                                for action_request in action_requests:
+                                    tool_name = action_request.get("name")
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                        "delete",
+                                    }:
+                                        args = action_request.get("args", {})
+                                        if isinstance(args, dict):
+                                            file_op_tracker.mark_hitl_approved(
+                                                tool_name, args
+                                            )
+
+                            elif decision_type == "switch_manual":
+                                if adapter._on_switch_to_manual is None:
+                                    msg = "Manual mode callback is unavailable"
+                                    raise RuntimeError(msg)  # noqa: TRY301  # shared turn error rendering owns this failure
+                                callback_result = adapter._on_switch_to_manual()
+                                switched = (
+                                    await callback_result
+                                    if inspect.isawaitable(callback_result)
+                                    else callback_result
+                                )
+                                if not switched:
+                                    msg = "Manual mode could not be persisted"
+                                    raise RuntimeError(msg)  # noqa: TRY301  # shared turn error rendering owns this failure
+                                decisions = [
+                                    cast("HITLDecision", {"type": "switch_manual"})
+                                    for _ in action_requests
+                                ]
+
+                            elif decision_type == "approve":
+                                decisions = [
+                                    ApproveDecision(type="approve")
+                                    for _ in action_requests
+                                ]
+                                tool_msgs = _interrupt_tool_rows(
+                                    review_namespace,
+                                    action_requests,
+                                    adapter._current_tool_messages,
+                                )
+                                for tool_msg in tool_msgs:
+                                    _set_running_unless_deferred(tool_msg)
+                                    adapter._sync_tool_widget(tool_msg)
+                                for action_request in action_requests:
+                                    tool_name = action_request.get("name")
+                                    if tool_name in {
+                                        "write_file",
+                                        "edit_file",
+                                        "delete",
+                                    }:
+                                        args = action_request.get("args", {})
+                                        if isinstance(args, dict):
+                                            file_op_tracker.mark_hitl_approved(
+                                                tool_name, args
+                                            )
+
+                            elif decision_type == "reject":
+                                reject_message = decision.get("message")
+                                reject_message = (
+                                    reject_message
+                                    if isinstance(reject_message, str)
+                                    and reject_message.strip()
+                                    else None
+                                )
+                                reject_decision: RejectDecision = (
+                                    RejectDecision(
+                                        type="reject", message=reject_message
+                                    )
+                                    if reject_message
+                                    else RejectDecision(type="reject")
+                                )
+                                decisions = [reject_decision for _ in action_requests]
+                                # Bare reject aborts an ordinary conversation
+                                # turn and shows the canned "Command rejected"
+                                # banner. Server operations must receive every
+                                # decision so their nested agent can finish
+                                # without the rejected context. A supplied
+                                # reason likewise resumes either kind of run.
+                                if reject_message is None and graph_input is None:
+                                    # The whole turn aborts.
+                                    completed_tool_result_ids.update(
+                                        _reject_tracked_rows(
+                                            adapter, reason=reject_message
+                                        )
+                                    )
+                                    any_rejected = True
+                                else:
+                                    # The run resumes, so only reviewed calls are
+                                    # terminally rejected. A main-agent checkpoint
+                                    # also paused ungated siblings in the parallel
+                                    # batch; resume those because they can still run
+                                    # after the rejected calls are replaced with
+                                    # synthetic ToolMessages.
+                                    tracked_tool_msgs = adapter._current_tool_messages
+                                    rejected_tool_msgs = _interrupt_owned_tool_rows(
+                                        action_requests,
+                                        tracked_tool_msgs,
+                                    )
+                                    rejected_ids = {
+                                        id(tool_msg) for tool_msg in rejected_tool_msgs
+                                    }
+                                    for tool_msg in rejected_tool_msgs:
+                                        tool_msg.set_rejected(reason=reject_message)
+                                        adapter._sync_tool_widget(tool_msg)
+                                    if not namespace:
+                                        for tool_msg in tracked_tool_msgs.values():
+                                            if id(tool_msg) in rejected_ids:
+                                                continue
+                                            _set_running_unless_deferred(tool_msg)
+                                            adapter._sync_tool_widget(tool_msg)
+                            else:
+                                logger.warning(
+                                    "Unexpected HITL decision type: %s",
+                                    decision_type,
+                                )
+                                decisions = [
+                                    RejectDecision(type="reject")
+                                    for _ in action_requests
+                                ]
+                                completed_tool_result_ids.update(
+                                    _reject_tracked_rows(adapter)
+                                )
+                                any_rejected = True
+                        else:
+                            logger.warning(
+                                "HITL decision was not a dict: %s",
+                                type(decision).__name__,
+                            )
+                            decisions = [
+                                RejectDecision(type="reject") for _ in action_requests
+                            ]
+                            completed_tool_result_ids.update(
+                                _reject_tracked_rows(adapter)
+                            )
+                            any_rejected = True
+
+                        decisions = merge_permission_decisions(plan, decisions)
+                        resume_payload[interrupt_id] = {"decisions": decisions}
+
+                        if any_rejected:
+                            break
+
+                suppress_resumed_output = any_rejected
+
+            if interrupt_occurred and resume_payload:
+                if suppress_resumed_output and (
+                    ask_user_cancelled or not pending_ask_user
+                ):
+                    # An answered `ask_user` can still be tracked here when a
+                    # *separate* `ask_user` call in the same batch was cancelled
+                    # (one widget cancels its whole prompt, never one question of
+                    # it, so this needs two parallel `ask_user` tool calls — which
+                    # `ASK_USER_SYSTEM_PROMPT` discourages but nothing forbids). This
+                    # `return` happens *before* `Command(resume=resume_payload)`
+                    # below, so those answers are discarded: they never reach the
+                    # graph, and the inline widget is already unmounted, making them
+                    # unrecoverable. Settle each row as a delivery failure rather
+                    # than letting the `finally` backstop record the ordinary
+                    # answered success — `ask_user` results double as authorization
+                    # records, and this authorization never took effect.
+                    undelivered = _pop_rows_awaiting_deferred_result(
+                        adapter._current_tool_messages
+                    )
+                    for tool_id, tool_msg in undelivered.items():
+                        _dispatch_tool_error_hook(tool_msg.tool_name)
+                        _dispatch_tool_result_hook(
+                            tool_msg.tool_name,
+                            tool_id,
+                            tool_msg.args,
+                            "error",
+                            ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY,
+                        )
+                        completed_tool_result_ids.add(tool_id)
+                        try:
+                            # Clear first: `set_error` would otherwise redirect
+                            # back to the deferred success.
+                            tool_msg.clear_deferred_success()
+                            tool_msg.set_error(ASK_USER_ANSWERED_NOT_DELIVERED_SUMMARY)
+                            adapter._sync_tool_widget(tool_msg)
+                        except Exception:
+                            logger.exception(
+                                "Failed to settle undelivered ask_user row %s",
+                                tool_id,
+                            )
+
+                    dismissed_subject = (
+                        "Questions" if dismissed_question_count > 1 else "Question"
+                    )
+                    message = (
+                        f"{dismissed_subject} dismissed. Tell the agent what you'd "
+                        "like instead."
+                        if ask_user_cancelled
+                        else "Command rejected. Tell the agent what you'd like instead."
+                    )
+                    if undelivered:
+                        # The user typed answers and they are now gone; saying so
+                        # is the only way they learn not to wait for a response.
+                        # Which event destroyed them differs: a dismissal in this
+                        # batch, or — when `pending_ask_user` is empty because it
+                        # resets each stream iteration — a rejection in a later
+                        # iteration discarding an earlier one's answered row.
+                        cause = (
+                            f"{dismissed_subject} dismissed"
+                            if ask_user_cancelled
+                            else "Command rejected"
+                        )
+                        message = (
+                            f"{cause}, so answers to the other question(s) in this "
+                            "batch were not sent. Tell the agent what you'd like "
+                            "instead."
+                        )
+                    await adapter._mount_message(AppMessage(message))
+                    turn_stats.wall_time_seconds = time.monotonic() - start_time
+                    # Model call already completed (HITL interrupt fires after
+                    # the model node); `ResumeStateMiddleware.after_model`
+                    # persisted the count, so only refresh UI here.
+                    _report_tokens(
+                        adapter,
+                        captured_input_tokens,
+                        captured_output_tokens,
+                    )
+                    return turn_stats
+
+                stream_input = Command(resume=resume_payload)
+            else:
+                # Clean stream end. Any tool still in `_current_tool_messages`
+                # had its `tool.use` dispatched at mount but never received a
+                # `ToolMessage` (e.g. a custom/remote graph that ends the turn
+                # after emitting an unexecuted tool call). Close each one with a
+                # terminal hook so the "every `tool.use` is terminated" guarantee
+                # does not depend on the graph raising. This mirrors the headless
+                # `_dispatch_orphaned_tool_result_hooks`, which likewise closes
+                # orphans hooks-only (no widget mutation) on every loop exit —
+                # the widget keeps its rendered state; only the audit stream and
+                # the cross-turn `_current_tool_messages` tracking are settled.
+                if adapter._current_tool_messages:
+                    logger.info(
+                        "Stream ended with %d un-resulted tool call(s); "
+                        "closing with terminal hooks",
+                        len(adapter._current_tool_messages),
+                    )
+                    _dispatch_terminal_tool_result_hooks(
+                        adapter._current_tool_messages,
+                        "Stream ended before tool result",
+                    )
+                    # Hooks-only above, per the contract in the comment: a row
+                    # keeps whatever it rendered. A deferred row rendered
+                    # *nothing* terminal though — an answered `ask_user` is still
+                    # showing its paused-pending look — so settle those, or the
+                    # row stays pending for the rest of the session, showing
+                    # neither the answers nor a failure.
+                    for tool_id, tool_msg in list(
+                        adapter._current_tool_messages.items()
+                    ):
+                        try:
+                            if tool_msg.settle_deferred_success():
+                                adapter._sync_tool_widget(tool_msg)
+                        except Exception:
+                            logger.exception(
+                                "Failed to settle deferred %s row %s at stream end",
+                                tool_msg.tool_name,
+                                tool_id,
+                            )
+                            # `clear()` below drops this row for good, so nothing
+                            # will retry: without a fallback it stays frozen on its
+                            # paused-pending look for the rest of the session.
+                            try:
+                                tool_msg.clear_deferred_success()
+                                tool_msg.set_error("Stream ended before tool result")
+                                adapter._sync_tool_widget(tool_msg)
+                            except Exception:
+                                logger.exception(
+                                    "Fallback terminal render also failed for %s "
+                                    "row %s; surfacing to the user",
+                                    tool_msg.tool_name,
+                                    tool_id,
+                                )
+                                # A permanently stuck row is user-visible damage;
+                                # a file-only log would leave them waiting on a
+                                # spinner that never resolves.
+                                await adapter._mount_message(
+                                    AppMessage(
+                                        f"A {tool_msg.tool_name} row could not be "
+                                        "updated and may stay stuck; its result was "
+                                        "still recorded."
+                                    )
+                                )
+                    adapter._current_tool_messages.clear()
+                # The end-of-stream diagnostic for buffered tool calls that never
+                # fired a `tool.use` runs in the `finally` below, not here, so it
+                # fires on cancel and mid-stream error too (not only this clean
+                # end) — mirroring the headless surface, whose identical
+                # diagnostic lives in `_run_agent_loop`'s `finally`.
+                from deepagents_code.hooks.models.domain import (
+                    DcodeNotificationKind,
+                )
+
+                try:
+                    await hooks.notify(
+                        DcodeNotificationKind.AGENT_COMPLETED,
+                        "Agent completed",
+                    )
+                except ClientHookStopError as exc:
+                    await adapter._mount_message(
+                        AppMessage(f"Operation stopped by hook: {exc}")
+                    )
+                if not hooks.has_handlers(HookEvent.NOTIFICATION):
+                    await dispatch_hook("task.complete", {"thread_id": thread_id})
+                stream_completed = True
+                break
+
+    except ClientHookStopError:
+        _reject_tracked_rows(adapter)
+        raise
+    except (asyncio.CancelledError, KeyboardInterrupt):
+        await _handle_interrupt_cleanup(
+            adapter=adapter,
+            agent=agent,
+            config=config,
+            pending_text_by_namespace=pending_text_by_namespace,
+            assistant_message_by_namespace=assistant_message_by_namespace,
+            reasoning_message_by_namespace=reasoning_message_by_namespace,
+            captured_input_tokens=captured_input_tokens,
+            captured_output_tokens=captured_output_tokens,
+            turn_stats=turn_stats,
+            start_time=start_time,
+            recover_interrupted_turn=recover_interrupted_turn,
+        )
+        return turn_stats
+    except Exception:
+        # No retry event follows an exhausted final attempt. Reconcile its root
+        # presentation now, before the generic teardown finalizes the live reply
+        # and makes a partial generation look complete.
+        root_ns: tuple = ()
+        if active_attempt_by_namespace.pop(root_ns, None) is not None:
+            preserve_partial = root_ns in assistant_message_by_namespace
+            try:
+                await _settle_attempt_for_retry(
+                    adapter,
+                    preserve_partial=preserve_partial,
+                    pending_text_by_namespace=pending_text_by_namespace,
+                    assistant_message_by_namespace=assistant_message_by_namespace,
+                    completed_tool_result_ids=completed_tool_result_ids,
+                    displayed_tool_ids=displayed_tool_ids,
+                    tool_call_buffers=tool_call_buffers,
+                )
+                if preserve_partial:
+                    await adapter._mount_message(AppMessage(TERMINAL_ATTEMPT_MARKER))
+            except Exception:
+                logger.warning(
+                    "Failed to reconcile the terminal model attempt", exc_info=True
+                )
+        raise
+    finally:
+        # A clean stream can leave its successful final attempt open when the
+        # best-effort completion event was lost. Commit those scopes; only an
+        # aborted stream owns incomplete records that must be discarded.
+        try:
+            if stream_completed:
+                for scope_ns, scope in active_attempt_by_namespace.items():
+                    agent_id = (
+                        None
+                        if not scope_ns
+                        else transcript_agent_by_namespace.get(scope_ns)
+                    )
+                    if not scope_ns or agent_id is not None:
+                        transcript.complete_attempt(
+                            agent_id=agent_id,
+                            call_id=scope.call_id,
+                            attempt=scope.attempt,
+                        )
+            else:
+                transcript.drop_uncommitted()
+        except Exception:
+            logger.warning(
+                "Failed to finalize uncommitted transcript attempts", exc_info=True
+            )
+
+        # Streamed text is coalesced in each AssistantMessage's `_pending_append`
+        # buffer and flushed on a throttled timer, so up to one flush interval of
+        # tokens can be in flight at any moment. Normal completion (the flush loop
+        # above) and interrupt cleanup both clear the namespace dict, leaving this
+        # a no-op there. The path that matters is a non-cancel mid-stream error
+        # propagating to the caller: without this drain those buffered tokens are
+        # never written and the user sees a silently truncated reply.
+        try:
+            await _stop_assistant_streams(adapter, assistant_message_by_namespace)
+        except Exception:  # drain must not mask the original error
+            logger.exception("Failed to drain assistant streams on exit")
+
+        # Reasoning needs the same drain for the same reason, plus one of its
+        # own: the store recorded this widget at mount time with empty content,
+        # so without the `_sync_message_content` inside the flush a re-hydrated
+        # row would come back blank and lose text the user had already read.
+        try:
+            await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
+        except Exception:  # drain must not mask the original error
+            logger.exception("Failed to drain reasoning streams on exit")
+
+        # Self-contained backstop for the "every `tool.use` is terminated" hook
+        # guarantee. The clean-end branch, HITL-reject branches, and interrupt
+        # cleanup each already drained `_current_tool_messages` and cleared it, so
+        # this is a no-op on those paths. The one path it covers is a non-cancel
+        # mid-stream error propagating to the caller: without it, the tools that
+        # fired `tool.use` would be terminated only by the caller's
+        # `finalize_pending_tools_with_error`, leaving the hook guarantee dependent
+        # on the caller rather than owned here (a future second caller, or a
+        # missing adapter, would leak an unterminated `tool.use`). Runs before the
+        # exception reaches the caller, whose `finalize_pending_tools_with_error`
+        # then finds an empty dict and no-ops, so no `tool.result` is dispatched
+        # twice. Fail-loud and guarded so a dispatch problem can never mask the
+        # error propagating from the stream.
+        if adapter._current_tool_messages:
+            logger.warning(
+                "Turn exited with %d un-terminated tool call(s); closing with "
+                "terminal hooks as a backstop",
+                len(adapter._current_tool_messages),
+            )
+            try:
+                adapter.finalize_pending_tools_with_error(
+                    "Agent error before tool result"
+                )
+            except Exception:
+                logger.warning(
+                    "Backstop terminal tool close failed unexpectedly",
+                    exc_info=True,
+                )
+
+        # Surface any buffered tool call that never mounted and never fired a
+        # `tool.use`, so it would otherwise vanish with `tool_call_buffers` at turn
+        # end with no trace. Two distinct cases (args that never parsed, and args
+        # that parsed but carried no tool-call id) are classified by the shared
+        # `count_unemitted_tool_calls`. In the `finally` so it fires on every exit
+        # path — clean end, cancel, and mid-stream error — matching the headless
+        # surface. Info, not warning: nothing executed for these and the
+        # precondition (exiting mid-tool-call) is unusual; it only needs to be
+        # greppable. Guarded so a logging failure can never mask a propagating
+        # exception (`parse_args`, re-run inside the count, can raise on the
+        # invariant-violating both-fields-set buffer).
+        try:
+            unemitted = count_unemitted_tool_calls(tool_call_buffers.values())
+            if unemitted.unparsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments never "
+                    "parsed; no tool.use was emitted for them",
+                    unemitted.unparsed,
+                )
+            if unemitted.idless_parsed:
+                logger.info(
+                    "Stream ended with %d tool call(s) whose arguments parsed "
+                    "but carried no tool-call id; no tool.use was emitted for "
+                    "them",
+                    unemitted.idless_parsed,
+                )
+        except Exception:
+            logger.warning(
+                "Unparsed tool-call buffer check failed unexpectedly",
+                exc_info=True,
+            )
+
+    # Update token count and return stats. Persistence is handled inside the
+    # graph by `ResumeStateMiddleware.after_model`, so this only refreshes UI.
+    turn_stats.wall_time_seconds = time.monotonic() - start_time
+    _report_tokens(
+        adapter,
+        captured_input_tokens,
+        captured_output_tokens,
+    )
+    if adapter._on_stream_complete:
+        try:
+            adapter._on_stream_complete()
+        except Exception:
+            logger.warning("on_stream_complete callback failed", exc_info=True)
+    return turn_stats
+
+
+async def _stop_assistant_streams(
+    adapter: TextualUIAdapter,
+    assistant_message_by_namespace: dict[tuple, Any] | None,
+) -> None:
+    """Finalize active assistant streams during interrupt cleanup."""
+    if not assistant_message_by_namespace:
+        return
+
+    for current_msg in list(assistant_message_by_namespace.values()):
+        try:
+            await current_msg.stop_stream()
+        except Exception:
+            logger.warning("Failed to stop interrupted assistant stream", exc_info=True)
+            continue
+
+        if adapter._sync_message_content and current_msg.id:
+            adapter._sync_message_content(current_msg.id, current_msg._content)
+
+    assistant_message_by_namespace.clear()
+
+
+async def _handle_interrupt_cleanup(
+    *,
+    adapter: TextualUIAdapter,
+    agent: Any,  # noqa: ANN401  # Dynamic agent graph type
+    config: RunnableConfig,
+    pending_text_by_namespace: dict[tuple, str],
+    assistant_message_by_namespace: dict[tuple, Any] | None = None,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None = None,
+    captured_input_tokens: int,
+    captured_output_tokens: int,
+    turn_stats: _session_stats.SessionStats,
+    start_time: float,
+    recover_interrupted_turn: bool = True,
+) -> None:
+    """Shared cleanup for CancelledError and KeyboardInterrupt.
+
+    Args:
+        adapter: UI adapter with display callbacks.
+        agent: The LangGraph agent.
+        config: Runnable config with `thread_id`.
+        pending_text_by_namespace: Accumulated text per namespace.
+        assistant_message_by_namespace: Active assistant message widgets per namespace.
+        reasoning_message_by_namespace: Active reasoning widgets per namespace.
+        captured_input_tokens: Input tokens captured before interrupt.
+        captured_output_tokens: Output tokens captured before interrupt.
+        turn_stats: Stats for the current turn.
+        start_time: Monotonic timestamp when the turn began.
+        recover_interrupted_turn: Whether to append the normal partial assistant
+            and cancellation messages for an interrupted conversation turn.
+
+    Raises:
+        ValueError: If proactive remote-run cancellation is attempted without a
+            `thread_id` in `config` (a contract violation rather than a
+            transient remote failure).
+    """
+    from langchain_core.messages import HumanMessage
+
+    # Clear active message immediately so it won't block pruning.
+    # If we don't do this, the store still thinks it's active and protects
+    # from pruning, which breaks get_messages_to_prune(), potentially
+    # blocking all future pruning.
+    if adapter._set_active_message:
+        adapter._set_active_message(None)
+
+    # Hide spinner (may still show "Offloading" if interrupted mid-offload)
+    if adapter._set_spinner:
+        await adapter._set_spinner(None)
+
+    await _stop_assistant_streams(adapter, assistant_message_by_namespace)
+    await _stop_reasoning_streams(adapter, reasoning_message_by_namespace)
+
+    if recover_interrupted_turn:
+        glyphs = get_glyphs()
+        await adapter._mount_message(
+            AppMessage(f"{glyphs.square_filled} Interrupted by user")
+        )
+
+    # Proactively cancel server-side runs before persisting recovery state, so
+    # the aupdate_state writes below don't 409 against a still-busy thread. This
+    # is defense-in-depth layered on top of aupdate_state's own 409 -> cancel ->
+    # retry path (see RemoteAgent.aupdate_state); a failure here is not fatal.
+    # Absent on local agents, so this is a no-op for them.
+    cancel_active_runs = getattr(agent, "acancel_active_runs", None)
+    if cancel_active_runs is not None:
+        try:
+            await cancel_active_runs(config)
+        except ValueError:
+            # A missing thread_id is a contract violation (a bug), not a
+            # transient remote failure — surface it rather than downgrading it
+            # to a warning alongside the swallowed network errors below.
+            raise
+        except Exception:
+            # Remote cancel is best-effort defense-in-depth; transient remote
+            # failures here are recovered by aupdate_state's 409 retry below.
+            logger.warning(
+                "Failed to cancel active remote runs for thread %s",
+                config.get("configurable", {}).get("thread_id"),
+                exc_info=True,
+            )
+
+    interrupted_msg = (
+        _build_interrupted_ai_message(
+            pending_text_by_namespace,
+            adapter._current_tool_messages,
+        )
+        if recover_interrupted_turn
+        else None
+    )
+
+    # Close out any tool whose `tool.use` fired but whose `ToolMessage` never
+    # arrived because the turn was cancelled: emit terminal hooks before the
+    # widgets are dropped, so a cancel path leaves no unterminated `tool.use`
+    # (mirroring the HITL-reject branches). The turn does not resume from here,
+    # so the returned ids need not be tracked for dedup.
+    #
+    # Dispatched *before* the `aupdate_state` writes below (not alongside the
+    # `set_rejected` loop after them): those writes await a possibly-slow remote
+    # checkpointer, and on an interactive quit the graceful-exit drain in
+    # `app.py` snapshots the in-flight hook tasks right after cancelling this
+    # worker. Scheduling the fire-and-forget hooks here — synchronously, as soon
+    # as cancellation is observed — guarantees they are in that snapshot and get
+    # drained, rather than being scheduled after a slow write and cancelled at
+    # loop teardown (a silent audit gap). It reads `tool_msg.args`/`tool_name`,
+    # both available regardless of the widget's rejected state.
+    #
+    # Guarded because this now sits *before* the recovery-state write below: the
+    # dispatch never raises by construction today (pure payload builders, and
+    # `dispatch_hook_fire_and_forget` swallows serialization inside its task), but
+    # this function's whole contract is best-effort-must-not-propagate, so a
+    # future change here must never skip the `aupdate_state` save or escape the
+    # cancel handler.
+    try:
+        _dispatch_terminal_tool_result_hooks(
+            adapter._current_tool_messages, "Turn cancelled"
+        )
+    except Exception:
+        logger.warning("Terminal tool.result dispatch failed on cancel", exc_info=True)
+
+    # Save accumulated state before marking tools as rejected (best-effort).
+    # State update failures shouldn't prevent cleanup.
+    from langsmith import tracing_context
+
+    try:
+        # tracing_context(enabled=False) suppresses only the UpdateState traced
+        # run that each aupdate_state call would otherwise emit in LangSmith — it
+        # does not affect any other tracing in the surrounding turn. These writes
+        # are internal interrupt-recovery mechanics (partial AI message +
+        # cancellation notice), not user-driven agent activity; surfacing them as
+        # standalone peer runs alongside real agent turns clutters the trace view.
+        with tracing_context(enabled=False):
+            if recover_interrupted_turn:
+                if interrupted_msg:
+                    await agent.aupdate_state(config, {"messages": [interrupted_msg]})
+
+                cancellation_msg = HumanMessage(
+                    content=f"{SYSTEM_MESSAGE_PREFIX} Task interrupted by user. "
+                    "Previous operation was cancelled."
+                )
+                cancellation_values: dict[str, Any] = {"messages": [cancellation_msg]}
+                # Piggy-back the latest token count on this already-required
+                # write instead of issuing a separate `aupdate_state`.
+                # `after_model` never ran on the partial turn, so without this
+                # the count would be stale on resume.
+                captured_total = captured_input_tokens + captured_output_tokens
+                if captured_total:
+                    cancellation_values["_context_tokens"] = captured_total
+                await agent.aupdate_state(config, cancellation_values)
+    except (httpx.TransportError, httpx.TimeoutException) as e:
+        logger.warning("Could not save interrupted state (network): %s", e)
+    except Exception as exc:  # interrupt cleanup must not propagate
+        logger.warning("Failed to save interrupted state", exc_info=True)
+        # Surface via the chat surface — silent file-only warnings have
+        # masked real state-write failures (validation, checkpointer
+        # corruption) in past incidents. The mount is best-effort; the
+        # adapter may already be tearing down.
+        with contextlib.suppress(Exception):
+            await adapter._mount_message(
+                AppMessage(
+                    f"Could not save interrupted state ({type(exc).__name__}). "
+                    "Subsequent turns may see stale state."
+                )
+            )
+
+    # Mark tools as rejected AFTER saving state. Terminal hooks for these were
+    # already dispatched before the state writes above (see the comment there).
+    # Guard each `set_rejected` — it does DOM work that can raise during
+    # app-exit teardown — so a failure can't skip the `clear()` below. If it
+    # did, `_current_tool_messages` would stay populated and the caller's
+    # `finally` backstop would re-dispatch a duplicate terminal hook for every
+    # id already closed at the top of this function.
+    for tool_msg in list(adapter._current_tool_messages.values()):
+        try:
+            tool_msg.set_rejected()
+            adapter._sync_tool_widget(tool_msg)
+        except Exception:
+            logger.exception(
+                "Failed to mark tool row rejected during interrupt cleanup"
+            )
+    adapter._current_tool_messages.clear()
+
+    # Keep the token count marked stale whenever interrupted state was captured,
+    # including tool-only turns after assistant text was already flushed.
+    approximate = interrupted_msg is not None
+
+    turn_stats.wall_time_seconds = time.monotonic() - start_time
+    _report_tokens(
+        adapter,
+        captured_input_tokens,
+        captured_output_tokens,
+        approximate=approximate,
+    )
+
+
+def _report_tokens(
+    adapter: TextualUIAdapter,
+    captured_input_tokens: int,
+    captured_output_tokens: int,
+    *,
+    approximate: bool = False,
+) -> None:
+    """Refresh the token-count UI display.
+
+    Persistence into graph state is owned by `ResumeStateMiddleware.after_model`
+    (normal turns), the server-side offload route (offload turns), and the
+    interrupt-cleanup `aupdate_state` write (partial turns) — never this helper.
+
+    Args:
+        adapter: UI adapter with token callbacks.
+        captured_input_tokens: Total input tokens captured during the turn.
+        captured_output_tokens: Total output tokens captured during the turn.
+        approximate: When `True`, signal to the UI that the count is stale
+            (e.g. after an interrupted generation) by appending "+".
+    """
+    if captured_input_tokens or captured_output_tokens:
+        if adapter._on_tokens_update:
+            adapter._on_tokens_update(captured_input_tokens, approximate=approximate)
+    elif adapter._on_tokens_show:
+        adapter._on_tokens_show(approximate=approximate)
+
+
+async def _flush_reasoning_ns(
+    adapter: TextualUIAdapter,
+    ns_key: tuple,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage],
+) -> None:
+    """Finalize and collapse reasoning for one namespace.
+
+    Syncs the accumulated text back to the store for the same re-hydration
+    reason as `_flush_assistant_text_ns`, then clears the adapter's active
+    message -- which is a single global slot, not per-namespace.
+    """
+    message = reasoning_message_by_namespace.pop(ns_key, None)
+    if message is None:
+        return
+    await message.stop_stream()
+    if adapter._sync_message_content and message.id:
+        adapter._sync_message_content(message.id, message._content)
+    if adapter._set_active_message:
+        adapter._set_active_message(None)
+
+
+async def _stop_reasoning_streams(
+    adapter: TextualUIAdapter,
+    reasoning_message_by_namespace: dict[tuple, ReasoningMessage] | None,
+) -> None:
+    """Finalize every active reasoning stream, isolating each widget.
+
+    One failing widget must not abort the rest of the drain, so each flush is
+    guarded the way `_stop_assistant_streams` guards its own. `_flush_reasoning_ns`
+    pops before it awaits, so a raising widget is already out of the dict.
+    """
+    if not reasoning_message_by_namespace:
+        return
+
+    for ns_key in list(reasoning_message_by_namespace):
+        try:
+            await _flush_reasoning_ns(adapter, ns_key, reasoning_message_by_namespace)
+        except Exception:
+            logger.warning("Failed to stop reasoning stream", exc_info=True)
+
+
+async def _flush_assistant_text_ns(
+    adapter: TextualUIAdapter,
+    text: str,
+    ns_key: tuple,
+    assistant_message_by_namespace: dict[tuple, Any],
+) -> None:
+    """Flush accumulated assistant text for a specific namespace.
+
+    Finalizes the streaming by stopping the MarkdownStream.
+    If no message exists yet, creates one with the full content.
+    """
+    if not text.strip():
+        return
+
+    current_msg = assistant_message_by_namespace.get(ns_key)
+    if current_msg is None:
+        # No message was created during streaming - create one with full content
+        msg_id = f"asst-{uuid.uuid4().hex}"
+        current_msg = AssistantMessage(text, id=msg_id)
+        await adapter._mount_message(current_msg)
+        await current_msg.write_initial_content()
+        assistant_message_by_namespace[ns_key] = current_msg
+    else:
+        # Stop the stream to finalize the content
+        await current_msg.stop_stream()
+
+    # When the AssistantMessage was first mounted and recorded in the
+    # MessageStore, it had empty content (streaming hadn't started yet).
+    # Now that streaming is done, the widget holds the full text in
+    # `_content`, but the store's MessageData still has `content=""`.
+    # If the message is later pruned and re-hydrated, `to_widget()` would
+    # recreate it from that stale empty string. This call copies the
+    # widget's final content back into the store so re-hydration works.
+    if adapter._sync_message_content and current_msg.id:
+        adapter._sync_message_content(current_msg.id, current_msg._content)
+
+    # Clear active message since streaming is done
+    if adapter._set_active_message:
+        adapter._set_active_message(None)

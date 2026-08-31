@@ -1,4 +1,4 @@
-.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage commands-catalog commands-catalog-check check bootstrap
+.PHONY: format lint type typecheck test tests integration_test integration_tests test_watch benchmark bench bench-memory help run lint_package lint_tests check_imports coverage commands-catalog commands-catalog-check check bootstrap update-snapshots
 
 .DEFAULT_GOAL := help
 
@@ -16,7 +16,11 @@ TEST_FILE ?= tests/unit_tests/
 integration_test integration_tests: TEST_FILE=tests/integration_tests/
 
 COV_ARGS ?= --cov=deepagents_code --cov-report=term-missing
+SMOKE_TESTS ?= tests/unit_tests/smoke_tests/
 PYTEST_EXTRA ?=
+
+update-snapshots: ## Update smoke test snapshots
+	uv run --group test pytest -vvv --disable-socket --allow-unix-socket --update-snapshots $(SMOKE_TESTS)
 
 test: ## Run unit tests
 test tests:
@@ -69,6 +73,7 @@ lint lint_diff lint_package lint_tests:
 	[ "$(PYTHON_FILES)" = "" ] || uv run --all-groups ruff format $(PYTHON_FILES) --diff
 	$(MAKE) type PYTHON_FILES="$(PYTHON_FILES)"
 	uv run --all-groups python scripts/generate_commands_catalog.py --check
+	uv run --all-groups python scripts/check_process_cwd.py deepagents_code
 
 type: ## Run type checker
 type typecheck:
@@ -101,13 +106,13 @@ bootstrap: ## Install dev dependencies and git hooks for local development
 check: ## Run the full local CI gauntlet (lint, types, imports, tests, repo gates)
 check: lint check_imports test
 	@echo "🔍 Verifying extras stay in sync with required deps..."
-	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_extras_sync.py" pyproject.toml
+	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/checks/check_extras_sync.py" pyproject.toml
 	@echo "🔍 Verifying pyproject.toml and _version.py agree..."
-	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_version_equality.py"
+	uv run --all-groups python "$(REPO_ROOT)/.github/scripts/checks/check_version_equality.py"
 	@echo "🔒 Verifying uv.lock is up-to-date..."
 	UV_FROZEN=false uv lock --check
 	@echo "🔗 Checking SDK pin against workspace SDK (advisory)..."
-	@uv run --all-groups python "$(REPO_ROOT)/.github/scripts/check_sdk_pin.py" || \
+	@uv run --all-groups python "$(REPO_ROOT)/.github/scripts/release/check_sdk_pin.py" || \
 		{ rc=$$?; [ $$rc -eq 1 ] && echo "⚠️  Stale SDK pin (advisory, non-fatal)." || exit $$rc; }
 	@echo "✅ All local CI checks passed!"
 

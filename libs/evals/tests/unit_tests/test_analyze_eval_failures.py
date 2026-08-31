@@ -1,4 +1,4 @@
-"""Tests for the eval failure analysis script (`.github/scripts/analyze_eval_failures.py`).
+"""Tests for the eval failure analysis script (`.github/scripts/evals/analyze_eval_failures.py`).
 
 Adds the script directory to `sys.path` for import since it lives outside
 the package tree.
@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".github" / "scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[4] / ".github" / "scripts" / "evals"))
 
 from analyze_eval_failures import (  # ty: ignore[unresolved-import]
     _DEFAULT_MODEL,

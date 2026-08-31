@@ -9,6 +9,8 @@ from acp import text_block, update_agent_message
 from acp.exceptions import RequestError
 from acp.interfaces import Client
 from acp.schema import (
+    AgentMessageChunk,
+    AgentThoughtChunk,
     AllowedOutcome,
     EmbeddedResourceContentBlock,
     ImageContentBlock,
@@ -22,13 +24,26 @@ from acp.schema import (
     TextContentBlock,
     TextResourceContents,
     ToolCallUpdate,
+    UserMessageChunk,
 )
 from deepagents import create_deep_agent
 from langchain.agents import create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware
 from langchain.tools import ToolRuntime
-from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    RemoveMessage,
+    ToolMessage,
+)
+from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import tool
+from langgraph.checkpoint.base import (
+    ChannelVersions,
+    Checkpoint,
+    CheckpointMetadata,
+)
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph.state import CompiledStateGraph
 from langgraph.types import interrupt
@@ -80,6 +95,21 @@ class FakeACPClient(Client):
         )
 
 
+class DelayedMemorySaver(MemorySaver):
+    """Simulate a persistent checkpointer whose async writes are not immediate."""
+
+    async def aput(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        """Delay checkpoint visibility until the async write completes."""
+        await asyncio.sleep(0.05)
+        return await super().aput(config, checkpoint, metadata, new_versions)
+
+
 async def test_acp_agent_prompt_streams_text() -> None:
     model = GenericFakeChatModel(
         messages=iter([AIMessage(content="Hello!")]), stream_delimiter=r"(\s)"
@@ -106,6 +136,166 @@ async def test_acp_agent_prompt_streams_text() -> None:
     assert texts == ["Hello!"]
 
 
+async def test_acp_agent_prompt_streams_visible_reasoning_in_block_order() -> None:
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            chunk = AIMessageChunk(
+                content=[
+                    {"type": "text", "text": "Before"},
+                    {"type": "reasoning", "reasoning": "Considering options"},
+                    {"type": "text", "text": "After"},
+                    {"type": "reasoning", "reasoning": ""},
+                    {"type": "reasoning", "reasoning": {"not": "a string"}},
+                    {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+                ]
+            )
+            yield ((), "messages", (chunk, {}))
+            yield (
+                ("subagent",),
+                "messages",
+                (AIMessageChunk(content=[{"type": "reasoning", "reasoning": "Nested secret"}]), {}),
+            )
+
+        async def aget_state(self, config: Any) -> Any:
+            class State:
+                next = ()
+                interrupts: list[Any] = []
+
+            return State()
+
+    agent = AgentServerACP(
+        agent=create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([])), checkpointer=MemorySaver()
+        )
+    )
+    agent._agent = Graph()  # type: ignore[assignment]
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    updates = [event["update"] for event in client.events]
+    assert [update.session_update for update in updates] == [
+        "agent_message_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert [update.content.text for update in updates] == [
+        "Before",
+        "Considering options",
+        "After",
+    ]
+    assert isinstance(updates[1], AgentThoughtChunk)
+
+
+def _streaming_server(chunks: list[tuple[tuple[str, ...], Any]]) -> tuple[Any, FakeACPClient]:
+    """Build a server whose graph streams `chunks` as (namespace, message)."""
+
+    class Graph:
+        @staticmethod
+        async def astream(*args: Any, **kwargs: Any):
+            for namespace, chunk in chunks:
+                yield (namespace, "messages", (chunk, {}))
+
+        async def aget_state(self, config: Any) -> Any:
+            class State:
+                next = ()
+                interrupts: list[Any] = []
+
+            return State()
+
+    agent = AgentServerACP(
+        agent=create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([])), checkpointer=MemorySaver()
+        )
+    )
+    agent._agent = Graph()  # type: ignore[assignment]
+    client = FakeACPClient()
+    agent.on_connect(client)  # type: ignore[arg-type]
+    return agent, client
+
+
+async def test_acp_agent_prompt_keeps_whitespace_between_reasoning_deltas() -> None:
+    """Reasoning streams one delta at a time, so whitespace-only deltas matter.
+
+    Dropping them concatenates words and collapses paragraph breaks.
+    """
+    deltas = ["Considering", " ", "options.", "\n\n", "Now deciding."]
+    agent, client = _streaming_server(
+        [((), AIMessageChunk(content=[{"type": "reasoning", "reasoning": d}])) for d in deltas]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    updates = [event["update"] for event in client.events]
+    assert all(isinstance(update, AgentThoughtChunk) for update in updates)
+    assert "".join(update.content.text for update in updates) == (
+        "Considering options.\n\nNow deciding."
+    )
+
+
+async def test_acp_agent_prompt_streams_image_and_audio_blocks() -> None:
+    """The live path forwards every block type that session replay forwards."""
+    agent, client = _streaming_server(
+        [
+            (
+                (),
+                AIMessageChunk(
+                    content=[
+                        {"type": "image", "base64": "aW1n", "mime_type": "image/png"},
+                        {"type": "audio", "base64": "c25k", "mime_type": "audio/wav"},
+                    ]
+                ),
+            )
+        ]
+    )
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    contents = [event["update"].content for event in client.events]
+    assert [content.type for content in contents] == ["image", "audio"]
+    assert [content.data for content in contents] == ["aW1n", "c25k"]
+
+
+async def test_acp_agent_prompt_streams_content_before_tool_calls() -> None:
+    """Live block order matches replay, which emits content before tool calls."""
+    chunk = AIMessageChunk(
+        content=[{"type": "text", "text": "Calling a tool"}],
+        tool_call_chunks=[
+            {
+                "name": "ls",
+                "args": '{"path": "."}',
+                "id": "call-1",
+                "index": 0,
+                "type": "tool_call_chunk",
+            }
+        ],
+    )
+    agent, client = _streaming_server([((), chunk)])
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Hi")], session_id=session.session_id
+    )
+
+    assert response.stop_reason == "end_turn"
+    kinds = [event["update"].session_update for event in client.events]
+    assert kinds.index("agent_message_chunk") < kinds.index("tool_call")
+
+
 async def test_acp_agent_cancel_stops_prompt() -> None:
     model = GenericFakeChatModel(messages=iter([AIMessage(content="Should not appear")]))
     graph = create_deep_agent(model=model, checkpointer=MemorySaver())
@@ -129,21 +319,20 @@ async def test_acp_agent_cancel_stops_prompt() -> None:
 
 
 async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
-    class ListContentMessage:
-        content = [
-            {"type": "text", "text": "Hello"},
-            " ",
-            {"type": "text", "text": "world"},
-        ]
-        tool_call_chunks: list[dict[str, Any]] = []
-
-    async def astream(*args: Any, **kwargs: Any):
-        yield (ListContentMessage(), {})
+    def list_content_message() -> AIMessageChunk:
+        """Mixed list content, so `content_blocks` normalization is exercised."""
+        return AIMessageChunk(
+            content=[
+                {"type": "text", "text": "Hello"},
+                " ",
+                {"type": "text", "text": "world"},
+            ]
+        )
 
     class Graph:
         @staticmethod
         async def astream(*args: Any, **kwargs: Any):
-            yield ((), "messages", (ListContentMessage(), {}))
+            yield ((), "messages", (list_content_message(), {}))
 
         async def aget_state(self, config: Any) -> Any:
             class S:
@@ -170,11 +359,11 @@ async def test_acp_agent_prompt_streams_list_content_blocks() -> None:
     )
     assert resp.stop_reason == "end_turn"
 
-    assert any(
-        e["update"] == update_agent_message(text_block("Hello world"))
-        for e in client.events
-        if e["type"] == "session_update"
-    )
+    assert [
+        event["update"].content.text
+        for event in client.events
+        if event["type"] == "session_update" and isinstance(event["update"], AgentMessageChunk)
+    ] == ["Hello", " ", "world"]
 
 
 async def test_acp_agent_initialize_and_modes() -> None:
@@ -187,10 +376,283 @@ async def test_acp_agent_initialize_and_modes() -> None:
 
     init = await agent.initialize(protocol_version=1)
     assert init.agent_capabilities.prompt_capabilities.image is True
-
+    assert init.agent_capabilities.load_session is False
     session = await agent.new_session(cwd="/tmp", mcp_servers=[])
     assert session.session_id
     assert session.modes is None
+
+
+def _persistent_graph(checkpointer: MemorySaver, *replies: str) -> CompiledStateGraph:
+    """Compile a deep agent over `checkpointer` that answers with `replies`."""
+    return create_deep_agent(
+        model=GenericFakeChatModel(messages=iter([AIMessage(content=reply) for reply in replies])),
+        checkpointer=checkpointer,
+    )
+
+
+def _persistent_server(graph: CompiledStateGraph) -> tuple[AgentServerACP, FakeACPClient]:
+    """Build a `load_sessions` server for `graph` with a connected fake client."""
+    server = AgentServerACP(agent=graph, load_sessions=True)
+    client = FakeACPClient()
+    server.on_connect(client)  # type: ignore[arg-type]
+    return server, client
+
+
+async def test_acp_agent_load_session_replays_persisted_history() -> None:
+    checkpointer = MemorySaver()
+    first_server, _ = _persistent_server(_persistent_graph(checkpointer, "Pong"))
+
+    session = await first_server.new_session(cwd="/tmp", mcp_servers=[])
+    await first_server.prompt(
+        [TextContentBlock(type="text", text="Ping")],
+        session_id=session.session_id,
+    )
+
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
+    init = await restarted_server.initialize(protocol_version=1)
+    assert init.agent_capabilities.load_session is True
+    await restarted_server.load_session(
+        cwd="/tmp",
+        session_id=session.session_id,
+        mcp_servers=[],
+    )
+
+    updates = [event["update"] for event in client.events]
+    user_updates = [update for update in updates if isinstance(update, UserMessageChunk)]
+    agent_updates = [update for update in updates if isinstance(update, AgentMessageChunk)]
+    assert [update.content.text for update in user_updates] == ["Ping"]
+    assert [update.content.text for update in agent_updates] == ["Pong"]
+
+
+async def test_acp_agent_load_session_replays_visible_reasoning_in_order() -> None:
+    checkpointer = MemorySaver()
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await graph.aupdate_state(
+        server._session_config(session.session_id),
+        {
+            "messages": [
+                AIMessage(
+                    id="agent-message",
+                    content=[
+                        {"type": "text", "text": "Before"},
+                        {"type": "reasoning", "reasoning": "Considering options"},
+                        {"type": "non_standard", "value": {"type": "redacted_thinking"}},
+                        {"type": "text", "text": "After"},
+                    ],
+                )
+            ]
+        },
+        as_node="__start__",
+    )
+
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
+    await restarted_server.load_session(cwd="/tmp", session_id=session.session_id, mcp_servers=[])
+
+    updates = [event["update"] for event in client.events]
+    assert [update.session_update for update in updates] == [
+        "agent_message_chunk",
+        "agent_thought_chunk",
+        "agent_message_chunk",
+    ]
+    assert [update.content.text for update in updates] == [
+        "Before",
+        "Considering options",
+        "After",
+    ]
+    assert isinstance(updates[1], AgentThoughtChunk)
+    assert [update.message_id for update in updates] == ["agent-message"] * 3
+
+
+async def test_acp_agent_load_session_replays_tool_calls() -> None:
+    checkpointer = MemorySaver()
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await graph.aupdate_state(
+        server._session_config(session.session_id),
+        {
+            "messages": [
+                AIMessage(
+                    content="",
+                    id="agent-message",
+                    tool_calls=[
+                        {
+                            "name": "execute",
+                            "args": {"command": "echo hi"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                ToolMessage(content="hi", id="tool-message", tool_call_id="call_1"),
+            ]
+        },
+        as_node="__start__",
+    )
+
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
+    await restarted_server.load_session(
+        cwd="/tmp",
+        session_id=session.session_id,
+        mcp_servers=[],
+    )
+
+    updates = [event["update"] for event in client.events]
+    tool_updates = [
+        update for update in updates if getattr(update, "tool_call_id", None) == "call_1"
+    ]
+    assert [update.session_update for update in tool_updates] == [
+        "tool_call",
+        "tool_call_update",
+    ]
+    assert tool_updates[0].raw_input == {"command": "echo hi"}
+    assert tool_updates[1].status == "completed"
+
+
+async def test_acp_agent_load_session_replays_compacted_messages() -> None:
+    checkpointer = MemorySaver()
+    graph = _persistent_graph(checkpointer)
+    server, _ = _persistent_server(graph)
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    config = server._session_config(session.session_id)
+    await graph.aupdate_state(
+        config,
+        {
+            "messages": [
+                HumanMessage(content="old", id="old-user"),
+                AIMessage(content="old reply", id="old-agent"),
+            ]
+        },
+        as_node="__start__",
+    )
+    await graph.aupdate_state(
+        config,
+        {
+            "messages": [
+                RemoveMessage(id="old-user"),
+                RemoveMessage(id="old-agent"),
+                HumanMessage(content="new", id="new-user"),
+            ]
+        },
+        as_node="model",
+    )
+
+    restarted_server, client = _persistent_server(_persistent_graph(checkpointer))
+    await restarted_server.load_session(
+        cwd="/tmp",
+        session_id=session.session_id,
+        mcp_servers=[],
+    )
+
+    updates = [event["update"] for event in client.events]
+    assert [
+        update.content.text
+        for update in updates
+        if isinstance(update, (UserMessageChunk, AgentMessageChunk))
+    ] == ["old", "old reply", "new"]
+
+
+async def test_acp_agent_load_session_restores_config_options() -> None:
+    checkpointer = MemorySaver()
+    contexts: list[AgentSessionContext] = []
+    modes = SessionModeState(
+        current_mode_id="auto",
+        available_modes=[
+            SessionMode(id="auto", name="Auto"),
+            SessionMode(id="manual", name="Manual"),
+        ],
+    )
+    models = [
+        {"value": "model-a", "name": "Model A"},
+        {"value": "model-b", "name": "Model B"},
+    ]
+
+    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+        contexts.append(context)
+        return create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([])),
+            checkpointer=checkpointer,
+        )
+
+    server = AgentServerACP(
+        agent=build_agent,
+        modes=modes,
+        models=models,
+        load_sessions=True,
+    )
+    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    session = await server.new_session(cwd="/tmp", mcp_servers=[])
+    await server.set_config_option(
+        config_id="mode",
+        session_id=session.session_id,
+        value="manual",
+    )
+    await server.set_config_option(
+        config_id="model",
+        session_id=session.session_id,
+        value="model-b",
+    )
+
+    restarted_server = AgentServerACP(
+        agent=build_agent,
+        modes=modes,
+        models=models,
+        load_sessions=True,
+    )
+    restarted_server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    response = await restarted_server.load_session(
+        cwd="/tmp",
+        session_id=session.session_id,
+        mcp_servers=[],
+    )
+
+    assert response.modes is not None
+    assert response.modes.current_mode_id == "manual"
+    options = [getattr(option, "root", option) for option in response.config_options or []]
+    model_option = next(option for option in options if option.id == "model")
+    assert model_option.current_value == "model-b"
+    assert contexts[-1] == AgentSessionContext(cwd="/tmp", mode="manual", model="model-b")
+
+
+async def test_acp_agent_load_session_rejects_sessions_it_did_not_create() -> None:
+    graph = _persistent_graph(MemorySaver())
+    await graph.aupdate_state(
+        {"configurable": {"thread_id": "other"}, "metadata": {"cwd": "/tmp"}},
+        {},
+        as_node="__start__",
+    )
+    server, _ = _persistent_server(graph)
+
+    for session_id in ("missing", "other"):
+        with pytest.raises(RequestError) as exc_info:
+            await server.load_session(cwd="/tmp", session_id=session_id, mcp_servers=[])
+        assert exc_info.value.code == -32002
+
+
+async def test_acp_agent_load_session_rejects_different_cwd() -> None:
+    checkpointer = MemorySaver()
+    contexts: list[AgentSessionContext] = []
+
+    def build_agent(context: AgentSessionContext) -> CompiledStateGraph:
+        contexts.append(context)
+        return _persistent_graph(checkpointer)
+
+    server = AgentServerACP(agent=build_agent, load_sessions=True)
+    server.on_connect(FakeACPClient())  # type: ignore[arg-type]
+    session = await server.new_session(cwd="/tmp/original", mcp_servers=[])
+
+    with pytest.raises(RequestError) as exc_info:
+        await server.load_session(
+            cwd="/tmp/different",
+            session_id=session.session_id,
+            mcp_servers=[],
+        )
+
+    assert exc_info.value.code == -32602
+    await server.load_session(cwd="/tmp/original", session_id=session.session_id, mcp_servers=[])
+    assert contexts[-1].cwd == "/tmp/original"
 
 
 async def test_new_session_preserves_positional_mcp_servers_slot() -> None:
@@ -963,6 +1425,53 @@ async def test_acp_agent_hitl_requests_permission_only_once() -> None:
         "This indicates the double approval bug has regressed."
     )
     assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
+
+
+async def test_acp_agent_hitl_waits_for_interrupt_checkpoint() -> None:
+    """Test that permission state is read after the interrupt stream closes."""
+    model = GenericFakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "write_file",
+                            "args": {"file_path": "/tmp/test.txt", "content": "hello"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="File written successfully"),
+            ]
+        ),
+        stream_delimiter=None,
+    )
+    graph = create_deep_agent(
+        model=model,
+        interrupt_on={"write_file": True},
+        checkpointer=DelayedMemorySaver(),
+    )
+    agent = AgentServerACP(agent=graph)
+    client = FakeACPClient(permission_outcomes=["approve"])
+    agent.on_connect(client)  # type: ignore[arg-type]
+
+    session = await agent.new_session(cwd="/tmp", mcp_servers=[])
+    response = await agent.prompt(
+        [TextContentBlock(type="text", text="Write a test file")],
+        session_id=session.session_id,
+    )
+
+    assert response.stop_reason == "end_turn"
+    permission_requests = [e for e in client.events if e["type"] == "request_permission"]
+    assert len(permission_requests) == 1
+    assert permission_requests[0]["tool_call"].title == "Write `/tmp/test.txt`"
+    assert any(
+        e["update"] == update_agent_message(text_block("File written successfully"))
+        for e in client.events
+        if e["type"] == "session_update"
+    )
 
 
 def _make_server(*, with_modes: bool = True, with_models: bool = True) -> AgentServerACP:

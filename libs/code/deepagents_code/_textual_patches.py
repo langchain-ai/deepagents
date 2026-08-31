@@ -1,6 +1,6 @@
 r"""Runtime patches over Textual internals, imported for side effect.
 
-This module hosts two independent best-effort patches over private Textual
+This module hosts six independent best-effort patches over private Textual
 APIs. Each guards its own import/assignment and degrades to stock Textual
 behavior (logging a warning) if the targeted internals move, so they have
 separate lifecycles — do not delete the whole file when only one lands
@@ -13,8 +13,8 @@ upstream.
     `alt+enter`. Tracked in Textualize/textual#6378. Remove this patch and
     the Textual pin comment in `pyproject.toml` when that lands.
 
-2. Kitty lock-key and sub-field handling. Two related problems with the
-    pinned Textual parser:
+2. Kitty lock-key and unsupported sub-field handling. Two related problems
+    remain with the pinned Textual parser:
 
     a. Lock keys (Caps Lock / Num Lock / Scroll Lock) must never produce
         text, but terminals encode them inconsistently. kitty/Ghostty/VS Code
@@ -27,21 +27,70 @@ upstream.
         single character-less `caps_lock` event, regardless of the modifier,
         associated-text, or event-type sub-fields the terminal includes.
 
-    b. `_re_extended_key` only accepts `;`-separated numeric fields, so any
-        *non-lock* kitty sequence carrying `:`-separated sub-fields — alternate
-        keys (`unicode:shifted:base`) or an event-type (`modifiers:event`) —
-        fails to match and is re-emitted one byte at a time as literal text.
-        The patch strips the `:` sub-fields before Textual parses the sequence
-        so it resolves to a single key event.
+    b. Textual 8.2.8 handles `:`-separated code points in the third,
+        associated-text field, but not alternate keys in the first field
+        (`unicode:shifted:base`) or an event type in the second field
+        (`modifiers:event`). The patch strips only those unsupported sub-fields
+        before Textual parses the sequence and preserves every associated-text
+        code point.
 
-    Remove when the pinned Textual neutralizes lock keys and widens its parser.
+    Remove when Textual neutralizes lock keys and handles key-code and modifier
+    sub-fields natively.
 
 3. Double-click word selection. Stock Textual selects the entire widget on
     a click chain; these patches narrow a double-click (and double-click
     drag) to word boundaries. No upstream issue tracks this yet, so it has
     no removal criterion — it stays until Textual grows native word select.
 
+4. Shift-click selection extension. Stock Textual replaces an existing text
+    selection on every mouse press, so Shift+click cannot move the active end
+    of a drag-selected range. The patch preserves the original selection anchor
+    and applies the click as its new end. No upstream issue tracks this yet.
+
+    Known terminal limitation: this only works when the terminal delivers the
+    modified click to the app. Ghostty binds Shift+click to its own selection
+    and never forwards the event while mouse reporting is active, so
+    Shift+click is a no-op there (users can `keybind = shift+click=unbind` to
+    opt out). iTerm2, kitty, and WezTerm forward it with the shift modifier
+    bit set, which is what the patch keys on. If Shift+click "does nothing"
+    for a user, check terminal delivery first — e.g. run
+    `printf '\e[?1003h\e[?1006h'; cat -v` and confirm Shift+click prints a
+    `^[[<;...;4M`-style sequence (the `4` is the shift bit) — before digging
+    into this patch.
+
+5. Detached-widget hit filtering. The compositor keeps reporting a widget as
+    visible for a few event-loop iterations after it leaves the DOM, which
+    `Markdown.update` (and therefore the `MarkdownStream` that drives every
+    streaming assistant message) does constantly. `Screen._forward_event`
+    starts a text selection from `content_widget.parent`, which is `None` for
+    such a widget, so a mouse press landing on freshly replaced markdown
+    crashes the app with `AttributeError: 'NoneType' object has no attribute
+    'region'`. Tracked in Textualize/textual#6643; remove when that lands.
+
+6. Diff-gutter exclusion from selections. Textual paints the selection
+    highlight from the geometry stored in `Screen.selections`, so excluding
+    a diff row's decorative gutter (line number, `+`/`-` marker) only in
+    `Widget.get_selection` would copy the right text while still highlighting
+    the gutter. The patch rewrites each selection whenever that reactive
+    changes, shifting any endpoint inside a row's gutter past it via
+    `diff.clamp_selection`. No upstream issue tracks per-widget selection
+    masking; it stays until Textual grows one.
+
+7. ASCII border rendering. Textual border styles are global character tables,
+    while dcode's charset preference is process-wide. In ASCII mode this patch
+    makes every border style render with Textual's `ascii` characters, including
+    third-party and dynamically mounted widgets, without replacing edge styles
+    or their resolved colors. It stays until Textual supports an application-wide
+    border character policy.
+
 Imported for side effect from `app.py` before any `App()` is created.
+
+Not every Textual-internals workaround lives here: subclasses that shadow a
+private base method carry theirs inline. When auditing a Textual bump, grep for
+`Textual's private` and `Validated against Textual` alongside this module. Those
+two markers are a starting point rather than a complete inventory — a workaround
+can always land without one, so treat an unflagged subclass of a Textual widget
+as unaudited until you have read it.
 """
 
 from __future__ import annotations
@@ -58,7 +107,7 @@ from textual.geometry import Offset
 from textual.selection import Selection
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Awaitable, Iterable
 
     from textual.events import Click, Event
     from textual.screen import Screen
@@ -66,6 +115,20 @@ if TYPE_CHECKING:
     from textual.widget import Widget
 
 logger = logging.getLogger(__name__)
+
+try:
+    from textual import _border  # noqa: PLC2701
+
+    from deepagents_code.config import is_ascii_mode
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning("Textual ASCII border patch skipped: %s", exc)
+else:
+    if is_ascii_mode():
+        ascii_border = _border.BORDER_CHARS["ascii"]
+        for edge_type in _border.BORDER_CHARS:
+            if edge_type not in {*_border.INVISIBLE_EDGE_TYPES, "blank"}:
+                _border.BORDER_CHARS[edge_type] = ascii_border
+        _border.get_box.cache_clear()
 
 _ESC_PREFIX_LEN = 2
 _DOUBLE_CLICK_CHAIN = 2
@@ -102,10 +165,9 @@ else:
     # varying shapes.
     _KITTY_KEY_SEQUENCE = re.compile(r"\x1b\[(\d+)[\d;:]*u")
 
-    # Kitty extended-key sequence carrying `:` sub-fields (alternate keys or an
-    # event-type sub-field). The pinned Textual's `_re_extended_key` rejects the
-    # colons, so non-lock keys with these sub-fields would otherwise leak as
-    # literal text — strip the sub-fields so they parse to a single key event.
+    # Kitty extended-key sequence carrying `:` sub-fields. Textual 8.2.8
+    # handles them in the associated-text field, but not the key-code or
+    # modifier fields; normalize only those first two fields below.
     _KITTY_SUBFIELD_KEY = re.compile(r"\x1b\[[\d;:]*:[\d;:]*[u~ABCDEFHPQRS]")
 
     # iTerm2 reports the Caps Lock toggle as a `CSI u` sequence whose primary
@@ -145,17 +207,19 @@ else:
         return modifier_bits & _REAL_MODIFIER_MASK == 0 and not has_text
 
     def _strip_kitty_subfields(sequence: str) -> str:
-        """Drop `:` sub-fields from a kitty extended-key sequence.
+        """Drop unsupported `:` sub-fields from a kitty key sequence.
 
-        Keeps the primary value of each `;`-separated field (the unicode key
-        code, modifier mask, and associated text), which is all Textual reads.
+        Keeps the primary key code and modifier while preserving every
+        colon-separated code point in the associated-text field, which
+        Textual 8.2.8 handles natively.
 
         Returns:
-            The sequence with every `:` sub-field removed.
+            The sequence with only key-code and modifier sub-fields removed.
         """
         body, terminator = sequence[2:-1], sequence[-1]
-        primary = ";".join(field.split(":", 1)[0] for field in body.split(";"))
-        return f"\x1b[{primary}{terminator}"
+        fields = body.split(";")
+        fields[:2] = [field.split(":", 1)[0] for field in fields[:2]]
+        return f"\x1b[{';'.join(fields)}{terminator}"
 
     def _lock_key_event(sequence: str) -> events.Key | None:
         """Return a text-free lock-key event for a kitty lock-key sequence.
@@ -197,8 +261,8 @@ else:
         if _spurious_caps_lock(sequence):
             yield events.Key("caps_lock", None)
             return
-        # Normalize any other kitty sequence with `:` sub-fields so it resolves
-        # to a single key event instead of leaking raw bytes.
+        # Normalize unsupported key-code and modifier sub-fields while leaving
+        # Textual 8.2.8's colon-separated associated text intact.
         if _KITTY_SUBFIELD_KEY.fullmatch(sequence):
             sequence = _strip_kitty_subfields(sequence)
         # Fast path: \x1b<byte> on first pass. Short-circuits the ~100 ms
@@ -415,6 +479,184 @@ else:
     except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
         logger.warning(
             "Textual word-selection patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual import events as _shift_events
+    from textual.screen import Screen as _ShiftScreen
+    from textual.selection import SelectEnd, SelectStart, SelectState
+
+    _original_forward_event_with_shift = _ShiftScreen._forward_event
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual Shift+click selection patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _shift_click_anchor(screen: Screen, event: Event) -> SelectState | None:
+        # When this returns None the press falls through to stock Textual,
+        # which starts a fresh selection — indistinguishable from the event
+        # never arriving. Before debugging the branches below, confirm the
+        # terminal forwarded a shift-modified click at all (see the module
+        # docstring's patch 4 note); terminals like Ghostty consume Shift+click
+        # locally, so `event.shift` never becomes True here.
+        if (
+            not isinstance(event, _shift_events.MouseDown)
+            or not event.shift
+            or screen.app.mouse_captured
+            or not screen.selections
+        ):
+            return None
+        select_state = screen._select_state
+        if select_state is None or select_state.end is None:
+            return None
+        content_widget = select_state.start.content_widget
+        if content_widget is not None and not content_widget.is_attached:
+            return None
+        return select_state if select_state.is_attached_to_dom() else None
+
+    def _rebase_anchor_scroll(anchor_start: SelectStart) -> SelectStart:
+        # `SelectStart.pointer_start_offset` adds the scroll travelled since
+        # the drag began, which tracks the viewport rather than the anchored
+        # text. That is harmless mid-drag, but a Shift+click can arrive many
+        # rows after the container scrolled — the transcript auto-scrolls while
+        # a message streams — leaving the anchor pointing at whatever text now
+        # occupies its old screen row. Fold the drift into the pointer delta
+        # and re-base against the current scroll offset, so the anchor stays on
+        # its original text.
+        container = anchor_start.container
+        drift = container.scroll_offset - anchor_start.container_initial_scroll_offset
+        return SelectStart(
+            container,
+            anchor_start.container_pointer_delta - drift,
+            anchor_start.container_initial_offset,
+            container.scroll_offset,
+            content_widget=anchor_start.content_widget,
+            content_offset=anchor_start.content_offset,
+        )
+
+    def _extend_selection_to_click(
+        screen: Screen,
+        anchor: SelectState | None,
+        event: _shift_events.MouseDown,
+    ) -> None:
+        click_state = screen._select_state
+        if anchor is None or click_state is None:
+            return
+        click = click_state.start
+        # Stock Textual clears the selection when a MouseUp lands on the
+        # offset of its MouseDown. Forget the offset so the Shift+click's own
+        # MouseUp leaves the extension we install below alone.
+        screen._mouse_down_offset = None
+        screen._select_state = SelectState(
+            event.screen_offset,
+            _rebase_anchor_scroll(anchor.start),
+            SelectEnd(click.container, click.content_widget, click.content_offset),
+        )
+
+    def _forward_event_with_shift_select(self: Screen, event: Event) -> None:
+        shift_anchor = _shift_click_anchor(self, event)
+        _original_forward_event_with_shift(self, event)
+        if isinstance(event, _shift_events.MouseDown):
+            _extend_selection_to_click(self, shift_anchor, event)
+
+    try:
+        _ShiftScreen._forward_event = _forward_event_with_shift_select  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual Shift+click selection patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual.screen import Screen as _HitScreen
+
+    _original_get_widget_and_offset_at = _HitScreen.get_widget_and_offset_at
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual detached-hit patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _get_widget_and_offset_at_attached(
+        self: Screen,
+        x: int,
+        y: int,
+    ) -> tuple[Widget | None, Offset | None]:
+        """Ignore compositor hits on widgets that already left the DOM.
+
+        Returns:
+            The stock result, or `(None, None)` when the hit widget is
+            detached, which sends Textual down its existing "nothing
+            selectable here" branch instead of dereferencing a `None` parent.
+        """
+        widget, offset = _original_get_widget_and_offset_at(self, x, y)
+        if (
+            widget is not None
+            and not isinstance(widget, _HitScreen)
+            and (widget.parent is None or not widget.is_attached)
+        ):
+            return None, None
+        return widget, offset
+
+    try:
+        _HitScreen.get_widget_and_offset_at = _get_widget_and_offset_at_attached  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual detached-hit patch assignment rejected (textual %s): %s",
+            _textual_version,
+            exc,
+        )
+
+
+try:
+    from textual.screen import Screen as _ClampScreen
+
+    from deepagents_code.tui.widgets.diff import clamp_selection
+
+    _original_watch_selections_for_clamp = _ClampScreen._watch_selections
+except (ImportError, AttributeError) as exc:  # pragma: no cover - defensive
+    logger.warning(
+        "Textual gutter-selection patch skipped (textual %s): %s",
+        _textual_version,
+        exc,
+    )
+else:
+
+    def _watch_selections_with_gutter_clamp(
+        self: Screen,
+        old_selections: dict[Widget, Selection],
+        selections: dict[Widget, Selection],
+    ) -> Awaitable[None] | None:
+        # Textual stores the new dict before invoking this watcher. Clamp that
+        # object synchronously before returning the original watcher's awaitable;
+        # assigning `self.selections` here would schedule this watcher again.
+        for widget, selection in list(selections.items()):
+            clamped = clamp_selection(widget, selection)
+            if clamped is None:
+                del selections[widget]
+            elif clamped != selection:
+                selections[widget] = clamped
+
+        result = _original_watch_selections_for_clamp(self, old_selections, selections)
+        # `_watch_selections` is async in the pinned Textual; the isawaitable
+        # guard tolerates a future synchronous implementation.
+        return result if isawaitable(result) else None
+
+    try:
+        _ClampScreen._watch_selections = _watch_selections_with_gutter_clamp  # ty: ignore[invalid-assignment]
+    except (AttributeError, TypeError) as exc:  # pragma: no cover - defensive
+        logger.warning(
+            "Textual gutter-selection patch assignment rejected (textual %s): %s",
             _textual_version,
             exc,
         )

@@ -1,18 +1,18 @@
 """Tests for resume-state persistence and token display callbacks."""
 
 from types import SimpleNamespace
-from typing import Any, get_type_hints
+from typing import Any
 
-from langchain.agents.middleware.types import PrivateStateAttr
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage
 
+from deepagents_code._session_stats import SessionStats
 from deepagents_code.app import DeepAgentsApp
 from deepagents_code.resume_state import (
-    ResumeState,
     ResumeStateMiddleware,
     _extract_context_tokens,
-    _extract_model_spec,
     coerce_goal_status,
+    coerce_model_spec,
 )
 
 
@@ -21,29 +21,15 @@ def _runtime(context: dict[str, str | None] | None) -> SimpleNamespace:
     return SimpleNamespace(context=context)
 
 
-class TestResumeState:
-    def test_state_has_context_tokens_field(self):
-        """ResumeState declares the `_context_tokens` channel."""
-        assert "_context_tokens" in ResumeState.__annotations__
+class TestCoerceRubricModelSpec:
+    """Tests for checkpointed grader model coercion."""
 
-    def test_state_has_model_spec_field(self):
-        """ResumeState declares the `_model_spec` channel."""
-        assert "_model_spec" in ResumeState.__annotations__
+    def test_accepts_nonblank_string(self) -> None:
+        assert coerce_model_spec(" openai:gpt-5.5 ") == "openai:gpt-5.5"
 
-    def test_sticky_rubric_field_is_private(self):
-        """Persistent TUI rubrics must not leak through the public schema."""
-        # `_sticky_rubric` is inherited from `GoalRubricChannels`, so resolve the
-        # full (inherited) hints the way LangGraph does rather than reading
-        # own-keys-only `__annotations__`. `get_type_hints` resolves the marker to
-        # its real object (`PrivateStateAttr`), so assert membership of that
-        # sentinel rather than matching the source text.
-        hints = get_type_hints(ResumeState, include_extras=True)
-        metadata = getattr(hints["_sticky_rubric"], "__metadata__", ())
-        assert PrivateStateAttr in metadata
-
-    def test_middleware_exposes_state_schema(self):
-        """ResumeStateMiddleware registers the correct state schema."""
-        assert ResumeStateMiddleware.state_schema is ResumeState
+    @pytest.mark.parametrize("value", [None, "", "   ", 1, {}])
+    def test_rejects_malformed_values(self, value: object) -> None:
+        assert coerce_model_spec(value) is None
 
 
 class TestCoerceGoalStatus:
@@ -51,17 +37,13 @@ class TestCoerceGoalStatus:
 
     def test_returns_known_statuses(self) -> None:
         assert coerce_goal_status("active") == "active"
+        assert coerce_goal_status("paused") == "paused"
         assert coerce_goal_status("blocked") == "blocked"
         assert coerce_goal_status("complete") == "complete"
 
-    def test_unknown_string_coerces_to_none(self) -> None:
-        assert coerce_goal_status("deleted") is None
-        assert coerce_goal_status("") is None
 
-    def test_non_string_coerces_to_none(self) -> None:
-        assert coerce_goal_status(None) is None
-        assert coerce_goal_status(123) is None
-        assert coerce_goal_status(["active"]) is None
+class TestCoerceGoalProposalKind:
+    """Tests for persisted pending-review mode coercion."""
 
 
 class TestExtractContextTokens:
@@ -105,27 +87,6 @@ class TestExtractContextTokens:
         assert _extract_context_tokens(msg) is None
 
 
-class TestExtractModelSpec:
-    """Tests for `_extract_model_spec`."""
-
-    def test_returns_effective_model_from_context(self) -> None:
-        runtime = _runtime({"effective_model": "anthropic:claude-sonnet-4-5"})
-        assert _extract_model_spec(runtime) == "anthropic:claude-sonnet-4-5"  # ty: ignore
-
-    def test_returns_none_when_context_missing(self) -> None:
-        assert _extract_model_spec(_runtime(None)) is None  # ty: ignore
-
-    def test_returns_none_when_field_absent(self) -> None:
-        assert _extract_model_spec(_runtime({"model": "x"})) is None  # ty: ignore
-
-    def test_returns_none_for_blank_or_nonstring(self) -> None:
-        assert _extract_model_spec(_runtime({"effective_model": ""})) is None  # ty: ignore
-        assert _extract_model_spec(_runtime({"effective_model": None})) is None  # ty: ignore
-
-    def test_returns_none_when_runtime_is_none(self) -> None:
-        assert _extract_model_spec(None) is None  # ty: ignore
-
-
 class TestAfterModelHook:
     """Tests for the `after_model` persistence hook."""
 
@@ -147,7 +108,8 @@ class TestAfterModelHook:
         result = middleware.after_model(state, _runtime(None))  # ty: ignore
         assert result == {"_context_tokens": 1700}
 
-    async def test_writes_model_spec_from_context(self) -> None:
+    async def test_does_not_write_model_spec_from_context(self) -> None:
+        """Model metadata is written by ConfigurableModelMiddleware."""
         middleware = ResumeStateMiddleware()
         state: dict[str, Any] = {
             "messages": [
@@ -162,25 +124,9 @@ class TestAfterModelHook:
                 ),
             ],
         }
-        runtime = _runtime({"effective_model": "openai:gpt-5.1"})
+        runtime = _runtime({"model": "openai:gpt-5.1"})
         result = middleware.after_model(state, runtime)  # ty: ignore
-        assert result == {
-            "_context_tokens": 1700,
-            "_model_spec": "openai:gpt-5.1",
-        }
-
-    async def test_writes_model_spec_without_token_usage(self) -> None:
-        """Model spec is recorded even when the AI message reports no usage."""
-        middleware = ResumeStateMiddleware()
-        state: dict[str, Any] = {
-            "messages": [
-                HumanMessage(content="hi"),
-                AIMessage(content="no usage info"),
-            ],
-        }
-        runtime = _runtime({"effective_model": "openai:gpt-5.1"})
-        result = middleware.after_model(state, runtime)  # ty: ignore
-        assert result == {"_model_spec": "openai:gpt-5.1"}
+        assert result == {"_context_tokens": 1700}
 
     async def test_returns_none_when_no_ai_message(self) -> None:
         middleware = ResumeStateMiddleware()
@@ -238,76 +184,110 @@ class TestAfterModelHook:
 class TestTokenDisplayCallbacks:
     """Verify the callback-based token tracking that replaced TextualTokenTracker."""
 
-    def test_on_tokens_update_sets_cache_and_calls_display(self):
-        """_on_tokens_update should set the local cache and update the status bar."""
-        display_calls: list[int] = []
 
-        class FakeApp:
-            _context_tokens: int = 0
-            _status_bar = None
+class TestCostDisplayCallbacks:
+    """Verify persisted thread cost is restored and accumulated in the TUI."""
 
-            def _update_tokens(self, count: int) -> None:
-                display_calls.append(count)
+    def test_unreported_pricing_health_leaves_the_last_value(self) -> None:
+        """A checkpoint read says nothing about pricing and must not erase it."""
+        app = DeepAgentsApp()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0, thread_id="thread-1", pricing_ok=False)
 
-            def _on_tokens_update(self, count: int) -> None:
-                self._context_tokens = count
-                self._update_tokens(count)
+        app._set_session_cost(2.0)
 
-        app = FakeApp()
-        app._on_tokens_update(4200)
+        assert app._pricing_is_broken() is True
 
-        assert app._context_tokens == 4200
-        assert display_calls == [4200]
+    def test_committed_state_lowers_an_optimistic_display(self) -> None:
+        """The client defers to the checkpoint instead of pushing its own total."""
+        app = DeepAgentsApp()
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.5)
 
-    def test_show_tokens_restores_cached_value(self):
-        """_show_tokens should re-display the cached value."""
-        display_calls: list[int] = []
+        app._sync_session_cost_from_state({"_session_cost_usd": 1.1})
 
-        class FakeApp:
-            _context_tokens: int = 1500
+        assert app._displayed_cost_usd == pytest.approx(1.1)
 
-            def _update_tokens(self, count: int) -> None:
-                display_calls.append(count)
+    async def test_resumed_zero_cost_usage_is_not_reported_as_unused(self) -> None:
+        """Checkpoint history preserves usage when its total cannot prove it."""
+        from deepagents_code.app import _ThreadHistoryPayload
 
-            def _show_tokens(self) -> None:
-                self._update_tokens(self._context_tokens)
-
-        app = FakeApp()
-        app._show_tokens()
-
-        assert display_calls == [1500]
-
-    def test_show_tokens_preserves_approximate_marker_without_fresh_usage(self):
-        """Turns without usage metadata should not clear a stale-token marker."""
-        display_calls: list[tuple[int, bool]] = []
-
-        def update_tokens(count: int, *, approximate: bool = False) -> None:
-            display_calls.append((count, approximate))
-
-        app = SimpleNamespace(
-            _context_tokens=1500,
-            _tokens_approximate=True,
-            _update_tokens=update_tokens,
+        app = DeepAgentsApp(thread_id="thread-1")
+        payload = _ThreadHistoryPayload(
+            messages=[],
+            context_tokens=0,
+            model_spec="",
+            session_cost_usd=0.0,
+            transcript_messages=(AIMessage(content=""),),
         )
 
-        DeepAgentsApp._show_tokens(app, approximate=False)  # ty: ignore
+        await app._load_thread_history(
+            thread_id="thread-1",
+            preloaded_payload=payload,
+        )
 
-        assert app._tokens_approximate is True
-        assert display_calls == [(1500, True)]
+        assert app._thread_stats.request_count == 0
+        assert app._format_cost_summary() == (
+            "Cost estimate unavailable\n\n"
+            "Earlier model usage was restored for this thread, but its request "
+            "and pricing details were not persisted. This does not mean the usage "
+            "was free."
+        )
 
-    def test_reset_clears_cache(self):
-        """Resetting (e.g. /clear) should zero the cache and display."""
-        display_calls: list[int] = []
+    def test_cost_summary_warns_when_current_details_are_incomplete(self) -> None:
+        """Checkpoint spend missing from streamed stats is called out."""
+        stats = SessionStats()
+        stats.record_request(
+            "gpt-5.5",
+            1_000,
+            100,
+            provider="openai",
+            cost_usd=0.32,
+        )
+        app = DeepAgentsApp()
+        app._reset_thread_usage(1.0)
+        app._thread_stats = stats
+        # The graph charged another $0.10 that the client message stream did
+        # not expose, in addition to the represented $0.32.
+        app._set_session_cost(1.42)
 
-        class FakeApp:
-            _context_tokens: int = 3000
+        summary = app._format_cost_summary()
 
-            def _update_tokens(self, count: int) -> None:
-                display_calls.append(count)
+        assert "Estimated thread cost: $1.42" in summary
+        assert "openai:gpt-5.5: $0.32" in summary
+        assert (
+            "Some current-session usage is included only in the total because "
+            "detailed usage metadata was unavailable."
+        ) in summary
 
-        app = FakeApp()
-        app._context_tokens = 0
-        app._update_tokens(0)
+    async def test_checkpoint_reconcile_never_writes_cost(self) -> None:
+        """The client reads the graph's total; it never back-fills the channel."""
+        from unittest.mock import AsyncMock
 
-        assert app._context_tokens == 0
-        assert display_calls == [0]
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0)
+        app._add_provisional_cost(0.25)
+        app._get_thread_state_values = AsyncMock(
+            return_value={"_session_cost_usd": 1.5}
+        )
+        app._aupdate_thread_state = AsyncMock()
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._displayed_cost_usd == pytest.approx(1.5)
+        app._aupdate_thread_state.assert_not_awaited()
+
+    async def test_failed_state_read_keeps_the_displayed_cost(self) -> None:
+        from unittest.mock import AsyncMock
+
+        app = DeepAgentsApp()
+        app._agent = object()
+        app._lc_thread_id = "thread-1"
+        app._set_session_cost(1.0)
+        app._get_thread_state_values = AsyncMock(side_effect=RuntimeError("no server"))
+
+        await app._sync_session_cost_from_checkpoint()
+
+        assert app._displayed_cost_usd == pytest.approx(1.0)

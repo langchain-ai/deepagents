@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, assert_never
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -15,6 +15,16 @@ if TYPE_CHECKING:
     from deepagents_code.output import OutputFormat
 
 from deepagents_code import theme
+from deepagents_code._paths import (
+    PATHS,
+    ensure_project_skills_dir,
+    ensure_user_skills_dir,
+    get_built_in_skills_dir,
+    get_project_agent_skills_dir,
+    get_project_skills_dir,
+    get_user_agent_skills_dir,
+    get_user_skills_dir,
+)
 
 MAX_SKILL_NAME_LENGTH = 64
 
@@ -146,14 +156,14 @@ def _list(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import Credentials, console, get_glyphs
     from deepagents_code.skills.load import list_skills
 
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+    credentials = Credentials.from_environment()
+    user_skills_dir = get_user_skills_dir(agent)
+    project_skills_dir = get_project_skills_dir(credentials.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(credentials.project_root)
 
     # If --project flag is used, only show project skills
     if project:
@@ -187,9 +197,10 @@ def _list(
 
                 write_json("skills list", [])
                 return
+            project_skills_display = escape_markup(str(project_skills_dir))
             console.print("[yellow]No project skills found.[/yellow]")
             console.print(
-                f"[dim]Project skills will be created in {project_skills_dir}/ "
+                f"[dim]Project skills will be created in {project_skills_display} "
                 "when you add them.[/dim]",
                 style=theme.MUTED,
             )
@@ -217,7 +228,7 @@ def _list(
     else:
         # Load skills from all directories (including built-in)
         skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
+            built_in_skills_dir=get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -231,6 +242,7 @@ def _list(
             return
 
         if not skills:
+            user_skills_display = escape_markup(PATHS.display(user_skills_dir))
             console.print()
             console.print("[yellow]No skills found.[/yellow]")
             console.print()
@@ -240,7 +252,7 @@ def _list(
                 "  1. .agents/skills/                 project skills\n"
                 "  2. .deepagents/skills/             project skills (alias)\n"
                 "  3. ~/.agents/skills/               user skills\n"
-                "  4. ~/.deepagents/<agent>/skills/   user skills (alias)\n"
+                f"  4. {user_skills_display}   user skills (alias)\n"
                 "  5. <package>/built_in_skills/      built-in skills[/dim]",
                 style=theme.MUTED,
             )
@@ -407,7 +419,9 @@ def _create(
     Raises:
         SystemExit: If the skill name is invalid or the directory cannot be created.
     """
-    from deepagents_code.config import Settings, console, get_glyphs
+    from rich.markup import escape as escape_markup
+
+    from deepagents_code.config import Credentials, console, get_glyphs
 
     # Validate skill name first (per Agent Skills spec)
     is_valid, error_msg = _validate_name(skill_name)
@@ -422,9 +436,9 @@ def _create(
         raise SystemExit(1)
 
     # Determine target directory
-    settings = Settings.from_environment()
+    credentials = Credentials.from_environment()
     if project:
-        if not settings.project_root:
+        if not credentials.project_root:
             console.print("[bold red]Error:[/bold red] Not in a project directory.")
             console.print(
                 "[dim]Project skills require a .git directory "
@@ -432,14 +446,14 @@ def _create(
                 style=theme.MUTED,
             )
             raise SystemExit(1)
-        skills_dir = settings.ensure_project_skills_dir()
+        skills_dir = ensure_project_skills_dir(credentials.project_root)
         if skills_dir is None:
             console.print(
                 "[bold red]Error:[/bold red] Could not create project skills directory."
             )
             raise SystemExit(1)
     else:
-        skills_dir = settings.ensure_user_skills_dir(agent)
+        skills_dir = ensure_user_skills_dir(agent)
 
     skill_dir = skills_dir / skill_name
 
@@ -490,25 +504,28 @@ def _create(
         return
 
     checkmark = get_glyphs().checkmark
+    skill_dir_display = escape_markup(PATHS.display(skill_dir))
+    skill_md_display = escape_markup(PATHS.display(skill_md))
+    skills_dir_display = escape_markup(PATHS.display(skills_dir))
     console.print(
         f"\n[bold]{checkmark} Skill '{skill_name}' created successfully![/bold]",
         style=theme.PRIMARY,
     )
-    console.print(f"Location: {skill_dir}\n", style=theme.MUTED)
+    console.print(f"Location: {skill_dir_display}\n", style=theme.MUTED)
     console.print(
         "[dim]Edit the SKILL.md file to customize:\n"
         "  1. Update the description in YAML frontmatter\n"
         "  2. Fill in the instructions and examples\n"
         "  3. Add any supporting files (scripts, configs, etc.)\n"
         "\n"
-        f"  nano {skill_md}\n"
+        f"  nano {skill_md_display}\n"
         "\n"
         "  See examples/skills/ in the deepagents-code repo for example skills:\n"
         "   - web-research: Structured research workflow\n"
         "   - langgraph-docs: LangGraph documentation lookup\n"
         "\n"
         "   Copy an example:\n"
-        "   cp -r examples/skills/web-research ~/.deepagents/agent/skills/\n",
+        f"   cp -r examples/skills/web-research {skills_dir_display}\n",
         style=theme.MUTED,
     )
 
@@ -534,14 +551,14 @@ def _info(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console
+    from deepagents_code.config import Credentials, console
     from deepagents_code.skills.load import list_skills
 
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+    credentials = Credentials.from_environment()
+    user_skills_dir = get_user_skills_dir(agent)
+    project_skills_dir = get_project_skills_dir(credentials.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(credentials.project_root)
 
     # Load skills based on --project flag
     if project:
@@ -556,7 +573,7 @@ def _info(
         )
     else:
         skills = list_skills(
-            built_in_skills_dir=settings.get_built_in_skills_dir(),
+            built_in_skills_dir=get_built_in_skills_dir(),
             user_skills_dir=user_skills_dir,
             project_skills_dir=project_skills_dir,
             user_agent_skills_dir=user_agent_skills_dir,
@@ -680,7 +697,7 @@ def _delete(
     """
     from rich.markup import escape as escape_markup
 
-    from deepagents_code.config import Settings, console, get_glyphs
+    from deepagents_code.config import Credentials, console, get_glyphs
     from deepagents_code.skills.load import list_skills
 
     # Validate skill name first (per Agent Skills spec)
@@ -689,11 +706,11 @@ def _delete(
         console.print(f"[bold red]Error:[/bold red] Invalid skill name: {error_msg}")
         raise SystemExit(1)
 
-    settings = Settings.from_environment()
-    user_skills_dir = settings.get_user_skills_dir(agent)
-    project_skills_dir = settings.get_project_skills_dir()
-    user_agent_skills_dir = settings.get_user_agent_skills_dir()
-    project_agent_skills_dir = settings.get_project_agent_skills_dir()
+    credentials = Credentials.from_environment()
+    user_skills_dir = get_user_skills_dir(agent)
+    project_skills_dir = get_project_skills_dir(credentials.project_root)
+    user_agent_skills_dir = get_user_agent_skills_dir()
+    project_agent_skills_dir = get_project_agent_skills_dir(credentials.project_root)
 
     # Load skills based on --project flag
     if project:
@@ -853,6 +870,131 @@ def _delete(
     )
 
 
+def _trust(args: argparse.Namespace) -> None:
+    """Handle `skills trust list|revoke|clear`.
+
+    Args:
+        args: Parsed arguments with a `trust_command` attribute.
+
+    Raises:
+        SystemExit: If the trust store cannot be read, or trust entries cannot
+            be revoked or cleared.
+    """
+    from rich.markup import escape
+
+    from deepagents_code.config import console, get_glyphs
+    from deepagents_code.skills.trust import (
+        RevokeResult,
+        clear_trusted_skill_dirs,
+        list_trusted_skill_dir_entries,
+        revoke_skill_dir_trust,
+    )
+
+    command = getattr(args, "trust_command", None)
+    output_format = getattr(args, "output_format", "text")
+    checkmark = get_glyphs().checkmark
+
+    if command in {"list", "ls"}:
+        # Read strictly so an unreadable store surfaces as an error instead of
+        # falsely reporting "No trusted skill directories" — the whole point of
+        # the audit command is to show what is trusted so it can be revoked.
+        try:
+            entries = list_trusted_skill_dir_entries(strict=True)
+        except (OSError, ValueError) as exc:
+            console.print(
+                f"[bold red]Error:[/bold red] Could not read the skill trust "
+                f"store: {escape(str(exc))}"
+            )
+            raise SystemExit(1) from exc
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json(
+                "skills trust list",
+                [
+                    {"dir": path, "trusted_at": trusted_at}
+                    for path, trusted_at in entries
+                ],
+            )
+            return
+        if not entries:
+            console.print()
+            console.print("[yellow]No trusted skill directories.[/yellow]")
+            console.print(
+                "[dim]Directories are trusted when you approve a skill that "
+                "resolves outside the standard skill roots.[/dim]",
+                style=theme.MUTED,
+            )
+            console.print()
+            return
+        console.print(
+            "\n[bold]Trusted skill directories:[/bold]\n", style=theme.PRIMARY
+        )
+        for path, trusted_at in entries:
+            console.print(f"  {escape(str(path))}")
+            if trusted_at:
+                console.print(
+                    f"    [dim]trusted {escape(trusted_at)}[/dim]", style=theme.MUTED
+                )
+        console.print()
+    elif command == "revoke":
+        target = args.dir
+        result = revoke_skill_dir_trust(target)
+        # An I/O/read failure is a hard error regardless of output format
+        # (matching `list`): print red and exit non-zero without emitting a
+        # success envelope a script might misread.
+        if result is RevokeResult.ERROR:
+            console.print(
+                "[bold red]Error:[/bold red] Could not revoke trust for: "
+                f"{escape(str(target))}"
+            )
+            raise SystemExit(1)
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json(
+                "skills trust revoke",
+                {"dir": str(target), "result": result.value},
+            )
+            return
+        # `ERROR` was handled above (early exit), so only `REMOVED`/`NOT_FOUND`
+        # remain. Match exhaustively with `assert_never` so adding a future
+        # `RevokeResult` member is a static error here rather than a silent
+        # success that prints nothing yet exits 0.
+        match result:
+            case RevokeResult.REMOVED:
+                console.print(
+                    f"{checkmark} Revoked trust for: {escape(str(target))}",
+                    style=theme.PRIMARY,
+                )
+            case RevokeResult.NOT_FOUND:
+                # Report honestly, not a false success.
+                console.print(
+                    f"[yellow]No trust entry found for:[/yellow] {escape(str(target))}"
+                )
+            case _:  # pragma: no cover - exhaustiveness guard
+                assert_never(result)
+    elif command == "clear":
+        if not clear_trusted_skill_dirs():
+            console.print(
+                "[bold red]Error:[/bold red] Could not clear trusted directories."
+            )
+            raise SystemExit(1)
+        if output_format == "json":
+            from deepagents_code.output import write_json
+
+            write_json("skills trust clear", {"cleared": True})
+            return
+        console.print(
+            f"{checkmark} Cleared all trusted skill directories.",
+            style=theme.PRIMARY,
+        )
+    else:
+        from deepagents_code.ui import show_skills_trust_help
+
+        show_skills_trust_help()
+
+
 def setup_skills_parser(
     subparsers: Any,  # noqa: ANN401  # argparse subparsers uses dynamic typing
     *,
@@ -934,7 +1076,7 @@ def setup_skills_parser(
         description=(
             "Create a new skill with a template SKILL.md file. "
             "By default, skills are created in "
-            "~/.deepagents/<agent>/skills/. "
+            f"{PATHS.display(PATHS.profile.agent_skills_dir('<agent>'))}. "
             "Use --project to create in the project's "
             ".deepagents/skills/ directory."
         ),
@@ -1012,6 +1154,45 @@ def setup_skills_parser(
         action="store_true",
         help="Show what would happen without making changes",
     )
+
+    # Skills trust — manage directories approved to be read outside the
+    # standard skill roots (the persistent counterpart to the in-TUI prompt).
+    trust_parser = skills_subparsers.add_parser(
+        "trust",
+        help="Manage trusted skill directories",
+        description=(
+            "List, revoke, or clear skill directories that have been trusted "
+            "to be read even though they resolve outside the standard skill "
+            "roots (for example, symlink targets approved at invocation time)."
+        ),
+        add_help=False,
+        parents=help_parent(_lazy_help("show_skills_trust_help")),
+    )
+    if add_output_args is not None:
+        add_output_args(trust_parser)
+    trust_subparsers = trust_parser.add_subparsers(
+        dest="trust_command", help="Trust command"
+    )
+    trust_list_parser = trust_subparsers.add_parser(
+        "list",
+        aliases=["ls"],
+        help="List trusted skill directories",
+    )
+    if add_output_args is not None:
+        add_output_args(trust_list_parser)
+    revoke_parser = trust_subparsers.add_parser(
+        "revoke",
+        help="Revoke trust for a directory",
+    )
+    revoke_parser.add_argument("dir", help="Directory path to revoke")
+    if add_output_args is not None:
+        add_output_args(revoke_parser)
+    clear_parser = trust_subparsers.add_parser(
+        "clear",
+        help="Remove all trusted skill directories",
+    )
+    if add_output_args is not None:
+        add_output_args(clear_parser)
     return skills_parser
 
 
@@ -1026,8 +1207,14 @@ def execute_skills_command(args: argparse.Namespace) -> None:
     """
     from deepagents_code.config import console
 
+    # The `trust` subcommand manages directory paths, not agent-scoped skills,
+    # so it has no `--agent` and is dispatched before agent validation.
+    if args.skills_command == "trust":
+        _trust(args)
+        return
+
     # validate agent argument
-    if args.agent:
+    if getattr(args, "agent", None):
         is_valid, error_msg = _validate_name(args.agent)
         if not is_valid:
             console.print(

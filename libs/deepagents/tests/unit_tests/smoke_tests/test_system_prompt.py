@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.store.memory import InMemoryStore
@@ -112,6 +113,35 @@ def test_system_prompt_snapshot_with_execute(snapshots_dir: Path, *, update_snap
     )
 
 
+@pytest.mark.video_extra
+def test_system_prompt_with_media_extra(snapshots_dir: Path, *, update_snapshots: bool) -> None:
+    """Snapshot the `read_file` tool when the optional `[video]` extra is installed.
+
+    The base `*_tools.json` snapshots capture the text-only `read_file`
+    description (the default install). When PyAV + Pillow are present,
+    `read_file` instead advertises the video-aware description and
+    seconds-based `offset`/`limit`. The `video_extra` marker pins that gate on
+    (see the smoke conftest), so this variant stays covered regardless of
+    whether the extra is actually installed in the test environment. The video
+    wording only affects `read_file`, so one representative config is enough.
+    """
+    model = _smoke_model()
+    backend = LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True)
+    agent = create_deep_agent(model=model, backend=backend)
+
+    _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
+
+    history = model.call_history
+    assert len(history) >= 1
+
+    _assert_tools_snapshot(
+        snapshots_dir,
+        "system_prompt_with_media_extra_tools.json",
+        history[0]["tools"],
+        update_snapshots=update_snapshots,
+    )
+
+
 def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     """Snapshot the materialized prompt for all route classifications (issue #3050).
 
@@ -136,6 +166,8 @@ def test_system_prompt_snapshot_with_routed_backend(snapshots_dir: Path, *, upda
         default=LocalShellBackend(root_dir=Path.cwd(), virtual_mode=True),
         routes={"/common/": route, "/legacy/": legacy, "/notes/": StateBackend()},
     )
+    # The filesystem routing section is essential per-backend config, so it
+    # survives trimming and appears here even on the (trimmed) default.
     agent = create_deep_agent(model=model, backend=backend)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
@@ -179,6 +211,8 @@ def test_system_prompt_snapshot_with_sandbox_default(snapshots_dir: Path, *, upd
         default=_SnapshotSandbox(store=InMemoryStore(), namespace=lambda _rt: ("default",)),
         routes={"/common/": route},
     )
+    # The filesystem mount guidance is essential per-backend config, so it
+    # survives trimming and appears here even on the (trimmed) default.
     agent = create_deep_agent(model=model, backend=backend)
 
     _invoke_for_snapshot(agent, {"messages": [HumanMessage(content="hi")]})
@@ -263,6 +297,9 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
     model = _smoke_model()
     backend = FilesystemBackend(root_dir=str(Path.cwd()), virtual_mode=True)
 
+    # The subagent usage prose is trimmed by default; the available agents still
+    # reach the model via the `task` tool description, so this snapshots the
+    # trimmed system prompt for that setup.
     agent = create_deep_agent(
         model=model,
         backend=backend,
@@ -314,6 +351,10 @@ def test_system_prompt_snapshot_with_sync_and_async_subagents(snapshots_dir: Pat
 def test_system_prompt_with_memory_and_skills(snapshots_dir: Path, *, update_snapshots: bool) -> None:
     model = _smoke_model()
 
+    # Skills and memory are opt-in features whose fragments are the only channel
+    # for their content, so they are never trimmed. This snapshot guards that:
+    # the skill index and memory content appear, while the trimmed todo/filesystem
+    # usage prose does not.
     agent = create_deep_agent(
         model=model,
         memory=["/memory/AGENTS.md", "/memory/user/AGENTS.md"],

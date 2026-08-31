@@ -1,17 +1,49 @@
 """Unit tests for LocalShellBackend."""
 
+import os
+import subprocess
 import sys
 import tempfile
 import warnings
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
-from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends.local_shell import LocalShellBackend
 from deepagents.backends.protocol import ExecuteResponse
 
 pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="LocalShellBackend requires sh, not available on Windows")
+
+
+def _execute_controlling_terminal_probe(directory: Path, result_file: Path) -> None:
+    """Run the backend probe after proving this process owns `/dev/tty`."""
+    descriptor = os.open("/dev/tty", os.O_RDONLY)
+    os.close(descriptor)
+    result = LocalShellBackend(root_dir=directory).execute(": </dev/tty")
+    result_file.write_text(f"{result.exit_code}\n{result.output}", encoding="utf-8")
+
+
+def _run_controlling_terminal_probe(directory: Path) -> tuple[int, str]:
+    """Run the backend inside a child that owns a real controlling terminal."""
+    pty = pytest.importorskip("pty")
+    result_file = directory / "tty-result"
+    child_id, terminal = pty.fork()
+    if child_id == 0:  # pragma: no cover - assertions run in the parent process
+        try:
+            _execute_controlling_terminal_probe(directory, result_file)
+        except BaseException as error:  # noqa: BLE001  # Report child setup failures to the parent.
+            result_file.write_text(f"harness error: {error}", encoding="utf-8")
+            os._exit(1)
+        os._exit(0)
+    try:
+        _, status = os.waitpid(child_id, 0)
+    finally:
+        os.close(terminal)
+    details = result_file.read_text(encoding="utf-8")
+    assert os.waitstatus_to_exitcode(status) == 0, details
+    exit_code, output = details.split("\n", 1)
+    return int(exit_code), output
 
 
 def test_local_shell_backend_initialization() -> None:
@@ -35,6 +67,24 @@ def test_local_shell_backend_execute_simple_command() -> None:
         assert result.exit_code == 0
         assert "Hello World" in result.output
         assert result.truncated is False
+
+
+def test_local_shell_backend_execute_starts_new_session() -> None:
+    """Test that commands cannot access the parent's controlling terminal."""
+    completed = subprocess.CompletedProcess(args="echo hello", returncode=0, stdout="hello\n", stderr="")
+    with tempfile.TemporaryDirectory() as tmpdir:
+        backend = LocalShellBackend(root_dir=tmpdir)
+        with patch("subprocess.run", return_value=completed) as run:
+            backend.execute("echo hello")
+
+    assert run.call_args.kwargs["start_new_session"] is True
+
+
+def test_local_shell_backend_cannot_open_parent_controlling_terminal(tmp_path: Path) -> None:
+    """Test a command cannot open the controlling terminal owned by its parent."""
+    exit_code, output = _run_controlling_terminal_probe(tmp_path)
+    assert exit_code != 0
+    assert "/dev/tty" in output
 
 
 def test_local_shell_backend_execute_with_error() -> None:
@@ -311,20 +361,17 @@ async def test_local_shell_backend_async_filesystem_operations() -> None:
         assert "modified content" in content.file_data["content"]
 
 
-class TestLocalShellVirtualModeDefaultDeprecation:
-    """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
+class TestLocalShellVirtualModeDefault:
+    """`virtual_mode` defaults to `True` and never emits a deprecation."""
 
-    def test_omitted_virtual_mode_warns(self) -> None:
+    def test_omitted_virtual_mode_defaults_true(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
             be = LocalShellBackend(root_dir=tmpdir)
 
-        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert deprecations[0].category is LangChainDeprecationWarning
-        assert "virtual_mode" in str(deprecations[0].message)
-        # Default falls back to `False` for backwards compatibility.
-        assert be.virtual_mode is False
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
+        assert deprecations == []
+        assert be.virtual_mode is True
 
     def test_explicit_virtual_mode_does_not_warn(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir, warnings.catch_warnings(record=True) as captured:

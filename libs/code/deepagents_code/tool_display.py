@@ -27,6 +27,13 @@ the "offer a collapsible code block" threshold stay in lock-step from a single
 source of truth.
 """
 
+EXECUTE_HEADER_MAX_LENGTH = 120
+"""Width at which the `execute` header truncates the shell command.
+
+Shared with `messages.py` so the header cutoff and the "offer a collapsible
+command block" threshold stay in lock-step from a single source of truth.
+"""
+
 
 def _format_timeout(seconds: int) -> str:
     """Format timeout in human-readable units (e.g., 300 -> '5m', 3600 -> '1h').
@@ -217,7 +224,9 @@ def format_tool_display(tool_name: str, tool_args: dict) -> str:
     elif tool_name == "execute":
         # Execute: show the command, and timeout only if non-default
         if "command" in tool_args:
-            command = _sanitize_display_value(tool_args["command"], max_length=120)
+            command = _sanitize_display_value(
+                tool_args["command"], max_length=EXECUTE_HEADER_MAX_LENGTH
+            )
             timeout = _coerce_timeout_seconds(tool_args.get("timeout"))
             from deepagents.backends import DEFAULT_EXECUTE_TIMEOUT
 

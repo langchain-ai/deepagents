@@ -1,4 +1,13 @@
-default_install_hook_types: [pre-commit, commit-msg]
+default_install_hook_types: [pre-commit, commit-msg, pre-push]
+
+# 3.2.0 is the first release that accepts the git-hook-named stages
+# (`pre-commit`/`pre-push`/`pre-merge-commit`); before it the spelling was
+# `push`, and an older pre-commit rejects this whole file on schema validation —
+# taking every other hook down with it, not just `branch-name`. It also covers
+# `PRE_COMMIT_REMOTE_BRANCH` (2.10.0) and `PRE_COMMIT_LOCAL_BRANCH` (2.14.0),
+# both of which pre-commit only exports together and which the `branch-name`
+# hook needs to know which branch is being pushed.
+minimum_pre_commit_version: '3.2.0'
 
 repos:
   - repo: https://github.com/compilerla/conventional-pre-commit
@@ -33,17 +42,17 @@ repos:
         args: ["--unsafe"] # allow custom tags
       - id: check-toml # validate TOML syntax
       - id: end-of-file-fixer # ensure files end with a newline
-        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/repl/tests/unit_tests/smoke_tests/snapshots/|libs/deepagents/tests/unit_tests/smoke_tests/snapshots/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/|libs/repl/tests/unit_tests/smoke_tests/snapshots/|libs/deepagents/tests/unit_tests/smoke_tests/snapshots/
       - id: trailing-whitespace # remove trailing whitespace from lines
-        exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/
+        exclude: \.ambr$|libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/
 
   - repo: https://github.com/sirosen/texthooks
     rev: 0.6.8
     hooks:
       - id: fix-smartquotes
-        exclude: libs/evals/tests/evals/tau2_airline/data/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/
       - id: fix-spaces
-        exclude: libs/evals/tests/evals/tau2_airline/data/
+        exclude: libs/evals/tests/evals/tau2_airline/data/|libs/evals/harbor_adapters/contextbench/vendor/files/|libs/evals/datasets/context-retrieval-evals/.*/environment/files/
 
   - repo: local
     hooks:
@@ -52,12 +61,6 @@ repos:
         language: system
         entry: make -C libs/deepagents format lint
         files: ^libs/deepagents/
-        pass_filenames: false
-      - id: deepagents-cli
-        name: format and lint deepagents-cli
-        language: system
-        entry: make -C libs/cli format lint
-        files: ^libs/cli/
         pass_filenames: false
       - id: deepagents-code
         name: format and lint deepagents-code
@@ -86,16 +89,29 @@ repos:
       - id: lock-check
         name: check lockfiles are up-to-date
         language: system
-        entry: python3 .github/scripts/check_lockfiles_pre_commit.py
+        entry: python3 .github/scripts/checks/check_lockfiles_pre_commit.py
         files: (^libs/.*/pyproject\.toml|^libs/.*/uv\.lock)$
       - id: extras-sync
         name: check extras sync with required deps
         language: system
-        entry: python3 .github/scripts/check_extras_sync.py
+        entry: python3 .github/scripts/checks/check_extras_sync.py
         files: ^libs/.*/pyproject\.toml$
       - id: version-equality
         name: check pyproject.toml and _version.py match
         language: system
-        entry: python3 .github/scripts/check_version_equality.py
-        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/cli/pyproject\.toml|^libs/cli/deepagents_cli/_version\.py)$
+        entry: python3 .github/scripts/checks/check_version_equality.py
+        files: (^libs/deepagents/pyproject\.toml|^libs/deepagents/deepagents/_version\.py|^libs/code/pyproject\.toml|^libs/code/deepagents_code/_version\.py)$
         pass_filenames: false
+      - id: branch-scopes-sync
+        name: check branch-name rules match across hook, CI and pr_lint
+        language: system
+        entry: python3 .github/scripts/checks/check_branch_scopes_sync.py
+        files: (^\.githooks/pre-push|^\.github/workflows/(branch_name_check|pr_lint)\.yml)$
+        pass_filenames: false
+      - id: branch-name
+        name: check pushed branch name follows the naming convention
+        language: system
+        entry: bash .githooks/pre-push
+        stages: [pre-push]
+        pass_filenames: false
+        always_run: true

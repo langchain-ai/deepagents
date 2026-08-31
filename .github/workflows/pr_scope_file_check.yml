@@ -20,8 +20,8 @@
 #
 # How it stays faithful to existing repo configuration:
 #   - Scope -> package and dir -> package mappings are read from
-#     .github/scripts/pr-labeler-config.json by the helper script — see
-#     .github/scripts/check_pr_scope_files.py.
+#     .github/scripts/labeling/pr-labeler-config.json by the helper script — see
+#     .github/scripts/labeling/check_pr_scope_files.py.
 #
 # Trust model:
 #   - The detector and labeler config run from the PR *base* revision, not the
@@ -81,13 +81,13 @@ jobs:
         # `persist-credentials: false` so the job token is not written into the
         # checkout's git config; the detector needs no git credentials, and the
         # github-script steps receive their own token directly.
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
 
       - name: "🐍 Setup Python 3.11"
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
 
@@ -130,7 +130,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
           set -euo pipefail
-          detector=".github/scripts/check_pr_scope_files.py"
+          # Preferred nested path ships on this PR; until that lands on base,
+          # fall back to the flat layout so the gate still enforces.
+          detector=".github/scripts/labeling/check_pr_scope_files.py"
+          legacy_detector=".github/scripts/check_pr_scope_files.py"
+          if [[ ! -f "$detector" && -f "$legacy_detector" ]]; then
+            detector="$legacy_detector"
+          fi
           if [[ ! -f "$detector" ]]; then
             # The detector does not exist on the base revision: the bootstrapping
             # PR that first introduces this check, or a branch cut from before it
@@ -291,7 +297,11 @@ jobs:
                 'Touched package dir(s) not covered by those scopes:',
                 offenderLines,
                 '',
+                '**Release-please consequence:** if this PR title is bump-worthy (`feat`/`fix`/etc.), release-please scopes by **changed file path**, not the title scope — so it can still open a **separate release PR for every managed component this PR touches**, even when the title names only one package. Prefer splitting into one package-scoped feature/fix PR and one `chore(deps):` PR for cross-package churn.',
+                '',
                 'Remove the label to re-enable the block.',
+                '',
+                '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)',
               ].join('\n'));
               core.info(`Bypassed via ${BYPASS_LABEL} label.`);
               return;
@@ -308,12 +318,21 @@ jobs:
               '',
               'This check is **blocking** because the PR title declares one package scope while the changed files live in a different package directory.',
               '',
+              '**Release-please consequence:** release-please attributes commits by **file path**, not title scope. A bump-worthy title (`feat`/`fix`/etc.) that touches multiple managed packages opens a **separate release PR per package**. Bypassing this gate does **not** stop that fan-out.',
+              '',
               '### To resolve',
               '',
               'Edit the PR title scope so it covers the changed package directory (for example, use `fix(code): ...` for `libs/code/**`), or move the files so they match the declared scope.',
               '',
+              'If this is a feature plus incidental cross-package dependency/lock churn, split into:',
+              '',
+              '1. One feature/fix PR scoped to the single package that owns the user-facing change.',
+              '2. One `chore(deps): ...` PR for the cross-package dependency / lockfile churn (`chore` is hidden and does not open release PRs).',
+              '',
               '### If intentional',
               '',
-              `Apply the \`${BYPASS_LABEL}\` label. The check re-runs and passes with an informational note.`,
+              `Apply the \`${BYPASS_LABEL}\` label. The check re-runs and passes with an informational note — confirm you still want a release PR for every managed component the diff touches.`,
+              '',
+              '📖 [Multi-component fan-out](https://github.com/langchain-ai/deepagents/blob/main/.github/RELEASING.md#multi-component-fan-out)',
             ].join('\n'));
             core.setFailed(`PR title scope(s) ${titleScopes.join(', ') || '(none)'} do not cover touched package dir(s): ${offenderSummary}. Fix the title scope/files, or apply the '${BYPASS_LABEL}' label if intentional.`);

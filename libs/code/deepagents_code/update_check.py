@@ -20,23 +20,49 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import sys
+import sysconfig
 import tempfile
+import threading
 import time
 import tomllib
-from collections.abc import Awaitable, Callable, Iterable, Mapping, Sequence
-from contextlib import suppress
-from dataclasses import dataclass
+import uuid
+from collections.abc import (
+    Awaitable,
+    Callable,
+    Collection,
+    Iterable,
+    Iterator,
+    Mapping,
+    Sequence,
+)
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, NamedTuple, TextIO
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, TextIO
 
 from packaging.requirements import InvalidRequirement, Requirement
-from packaging.utils import canonicalize_name
+from packaging.utils import NormalizedName, canonicalize_name
 from packaging.version import InvalidVersion, Version
 
+from deepagents_code._paths import (
+    PATHS,
+    first_writable,
+    harden_state_dir,
+)
 from deepagents_code._version import PYPI_URL, SDK_PYPI_URL, USER_AGENT, __version__
-from deepagents_code.model_config import DEFAULT_CONFIG_PATH, DEFAULT_STATE_DIR
+from deepagents_code.model_config import (
+    DEFAULT_CONFIG_PATH,
+    DEFAULT_STATE_DIR,
+    default_cache_dir,
+)
+
+if TYPE_CHECKING:
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import ResolvedValue
+    from deepagents_code.configuration.service import ConfigSources
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +72,27 @@ CACHE_FILE: Path = DEFAULT_STATE_DIR / "latest_version.json"
 Populated by `get_latest_version`; reads short-circuit on the cached payload
 when it is younger than `CACHE_TTL`. SDK upload timestamps are stored under
 `_SDK_RELEASE_TIMES_KEY`.
+"""
+
+UPDATE_LOCK_FILE: Path = PATHS.installation.locks_dir / "update.lock"
+"""Advisory lock file serializing dcode self-upgrades across processes.
+
+Held for the duration of an install by whichever process is upgrading, so
+several concurrently launched terminals do not each run their own
+`uv tool install -U` against the same tool environment. Carries no data — only
+the lock matters. Its installation-derived location is shared by every profile
+that launches this tool environment. See `update_install_lock`.
+"""
+
+FALLBACK_UPDATE_LOCK_FILE: Path = PATHS.profile.locks_dir / "update.lock"
+"""Profile-scoped lock used when the installation locks directory is unwritable.
+
+A system or root-owned `sys.prefix` makes `UPDATE_LOCK_FILE`'s parent
+uncreatable for a normal user. Without this fallback the lock would fail open
+on *every* launch, which is the concurrent-install race it exists to prevent.
+Profile-scoped serialization is weaker than installation-scoped — two profiles
+sharing one unwritable installation would not serialize against each other —
+but it is strictly better than no lock at all.
 """
 
 UPDATE_STATE_FILE: Path = DEFAULT_STATE_DIR / "update_state.json"
@@ -69,11 +116,50 @@ call to PyPI; older payloads trigger a fresh fetch. Set conservatively at
 INSTALLED_AGE_NOTICE_DAYS = 7
 """Minimum installed-version age before update notices call it out explicitly."""
 
+INSTALLED_STALE_NOTICE_DAYS = 14
+"""Minimum installed-version age (days) before the stale-install banner shows."""
+
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""
 
-_RELEASE_PRERELEASE_DEPS_KEY = "release_requires_prereleases"
-"""`CACHE_FILE` key for release versions that require pre-release dependencies."""
+_RELEASE_PRERELEASE_PINS_KEY = "release_prerelease_pins"
+"""`CACHE_FILE` key mapping a release version to its targeted pre-release pins.
+
+Values are lists of exact pin strings (e.g. `["deepagents==0.7.0a7"]`) that a
+stable `deepagents-code` release mandates as direct, unconditional dependencies.
+An empty list means the release needs no pre-release admission.
+
+This intentionally replaces (rather than reuses) the older
+`"release_requires_prereleases"` cache key, whose values were marker-agnostic
+booleans: an old `True` said only that *some* specifier named a pre-release
+(including upper bounds like `pydantic<2.14.0a0` or exclusions like
+`package!=1.0rc1`), never *which* requirement to pin. Those booleans are not
+authoritative under the targeted-constraint semantics, so the new code never
+reads that legacy key.
+"""
+
+UvPrereleaseStrategy = Literal["if-necessary-or-explicit"]
+"""Type of the targeted uv `--prerelease` strategy.
+
+A one-member `Literal` rather than a bare `str`: the only non-`None` strategy
+the targeted-constraints path ever emits is `_UV_TARGETED_PRERELEASE_STRATEGY`,
+so the type says exactly that and rejects arbitrary strings at the boundary.
+"""
+
+_UV_TARGETED_PRERELEASE_STRATEGY: UvPrereleaseStrategy = "if-necessary-or-explicit"
+"""uv `--prerelease` strategy paired with targeted first-party constraints.
+
+Unlike the global `allow` strategy, `if-necessary-or-explicit` only admits a
+pre-release when a constraint pins it exactly (explicit) or no stable release
+can satisfy the requirement (if-necessary). Combined with a constraints file
+listing the exact SDK pin, it lets a stable dcode target install its required
+pre-release dependency without widening the candidate set for unrelated
+optional providers — the bug behind #4524, where a global `allow` pulled in an
+unbuildable `litellm` RC.
+"""
+
+_PRERELEASE_CONSTRAINTS_FILE_PREFIX = "dcode-prereleases-"
+"""Temp-file prefix for the targeted pre-release uv constraints file."""
 
 InstallMethod = Literal["uv", "brew", "other", "unknown"]
 
@@ -135,17 +221,41 @@ since that one-liner is the path we promote.
 _UPGRADE_TIMEOUT = 120  # seconds
 """Wall-clock cap for `perform_upgrade` and `perform_install_extra`."""
 
+_TERMINATE_WAIT_TIMEOUT = 5  # seconds
+"""Cap on reaping a killed install subprocess so cleanup cannot hang launch."""
+
 INSTALL_SCRIPT_COMMAND = "curl -LsSf https://langch.in/dcode | bash"
 """Promoted public install command for Deep Agents Code."""
 
-UPDATE_LOG_DIR: Path = DEFAULT_STATE_DIR / "update_logs"
-"""Directory for persisted update command logs."""
+UPDATE_LOG_DIR: Path = default_cache_dir() / "deepagents-code" / "update_logs"
+"""Directory for persisted update command logs.
+
+Lives under the OS cache directory (`default_cache_dir()`), since these are
+ephemeral `uv`/`pip` diagnostics rather than app state. Note the install
+script's `<cache>/deepagents-code/install.log` follows
+`${XDG_CACHE_HOME:-~/.cache}` unconditionally, so on macOS the two logs land
+under different roots.
+"""
 
 UPDATE_LOG_RETENTION_DAYS = 14
 """Delete update logs older than this many days."""
 
 UPDATE_LOG_MAX_FILES = 10
 """Keep at most this many newest update logs."""
+
+STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN = CACHE_TTL
+"""Seconds to suppress same-version startup auto-update retries after failure."""
+
+RESUME_AUTO_UPDATE_GRACE_PERIOD = 7 * 24 * 60 * 60
+"""Seconds resumed sessions may bypass the startup auto-update path."""
+
+_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY = "startup_auto_update_failed_version"
+_STARTUP_AUTO_UPDATE_FAILED_AT_KEY = "startup_auto_update_failed_at"
+_STARTUP_AUTO_UPDATE_FAILURE_KEYS: tuple[str, ...] = (
+    _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY,
+    _STARTUP_AUTO_UPDATE_FAILED_AT_KEY,
+)
+_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY = "resume_auto_update_deferred_at"
 
 UpgradeProgressCallback = Callable[[str], Awaitable[None] | None]
 
@@ -211,6 +321,81 @@ def _latest_from_releases(
     return best_str
 
 
+def read_installed_distribution_version() -> str | None:
+    """Read the currently installed `deepagents-code` distribution version.
+
+    Unlike `__version__`, this does not come from the module this process
+    imported at launch: it reads the running tool environment's
+    `deepagents_code-*.dist-info` directory name from disk, so it reflects the
+    install even after an in-session upgrade rewrote the environment. Used to
+    report what an upgrade actually installed.
+
+    Returns:
+        The installed version string, or `None` when it cannot be determined
+            (missing/ambiguous dist-info, unreadable directory, or a version
+            this process's `packaging` rejects).
+    """
+    # `sysconfig`'s purelib resolves the per-platform layout (`lib/pythonX.Y/
+    # site-packages` on POSIX, `Lib\site-packages` on Windows), so the
+    # readback works for uv tool environments on every supported OS.
+    site_packages = Path(sysconfig.get_path("purelib"))
+    try:
+        candidates = [
+            entry
+            for entry in site_packages.iterdir()
+            if entry.name.startswith("deepagents_code-")
+            and entry.name.endswith(".dist-info")
+        ]
+    except OSError:
+        logger.debug(
+            "Could not list site-packages at %s to read the installed version",
+            site_packages,
+            exc_info=True,
+        )
+        return None
+    if len(candidates) != 1:
+        # Zero matches means the distribution is missing from this environment;
+        # more than one means leftover dist-infos make the installed version
+        # ambiguous. Neither is actionable from the caller — a successful
+        # upgrade just gets a less precise report — so debug is loud enough.
+        logger.debug(
+            "Expected exactly one deepagents_code dist-info under %s, found %d",
+            site_packages,
+            len(candidates),
+        )
+        return None
+    raw = candidates[0].name[len("deepagents_code-") : -len(".dist-info")]
+    try:
+        return str(_parse_version(raw))
+    except InvalidVersion:
+        # A newer packaging could accept a version this process's copy rejects;
+        # reporting nothing beats reporting an unparseable string.
+        logger.debug("Unparseable installed dist-info version: %s", raw)
+        return None
+
+
+def cached_release_requires_prereleases(version: str | None) -> bool | None:
+    """Return cached pre-release-pin status, or `None` without a fresh answer."""
+    if not version:
+        return None
+    try:
+        data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        checked_at = _coerce_checked_at(data.get("checked_at"))
+        if not is_update_cache_fresh(checked_at):
+            return None
+        values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
+        cached = values.get(version) if isinstance(values, dict) else None
+        if not isinstance(cached, list):
+            return None
+        pins = [_canonical_prerelease_pin(pin) for pin in cached]
+        return bool(pins) if all(pin is not None for pin in pins) else None
+    except (OSError, json.JSONDecodeError, TypeError):
+        logger.debug("Failed to read cached release pre-release pins", exc_info=True)
+        return None
+
+
 def get_cached_update_available() -> tuple[bool, str | None]:
     """Check for updates using only a fresh local cache entry.
 
@@ -274,7 +459,7 @@ def get_last_update_check_time() -> float | None:
 
     Reads the `checked_at` stamp recorded in `CACHE_FILE` when the update cache
     is written (primarily by `get_latest_version`; also seeded by
-    `_write_release_requires_prereleases`). Missing, corrupt, or non-numeric
+    `_write_release_prerelease_pins`). Missing, corrupt, or non-numeric
     data fail-soft to `None` so callers can render an "unknown" state without
     contacting the network.
     """
@@ -291,44 +476,123 @@ def get_last_update_check_time() -> float | None:
     return _coerce_checked_at(checked_at)
 
 
-def _requires_prerelease_dependency(requirements: Sequence[object] | None) -> bool:
-    """Return whether any requirement specifier names a pre-release version.
+def is_update_cache_fresh(checked_at: float | None) -> bool:
+    """Return whether a recorded check stamp is still within `CACHE_TTL`.
+
+    Lets status surfaces tell "the cache expired" apart from "the cache is
+    current but holds no usable answer for this install" — states that
+    `get_cached_update_available` collapses into the same `(False, None)`
+    result. Takes the stamp instead of reading it so a caller that already
+    called `get_last_update_check_time` does not read `CACHE_FILE` twice and
+    risk straddling a concurrent refresh.
+
+    Args:
+        checked_at: Epoch time of the last recorded check, as returned by
+            `get_last_update_check_time`.
+
+    Returns:
+        `True` when `checked_at` is set and younger than `CACHE_TTL`.
+    """
+    return checked_at is not None and time.time() - checked_at < CACHE_TTL
+
+
+def _canonical_prerelease_pin(raw: object) -> str | None:
+    """Return the canonical targeted pre-release pin for `raw`, or `None`.
+
+    `raw` is a single `Requires-Dist`-style requirement string (from PyPI
+    metadata or a round-tripped cache entry, which may be non-string or
+    non-PEP-508 junk). It qualifies as a *targeted pre-release constraint* — safe
+    to hand uv as a first-party constraint that admits exactly one pre-release
+    without widening the candidate set for anything else — only when it is:
+
+    - **mandatory** — no environment marker at all, so it is neither gated behind
+        an optional `extra` (`; extra == "litellm"`) nor conditioned on
+        the target interpreter/platform (`; python_version >= "3.10"`);
+    - a **positive exact pin** — the specifier set is a single `==`/`===` clause;
+    - whose pinned version is a **pre-release** (`0.7.0a7`, `1.2.0rc1`, ...).
+
+    Everything else returns `None`, matching the constraints uv would actually
+    need:
+
+    - upper bounds such as `pydantic<2.14.0a0` (not a positive pin);
+    - exclusions such as `package!=1.0rc1` (not a positive pin);
+    - extra-gated pins such as `package==1.0rc1; extra == "x"` (not mandatory);
+    - interpreter/platform-gated pins such as `pkg==1a1; python_version < "3.0"`.
+
+    Marker-bearing pins are intentionally out of the supported contract: the uv
+    tool receipt may target a different interpreter than the one currently
+    running dcode, so evaluating `python_version`/`sys_platform` markers here
+    could resolve them against the wrong environment. Rather than guess, the
+    initial contract is limited to unconditional exact pins (which covers the
+    real-world `deepagents==0.7.0a7` SDK pin); widening it later must evaluate
+    markers against the *target* environment, not the running one.
+
+    Returns:
+        The canonical pin string (e.g. `"deepagents==0.7.0a7"`), or `None` when
+            `raw` falls outside the contract above.
+    """
+    if not isinstance(raw, str):
+        return None
+    try:
+        requirement = Requirement(raw)
+    except InvalidRequirement:
+        logger.debug("Skipping unparseable Requires-Dist entry: %r", raw)
+        return None
+    specifiers = list(requirement.specifier)
+    if len(specifiers) != 1:
+        return None
+    specifier = specifiers[0]
+    if specifier.operator not in {"==", "==="}:
+        return None
+    try:
+        version = Version(specifier.version)
+    except InvalidVersion:
+        logger.debug(
+            "Skipping unparseable requirement version: %r",
+            specifier.version,
+        )
+        return None
+    if not version.is_prerelease:
+        return None
+    # Only reached for a single positive `==`/`===` pin to a pre-release — the
+    # one shape inside the contract. A marker still disqualifies it (see the
+    # docstring), but because it would *otherwise* qualify, log the drop so a
+    # future marker-gated SDK pin that silently resolves to no admission is
+    # greppable. Checking the marker here (rather than first) keeps this quiet
+    # for ordinary extra-gated optional deps, which never reach this point.
+    if requirement.marker is not None:
+        logger.debug(
+            "Skipping marker-gated pre-release pin outside the targeted "
+            "contract (marker %r): %r",
+            str(requirement.marker),
+            raw,
+        )
+        return None
+    return f"{canonicalize_name(requirement.name)}=={version}"
+
+
+def _prerelease_pin_requirements(
+    requirements: Sequence[object] | None,
+) -> list[str]:
+    """Return the mandatory, unconditional, exact pre-release pins in a metadata list.
 
     Accepts the raw `Requires-Dist` list from PyPI metadata, which may contain
     non-string or non-PEP-508 junk; such entries are skipped rather than raising
-    so one malformed line cannot poison the whole check.
+    so one malformed line cannot poison the whole check. Each entry is classified
+    by `_canonical_prerelease_pin`; see it for the supported contract.
 
-    The check is intentionally operator- and marker-agnostic: it returns `True`
-    if *any* specifier across *any* requirement pins a pre-release version,
-    regardless of the operator (`==`, `>=`, even `!=`) or environment markers
-    (extras, `python_version`). This errs toward `True`, which is the safe
-    direction — opting `uv` into `--prerelease allow` still resolves stable
-    releases correctly, so a false positive only widens the candidate set and
-    never strands a user. Do not "tighten" this to the dangerous direction
-    without revisiting the fallback asymmetry in `release_requires_prereleases`.
+    Returns:
+        A sorted list of canonical pin strings (e.g. `["deepagents==0.7.0a7"]`).
+            Empty when the release needs no targeted pre-release admission.
     """
     if not requirements:
-        return False
+        return []
+    pins: set[str] = set()
     for raw in requirements:
-        if not isinstance(raw, str):
-            continue
-        try:
-            requirement = Requirement(raw)
-        except InvalidRequirement:
-            logger.debug("Skipping unparseable Requires-Dist entry: %r", raw)
-            continue
-        for specifier in requirement.specifier:
-            try:
-                version = Version(specifier.version)
-            except InvalidVersion:
-                logger.debug(
-                    "Skipping unparseable requirement version: %r",
-                    specifier.version,
-                )
-                continue
-            if version.is_prerelease:
-                return True
-    return False
+        pin = _canonical_prerelease_pin(raw)
+        if pin is not None:
+            pins.add(pin)
+    return sorted(pins)
 
 
 def _atomic_write_cache(data: dict[str, Any]) -> None:
@@ -358,8 +622,8 @@ def _atomic_write_cache(data: dict[str, Any]) -> None:
         raise
 
 
-def _write_release_requires_prereleases(version: str, requires: bool) -> None:
-    """Cache whether a release needs uv's pre-release resolver opt-in."""
+def _write_release_prerelease_pins(version: str, pins: Sequence[str]) -> None:
+    """Cache the targeted pre-release pins a release requires (versioned cache)."""
     try:
         data: dict[str, Any]
         if CACHE_FILE.exists():
@@ -367,18 +631,46 @@ def _write_release_requires_prereleases(version: str, requires: bool) -> None:
             data = loaded if isinstance(loaded, dict) else {}
         else:
             data = {}
-        values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
+        values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
         if not isinstance(values, dict):
             values = {}
-        values[version] = requires
-        data[_RELEASE_PRERELEASE_DEPS_KEY] = values
+        values[version] = list(pins)
+        data[_RELEASE_PRERELEASE_PINS_KEY] = values
         data.setdefault("checked_at", time.time())
         _atomic_write_cache(data)
     except (OSError, json.JSONDecodeError, TypeError):
         logger.debug(
-            "Failed to write release pre-release dependency cache",
+            "Failed to write release pre-release pins cache",
             exc_info=True,
         )
+
+
+def _pypi_request_kwargs(*, bypass_cache: bool) -> dict[str, Any]:
+    """Build `requests.get` keyword arguments for a PyPI metadata request.
+
+    PyPI's JSON API is served through a CDN (Fastly). Bypassing only the local
+    on-disk cache is not enough immediately after a release: an edge node can
+    keep serving a stale copy for a few seconds until the purge propagates, so
+    a forced check may still report "already on the latest version" until a
+    retry. When `bypass_cache` is set, send no-cache request headers and a
+    unique cache-busting query parameter so the CDN cache key misses and the
+    response is fetched fresh from origin.
+
+    Args:
+        bypass_cache: When `True`, defeat CDN edge caching as well as the local
+            cache.
+
+    Returns:
+        Keyword arguments to pass to `requests.get`. Callers still pass
+        `timeout` explicitly so the timeout lint rule can see it.
+    """
+    headers = {"User-Agent": USER_AGENT}
+    kwargs: dict[str, Any] = {"headers": headers}
+    if bypass_cache:
+        headers["Cache-Control"] = "no-cache"
+        headers["Pragma"] = "no-cache"
+        kwargs["params"] = {"_": uuid.uuid4().hex}
+    return kwargs
 
 
 def get_latest_version(
@@ -432,8 +724,8 @@ def get_latest_version(
     try:
         resp = requests.get(
             PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -450,9 +742,7 @@ def get_latest_version(
         if not releases:
             logger.debug("PyPI response missing or empty 'releases' key")
         prerelease = _latest_from_releases(releases, include_prereleases=True)
-        stable_requires_prereleases = _requires_prerelease_dependency(
-            info.get("requires_dist")
-        )
+        stable_prerelease_pins = _prerelease_pin_requirements(info.get("requires_dist"))
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.debug("Failed to fetch latest version from PyPI", exc_info=True)
         return cached_version
@@ -461,22 +751,24 @@ def get_latest_version(
         payload, stable=stable, prerelease=prerelease, installed=__version__
     )
 
-    # Preserve per-version pre-release-dependency entries written by
-    # `_write_release_requires_prereleases` for *other* versions; this refresh
-    # only knows the answer for `stable`, so merge rather than overwrite the map
+    # Preserve per-version pre-release-pin entries written by
+    # `_write_release_prerelease_pins` for *other* versions; this refresh only
+    # knows the pins for `stable`, so merge rather than overwrite the map
     # (otherwise a routine check would evict a cached answer and force a re-fetch
-    # that, on a PyPI hiccup, falls back to the unsafe stable-only default).
-    prerelease_deps: dict[str, Any] = {}
+    # that, on a PyPI hiccup, falls back to the conservative empty-pins default).
+    prerelease_pins: dict[str, Any] = {}
     try:
         if CACHE_FILE.exists():
             existing = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
             if isinstance(existing, dict):
-                cached_deps = existing.get(_RELEASE_PRERELEASE_DEPS_KEY)
-                if isinstance(cached_deps, dict):
-                    prerelease_deps = cached_deps
+                cached_pins = existing.get(_RELEASE_PRERELEASE_PINS_KEY)
+                if isinstance(cached_pins, dict):
+                    prerelease_pins = cached_pins
     except (OSError, json.JSONDecodeError, TypeError):
-        logger.debug("Failed to read cached pre-release deps before refresh")
-    prerelease_deps[stable] = stable_requires_prereleases
+        logger.debug(
+            "Failed to read cached pre-release pins before refresh", exc_info=True
+        )
+    prerelease_pins[stable] = stable_prerelease_pins
 
     try:
         _atomic_write_cache(
@@ -484,7 +776,7 @@ def get_latest_version(
                 "version": stable,
                 "version_prerelease": prerelease,
                 "release_times": release_times,
-                _RELEASE_PRERELEASE_DEPS_KEY: prerelease_deps,
+                _RELEASE_PRERELEASE_PINS_KEY: prerelease_pins,
                 "checked_at": time.time(),
             }
         )
@@ -494,44 +786,69 @@ def get_latest_version(
     return prerelease if include_prereleases else stable
 
 
-def release_requires_prereleases(
+def release_prerelease_pins(
     version: str | None,
     *,
     bypass_cache: bool = False,
-) -> bool:
-    """Return whether installing `version` needs uv pre-release resolution.
+) -> list[str]:
+    """Return the targeted pre-release pins installing `version` requires.
+
+    A stable `deepagents-code` release may mandate an exact pre-release
+    dependency (for example `deepagents==0.7.0a7`). This resolves those pins from
+    the release's PyPI metadata so command builders can pass them to uv as
+    first-party constraints — admitting *only* the named pre-release rather than
+    opting the whole resolution into pre-releases with a global `--prerelease
+    allow`.
 
     Args:
         version: `deepagents-code` version to inspect.
         bypass_cache: Skip cached release metadata and fetch PyPI directly.
 
     Returns:
-        `True` when the release metadata pins or bounds a pre-release dependency.
+        A sorted list of exact pin strings (e.g. `["deepagents==0.7.0a7"]`), or
+            an empty list when the release needs no targeted pre-release
+            admission.
 
     Note:
         On any lookup failure (no `requests`, network/parse error) this returns
-        `False` — i.e. "stable-only resolution". That is deliberately
-        conservative rather than fail-safe: the truly safe default would be to
-        allow pre-releases, but a spurious `True` would make
+        `[]` — "no pre-release admission". That is deliberately conservative
+        rather than fail-safe: the truly safe default would be to admit
+        pre-releases, but a spurious non-empty result would make
         `prerelease_upgrade_supported` *refuse* the upgrade outright on non-uv
-        installs (Homebrew/other), regressing the common case. `False` keeps
-        those installs upgradable; the cost is that, during a PyPI outage, a
-        stable release that genuinely pins a pre-release dependency may be
-        installed stable-only. Failures are logged at `warning` so the blind
-        decision is at least visible.
+        installs (Homebrew/other), regressing the common case. `[]` keeps those
+        installs upgradable; the cost is that, during a PyPI outage, a stable
+        release that genuinely pins a pre-release dependency may be installed
+        stable-only (and may then fail to resolve). Failures are logged at
+        `warning` so the blind decision is at least visible.
     """
     if not version:
-        return False
+        return []
     try:
         if not bypass_cache and CACHE_FILE.exists():
             data = json.loads(CACHE_FILE.read_text(encoding="utf-8"))
             if isinstance(data, dict):
-                values = data.get(_RELEASE_PRERELEASE_DEPS_KEY)
-                if isinstance(values, dict) and isinstance(values.get(version), bool):
-                    return values[version]
+                values = data.get(_RELEASE_PRERELEASE_PINS_KEY)
+                if isinstance(values, dict):
+                    cached = values.get(version)
+                    if isinstance(cached, list):
+                        # Re-validate every stored entry against the current
+                        # contract rather than trusting the raw JSON: these
+                        # strings are written verbatim into a uv constraints
+                        # file, which honors directives like `-r`/`-c`/`--hash`.
+                        # A dropped or altered entry means the value drifted or
+                        # was tampered with (CACHE_FILE is user-local state), so
+                        # fall through to a fresh fetch rather than feed a
+                        # partial or mutated constraint set to uv.
+                        revalidated: set[str] = set()
+                        for raw_pin in cached:
+                            pin = _canonical_prerelease_pin(raw_pin)
+                            if pin is not None:
+                                revalidated.add(pin)
+                        if len(revalidated) == len(cached):
+                            return sorted(revalidated)
     except (OSError, json.JSONDecodeError, TypeError):
         logger.debug(
-            "Failed to read release pre-release dependency cache",
+            "Failed to read release pre-release pins cache",
             exc_info=True,
         )
 
@@ -540,34 +857,53 @@ def release_requires_prereleases(
     except ImportError:
         logger.warning(
             "requests package not installed — cannot check whether v%s pins a "
-            "pre-release dependency; assuming stable-only resolution",
+            "pre-release dependency; assuming no pre-release admission",
             version,
         )
-        return False
+        return []
 
     try:
         url = f"{PYPI_URL.removesuffix('/json')}/{version}/json"
         resp = requests.get(
             url,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
         info = payload.get("info")
         requires = info.get("requires_dist") if isinstance(info, dict) else None
-        result = _requires_prerelease_dependency(requires)
+        pins = _prerelease_pin_requirements(requires)
     except (requests.RequestException, OSError, KeyError, json.JSONDecodeError):
         logger.warning(
             "Failed to fetch dependency metadata for v%s from PyPI; assuming "
-            "stable-only resolution",
+            "no pre-release admission",
             version,
             exc_info=True,
         )
-        return False
+        return []
 
-    _write_release_requires_prereleases(version, result)
-    return result
+    _write_release_prerelease_pins(version, pins)
+    return pins
+
+
+def release_requires_prereleases(
+    version: str | None,
+    *,
+    bypass_cache: bool = False,
+) -> bool:
+    """Return whether installing `version` needs uv pre-release admission.
+
+    Boolean view over `release_prerelease_pins`, kept for display-only callers
+    that only decide *whether* to show a pre-release-aware upgrade hint, not
+    which pins to constrain. `True` iff the release mandates at least one exact
+    pre-release dependency.
+
+    Args:
+        version: `deepagents-code` version to inspect.
+        bypass_cache: Skip cached release metadata and fetch PyPI directly.
+    """
+    return bool(release_prerelease_pins(version, bypass_cache=bypass_cache))
 
 
 def _extract_release_times(
@@ -619,7 +955,7 @@ def _upload_time(file_entry: object) -> str | None:
     # `isinstance(..., dict)` narrows to `dict[Unknown, Unknown]`, so `.get()`
     # overload resolution is ambiguous. PyPI payloads are str-keyed in practice
     # and the `isinstance(value, str)` check below validates the result anyway.
-    value = file_entry.get("upload_time_iso_8601")  # ty: ignore[invalid-argument-type]
+    value = file_entry.get("upload_time_iso_8601")
     return value if isinstance(value, str) else None
 
 
@@ -709,6 +1045,48 @@ def format_installed_age_suffix(version: str | None) -> str:
     return f" ({days} {unit} old)"
 
 
+def installed_days_old() -> int | None:
+    """Return whole days since the installed version's release, or `None`.
+
+    Cache-only (`get_release_time`), so it never blocks on the network.
+    Returns `None` when the release time is unknown (cold cache or an
+    unparseable timestamp). Best-effort: any unexpected error degrades to
+    `None` rather than propagating, since this runs on the startup path.
+    """
+    try:
+        return _days_old_from_iso(get_release_time(__version__))
+    except Exception:
+        logger.debug("Failed to compute installed version age", exc_info=True)
+        return None
+
+
+def is_installation_stale() -> bool:
+    """Return whether an older installed version should warn about updating.
+
+    `True` only when a fresh cache says an update is available and the installed
+    version's release is at least `INSTALLED_STALE_NOTICE_DAYS` old. Returns
+    `False` for editable/dev installs (release age is meaningless there), when
+    update checks are disabled (the opt-out silences this too), and when the age
+    or update answer is unknown.
+
+    Best-effort: any unexpected error degrades to `False` rather than
+    propagating, so this cosmetic check can never abort TUI startup.
+    """
+    from deepagents_code.config import _is_editable_install
+
+    try:
+        if _is_editable_install() or not is_update_check_enabled():
+            return False
+        available, _ = get_cached_update_available()
+        if not available:
+            return False
+        days = installed_days_old()
+    except Exception:
+        logger.debug("Failed to determine installation staleness", exc_info=True)
+        return False
+    return days is not None and days >= INSTALLED_STALE_NOTICE_DAYS
+
+
 def get_sdk_release_time(
     version: str | None, *, bypass_cache: bool = False
 ) -> str | None:
@@ -753,8 +1131,8 @@ def get_sdk_release_time(
     try:
         resp = requests.get(
             SDK_PYPI_URL,
-            headers={"User-Agent": USER_AGENT},
             timeout=3,
+            **_pypi_request_kwargs(bypass_cache=bypass_cache),
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -881,6 +1259,64 @@ def _write_update_state(
         )
         return False
     return True
+
+
+def should_defer_startup_auto_update_for_resume() -> bool:
+    """Return whether a resumed session is still in its update grace period.
+
+    The first resumed launch starts a fixed grace period. Later resumes do not
+    extend it, so a resume-only workflow eventually follows the normal startup
+    auto-update path. If the marker cannot be persisted, fail closed and run
+    the update path rather than allowing an unbounded bypass.
+    """
+    data = _read_update_state()
+    now = time.time()
+    deferred_at = _coerce_checked_at(data.get(_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY))
+    if deferred_at is None or deferred_at > now:
+        return _write_update_state({_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY: now})
+    return now - deferred_at < RESUME_AUTO_UPDATE_GRACE_PERIOD
+
+
+def clear_resume_auto_update_deferral() -> None:
+    """Reset the resume grace period after a normal interactive launch."""
+    data = _read_update_state()
+    if _RESUME_AUTO_UPDATE_DEFERRED_AT_KEY not in data:
+        return
+    _write_update_state({}, remove_keys=(_RESUME_AUTO_UPDATE_DEFERRED_AT_KEY,))
+
+
+def should_skip_startup_auto_update_after_failure(version: str) -> bool:
+    """Return whether startup auto-update should skip a recently failed version."""
+    data = _read_update_state()
+    failed_version = data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY)
+    failed_at = data.get(_STARTUP_AUTO_UPDATE_FAILED_AT_KEY)
+    return bool(
+        failed_version == version
+        and isinstance(failed_at, (int, float))
+        and time.time() - failed_at < STARTUP_AUTO_UPDATE_FAILURE_COOLDOWN
+    )
+
+
+def mark_startup_auto_update_failed(version: str) -> bool:
+    """Persist a same-version startup auto-update retry cooldown marker.
+
+    Returns:
+        `True` if the marker was written, `False` otherwise.
+    """
+    return _write_update_state(
+        {
+            _STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY: version,
+            _STARTUP_AUTO_UPDATE_FAILED_AT_KEY: time.time(),
+        }
+    )
+
+
+def clear_startup_auto_update_failure(version: str) -> None:
+    """Clear a startup auto-update failure marker for `version` if present."""
+    data = _read_update_state()
+    if data.get(_STARTUP_AUTO_UPDATE_FAILED_VERSION_KEY) != version:
+        return
+    _write_update_state({}, remove_keys=_STARTUP_AUTO_UPDATE_FAILURE_KEYS)
 
 
 def should_notify_update(latest: str) -> bool:
@@ -1147,12 +1583,61 @@ def dependency_refresh_supported(
     return False, _DEPENDENCY_REFRESH_UNSUPPORTED[method]
 
 
+def _is_windows() -> bool:
+    """Return whether the current platform uses Windows executable suffixes."""
+    return os.name == "nt"
+
+
+def _upgraded_entry_point(upgraded_bin_dir: Path, name: str) -> Path:
+    """Find a console-script shim without searching outside uv's bin directory.
+
+    On Windows, a console-script name without a suffix can refer to any
+    executable extension in `PATHEXT`. Construct the candidate paths directly
+    instead of using `shutil.which`: Python may include the current directory
+    in a Windows `which` lookup even when a `path` argument is supplied.
+
+    Args:
+        upgraded_bin_dir: Directory containing uv's console-script shims.
+        name: Console-script name to resolve.
+
+    Returns:
+        The first existing executable candidate in `upgraded_bin_dir`, or the
+        suffixless candidate when no shim can be found.
+    """
+    filename = Path(name).name
+    candidates = [filename]
+    if _is_windows() and not Path(filename).suffix:
+        pathext = os.environ.get("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+        candidates = [
+            f"{filename}{suffix}"
+            for suffix in pathext.split(";")
+            if suffix.startswith(".") and Path(suffix).name == suffix
+        ]
+
+    for candidate_name in candidates:
+        candidate = upgraded_bin_dir / candidate_name
+        # Keep the selection lexical: resolving a legitimate uv shim follows
+        # its symlink into the tool environment, while this check only guards
+        # against a malformed name or PATHEXT escaping uv's bin directory.
+        if candidate.parent != upgraded_bin_dir:
+            continue
+        try:
+            if candidate.is_file():
+                return candidate
+        except OSError:
+            logger.debug("Could not inspect upgraded shim candidate %s", candidate)
+
+    return upgraded_bin_dir / filename
+
+
 @dataclass(frozen=True)
 class ShadowedDcode:
     """A different dcode entry point is winning on PATH than the one we upgraded.
 
-    Returned by `detect_shadowed_dcode` after a successful upgrade so the TUI can
-    warn the user that re-launching will pick up the wrong binary. The most
+    Returned by `detect_shadowed_dcode` after a successful upgrade so the user
+    can be warned that a *manually* launched `dcode` will pick up the wrong
+    binary. The startup auto-update's own restart is unaffected: it re-execs
+    `upgraded_bin` directly rather than going through a `PATH` lookup. The most
     common cause is a pre-uv install (e.g. a leftover from a previous
     `pipx`/`pip`-based install) earlier on `PATH` than the uv tool shims.
 
@@ -1179,6 +1664,14 @@ class ShadowedDcode:
     `_uv_tool_bin_dir`).
     """
 
+    entry_point: str | None = field(default=None, compare=False)
+    """Console-script name requested from `PATH`.
+
+    Kept separately from `shadowing_bin` because Windows `PATHEXT` can make
+    the latter end in `.cmd` or `.bat`, even though uv installed an `.exe`
+    shim for the same entry point.
+    """
+
     def __post_init__(self) -> None:
         """Reject a non-conflict instance — the type's namesake invariant.
 
@@ -1199,12 +1692,15 @@ class ShadowedDcode:
 
     @property
     def upgraded_bin(self) -> Path:
-        """Absolute path to the upgraded `dcode` shim uv installed.
+        """Absolute path to the upgraded console-script shim uv installed.
 
-        Keeps the `dcode` entry-point name owned by the type rather than
-        re-derived at each call site (mirrors `DependencyChange.kind`).
+        Resolves the requested entry point within uv's bin directory so
+        Windows `PATHEXT` selects uv's actual executable suffix instead of
+        reusing a shadowing `.cmd` or `.bat` suffix. On other platforms, this
+        resolves the normal shim name directly.
         """
-        return self.upgraded_bin_dir / "dcode"
+        entry_point = self.entry_point or self.shadowing_bin.name
+        return _upgraded_entry_point(self.upgraded_bin_dir, entry_point)
 
 
 def _uv_tool_bin_dir() -> Path | None:
@@ -1274,31 +1770,80 @@ def _uv_tool_bin_dir() -> Path | None:
     return None
 
 
+def _resolves_to_upgraded_entry_point(
+    path_entry: str,
+    *,
+    upgraded_bin_dir: Path,
+    name: str,
+) -> bool:
+    """Report whether a PATH entry point resolves to the upgraded shim.
+
+    Complements the directory comparison in `detect_shadowed_dcode`: a symlink
+    outside uv's bin dir that points at uv's own shim runs the upgraded install,
+    so warning about it would send the user chasing a conflict that does not
+    exist.
+
+    Args:
+        path_entry: Un-followed `shutil.which` result for *name*.
+        upgraded_bin_dir: Bin directory uv installed the upgraded shim into.
+        name: Console-script name being checked.
+
+    Returns:
+        `True` when both paths resolve to the same file. `False` when they
+            differ or either side cannot be resolved — the caller then reports
+            the shadow, since an unverifiable alias is better surfaced than
+            silently dismissed.
+    """
+    try:
+        return (
+            Path(path_entry).resolve()
+            == _upgraded_entry_point(upgraded_bin_dir, name).resolve()
+        )
+    except OSError:
+        # `Path.resolve` is non-strict, so a merely missing path does not land
+        # here — an `OSError` means something abnormal (`ELOOP`, `EACCES` on a
+        # path component, `ENAMETOOLONG`). The consequence is user-visible: a
+        # false-positive warning telling them to fix a PATH conflict that may
+        # not exist. Log at `warning` for the same reason the sibling
+        # `path_dir.resolve()` guard in `detect_shadowed_dcode` does — an
+        # indeterminate result is worth surfacing to a developer, not masking.
+        logger.warning(
+            "Could not compare %s at %s against the upgraded shim",
+            name,
+            path_entry,
+            exc_info=True,
+        )
+        return False
+
+
 def detect_shadowed_dcode() -> ShadowedDcode | None:
     """Return the shadowing dcode entry point on the user's PATH, if any.
 
     After a successful `uv tool upgrade`, the upgraded binary only takes effect
-    on the next launch if the user's `PATH` resolves to uv's tool bin dir for
-    `dcode` (and `deepagents-code`). A pre-uv install earlier on `PATH` will
-    silently win and report the old version, which looks like "the upgrade
+    on the next manual launch if the user's `PATH` resolves to uv's tool bin dir
+    for `dcode` (and `deepagents-code`) — or to a link into it, which the
+    resolved-target check below also accepts. A pre-uv install earlier on `PATH`
+    will silently win and report the old version, which looks like "the upgrade
     didn't work" to the user.
 
     This compares each supported console script against uv's tool bin dir. A
-    mismatch means a different binary will run next launch for that entry point.
+    mismatch means a different binary will run the next time the user launches
+    that entry point themselves.
 
-    Caveat: a `dcode` symlink that lives in some unrelated bin dir but
-    points *into* the upgraded tool venv (e.g. a manually-created
-    convenience symlink) is reported as shadowing even though the next
-    launch would actually run the upgraded entry point. Comparing
-    directories rather than resolved targets is intentional — see the
-    inline note below for why — and this edge is rare enough that we
-    accept a benign false positive over a class of false negatives.
+    The primary comparison is between *directories* rather than resolved
+    symlink targets (see the inline note below for why), but a directory
+    mismatch alone would misreport a `dcode` symlink that lives in an
+    unrelated bin dir and points *into* the upgraded tool venv (e.g. a
+    manually-created convenience symlink, or a package manager that
+    re-exposes uv's shim). Those launches do run the upgraded entry point, so
+    a second check compares resolved targets before reporting a conflict.
 
     Returns:
         A `ShadowedDcode` describing the conflict, or `None` when there is no
-            shadowing binary (the common case) or when detection is not
-            applicable (non-uv install, uv bin dir unknown, no supported entry
-            point on `PATH` at all).
+            shadowing binary (the common case), when every entry point found on
+            `PATH` resolves into the upgraded install despite living elsewhere,
+            or when detection is not applicable (non-uv install, uv bin dir
+            unknown, no supported entry point on `PATH` at all).
     """
     if detect_install_method() != "uv":
         return None
@@ -1345,9 +1890,19 @@ def detect_shadowed_dcode() -> ShadowedDcode | None:
             # Keep checking the other supported entry point before declaring
             # there is no shadow.
             continue
+        if _resolves_to_upgraded_entry_point(
+            resolved,
+            upgraded_bin_dir=upgraded_bin_dir,
+            name=name,
+        ):
+            # A symlink outside uv's bin dir that still points at uv's own
+            # shim. PATH wins, but it wins *into* the upgraded install, so
+            # there is nothing for the user to fix.
+            continue
         return ShadowedDcode(
             shadowing_bin=Path(resolved),
             upgraded_bin_dir=upgraded_bin_dir,
+            entry_point=name,
         )
     return None
 
@@ -1391,7 +1946,7 @@ def format_shadowed_dcode_warning(shadow: ShadowedDcode) -> str:
     indented_command = fix_command.replace("\n", "\n  ")
     return (
         "Update installed, but another `dcode` is earlier on your PATH and "
-        "will keep running the old version on relaunch:\n"
+        "will run the old version the next time you launch it yourself:\n"
         f"  Shadowing binary: {shadow.shadowing_bin}\n"
         f"  Upgraded shim:    {shadow.upgraded_bin}\n"
         "After closing dcode, run this to make the upgraded shim win in this "
@@ -1469,6 +2024,56 @@ def create_update_log_path() -> Path:
     return UPDATE_LOG_DIR / f"{stamp}-update.log"
 
 
+def create_update_log_file() -> Path | None:
+    """Create an empty update log file and return its path.
+
+    Callers that *advertise* the log to a user — "Update log: tail -f <path>" —
+    must use this rather than `create_update_log_path`, which only computes a
+    path. `perform_upgrade` refuses some upgrades before ever spawning an
+    installer (unknown or unsupported install method, `brew` missing from
+    `PATH`, the pre-release gate), and `_run_install_subprocess` degrades to
+    not persisting output when the log cannot be opened. In all of those cases
+    the path alone would name a file that never comes into existence, leaving
+    the user tailing an `ENOENT`.
+
+    Returns:
+        The created log path, or `None` if it could not be created — callers
+            should then omit the log hint rather than point at a missing file.
+    """
+    log_path = create_update_log_path()
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.touch()
+    except OSError:
+        logger.warning(
+            "Could not create update log at %s; not advertising it",
+            log_path,
+            exc_info=True,
+        )
+        return None
+    return log_path
+
+
+def format_log_follow_command(log_path: Path | str) -> str:
+    """Return a copy-pasteable command for following a log file as it is written.
+
+    Args:
+        log_path: Log file to follow.
+
+    Returns:
+        A `tail -f` invocation on POSIX, or its PowerShell equivalent on
+            Windows, where `tail` is not available.
+    """
+    if sys.platform == "win32":
+        # PowerShell, the default Windows shell. Single-quote the literal path
+        # so `$`, `$()`, and backticks in it are not expanded, doubling any
+        # embedded quote as PowerShell requires. `-LiteralPath` additionally
+        # keeps `[`/`]` in a cache path from being read as wildcards.
+        quoted = str(log_path).replace("'", "''")
+        return f"Get-Content -Wait -LiteralPath '{quoted}'"
+    return f"tail -f {shlex.quote(str(log_path))}"
+
+
 async def _emit_progress(callback: UpgradeProgressCallback | None, line: str) -> None:
     """Send a progress line to *callback*, supporting sync or async callbacks."""
     if callback is None:
@@ -1499,6 +2104,49 @@ async def _read_stream(
         await _emit_progress(progress, line)
 
 
+async def _terminate_install_process(proc: asyncio.subprocess.Process) -> None:
+    """Best-effort kill of an install subprocess and its descendants.
+
+    On POSIX the sole caller starts the child in its own session
+    (`start_new_session=True`), so `proc.pid` doubles as the process-group id
+    and `killpg` reaps descendants too; do not call this on a process not
+    started that way or it would signal the caller's own group.
+
+    This is teardown that runs *under* a timeout or cancellation, so it must
+    never raise — a stray error here would mask the failure it is cleaning up
+    after. Every step therefore swallows benign races (a process that already
+    exited, a group we cannot signal) and the final reap is time-bounded so an
+    unreapable child cannot hang startup before the TUI.
+    """
+    if os.name == "posix":
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        except OSError:
+            # e.g. EPERM if the group contains a privileged descendant; fall
+            # back to killing the direct child so at least it is reaped.
+            with suppress(OSError):
+                proc.kill()
+    elif proc.returncode is None:
+        with suppress(OSError):
+            proc.kill()
+    with suppress(OSError, TimeoutError):
+        await asyncio.wait_for(proc.wait(), timeout=_TERMINATE_WAIT_TIMEOUT)
+    # Reaping the process is not enough: when this cleanup runs after we stopped
+    # draining stdout/stderr (timeout/cancellation), those pipes never reach EOF,
+    # so the pipe transports — and the parent subprocess transport — stay open
+    # until garbage collection. If the event loop has closed by then,
+    # `BaseSubprocessTransport.__del__` retries the close on a dead loop and
+    # raises "Event loop is closed" (surfaced as PytestUnraisableExceptionWarning
+    # under pytest). Close it eagerly while the loop is still alive. `_transport`
+    # is the only handle asyncio exposes, and close() must not break teardown.
+    transport = getattr(proc, "_transport", None)
+    if transport is not None:
+        with suppress(Exception):
+            transport.close()
+
+
 async def _run_install_subprocess(
     cmd: str,
     *,
@@ -1523,6 +2171,9 @@ async def _run_install_subprocess(
 
     Returns:
         `(success, output)` — *success* is `True` iff the subprocess exited 0.
+
+    Raises:
+        asyncio.CancelledError: If the calling task is cancelled.
     """
     timeout = _UPGRADE_TIMEOUT
     if log_path is None:
@@ -1546,12 +2197,21 @@ async def _run_install_subprocess(
         log_file = None
 
     try:
-        proc = await asyncio.create_subprocess_shell(
-            cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-        )
+        if os.name == "posix":
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        else:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+            )
         await asyncio.wait_for(
             asyncio.gather(
                 _read_stream(
@@ -1572,8 +2232,7 @@ async def _run_install_subprocess(
         )
     except TimeoutError:
         if proc is not None:
-            proc.kill()
-            await proc.wait()
+            await _terminate_install_process(proc)
         msg = f"Command timed out after {timeout}s: {cmd}"
         if log_file is not None:
             with suppress(OSError):
@@ -1582,6 +2241,13 @@ async def _run_install_subprocess(
         await _emit_progress(progress, msg)
         logger.warning(msg)
         return False, msg
+    except asyncio.CancelledError:
+        if proc is not None:
+            await _terminate_install_process(proc)
+        if log_file is not None:
+            with suppress(OSError):
+                log_file.close()
+        raise
     except OSError as exc:
         if log_file is not None:
             with suppress(OSError):
@@ -1604,13 +2270,190 @@ async def _run_install_subprocess(
     return False, output
 
 
+_UPDATE_INSTALL_THREAD_LOCK = threading.Lock()
+"""Process-local half of `update_install_lock`.
+
+`update_install_lock` builds a fresh `FileLock(thread_local=False)` per call, so
+the cross-process lock alone would not stop two threads in one dcode process
+from both entering the install. This guarantees a single in-process holder,
+independent of the filelock backend's cross-thread behavior.
+
+`thread_local=False` is required rather than incidental: `_perform_app_upgrade`
+holds this lock across `await`s, so acquisition and release are not guaranteed
+to happen on the same thread, and a thread-local `FileLock` would refuse to
+release on a different one.
+"""
+
+
+def _resolve_update_lock_file() -> Path | None:
+    """Return the first usable lock path, preferring installation scope.
+
+    Returns:
+        The lock file whose parent directory is writable, or `None` when
+        neither is. The caller then proceeds without a lock.
+    """
+    candidates = (UPDATE_LOCK_FILE, FALLBACK_UPDATE_LOCK_FILE)
+    chosen_dir = first_writable(
+        [candidate.parent for candidate in candidates],
+        mode=0o700,
+        what="Update lock",
+    )
+    if chosen_dir is None:
+        return None
+    chosen = next(c for c in candidates if c.parent == chosen_dir)
+    if chosen != UPDATE_LOCK_FILE:
+        logger.warning(
+            "Using the profile update lock %s because the shared "
+            "installation lock directory %s is not writable; upgrades are "
+            "serialized per profile only",
+            chosen,
+            UPDATE_LOCK_FILE.parent,
+        )
+    return chosen
+
+
+_WARNED_LOCK_UNAVAILABLE = False
+"""Whether the "no update lock" warning already reached stderr this process."""
+
+UPDATE_LOCK_CONTENDED_MESSAGE = (
+    "Another dcode update or install is already running. "
+    "Wait for it to finish, then try again."
+)
+"""Refusal shown when `update_install_lock` is held by another process.
+
+Shared by every operation that serializes behind the lock so users see one
+wording no matter which command lost the race.
+"""
+
+
+@contextmanager
+def update_install_lock() -> Iterator[bool]:
+    """Try to claim the exclusive right to self-upgrade dcode.
+
+    Startup auto-update, `dcode update`, `/update`, and the update notification
+    all replace the same installed package, so concurrently launched terminals
+    would otherwise each run their own install against one tool environment.
+    Whichever process wins the lock performs the upgrade; the rest keep running
+    the version they launched with and pick the new one up on their next launch.
+
+    Non-blocking by design: a loser returns immediately rather than stalling
+    startup behind an install it does not need.
+
+    The locking itself never raises; exceptions from the caller's own body
+    propagate as usual. When the lock is unusable — an unwritable state
+    directory, or a filesystem whose locking the OS refuses — this yields
+    `True` and lets the caller proceed unsynchronized. That is the behavior
+    from before this lock existed, and it is the fail-open choice: yielding
+    `False` there would mean updates never run again on that machine. Only a
+    lock genuinely held elsewhere yields `False`.
+
+    Yields:
+        `True` while this process may install, `False` when an install is
+        already under way — in another process, on another thread, or on this
+        same thread, since the lock is not reentrant. Callers must not upgrade
+        unless they were handed `True`.
+    """
+    # Deferred: importing `filelock` costs tens of milliseconds, and this module
+    # is imported on every launch to decide whether an update is even due. Only
+    # a launch that reaches an actual install pays for it. This only helps while
+    # nothing else on the pre-TUI path imports `filelock`; `approval_mode`,
+    # `mcp_auth`, and `hooks.trust` all import it at module level, so moving any
+    # of those onto that path would quietly make this deferral pointless.
+    try:
+        from filelock import FileLock, Timeout
+    except ImportError:
+        # A self-upgrade replaces the very environment this process imports
+        # from, so a clobbered or half-written `site-packages` is exactly this
+        # function's domain. Fail open rather than raise out of a caller that
+        # would report it as an update failure.
+        logger.warning(
+            "Proceeding without the update lock; filelock is unavailable",
+            exc_info=True,
+        )
+        yield True
+        return
+
+    if not _UPDATE_INSTALL_THREAD_LOCK.acquire(blocking=False):
+        logger.info("Skipping update install; one is already running in this process")
+        yield False
+        return
+    try:
+        lock_file = _resolve_update_lock_file()
+        if lock_file is None:
+            # Both locations failed, so the lock is fail-open on every launch
+            # from now on — the permanent state `FALLBACK_UPDATE_LOCK_FILE`
+            # exists to prevent. A warning alone is invisible, so say it on
+            # stderr once per process.
+            message = (
+                "Proceeding without the update lock; could not create "
+                f"{UPDATE_LOCK_FILE.parent} or "
+                f"{FALLBACK_UPDATE_LOCK_FILE.parent}. Concurrent dcode "
+                "upgrades will not be serialized."
+            )
+            global _WARNED_LOCK_UNAVAILABLE  # noqa: PLW0603  # once per process
+            if not _WARNED_LOCK_UNAVAILABLE:
+                _WARNED_LOCK_UNAVAILABLE = True
+                print(f"Warning: {message}", file=sys.stderr)  # noqa: T201
+            logger.warning("%s", message)
+            yield True
+            return
+        # Only the permission hardening can fail here. The directory is still
+        # usable for locking (CIFS/exFAT mounts routinely refuse `chmod`), so
+        # abandoning the lock would disable this protection for no reason.
+        harden_state_dir(lock_file.parent)
+        file_lock = FileLock(str(lock_file), timeout=0, thread_local=False)
+        try:
+            file_lock.acquire()
+        # `filelock.Timeout` subclasses `TimeoutError`, hence `OSError`, so this
+        # clause MUST stay above the one below. Reorder them and every "another
+        # process is installing" case silently becomes a fail-open `yield True`
+        # — the concurrent double-install this lock exists to prevent.
+        except Timeout:
+            logger.info(
+                "Skipping update install; %s is held by another dcode process",
+                lock_file,
+            )
+            yield False
+            return
+        except OSError:
+            logger.warning(
+                "Proceeding without the update lock; could not acquire %s. "
+                "If this persists, removing that file may clear it.",
+                lock_file,
+                exc_info=True,
+            )
+            yield True
+            return
+        try:
+            yield True
+        finally:
+            # Releasing must not mask the install's own outcome, and the lock is
+            # dropped when the process exits regardless. But it is not harmless:
+            # `UnixFileLock._release` clears its fd handle *before* unlocking, so
+            # a raising `flock` leaks an fd that still holds the lock, and every
+            # later attempt in this session then reports a phantom concurrent
+            # install. Log it, or that failure is undiagnosable.
+            try:
+                file_lock.release()
+            except OSError:
+                logger.warning(
+                    "Failed to release the update lock at %s; further update "
+                    "attempts in this session may report a concurrent install "
+                    "until dcode is restarted",
+                    lock_file,
+                    exc_info=True,
+                )
+    finally:
+        _UPDATE_INSTALL_THREAD_LOCK.release()
+
+
 async def perform_upgrade(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
     include_prereleases: bool | None = None,
     target_version: str | None = None,
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str | None]:
     """Attempt to upgrade `deepagents-code` using the detected install method.
 
     Only tries the detected method — does not fall back to other package
@@ -1627,75 +2470,150 @@ async def perform_upgrade(
             dcode releases that intentionally depend on pre-release packages.
 
     Returns:
-        `(success, output)` — *output* is the combined stdout/stderr.
+        `(success, output, installed_version)` — *output* is the combined
+        stdout/stderr. *installed_version* is the version the successful
+        install actually resolved to, read back from the tool environment on
+        disk, or `None` when the upgrade failed or the installed version
+        could not be determined. A successful uv installer exit is reported
+        as a failure when the installed version remains below `target_version`.
+        Callers should report *installed_version* rather than the version their
+        update check observed: the install command is unpinned, so a release
+        published between check and install is what lands on disk.
+
+    Raises:
+        OSError: Propagated from building the upgrade command or running the
+            install subprocess (e.g. unreadable distribution metadata). An
+            `OSError` from *staging* the pre-release constraints file is handled
+            internally and reported as a `(False, output)` failure instead.
     """
     method = detect_install_method()
     if method == "unknown":
-        return False, "Editable install detected — skipping auto-update."
+        return False, "Editable install detected — skipping auto-update.", None
     if method == "other":
-        return False, (
-            "Unsupported install method detected — cannot auto-update without "
-            "knowing which environment provides `dcode`. Reinstall with "
-            "`uv tool install -U deepagents-code` or upgrade with the package "
-            "manager originally used for this install."
+        return (
+            False,
+            (
+                "Unsupported install method detected — cannot auto-update without "
+                "knowing which environment provides `dcode`. Reinstall with "
+                "`uv tool install -U deepagents-code` or upgrade with the package "
+                "manager originally used for this install."
+            ),
+            None,
         )
     resolved_include_prereleases = _resolve_include_prereleases(include_prereleases)
+    # Targeted pre-release admission: a *stable* dcode target that mandates an
+    # exact pre-release dependency (e.g. `deepagents==0.7.0a7`). Rather than opt
+    # the whole resolution into pre-releases with a global `--prerelease allow`
+    # — which let an unrelated optional provider float to an unbuildable RC in
+    # #4524 — pin that dependency in a uv constraints file and use the scoped
+    # `if-necessary-or-explicit` strategy so only the named pre-release is
+    # admitted. Kept separate from the explicit pre-release *channel* below,
+    # where the user deliberately follows dcode's own pre-release feed.
+    targeted_pins: list[str] = []
     pin_target_version: str | None = None
-    if (
-        not resolved_include_prereleases
-        and include_prereleases is None
-        and release_requires_prereleases(target_version)
-    ):
-        resolved_include_prereleases = True
-        pin_target_version = target_version
-    if resolved_include_prereleases:
+    if not resolved_include_prereleases and include_prereleases is None:
+        targeted_pins = release_prerelease_pins(target_version)
+        if targeted_pins:
+            pin_target_version = target_version
+
+    if resolved_include_prereleases or targeted_pins:
         supported, reason = prerelease_upgrade_supported(method)
         if not supported:
-            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE
+            return False, reason or _PRERELEASE_UNSUPPORTED_MESSAGE, None
 
-    fell_back_to_bare_command = False
-    if method == "uv":
-        # Prefer the receipt-aware `uv tool install -U` builder so installed
-        # extras / `--with` packages survive the upgrade and any stale
-        # `==<version>` pin in the receipt is cleared. Fall back to the bare
-        # display command when extras or receipt introspection fails — the
-        # fallback might drop extras, but a successful unpinned upgrade is
-        # still strictly better than a pinned "upgrade" that quietly stays
-        # on the old version.
-        from deepagents_code.extras_info import ExtrasIntrospectionError
+    # Skip brew if binary not on PATH (before touching temp files).
+    if method == "brew" and not shutil.which("brew"):
+        return False, "brew not found on PATH.", None
 
-        try:
-            cmd = upgrade_install_command(
-                include_prereleases=resolved_include_prereleases,
-                version=pin_target_version,
+    prerelease_strategy = _UV_TARGETED_PRERELEASE_STRATEGY if targeted_pins else None
+    constraints_staged = False
+    try:
+        with _prerelease_constraints_file(targeted_pins) as constraints_path:
+            # The constraints file (if any) is now written; any OSError past
+            # this point originates in command-building or the subprocess
+            # wrapper, not constraint staging.
+            constraints_staged = True
+            fell_back_to_bare_command = False
+            if method == "uv":
+                # Prefer the receipt-aware `uv tool install -U` builder so
+                # installed extras / `--with` packages survive the upgrade and
+                # any stale `==<version>` pin in the receipt is cleared. Fall
+                # back to the bare display command when extras or receipt
+                # introspection fails — the fallback might drop extras, but a
+                # successful unpinned upgrade is still strictly better than a
+                # pinned "upgrade" that quietly stays on the old version.
+                from deepagents_code.extras_info import ExtrasIntrospectionError
+
+                try:
+                    cmd = upgrade_install_command(
+                        include_prereleases=resolved_include_prereleases,
+                        version=pin_target_version,
+                        constraints_path=constraints_path,
+                        prerelease_strategy=prerelease_strategy,
+                    )
+                except (
+                    ExtrasIntrospectionError,
+                    ToolRequirementIntrospectionError,
+                ) as exc:
+                    logger.warning(
+                        "Could not build receipt-aware uv upgrade command "
+                        "(%s: %s); falling back to the bare command. Installed "
+                        "extras may be dropped.",
+                        type(exc).__name__,
+                        exc,
+                    )
+                    fell_back_to_bare_command = True
+                    cmd = upgrade_command(
+                        method,
+                        include_prereleases=resolved_include_prereleases,
+                        version=pin_target_version,
+                    )
+                    # The bare display command has no constraints knob, so add
+                    # the targeted flags here too — the fallback must not revert
+                    # to a global `--prerelease allow`.
+                    cmd = _append_uv_prerelease_flags(
+                        cmd,
+                        constraints_path=constraints_path,
+                        prerelease_strategy=prerelease_strategy,
+                    )
+            else:
+                cmd = upgrade_command(
+                    method,
+                    include_prereleases=resolved_include_prereleases,
+                )
+
+            success, output = await _run_install_subprocess(
+                cmd, progress=progress, log_path=log_path
             )
-        except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
-            logger.warning(
-                "Could not build receipt-aware uv upgrade command (%s: %s); "
-                "falling back to the bare command. Installed extras may be "
-                "dropped.",
-                type(exc).__name__,
-                exc,
-            )
-            fell_back_to_bare_command = True
-            cmd = upgrade_command(
-                method,
-                include_prereleases=resolved_include_prereleases,
-                version=pin_target_version,
-            )
-    else:
-        cmd = upgrade_command(
-            method,
-            include_prereleases=resolved_include_prereleases,
+    except OSError as exc:
+        if constraints_staged:
+            # The constraints file was written successfully, so this OSError
+            # came from command-building or the subprocess wrapper — not from
+            # staging. Don't misreport it as a constraints-generation failure
+            # (which, on the common non-targeted path, would even claim to
+            # "install vNone"). Re-raise to surface the real error, matching the
+            # pre-targeted-constraints behavior where these propagated.
+            raise
+        # Constraint-generation failure: we know the target needs a pinned
+        # pre-release but could not stage the constraints file, so refuse rather
+        # than fall back to a global `--prerelease allow`. Staging happens before
+        # the install subprocess, so no subprocess ran and the existing install
+        # is untouched.
+        logger.warning(
+            "Could not create pre-release constraints file for v%s",
+            target_version,
+            exc_info=True,
+        )
+        return (
+            False,
+            (
+                "Could not prepare the pre-release dependency constraints required "
+                f"to install v{target_version}; the existing installation was left "
+                f"unchanged.\n{type(exc).__name__}: {exc}"
+            ),
+            None,
         )
 
-    # Skip brew if binary not on PATH
-    if method == "brew" and not shutil.which("brew"):
-        return False, "brew not found on PATH."
-
-    success, output = await _run_install_subprocess(
-        cmd, progress=progress, log_path=log_path
-    )
     if success and fell_back_to_bare_command:
         # Surface the dropped-extras caveat only now that the bare upgrade has
         # actually succeeded. Emitting it before `_run_install_subprocess` ran
@@ -1709,7 +2627,35 @@ async def perform_upgrade(
             "installed extras or extra packages may not carry over. "
             "Re-add them if a feature stops working after relaunch.",
         )
-    return success, output
+    installed_version: str | None = None
+    if success:
+        if pin_target_version is not None:
+            # The install was pinned to the exact target version, so that is
+            # what landed on disk; skip the filesystem readback.
+            installed_version = pin_target_version
+        elif method == "uv":
+            # uv updates the running tool environment in place, so its dist-info
+            # reflects what the resolver actually installed. Homebrew replaces
+            # and relinks a Cellar keg instead; this process still sees the old
+            # prefix and cannot verify the new formula this way.
+            installed_version = await asyncio.to_thread(
+                read_installed_distribution_version
+            )
+            if (
+                installed_version is not None
+                and target_version is not None
+                and _parse_version(installed_version) < _parse_version(target_version)
+            ):
+                detail = (
+                    f"v{target_version} is still propagating to the package index; "
+                    f"dcode remains on v{installed_version}. "
+                    "Try again in a few minutes."
+                )
+                return False, detail, None
+            installed_version = installed_version or target_version
+        else:
+            installed_version = target_version
+    return success, output, installed_version
 
 
 async def perform_dependency_refresh(
@@ -1988,11 +2934,56 @@ def _uv_tool_receipt_data(tool_root: Path | None = None) -> dict[str, Any]:
         raise ToolRequirementIntrospectionError(msg) from exc
 
 
-def _uv_tool_python(tool_root: Path | None = None) -> str | None:
+def _iter_uv_tool_requirements(
+    data: dict[str, Any],
+) -> Iterator[tuple[str, dict[str, Any]]]:
+    """Yield validated `(name, entry)` pairs from a uv tool receipt.
+
+    Shared by the selected-extras and `--with`-package readers so the receipt's
+    `[tool].requirements` shape is validated — and its failure messages worded —
+    in exactly one place. Callers apply their own per-entry key allowlist, which
+    is the only part that legitimately differs between them.
+
+    Args:
+        data: Parsed `uv-receipt.toml` contents.
+
+    Yields:
+        Each requirement's declared `name` and its full table entry, in receipt
+            order.
+
+    Raises:
+        ToolRequirementIntrospectionError: If `[tool].requirements` is missing or
+            contains an entry that is not a table with a package name.
+    """
+    tool = data.get("tool")
+    requirements = tool.get("requirements") if isinstance(tool, dict) else None
+    if not isinstance(requirements, list):
+        msg = "uv tool receipt is missing `[tool].requirements`"
+        raise ToolRequirementIntrospectionError(msg)
+
+    for entry in requirements:
+        if not isinstance(entry, dict):
+            msg = "uv tool receipt contains a non-table requirement entry"
+            raise ToolRequirementIntrospectionError(msg)
+        name = entry.get("name")
+        if not isinstance(name, str) or not name:
+            msg = "uv tool receipt contains a requirement without a package name"
+            raise ToolRequirementIntrospectionError(msg)
+        yield name, entry
+
+
+def _uv_tool_python(
+    tool_root: Path | None = None,
+    *,
+    data: dict[str, Any] | None = None,
+) -> str | None:
     """Return the Python interpreter recorded in the uv tool receipt.
 
     Args:
         tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+        data: Optional pre-parsed receipt contents. Supplied by callers that
+            read several receipt fields at once so the file is parsed once
+            rather than per field.
 
     Returns:
         The recorded `[tool].python` value, or `None` when the receipt does not
@@ -2002,7 +2993,8 @@ def _uv_tool_python(tool_root: Path | None = None) -> str | None:
         ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
             or safely re-expressed as a `--python` value.
     """
-    data = _uv_tool_receipt_data(tool_root)
+    if data is None:
+        data = _uv_tool_receipt_data(tool_root)
     tool = data.get("tool")
     if not isinstance(tool, dict):
         msg = "uv tool receipt is missing `[tool]`"
@@ -2016,10 +3008,66 @@ def _uv_tool_python(tool_root: Path | None = None) -> str | None:
     return python
 
 
+def _uv_tool_selected_extras(
+    *,
+    distribution_name: str = "deepagents-code",
+    tool_root: Path | None = None,
+    data: dict[str, Any] | None = None,
+) -> set[NormalizedName]:
+    """Return extras explicitly selected on the uv tool requirement.
+
+    Args:
+        distribution_name: Main tool distribution whose extras to read.
+        tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+        data: Optional pre-parsed receipt contents. Supplied by callers that
+            read several receipt fields at once so the file is parsed once
+            rather than per field.
+
+    Raises:
+        ToolRequirementIntrospectionError: If the receipt does not safely describe
+            the main tool requirement and its selected extras.
+    """
+    if data is None:
+        data = _uv_tool_receipt_data(tool_root)
+
+    main = canonicalize_name(distribution_name)
+    for name, entry in _iter_uv_tool_requirements(data):
+        if canonicalize_name(name) != main:
+            continue
+        unsupported_keys = sorted(
+            str(key)
+            for key in entry
+            if not isinstance(key, str) or key not in {"name", "extras", "specifier"}
+        )
+        if unsupported_keys:
+            fields = ", ".join(unsupported_keys)
+            msg = (
+                f"uv tool receipt requirement {name!r} uses source fields "
+                f"that cannot be preserved automatically: {fields}"
+            )
+            raise ToolRequirementIntrospectionError(msg)
+        extras = entry.get("extras", [])
+        if not isinstance(extras, list) or any(
+            not isinstance(extra, str) or not is_valid_extra_name(extra)
+            for extra in extras
+        ):
+            msg = "uv tool receipt contains invalid extras on the tool requirement"
+            raise ToolRequirementIntrospectionError(msg)
+        normalized = {canonicalize_name(extra) for extra in extras}
+        if len(normalized) != len(extras):
+            msg = "uv tool receipt contains duplicate canonical extra names"
+            raise ToolRequirementIntrospectionError(msg)
+        return normalized
+
+    msg = f"uv tool receipt does not contain a {distribution_name!r} requirement"
+    raise ToolRequirementIntrospectionError(msg)
+
+
 def _uv_tool_with_packages(
     *,
     distribution_name: str = "deepagents-code",
     tool_root: Path | None = None,
+    data: dict[str, Any] | None = None,
 ) -> tuple[str, ...]:
     """Return package names recorded as uv tool `--with` requirements.
 
@@ -2031,6 +3079,9 @@ def _uv_tool_with_packages(
     Args:
         distribution_name: Main tool distribution to exclude from `--with`.
         tool_root: Optional uv tool environment root. Defaults to `sys.prefix`.
+        data: Optional pre-parsed receipt contents. Supplied by callers that
+            read several receipt fields at once so the file is parsed once
+            rather than per field.
 
     Returns:
         A sorted tuple of validated package names to pass as `--with` values.
@@ -2039,26 +3090,17 @@ def _uv_tool_with_packages(
         ToolRequirementIntrospectionError: If the receipt cannot be read, parsed,
             or safely re-expressed as package-name `--with` requirements.
     """
-    data = _uv_tool_receipt_data(tool_root)
-    tool = data.get("tool")
-    requirements = tool.get("requirements") if isinstance(tool, dict) else None
-    if not isinstance(requirements, list):
-        msg = "uv tool receipt is missing `[tool].requirements`"
-        raise ToolRequirementIntrospectionError(msg)
+    if data is None:
+        data = _uv_tool_receipt_data(tool_root)
 
     main = canonicalize_name(distribution_name)
     packages: set[str] = set()
-    for entry in requirements:
-        if not isinstance(entry, dict):
-            msg = "uv tool receipt contains a non-table requirement entry"
-            raise ToolRequirementIntrospectionError(msg)
-        name = entry.get("name")
-        if not isinstance(name, str) or not name:
-            msg = "uv tool receipt contains a requirement without a package name"
-            raise ToolRequirementIntrospectionError(msg)
+    for name, entry in _iter_uv_tool_requirements(data):
         if canonicalize_name(name) == main:
             continue
-        unsupported_keys = sorted(set(entry) - {"name"})
+        unsupported_keys = sorted(
+            str(key) for key in entry if not isinstance(key, str) or key != "name"
+        )
         if unsupported_keys:
             msg = (
                 f"uv tool receipt requirement {name!r} cannot be preserved "
@@ -2093,7 +3135,7 @@ def _dcode_extras_requirement(
         extras: Extra names to encode. Each is validated against PEP 508
             grammar before interpolation. This is the authoritative gate for
             caller-supplied extras (`install_extras_command`) and a
-            redundant re-check for extras read from distribution metadata
+            redundant re-check for extras read from the uv tool receipt
             (`install_package_command`).
         version: Optional exact `deepagents-code` version pin.
 
@@ -2133,17 +3175,27 @@ def _uv_tool_install_command(
     include_prereleases: bool | None,
     distribution_name: str,
     extras_to_add: Iterable[str] = (),
+    extras_to_remove: Iterable[str] = (),
     with_packages_to_add: Iterable[str] = (),
     reinstall: bool = False,
+    constraints_path: Path | None = None,
+    prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
     """Return the receipt-preserving `uv tool install -U` command.
 
     Args:
         version: Optional exact `deepagents-code` version pin.
         include_prereleases: Whether to include alpha/beta/rc releases. When
-            `None`, follows the installed version's channel.
+            `None`, follows the installed version's channel. Ignored when
+            `constraints_path` or `prerelease_strategy` is set (targeted
+            constraints drive the resolver instead of the global channel).
         distribution_name: Name of the installed distribution to inspect.
-        extras_to_add: Extra names to merge with already-installed extras.
+        extras_to_add: Extra names to merge into the receipt's selected extras.
+            Canonicalized before merging, so a differently-spelled duplicate of
+            an already-selected extra cannot be added twice.
+        extras_to_remove: Extra names to drop from the receipt's selected extras.
+            Applied after `extras_to_add`, so passing the same name to both
+            removes it. Names absent from the receipt are ignored.
         with_packages_to_add: Package names to merge with the receipt's existing
             `--with` packages. Names already present (compared canonically) are
             not duplicated; genuinely new names are appended after the preserved
@@ -2157,36 +3209,61 @@ def _uv_tool_install_command(
             an `ImportError`; the preserved `--python` interpreter and `--with`
             packages still apply, so the rebuild keeps the existing tool
             context.
+        constraints_path: Optional path to a uv constraints file, appended as
+            `--constraints <path>`. Used to pin an exact pre-release dependency
+            as a first-party constraint rather than admitting pre-releases
+            globally. Callers own the file's lifecycle (see
+            `_prerelease_constraints_file`); the builder only references it.
+        prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
+            `if-necessary-or-explicit`). When set, it is emitted verbatim and
+            takes precedence over the `include_prereleases`-driven global
+            `allow`, so a stable target can admit exactly its constrained
+            pre-release pins without widening the candidate set.
 
     Raises:
-        ExtrasIntrospectionError: If a metadata-sourced extra name fails PEP 508
-            validation.
+        ExtrasIntrospectionError: If a receipt-sourced or caller-supplied extra
+            name fails PEP 508 validation.
         ValueError: If `version` is not PEP 440 compliant.
 
     Propagates `ToolRequirementIntrospectionError` if the uv tool receipt's
-    interpreter or `--with` packages cannot be determined safely from the tool
-    receipt.
-    """
-    from deepagents_code.extras_info import (
-        ExtrasIntrospectionError,
-        installed_extra_names,
-    )
+    selected extras, interpreter, or `--with` packages cannot be determined
+    safely from the tool receipt.
 
-    extras = set(installed_extra_names(distribution_name, strict=True))
-    extras.update(extras_to_add)
+    The extra set comes from the uv receipt — what the user actually asked uv to
+    install — not from installed-package metadata. `installed_extra_names` reports
+    an extra as installed when *any* one of its packages is present, so extras
+    whose packages also arrive as base or transitive dependencies (e.g. `media`
+    via `pillow`, `nvidia` via `aiohttp`) read as installed on every env. Deriving
+    the set that way both injected phantom extras into rebuilt commands and
+    silently restored extras the user had removed, since a removal cannot delete a
+    base dependency. The receipt is the only source that distinguishes "selected"
+    from "some package happens to be present".
+    """
+    from deepagents_code.extras_info import ExtrasIntrospectionError
+
+    receipt = _uv_tool_receipt_data()
+    selected_extras: set[str] = set(
+        _uv_tool_selected_extras(distribution_name=distribution_name, data=receipt)
+    )
+    selected_extras.update(canonicalize_name(extra) for extra in extras_to_add)
+    selected_extras.difference_update(
+        canonicalize_name(extra) for extra in extras_to_remove
+    )
     try:
-        requirement = _dcode_extras_requirement(extras, version=version)
+        requirement = _dcode_extras_requirement(selected_extras, version=version)
     except ValueError as exc:
         if str(exc).startswith("Invalid deepagents-code version"):
             raise
-        msg = f"Distribution metadata yielded an invalid extra name: {exc}"
+        msg = f"uv tool receipt yielded an invalid extra name: {exc}"
         raise ExtrasIntrospectionError(msg) from exc
     cmd = "uv tool install --reinstall -U" if reinstall else "uv tool install -U"
-    python = _uv_tool_python()
+    python = _uv_tool_python(data=receipt)
     if python is not None:
         cmd += f" --python {shlex.quote(python)}"
     cmd += f" {requirement}"
-    with_packages = list(_uv_tool_with_packages(distribution_name=distribution_name))
+    with_packages = list(
+        _uv_tool_with_packages(distribution_name=distribution_name, data=receipt)
+    )
     known = {canonicalize_name(package) for package in with_packages}
     for package in with_packages_to_add:
         if canonicalize_name(package) not in known:
@@ -2194,9 +3271,92 @@ def _uv_tool_install_command(
             known.add(canonicalize_name(package))
     for package in with_packages:
         cmd += f" --with {shlex.quote(package)}"
+    if constraints_path is not None or prerelease_strategy is not None:
+        return _append_uv_prerelease_flags(
+            cmd,
+            constraints_path=constraints_path,
+            prerelease_strategy=prerelease_strategy,
+        )
     if _resolve_include_prereleases(include_prereleases):
         cmd += " --prerelease allow"
     return cmd
+
+
+def _append_uv_prerelease_flags(
+    cmd: str,
+    *,
+    constraints_path: Path | None,
+    prerelease_strategy: UvPrereleaseStrategy | None,
+) -> str:
+    """Append targeted `--constraints`/`--prerelease` flags to a uv command.
+
+    Shared by the receipt-aware builder and `perform_upgrade`'s bare-command
+    fallback so both emit the scoped pre-release form identically: a constraints
+    file pinning the exact pre-release dependency plus a non-`allow` strategy
+    (e.g. `if-necessary-or-explicit`). The constraints path is `shlex.quote`-d;
+    the strategy is a fixed internal literal.
+
+    Returns:
+        `cmd` with any `--constraints`/`--prerelease` flags appended.
+    """
+    if constraints_path is not None:
+        cmd += f" --constraints {shlex.quote(str(constraints_path))}"
+    if prerelease_strategy is not None:
+        cmd += f" --prerelease {prerelease_strategy}"
+    return cmd
+
+
+@contextmanager
+def _prerelease_constraints_file(pins: Sequence[str]) -> Iterator[Path | None]:
+    """Yield a temp uv constraints file listing `pins`, removed on exit.
+
+    Writes one pin per line (e.g. `deepagents==0.7.0a7`) to a `mkstemp` file so
+    the exact pre-release dependency can be handed to uv as a first-party
+    constraint. Yields `None` when `pins` is empty so callers can use one code
+    path regardless of whether targeted constraints are needed.
+
+    The file is created with `mkstemp` (mode `0600`) and unlinked in `finally`,
+    so it stays alive for the full subprocess invocation and is cleaned up even
+    when the install raises. Cleanup errors are logged but never raised, so a
+    failed unlink cannot mask the install's own result.
+
+    Raises:
+        OSError: If the constraints file cannot be created or written. Callers
+            treat this as a constraint-generation failure and must not run the
+            install (the alternative — a global `--prerelease allow` fallback —
+            is exactly the behavior this strategy exists to avoid).
+    """
+    if not pins:
+        yield None
+        return
+    fd, name = tempfile.mkstemp(
+        prefix=_PRERELEASE_CONSTRAINTS_FILE_PREFIX, suffix=".txt"
+    )
+    path = Path(name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("\n".join(pins) + "\n")
+    except OSError:
+        # If `os.fdopen` itself raised, it never took ownership of `fd`, so the
+        # raw descriptor would leak — close it explicitly. When `fdopen`
+        # succeeded and `write` failed, the `with` already closed `fd`, so this
+        # `os.close` raises `OSError` (bad fd) and the `suppress` absorbs it.
+        with suppress(OSError):
+            os.close(fd)
+        with suppress(OSError):
+            path.unlink()
+        raise
+    try:
+        yield path
+    finally:
+        try:
+            path.unlink()
+        except OSError:
+            logger.debug(
+                "Failed to remove temporary pre-release constraints file %s",
+                path,
+                exc_info=True,
+            )
 
 
 def upgrade_install_command(
@@ -2204,6 +3364,8 @@ def upgrade_install_command(
     include_prereleases: bool | None = None,
     distribution_name: str = "deepagents-code",
     version: str | None = None,
+    constraints_path: Path | None = None,
+    prerelease_strategy: UvPrereleaseStrategy | None = None,
 ) -> str:
     """Return the uv command that upgrades dcode while clearing stale pins.
 
@@ -2227,22 +3389,28 @@ def upgrade_install_command(
             already-installed extras.
         version: Optional exact target version. Use only when pre-release
             dependency resolution must not also select a root app pre-release.
+        constraints_path: Optional uv constraints file pinning the exact
+            pre-release dependency, forwarded as `--constraints <path>`.
+        prerelease_strategy: Optional uv `--prerelease` strategy (e.g.
+            `if-necessary-or-explicit`) that admits only the constrained
+            pre-release instead of a global `allow`.
 
     Returns:
         Shell command string suitable for execution via the shell.
 
-    Propagates `ExtrasIntrospectionError` if installed extras cannot be
-    determined safely from distribution metadata, or a metadata-sourced extra name
-    fails PEP 508 validation. Also propagates `ToolRequirementIntrospectionError`
-    if the uv tool `--with` packages or interpreter cannot be determined safely
-    from the tool receipt. Callers choose whether to treat those errors as
-    failures or fall back to a simpler unpinned upgrade command with a
-    user-facing warning.
+    Propagates `ExtrasIntrospectionError` if a receipt-sourced extra name fails
+    PEP 508 validation. Also propagates `ToolRequirementIntrospectionError` if the
+    uv tool receipt's selected extras, `--with` packages, or interpreter cannot be
+    determined safely from the tool receipt. Callers choose whether to treat
+    those errors as failures or fall back to a simpler unpinned upgrade command
+    with a user-facing warning.
     """
     return _uv_tool_install_command(
         version=version,
         include_prereleases=include_prereleases,
         distribution_name=distribution_name,
+        constraints_path=constraints_path,
+        prerelease_strategy=prerelease_strategy,
     )
 
 
@@ -2264,12 +3432,11 @@ def dependency_refresh_command(
     Returns:
         Shell command string suitable for execution via the shell.
 
-    Propagates `ExtrasIntrospectionError` if installed extras cannot be
-    determined safely from distribution metadata, or a metadata-sourced extra name
-    fails PEP 508 validation, and `ToolRequirementIntrospectionError` if the uv
-    tool `--with` packages or interpreter cannot be determined safely from the
-    tool receipt. `perform_dependency_refresh` converts both into a user-facing
-    failure.
+    Propagates `ExtrasIntrospectionError` if a receipt-sourced extra name fails
+    PEP 508 validation, and `ToolRequirementIntrospectionError` if the uv tool
+    receipt's selected extras, `--with` packages, or interpreter cannot be
+    determined safely from the tool receipt. `perform_dependency_refresh`
+    converts both into a user-facing failure.
     """
     return _uv_tool_install_command(
         version=version,
@@ -2303,13 +3470,11 @@ def dependency_refresh_dry_run_command(
         ToolRequirementIntrospectionError: If the target Python or uv tool receipt
             requirements cannot be determined safely.
     """
-    from deepagents_code.extras_info import installed_extra_names
-
     target_python = python or sys.executable
     if not target_python:
         msg = "Could not determine the running Python executable"
         raise ToolRequirementIntrospectionError(msg)
-    extras = installed_extra_names(distribution_name, strict=True)
+    extras = _uv_tool_selected_extras(distribution_name=distribution_name)
     requirement = _dcode_extras_requirement(extras, version=version)
     cmd = (
         "uv pip install --dry-run --python "
@@ -2363,11 +3528,10 @@ def install_package_command(
     Raises:
         ValueError: If `package` fails PEP 508 validation.
 
-    Propagates `ExtrasIntrospectionError` if installed extras cannot be
-    determined safely from distribution metadata (or a metadata-sourced extra
-    name fails PEP 508 validation), and `ToolRequirementIntrospectionError` if
-    the uv tool receipt's interpreter or `--with` packages cannot be determined
-    safely.
+    Propagates `ExtrasIntrospectionError` if a receipt-sourced extra name fails
+    PEP 508 validation, and `ToolRequirementIntrospectionError` if the uv tool
+    receipt's selected extras, interpreter, or `--with` packages cannot be
+    determined safely.
     """
     if not _PACKAGE_NAME_RE.fullmatch(package):
         msg = (
@@ -2468,6 +3632,30 @@ def install_extra_recovery_command(extra: str) -> str:
     return install_extra_command(extra)
 
 
+def safe_install_extra_recovery_command(extra: str, *, fallback: str) -> str:
+    """Return a manual recovery command, never raising.
+
+    Wraps `install_extra_recovery_command` so recovery-hint call sites never
+    let a second failure (validation, uv-receipt introspection, or unexpected
+    metadata errors) replace the original install/user error. On any failure
+    it logs and returns `fallback` so the hint is never empty.
+
+    Args:
+        extra: Extra name to add.
+        fallback: Command to return when the recovery command cannot be derived.
+
+    Returns:
+        The recovery command, or `fallback` when it could not be determined.
+    """
+    try:
+        return install_extra_recovery_command(extra)
+    except Exception:  # best-effort hint; never re-raise over the original error
+        logger.warning(
+            "install_extra_recovery_command failed; using fallback", exc_info=True
+        )
+        return fallback
+
+
 def _install_extra_uv_tool_command(
     extra: str,
     *,
@@ -2484,16 +3672,16 @@ def _install_extra_uv_tool_command(
     Args:
         extra: The extra name to add. Validated against PEP 508 grammar before
             interpolation into the shell command.
-        distribution_name: Name of the installed distribution to inspect for
-            already-installed extras and uv receipt requirements.
+        distribution_name: Name of the installed distribution whose uv receipt
+            supplies the already-selected extras and `--with` requirements.
 
     Raises:
         ValueError: If `extra` fails PEP 508 validation.
 
-    Propagates `ExtrasIntrospectionError` if installed extras cannot be
-    determined safely from distribution metadata, and
-    `ToolRequirementIntrospectionError` if the uv tool receipt's interpreter or
-    `--with` packages cannot be preserved safely.
+    Propagates `ExtrasIntrospectionError` if a receipt-sourced extra name fails
+    PEP 508 validation, and `ToolRequirementIntrospectionError` if the uv tool
+    receipt's selected extras, interpreter, or `--with` packages cannot be
+    preserved safely.
     """
     if not is_valid_extra_name(extra):
         msg = (
@@ -2508,6 +3696,215 @@ def _install_extra_uv_tool_command(
         extras_to_add=(extra,),
         reinstall=True,
     )
+
+
+class ExtraNotInstalledError(RuntimeError):
+    """Raised when an extra cannot be removed from this install.
+
+    Covers both "not selected on the tool requirement" and refusal subclasses.
+    Callers distinguish them because only the base class is an idempotent no-op:
+    re-running a removal for an extra that is already gone is a success, while
+    refusing a protected or composite-supplied extra is not.
+    """
+
+
+class ProtectedExtraError(ExtraNotInstalledError):
+    """Raised when an uninstall targets a required base-dependency extra.
+
+    A subclass so callers that only care about "cannot remove" can catch the
+    base class, while the CLI and TUI can report a refusal separately from a
+    no-op.
+    """
+
+
+class CompositeExtraConflictError(ExtraNotInstalledError):
+    """Raised when a selected composite still supplies the requested extra."""
+
+
+def removable_extras(
+    *,
+    distribution_name: str = "deepagents-code",
+) -> list[str]:
+    """Return the selected extras this install can actually remove.
+
+    Shared by the CLI and TUI `uninstall` help so both list the same set:
+    receipt-selected extras minus targets removal refuses.
+
+    A directly selected extra is excluded when a selected composite also supplies
+    it, because removing its selector would leave its packages installed.
+
+    Args:
+        distribution_name: Name of the installed distribution to inspect.
+
+    Returns:
+        Sorted removable extra names.
+
+    Propagates `ToolRequirementIntrospectionError` if the uv tool receipt cannot
+    be read or does not safely describe the selected extras.
+    """
+    from deepagents_code.extras_info import (
+        BASE_DEPENDENCY_EXTRAS,
+        composite_extras_providing,
+    )
+
+    selected = _uv_tool_selected_extras(distribution_name=distribution_name)
+    return sorted(
+        extra
+        for extra in selected - BASE_DEPENDENCY_EXTRAS
+        if not composite_extras_providing(extra) & selected
+    )
+
+
+def uninstall_extra_command(
+    extra: str,
+    *,
+    distribution_name: str = "deepagents-code",
+    version: str = __version__,
+) -> str:
+    """Return the receipt-preserving command that removes one selected extra.
+
+    Args:
+        extra: Extra name to remove.
+        distribution_name: Name of the installed distribution to inspect.
+        version: Exact installed `deepagents-code` version to preserve.
+
+    Raises:
+        ValueError: If `extra` is not a valid PEP 508 extra name.
+        ProtectedExtraError: If `extra` is a required base dependency.
+        CompositeExtraConflictError: If a selected composite supplies `extra`.
+        ExtraNotInstalledError: If `extra` is not selected in this install.
+
+    Propagates `ToolRequirementIntrospectionError` if the uv tool receipt cannot
+    be read, or does not safely describe the selected extras, the interpreter, or
+    the `--with` packages.
+    """
+    if not is_valid_extra_name(extra):
+        msg = (
+            f"Invalid extra name {extra!r}: must match PEP 508 "
+            f"({_EXTRA_NAME_RE.pattern})"
+        )
+        raise ValueError(msg)
+    from deepagents_code.extras_info import BASE_DEPENDENCY_EXTRAS
+
+    selected_extra = canonicalize_name(extra)
+    if selected_extra in BASE_DEPENDENCY_EXTRAS:
+        msg = f"Extra {extra!r} is a base dependency and cannot be removed."
+        raise ProtectedExtraError(msg)
+
+    extras = _uv_tool_selected_extras(distribution_name=distribution_name)
+    conflict = _composite_extra_conflict_message(extra, selected=extras)
+    if conflict is not None:
+        raise CompositeExtraConflictError(conflict)
+    if selected_extra not in extras:
+        listed = ", ".join(sorted(extras)) or "(none)"
+        msg = f"Extra {extra!r} is not installed. Selected extras: {listed}"
+        raise ExtraNotInstalledError(msg)
+    return _uv_tool_install_command(
+        version=version,
+        include_prereleases=_resolve_include_prereleases(
+            None, installed=_parse_version(version)
+        ),
+        distribution_name=distribution_name,
+        extras_to_remove=(selected_extra,),
+        reinstall=True,
+    )
+
+
+def _composite_extra_conflict_message(
+    extra: str,
+    *,
+    selected: Collection[str],
+) -> str | None:
+    """Return why a selected composite prevents removing `extra`, if any.
+
+    A bare "not installed" is misleading when a selected composite extra
+    provides the target: the packages *are* installed, just not through a
+    requirement removal can edit. Naming the composite turns a dead end into an
+    action the user can take.
+
+    Args:
+        extra: Extra name the user asked to remove, as typed.
+        selected: Canonicalized extras selected on the uv tool requirement.
+
+    Returns:
+        The conflict message, or `None` when no selected composite provides the
+        target.
+    """
+    from deepagents_code.extras_info import composite_extras_providing
+
+    name = canonicalize_name(extra)
+    providers = sorted(composite_extras_providing(name) & set(selected))
+    if not providers:
+        return None
+    listed = ", ".join(providers)
+    lead = (
+        f"Extra {extra!r} is also provided by {listed} and cannot be removed "
+        "independently."
+        if name in selected
+        else f"Extra {extra!r} is not selected directly — it is provided by {listed}."
+    )
+    return (
+        f"{lead} Remove that extra instead, then reinstall the extras you want "
+        "individually."
+    )
+
+
+def editable_extra_removal_hint(extra: str) -> str:
+    """Return the action hint for removing an extra from an editable install.
+
+    The result embeds a literal `deepagents-code[<extra>]`, so callers that print
+    it through Rich markup must escape it first — the same contract as
+    `editable_extra_hint`.
+
+    Args:
+        extra: Extra name to name in the hint.
+
+    Returns:
+        The action hint text.
+    """
+    return (
+        "Rerun your `uv tool install --editable` command without "
+        f"`--with 'deepagents-code[{extra}]'` so the extra is no longer "
+        "resolved against the editable source."
+    )
+
+
+def uninstall_extra_method_error(
+    extra: str,
+    *,
+    method: InstallMethod | None = None,
+) -> str | None:
+    """Return why the install method cannot remove `extra`, if applicable.
+
+    The editable check is separate from `detect_install_method`: an editable
+    checkout installed under a uv tool prefix is reported as `"uv"`, so the
+    method alone would let a removal through that cannot work. Gating both here
+    keeps one refusal message and makes `perform_uninstall_extra` safe for any
+    caller rather than relying on each one to pre-check.
+
+    Args:
+        extra: Extra name the user asked to remove, used in the hint.
+        method: Optional pre-detected install method. Defaults to detecting it.
+
+    Returns:
+        The refusal message, or `None` when this install can remove extras.
+    """
+    from deepagents_code.config import _is_editable_install
+
+    method = method or detect_install_method()
+    if method == "unknown" or _is_editable_install():
+        return (
+            "Editable install detected — cannot remove extras automatically.\n"
+            + editable_extra_removal_hint(extra)
+        )
+    if method == "brew":
+        return "Homebrew install detected — extras cannot be removed in place."
+    if method == "other":
+        return (
+            "Unsupported install method detected — cannot remove extras without "
+            "knowing which environment provides `dcode`."
+        )
+    return None
 
 
 def editable_extra_hint(extra: str) -> str:
@@ -2535,8 +3932,25 @@ def editable_package_hint(package: str) -> str:
     """
     return (
         f"Add '{package}' to your editable checkout's environment (the one your "
-        "editable install of Deep Agents Code runs from), then relaunch."
+        "editable install of dcode runs from), then relaunch."
     )
+
+
+class ExtraInstallOutcome(NamedTuple):
+    """Result of an attempted optional-extra install."""
+
+    success: bool
+    """Whether the tool environment was rebuilt with the extra."""
+
+    output: str
+    """Combined command output, or an explanatory refusal message."""
+
+    manual_recovery_safe: bool = True
+    """Whether offering a manual recovery command is safe.
+
+    `False` only for lock contention, where the suggested command would bypass
+    the update lock another process still holds.
+    """
 
 
 async def perform_install_extra(
@@ -2544,11 +3958,13 @@ async def perform_install_extra(
     *,
     progress: UpgradeProgressCallback | None = None,
     log_path: Path | None = None,
-) -> tuple[bool, str]:
+) -> ExtraInstallOutcome:
     """Add `extra` to the installed dcode tool environment.
 
     Runs `uv tool install --reinstall -U 'deepagents-code[<extras>]==<current>'
     --prerelease allow`, preserving any extras that are already installed.
+    Command construction and execution hold the shared update/install lock so a
+    concurrent install, removal, or upgrade cannot rebuild from a stale receipt.
     Editable installs are refused — the caller should rerun their
     `uv tool install --editable` command with `--with 'deepagents-code[<extra>]'`
     added so the extra is resolved against the editable source.
@@ -2561,53 +3977,184 @@ async def perform_install_extra(
         log_path: Optional path to persist command output.
 
     Returns:
-        `(success, output)` — *output* is the combined stdout/stderr, or an
-            explanatory error message when the install method is unsupported
-            or `extra` is malformed.
+        The install outcome. `output` is the combined stdout/stderr, or an
+            explanatory error message when the install method is unsupported or
+            `extra` is malformed. `manual_recovery_safe` is `False` when the
+            failure was lock contention, so callers suppress a recovery command
+            that would bypass the lock another process holds.
     """
     if not is_valid_extra_name(extra):
-        return False, (
-            f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}"
+        return ExtraInstallOutcome(
+            False,
+            f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}",
         )
     method = detect_install_method()
     if method == "unknown":
-        return False, (
+        return ExtraInstallOutcome(
+            False,
             "Editable install detected — cannot add extras automatically.\n"
-            + editable_extra_hint(extra)
+            + editable_extra_hint(extra),
         )
     if method == "brew":
         # Homebrew formula doesn't expose extras; uv tool install is the
         # right escape hatch but would conflict with the brew-managed binary.
-        return False, (
+        return ExtraInstallOutcome(
+            False,
             "Homebrew install detected — extras are not supported via brew. "
             f"Reinstall with `{install_extra_command(extra)}` to switch to a "
-            "uv-managed tool install with extras."
+            "uv-managed tool install with extras.",
         )
     if method == "other":
-        return False, (
+        return ExtraInstallOutcome(
+            False,
             "Unsupported install method detected — cannot add extras without "
             "knowing which environment provides `dcode`. Reinstall with "
             f"`{install_extra_command(extra)}` to switch to a uv-managed tool "
-            "install with extras."
+            "install with extras.",
         )
 
     if not shutil.which("uv"):
-        return False, (
+        return ExtraInstallOutcome(
+            False,
             "`uv` not found on PATH. Reinstall dcode following the docs, or "
-            "install uv (https://docs.astral.sh/uv/) so extras can be added."
+            "install uv (https://docs.astral.sh/uv/) so extras can be added.",
         )
 
-    from deepagents_code.extras_info import ExtrasIntrospectionError
+    with update_install_lock() as holding_update_lock:
+        if not holding_update_lock:
+            return ExtraInstallOutcome(
+                False,
+                UPDATE_LOCK_CONTENDED_MESSAGE,
+                manual_recovery_safe=False,
+            )
+        from deepagents_code.extras_info import ExtrasIntrospectionError
 
-    try:
-        cmd = _install_extra_uv_tool_command(extra)
-    except (
-        ExtrasIntrospectionError,
-        ToolRequirementIntrospectionError,
-        ValueError,
-    ) as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        try:
+            cmd = _install_extra_uv_tool_command(extra)
+        except (
+            ExtrasIntrospectionError,
+            ToolRequirementIntrospectionError,
+            ValueError,
+        ) as exc:
+            return ExtraInstallOutcome(False, f"{type(exc).__name__}: {exc}")
+        return ExtraInstallOutcome(
+            *await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        )
+
+
+class ExtraRemovalOutcome(NamedTuple):
+    """Result of an attempted optional-extra removal."""
+
+    success: bool
+    """Whether the tool environment was rebuilt without the extra."""
+
+    output: str
+    """Subprocess output, or an explanatory message when nothing ran."""
+
+    manual_recovery_safe: bool = True
+    """Whether offering the equivalent manual uv command is safe.
+
+    `False` when the failure was contention — another update or install already
+    holds the install lock. Telling the user to hand-run
+    `uv tool install --reinstall` while that is in flight is how the tool
+    environment gets corrupted, so callers must suppress the hint.
+    """
+
+    manual_recovery_command: str | None = None
+    """Receipt-preserving command generated while holding the install lock."""
+
+    extra_was_absent: bool = False
+    """Whether the target was already absent, making the request a no-op."""
+
+    interrupted: bool = False
+    """Whether cancellation interrupted a rebuild after command generation."""
+
+
+async def perform_uninstall_extra(
+    extra: str,
+    *,
+    progress: UpgradeProgressCallback | None = None,
+    log_path: Path | None = None,
+) -> ExtraRemovalOutcome:
+    """Remove `extra` by rebuilding the current uv-managed tool environment.
+
+    The install lock covers both receipt inspection and uv execution, so a
+    concurrent upgrade, install, or removal cannot rebuild from a receipt this
+    call is midway through replacing. It fail-opens when the lock file is unusable
+    (see `update_install_lock`), so exclusion is best-effort.
+
+    Args:
+        extra: Extra name to remove. Must satisfy `is_valid_extra_name`; invalid
+            names are rejected without invoking uv. This mirrors the install
+            performer's defense in depth — the name reaches a shell command, and
+            the validation must not be refactored away.
+        progress: Optional callback invoked for each output line.
+        log_path: Optional path to persist command output.
+
+    Returns:
+        The removal outcome. `manual_recovery_command` is generated from the
+            installed version and receipt while the install lock is held.
+            `manual_recovery_safe` is `False` when the failure was lock
+            contention, and `interrupted` is `True` when cancellation stopped a
+            rebuild after command generation.
+    """
+    if not is_valid_extra_name(extra):
+        return ExtraRemovalOutcome(
+            False,
+            f"Invalid extra name {extra!r}: must match {_EXTRA_NAME_RE.pattern}",
+        )
+    method_error = uninstall_extra_method_error(extra)
+    if method_error is not None:
+        return ExtraRemovalOutcome(False, method_error)
+
+    with update_install_lock() as holding_update_lock:
+        if not holding_update_lock:
+            return ExtraRemovalOutcome(
+                False,
+                UPDATE_LOCK_CONTENDED_MESSAGE,
+                manual_recovery_safe=False,
+            )
+        installed_version = read_installed_distribution_version()
+        if installed_version is None:
+            return ExtraRemovalOutcome(
+                False,
+                "Could not determine the installed deepagents-code version; "
+                "refusing to rebuild the tool environment.",
+            )
+        try:
+            cmd = uninstall_extra_command(extra, version=installed_version)
+        except (CompositeExtraConflictError, ProtectedExtraError) as exc:
+            return ExtraRemovalOutcome(False, str(exc))
+        except ExtraNotInstalledError as exc:
+            return ExtraRemovalOutcome(False, str(exc), extra_was_absent=True)
+        except (ToolRequirementIntrospectionError, ValueError) as exc:
+            return ExtraRemovalOutcome(False, f"{type(exc).__name__}: {exc}")
+        if not shutil.which("uv"):
+            return ExtraRemovalOutcome(
+                False, "`uv` not found on PATH; extras cannot be removed."
+            )
+        try:
+            success, output = await _run_install_subprocess(
+                cmd, progress=progress, log_path=log_path
+            )
+        except asyncio.CancelledError:
+            return ExtraRemovalOutcome(
+                False,
+                "Uninstall interrupted.",
+                manual_recovery_command=cmd,
+                interrupted=True,
+            )
+        except OSError as exc:
+            return ExtraRemovalOutcome(
+                False,
+                f"{type(exc).__name__}: {exc}",
+                manual_recovery_command=cmd,
+            )
+        return ExtraRemovalOutcome(
+            success,
+            output,
+            manual_recovery_command=cmd,
+        )
 
 
 async def perform_install_package(
@@ -2622,7 +4169,9 @@ async def perform_install_package(
     --with <package> --prerelease allow`, the escape hatch for a provider whose
     package is not a `deepagents-code` extra (e.g. a custom or in-house
     `class_path` model). Already-installed extras are preserved so the reinstall
-    does not drop them.
+    does not drop them. Command construction and execution hold the shared
+    update/install lock so a concurrent install, removal, or upgrade cannot
+    rebuild from a stale receipt.
     Editable installs are refused
     — the caller should rerun their `uv tool install --editable` command with
     `--with <package>` added so it resolves against the editable source.
@@ -2655,43 +4204,46 @@ async def perform_install_package(
     if method == "brew":
         return False, (
             "Homebrew install detected — packages can't be added to a brew "
-            "install. Reinstall Deep Agents Code as a uv-managed tool (see the "
+            "install. Reinstall dcode as a uv-managed tool (see the "
             "installation docs) to enable adding packages."
         )
     if method == "other":
         return False, (
             "Unsupported install method detected — cannot add packages without "
-            "knowing which environment provides `dcode`. Reinstall Deep Agents "
-            "Code as a uv-managed tool (see the installation docs) to enable "
+            "knowing which environment provides `dcode`. Reinstall dcode "
+            "as a uv-managed tool (see the installation docs) to enable "
             "adding packages."
         )
 
     if not shutil.which("uv"):
         return False, (
-            "Package installs require uv, which was not found. Reinstall Deep "
-            "Agents Code following the installation docs so packages can be "
+            "Package installs require uv, which was not found. Reinstall "
+            "dcode following the installation docs so packages can be "
             "added."
         )
 
-    from deepagents_code.extras_info import ExtrasIntrospectionError
+    with update_install_lock() as holding_update_lock:
+        if not holding_update_lock:
+            return False, UPDATE_LOCK_CONTENDED_MESSAGE
+        from deepagents_code.extras_info import ExtrasIntrospectionError
 
-    try:
-        cmd = install_package_command(package)
-    except ValueError as exc:
-        return False, f"{type(exc).__name__}: {exc}"
-    except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
-        # Distinct from a malformed package name: the running distribution's own
-        # metadata, or the uv tool receipt, could not be read or parsed. Leave a
-        # breadcrumb so the cause is recoverable from logs, even though the user
-        # message is unchanged.
-        logger.warning(
-            "Could not introspect installed extras or uv receipt for package "
-            "install of %r",
-            package,
-            exc_info=True,
-        )
-        return False, f"{type(exc).__name__}: {exc}"
-    return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
+        try:
+            cmd = install_package_command(package)
+        except ValueError as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+        except (ExtrasIntrospectionError, ToolRequirementIntrospectionError) as exc:
+            # Distinct from a malformed package name: the running distribution's own
+            # metadata, or the uv tool receipt, could not be read or parsed. Leave a
+            # breadcrumb so the cause is recoverable from logs, even though the user
+            # message is unchanged.
+            logger.warning(
+                "Could not introspect installed extras or uv receipt for package "
+                "install of %r",
+                package,
+                exc_info=True,
+            )
+            return False, f"{type(exc).__name__}: {exc}"
+        return await _run_install_subprocess(cmd, progress=progress, log_path=log_path)
 
 
 # ---------------------------------------------------------------------------
@@ -2699,26 +4251,158 @@ async def perform_install_package(
 # ---------------------------------------------------------------------------
 
 
+def _resolve_update_setting(
+    option_key: str,
+) -> tuple[ConfigSources, ConfigOption[object], ResolvedValue[object]]:
+    """Resolve one update option from one managed/user snapshot generation.
+
+    Returns:
+        Sources, manifest declaration, and ranked resolution.
+
+    Raises:
+        RuntimeError: If `option_key` is missing from the manifest.
+    """
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.providers import TomlFileProvider
+    from deepagents_code.configuration.resolver import resolver_from_snapshots
+    from deepagents_code.configuration.service import (
+        ConfigSources,
+        get_managed_snapshot,
+    )
+
+    option = get_option(option_key)
+    if option is None:
+        msg = f"missing update option: {option_key}"
+        raise RuntimeError(msg)
+    resolver_option = (
+        replace(option, empty_env_is_false=True)
+        if option_key == "update.auto_update"
+        else option
+    )
+    sources = ConfigSources(
+        managed=get_managed_snapshot(),
+        user=TomlFileProvider("config.toml", DEFAULT_CONFIG_PATH).load(),
+    )
+    # Resolve against this exact snapshot generation: the caller reports the
+    # sources' health next to the value, so both must come from the same read
+    # rather than the shared process cache.
+    resolved = resolver_from_snapshots(managed=sources.managed, user=sources.user).get(
+        resolver_option
+    )
+    return sources, option, resolved
+
+
+def _managed_update_failure(
+    key: str,
+    sources: ConfigSources,
+    resolved: ResolvedValue[object],
+) -> bool:
+    """Apply the update subsystem's fail-closed policy to ranked health.
+
+    Returns:
+        Whether managed provider health or coercion forces the setting off.
+    """
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    status = sources.managed.status
+    if not status.usable:
+        logger.error(
+            "Managed config %s is %s (%s); disabling [update].%s until it is repaired",
+            status.path,
+            status.health.value,
+            status.detail or "no detail",
+            key,
+        )
+        return True
+    managed = resolved.tier_health.get(MANAGED_RANK)
+    if not isinstance(managed, Invalid):
+        return False
+
+    # Report the provider's own rejection. Re-deriving one from the raw table
+    # cannot describe a malformed `[update]` section, which has no value to
+    # name, and can only disagree with what the resolver actually saw.
+    logger.error(
+        "Disabling [update].%s until managed policy is repaired: %s",
+        key,
+        managed.reason,
+    )
+    return True
+
+
+def _warn_invalid_update_environment(resolved: ResolvedValue[object]) -> None:
+    """Emit the legacy warning carried by an invalid environment provider."""
+    from deepagents_code.configuration.resolver import ENVIRONMENT_RANK
+    from deepagents_code.configuration.types import Invalid
+
+    result = resolved.tier_health[ENVIRONMENT_RANK]
+    if isinstance(result, Invalid):
+        logger.warning("%s", result.reason)
+
+
+def _user_update_unreadable(sources: ConfigSources) -> bool:
+    """Return whether the user provider cannot yield an `[update]` table."""
+    section = sources.user.data.get("update")
+    return not sources.user.status.usable or (
+        section is not None and not isinstance(section, dict)
+    )
+
+
+def _managed_update_value(key: str) -> tuple[bool, bool]:
+    """Return one managed update boolean from the ranked provider result.
+
+    An unreadable or corrupt managed file, or a present value that is not a
+    boolean, reports `(True, False)`, which turns the setting off. Policy that
+    cannot be read must not be treated as absent, and this is the safe
+    direction for a feature that reaches the network and installs binaries. The
+    condition is logged, because "disabled by policy" and "policy unreadable"
+    are otherwise indistinguishable to the user.
+
+    Returns:
+        Whether managed config decides the value, and the value.
+    """
+    from deepagents_code.configuration.resolver import MANAGED_RANK
+    from deepagents_code.configuration.types import Found
+
+    option_key = "update.no_update_check" if key == "check" else f"update.{key}"
+    sources, _, resolved = _resolve_update_setting(option_key)
+    if _managed_update_failure(key, sources, resolved):
+        return True, False
+    managed = resolved.tier_health[MANAGED_RANK]
+    if not isinstance(managed, Found):
+        return False, False
+    value = bool(managed.value)
+    return True, not value if key == "check" else value
+
+
 def is_update_check_enabled() -> bool:
     """Return whether update checks are enabled.
 
-    Checks `DEEPAGENTS_CODE_NO_UPDATE_CHECK` env var and the `[update].check` key
-    in `config.toml`.
+    Managed config decides first: `[update].check` in `managed_config.toml`
+    outranks both layers below, and a managed file that cannot be parsed
+    forces `False`. Otherwise, checks the `DEEPAGENTS_CODE_NO_UPDATE_CHECK`
+    env var and the `[update].check` key in `config.toml`.
 
     Defaults to enabled.
     """
-    from deepagents_code._env_vars import NO_UPDATE_CHECK
-
-    if os.environ.get(NO_UPDATE_CHECK):
+    sources, _, resolved = _resolve_update_setting("update.no_update_check")
+    if _managed_update_failure("check", sources, resolved):
         return False
-    return _read_update_config().get("check", True)
+    _warn_invalid_update_environment(resolved)
+    if _user_update_unreadable(sources):
+        logger.warning("Could not read [update] config — using defaults")
+    return not bool(resolved.value)
 
 
 def is_auto_update_enabled() -> bool:
     """Return whether auto-update is enabled.
 
-    Opt-out via `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or
-    `[update].auto_update = false` in `config.toml`.
+    Editable installs are always disabled, before any layer is consulted.
+    Otherwise managed config decides first: `[update].auto_update` in
+    `managed_config.toml` outranks both layers below, and a managed file that
+    cannot be parsed forces `False`. Otherwise, opt out via the
+    `DEEPAGENTS_CODE_AUTO_UPDATE=0` env var or `[update].auto_update = false`
+    in `config.toml`.
 
     Defaults to `True`.
 
@@ -2728,41 +4412,24 @@ def is_auto_update_enabled() -> bool:
     If `config.toml` exists but cannot be parsed, returns `False` (fail-closed):
     a corrupt file may hold an explicit opt-out, so it is not treated as the
     permissive default. A genuinely absent config falls through to `True`.
-
-    Always disabled for editable installs.
     """
-    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
     from deepagents_code.config import _is_editable_install
+    from deepagents_code.configuration.resolver import USER_RANK
 
     if _is_editable_install():
         return False
-    if AUTO_UPDATE in os.environ:
-        raw = os.environ[AUTO_UPDATE]
-        classified = classify_env_bool(raw)
-        if classified is not None:
-            return classified
-        # Unrecognized boolean token: warn and fall through to the config read
-        # below (which itself fails closed on a corrupt config), mirroring
-        # `config_manifest._coerce_env`. With the opt-out default an absent or
-        # default config leaves auto-update on, so an ignored disable attempt
-        # (e.g. a typo like `ture`) must be surfaced rather than swallowed.
-        logger.warning("Ignoring %s=%r (expected bool)", AUTO_UPDATE, raw)
-    try:
-        config = _read_update_config_strict()
-    except _ConfigReadError:
-        # The config exists but cannot be parsed. Fail *closed* here even though
-        # the default is opt-out: a corrupt file may hold an explicit
-        # `auto_update = false`, and silently re-enabling auto-update (which
-        # upgrades and re-execs the process) against an unreadable opt-out is
-        # worse than skipping the upgrade. A genuinely absent config still
-        # falls through to the opt-out default below.
+    sources, _, resolved = _resolve_update_setting("update.auto_update")
+    if _managed_update_failure("auto_update", sources, resolved):
+        return False
+    _warn_invalid_update_environment(resolved)
+    if _user_update_unreadable(sources) and not any(
+        rank < USER_RANK for rank in resolved.ranks
+    ):
         logger.warning(
-            "Could not read [update] config; disabling auto-update until it is "
-            "readable",
-            exc_info=True,
+            "Could not read [update] config; disabling auto-update until it is readable"
         )
         return False
-    return config.get("auto_update", True)
+    return bool(resolved.value)
 
 
 def set_auto_update(enabled: bool) -> None:
@@ -2772,92 +4439,52 @@ def set_auto_update(enabled: bool) -> None:
 
     Args:
         enabled: Whether auto-update should be enabled.
-    """
-    import contextlib
-    import tempfile
-    from pathlib import Path
-
-    import tomli_w
-
-    DEFAULT_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    if DEFAULT_CONFIG_PATH.exists():
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    else:
-        data = {}
-
-    if "update" not in data:
-        data["update"] = {}
-    data["update"]["auto_update"] = enabled
-
-    fd, tmp_path = tempfile.mkstemp(dir=DEFAULT_CONFIG_PATH.parent, suffix=".tmp")
-    try:
-        with os.fdopen(fd, "wb") as f:
-            tomli_w.dump(data, f)
-        Path(tmp_path).replace(DEFAULT_CONFIG_PATH)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            Path(tmp_path).unlink()
-        raise
-
-
-class _ConfigReadError(Exception):
-    """Internal: `config.toml` exists but could not be read or parsed.
-
-    Lets callers that care about the difference (e.g. `is_auto_update_enabled`,
-    which fails closed) distinguish a corrupt config from a genuinely absent
-    one. A missing file is *not* an error and returns an empty config.
-    """
-
-
-def _read_update_config_strict() -> dict[str, bool]:
-    """Read `[update]` section from `config.toml`, surfacing read errors.
-
-    Returns:
-        A dict of boolean config values; empty when the file is absent.
 
     Raises:
-        _ConfigReadError: When the file exists but cannot be opened or parsed.
+        OSError: If the user config cannot be updated atomically.
     """
-    if not DEFAULT_CONFIG_PATH.exists():
-        return {}
-    try:
-        with DEFAULT_CONFIG_PATH.open("rb") as f:
-            data = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError) as exc:
-        raise _ConfigReadError from exc
-    section = data.get("update", {})
-    return {k: v for k, v in section.items() if isinstance(v, bool)}
+    from deepagents_code.configuration.writer import update_user_config
 
+    def mutate(data: dict[str, Any]) -> bool:
+        section = data.get("update")
+        if not isinstance(section, dict):
+            section = {}
+            data["update"] = section
+        if section.get("auto_update") is enabled:
+            return False
+        section["auto_update"] = enabled
+        return True
 
-def _read_update_config() -> dict[str, bool]:
-    """Read `[update]` section from `config.toml`.
-
-    Returns:
-        A dict of boolean config values, empty on missing/unreadable file.
-    """
-    try:
-        return _read_update_config_strict()
-    except _ConfigReadError:
-        logger.warning("Could not read [update] config — using defaults", exc_info=True)
-        return {}
+    result = update_user_config(mutate, config_path=DEFAULT_CONFIG_PATH)
+    if not result.ok:
+        raise OSError(result.error or f"could not update {DEFAULT_CONFIG_PATH}")
 
 
 def is_auto_update_explicitly_set() -> bool:
-    """Return whether the user explicitly chose an auto-update preference.
+    """Return whether an explicit auto-update preference is in force.
 
-    `True` when `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean or
+    `True` when managed policy decides the value, when
+    `DEEPAGENTS_CODE_AUTO_UPDATE` holds a recognized boolean, or when
     `[update].auto_update` is present in `config.toml`. Distinguishes a
     deliberate opt-in/out from the implicit opt-out default.
-    """
-    from deepagents_code._env_vars import AUTO_UPDATE, classify_env_bool
 
-    if (
-        AUTO_UPDATE in os.environ
-        and classify_env_bool(os.environ[AUTO_UPDATE]) is not None
-    ):
+    Managed policy counts: it is the most explicit preference there is, and
+    omitting it made `should_announce_auto_update_default` tell the user that
+    the implicit default was in force on a machine where an administrator had
+    set the value.
+    """
+    from deepagents_code.configuration.resolver import (
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+    )
+    from deepagents_code.configuration.types import Found, Invalid
+
+    sources, _, resolved = _resolve_update_setting("update.auto_update")
+    managed = resolved.tier_health[MANAGED_RANK]
+    if not sources.managed.status.usable or isinstance(managed, (Found, Invalid)):
         return True
-    return "auto_update" in _read_update_config()
+    return any(rank in resolved.ranks for rank in (ENVIRONMENT_RANK, USER_RANK))
 
 
 def should_announce_auto_update_default() -> bool:

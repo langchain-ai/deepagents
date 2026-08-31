@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:d8efa1bbf149855962ebbfe3cbb2106c317bb20d2b604c7da960d0fa8bfe776e",
+  "claims": [
+    {
+      "id": "claim_c382361b954f4ca3b144f9b110a0bad1",
+      "statement": "dcode detects --acp in argv to skip the Textual UI dependency checks, and lazily imports the ACP dependencies, printing an install hint and exiting non-zero if acp or deepagents-acp are missing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5187-L5190",
+          "version": "repo-lines-v1:sha256:3c73ff0081f4fd713933035a0b92d8800aea28c958f164058ff6941376a0e3bb:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDUxMmRhMTE4MWU2Y2YwMDMyZmRkZDhmZjBkOTZjNTkwZGY3MGE3N2QzM2JkNjNiMTc4ZmVkNWU2ZTJmYjkyMiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzI5ZjlmMzhlNzkxNjllOWRiMWVjODMyYmZmOTY0NDVjMzJlMThmZjdkNjAxMTRkNDQ1M2QxMmNiYzgyMDM3NyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjE2MTMzMmNlZjA4YTNiYTc4NWM0MTUyNTdkMjI0Njk1ZTgxMTY0ZDQ3OGJjNDgyMTZlMmI3NzhkMGNkZDQ1OSIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiZjhmNzU1ZWZmYjVlOThkNzM0ZTMxMDFhNzE0YTI1OWUwNDBkMGM5NWIyYTNiMjA0YjFlNTdjYjllZjk4YjliYSJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5417-L5429",
+          "version": "repo-lines-v1:sha256:b7529b2332cd63328cb814cc68483a8c4cb1143432091ed774b6432b58b02826:eyJzZWxlY3RlZExpbmVDb3VudCI6MTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlZmM5YzhkODU2YzBjYWJjMGZmZmFkOGRiMTZhNjZjZWM4YzUxNDk2MGI1ZjZjMTE0MDgwZWY4ZGE0NThmYjMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImI4ZjcxYjI3ZTA1MmI1ZDgxNGQyNzBjNmRjNzcxNjQ4MmZiNWJhMWFmZjA4OTZkMGUzZTk2OGI1ZjViZWY4ODkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgyZjEzNTc4NTFjODQwMmMzYTI0MzdlYWI0NzhkM2M1MjllZDM3ZWYwNGNlYTk4ZGExYTU0NjM0YzQ2MDIzZWIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwODdmMWNlMjliNmQxYWIwNzkxOGE2YWM3NTliZmE2NDQxNGJmMTE3MDllYjA1ZjM1ZjljNmJlMjNjYTdlYmYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_4ea62f9dd09e430a9caabdc109a63602",
+      "statement": "In dcode ACP mode --no-mcp and --mcp-config are mutually exclusive, YOLO approval requires a prior acknowledgement made in the interactive TUI, and --auto-classifier-model is only valid together with Auto mode.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5386-L5440",
+          "version": "repo-lines-v1:sha256:8888c5d382956e446a5eb79cd12ffaa9259268ab5393474d88aced359384ba66:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOTM2NTUyZDk1YTU4MjFhOGNkMWYwNjE4MmVlOGMwZTRlYjRkOGQxNzYwNzc5MjU3MzRlNGY0ODFkY2RkMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjMyNjIzOWZmOWViMmQwNGI5NDY2YmVhM2Y1ODA5Y2ZkNDljMGI5MTQxODliZGU5NmY3MmJkYmFlZDE0YjRmOGMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjYWYzZjNkNzllNGFmZTAzZDI0ZWIyZjFjNmEzMGNhYjkyZjczMmIwNDc1NzU5MzNiY2I4MmVjNGViNjljNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwZGIwMTY4Njg5MzVlY2U3ODQ4OTI3MWQ3MmFiOGZjODFlYTRkMTQ4YmIwOGY1NDJiZGEyMGY1N2ZlNzg3NDMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_729b6c9b38a04f94a316eb5fc13ea1d1",
+      "statement": "The dcode ACP factory passes auto_approve=yolo and auto_mode_enabled=auto to create_cli_agent, so ACP's fixed-decision rendering applies only if dcode's independently selected policy leaves a human-in-the-loop interrupt to render.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L3592-L3606",
+          "version": "repo-lines-v1:sha256:bc6c180ef2cffe787781404d38b95b2d7123d2f1e3582ec171273ef7774a35c0:eyJzZWxlY3RlZExpbmVDb3VudCI6MTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImUyNjQzNjc1NzZhZTk3NGZhZjMzZWU0YjJhMjk2NmJiNjA0NzRmMThmMGJjMmM4MDI2ZGMzY2MxYTBlM2E0OWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUzMWE2YmU0MmQ5N2I1MWVmMjE3NTY4ZjIzZDVhZDQ1ODljYzE1OTQ4ZTY3OWY3NjQ3YTA2MDE0Y2UwODliZjIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijg3ZDBiMWFlZGVhZGM4NGJlZWI1Nzc5ZGNkOTFiMmQyZjE2YTNlODc1ZDczYjEwYmUzOWQwMmU4YTZmMTQ4YTMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2MzNlZTM0YzFkMDY3MjczMzI1NzIyNmY5Y2NlNjM4YTJiNDYxNzgwMjJkZDdhYjdhMzFmNDBmMjMyODA2YzMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L5386-L5460",
+          "version": "repo-lines-v1:sha256:3b8911d87bc228f11413e3d8a81abd89dbcde21e2aafc810f04e9eec4e547791:eyJzZWxlY3RlZExpbmVDb3VudCI6NzUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlOTM2NTUyZDk1YTU4MjFhOGNkMWYwNjE4MmVlOGMwZTRlYjRkOGQxNzYwNzc5MjU3MzRlNGY0ODFkY2RkMzEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjUxMDM0ODFjNTdkMGYwZGMwZjc2Y2QyY2M4YjM2MDRjNGU4Mjk2ZGE0MTIyYWRkMTllODE3NDVkYzdlMzMxYTYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFjYWYzZjNkNzllNGFmZTAzZDI0ZWIyZjFjNmEzMGNhYjkyZjczMmIwNDc1NzU5MzNiY2I4MmVjNGViNjljNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkZTE5OWE2ODc3ZDE5Y2UxMWFiOTM5MGI3OTU2YzA2N2QzNzEwZGUzM2ExOGFhZmQxYTM1MzBlNjE2ZTMxZGMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_a409c3a02ae644cbb6cb5f6a88d6524c",
+      "statement": "Normal dcode remote-agent operation uses a LangGraph RemoteGraph over HTTP+SSE for the Textual adapter, whereas --acp runs an ACP server over stdio instead of launching the Textual UI.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/remote_client.py#L296-L348",
+          "version": "repo-lines-v1:sha256:8a6e291c1fec45e85eeab08dda96786d8359473166ee7426235d55485f107875:eyJzZWxlY3RlZExpbmVDb3VudCI6NTMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjdhMThhMWJlMjBjMjcyZDE1YzRkNzgxNDhlNDY3M2M4MzgzMjcwNDhjZmExYzc3ZDgwZTU2OThhOTc1NzRjZTYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjEzNjY2NWI1MTkzYzQ2ZjBhNmExNTlmMGIwYzU5NzBhYjc3ODZjZDg2ZWNiMTJlZjM5YWZkMGY3ZTAwMTcxNDkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImE1N2FlNTRmODA1MmY5MWVmMWM5NmU4ZTZlYmEzZjhhOWEwODBhYWYyYjI2YTcyY2Y4YWJlMjZhZjY1NzEzODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjcyODIzNTc3NWQ5NjljOGQyMTQzNzFiZDU3ZWUwZDdiMjZjNjVhOGI4YTc5Y2NlZDkzNzk1ZDk3MGM3YTA1NGMifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/main.py#L2866-L2870",
+          "version": "repo-lines-v1:sha256:52a614d445eb06ad751e4ec437f571f58b0730a967bc22775d2694f63970f607:eyJzZWxlY3RlZExpbmVDb3VudCI6NSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNmJlNDM5YTQ3NTAzNDI3YTRjNzlmOWJkM2MzYzNmYzFmOTNmZDFlN2I0YzdhMTUxZDVhZmFkMDQwMmQxYThlYSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiMzBjMWYxODhmMTQyZWQ3YTgyNDY4MGIyMDcxNzJjNTUxOWJjNjE0YTQ4ZmRhN2NmMTY3ZWRiOGRkZjc5OTU2YyIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNGUzNGZlYmEwNTg0NzExY2QzZmVhMzczOGZjNWMzOTAzMTgyY2E4NGE4ODgxN2ZkZGNlZmQ2MzZiZmYwOTE4NCIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYmJlOWMyYTA3YTRiMTk4NGIwYjEzODViNmVlZDMzMzliMGIyYzM5NzVmODM3ZTAzYmY2Yjc0NGVmZDYyYWJhNCJ9"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-08-28T11:44:48.051Z"
+  }
+}

@@ -9,27 +9,55 @@ and project-level locations.
 from __future__ import annotations
 
 import asyncio
+import codecs
 import copy
+import errno
 import fnmatch
+import functools
+import io
 import json
 import logging
+import os
 import re
 import shutil
-from contextlib import AsyncExitStack
+import threading
+import unicodedata
+from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
+from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, cast, overload
+from types import MappingProxyType
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
+
+from deepagents_code import _env_vars
+from deepagents_code._paths import PATHS, project_paths
+from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import (
+        AsyncIterator,
+        Awaitable,
+        Callable,
+        Collection,
+        Mapping,
+        Sequence,
+    )
+    from typing import TextIO
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
     from mcp import ClientSession
 
+    from deepagents_code.model_config import McpServerTrustLists
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+_MCP_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_MCP_TOOL_NAME_MAX_LENGTH = 64
+_MCP_TOOL_NAME_HASH_LENGTH = 12
+_MCP_ORIGINAL_TOOL_NAME_KEY = "_deepagents_code_mcp_tool"
 
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
@@ -108,13 +136,38 @@ class MCPServerInfo:
     error: str | None = None
     """Human-readable reason when `status != "ok"`."""
 
+    pending_reconnect: bool = False
+    """`True` for a disabled entry that was just re-enabled in the TUI and is
+    awaiting a reconnect to load its tools.
+
+    Lets `/tools` (`tool_catalog.split_mcp_server_info`) preserve the reconnect
+    guidance held in `error` instead of collapsing it to the generic "disabled
+    by user" label — an explicit flag rather than a fragile match on the
+    guidance text. Only meaningful while `status == "disabled"`.
+    """
+
+    uses_oauth: bool = False
+    """`True` when this server's connection carries an OAuth provider.
+
+    Mirrors the condition that governs whether OAuth is actually used for the
+    connection: the config opted in with `auth: oauth`, or a prior login stored
+    tokens and no static `Authorization` header overrides them. Lets the TUI
+    offer re-authentication only where it would mean something — a server
+    authenticated by a static header ignores stored OAuth tokens, and a public
+    server has no OAuth flow to run.
+
+    Only meaningful while `status == "ok"`; `unauthenticated` servers are
+    already covered by `needs_attention()`.
+    """
+
     def __post_init__(self) -> None:
         """Enforce the status/error/tools consistency invariant.
 
         Raises:
             ValueError: If any of: `status='ok'` with a non-`None` error;
                 non-`ok` status without an error message; non-`ok` status
-                carrying tools.
+                carrying tools; or `pending_reconnect` set without
+                `status='disabled'`.
         """
         if self.status == "ok":
             if self.error is not None:
@@ -136,6 +189,12 @@ class MCPServerInfo:
                     "cannot carry tools"
                 )
                 raise ValueError(msg)
+        if self.pending_reconnect and self.status != "disabled":
+            msg = (
+                f"MCPServerInfo {self.name!r}: pending_reconnect requires "
+                f"status='disabled' (got {self.status!r})"
+            )
+            raise ValueError(msg)
 
     def needs_attention(self) -> bool:
         """Return whether this server is blocked on user login."""
@@ -165,6 +224,324 @@ class MCPConfigError(ValueError):
     keep working; new code can catch this specifically to render a
     user-actionable message (typically with a file path and hint).
     """
+
+
+_MCP_STDERR_LINE_LIMIT = 4096
+_MCP_STDERR_READ_SIZE = 8192
+_MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
+_MCP_STDERR_CAPTURE_ERRORS = "replace"
+"""Encoding error handler for the stderr *capture* decoder.
+
+Deliberately independent of the server's `encoding_error_handler`, which
+governs the protocol stream and defaults to `strict`. Nothing parses captured
+stderr — it goes to a log — so one stray non-UTF-8 byte should mangle a
+character, not discard the whole 8 KiB chunk it arrived in. Dropping the chunk
+would lose exactly the diagnostic this capture exists to provide.
+"""
+_MCP_STDERR_DRAIN_JOIN_TIMEOUT = 2.0
+"""Bound on joining the stderr drain thread during session teardown.
+
+The drain thread blocks in `os.read` until the pipe hits EOF. EOF comes only
+when *every* process holding the write end has closed it. MCP's stdio shutdown
+terminates the server's process tree, but a server can spawn a descendant that
+escapes that process group and keeps the inherited pipe open. An unbounded join
+would then block session close. Session close runs on discovery failure, on
+reload, and on shutdown.
+
+After this timeout the read end is closed to make the blocked `os.read` return.
+That is not a portable guarantee: on darwin the read returns EOF, and on Linux
+it can stay blocked, because `close` need not wake a reader already inside the
+syscall. The forced-close join is therefore bounded by this timeout as well,
+and the thread is abandoned if it outlives it. It is a daemon thread.
+"""
+
+
+class _MCPStderrSink(io.TextIOBase):
+    """A pipe that the MCP stdio transport can use as a server's stderr.
+
+    The transport only ever calls `fileno()` on the object it is handed, then
+    passes that descriptor to the subprocess. So this is a pipe with a reader
+    attached, not a writable stream: `fileno()` and `close()` are the whole
+    consumed surface, and `io.TextIOBase` is here for the `closed` bookkeeping
+    plus the `TextIO` cast the transport signature requires.
+
+    The reader thread has two jobs. It always drains, so a chatty server cannot
+    block writing to a full stderr pipe. It additionally logs whole, bounded,
+    sanitized lines to `deepagents_code.mcp_tools` at `DEBUG`, but only when
+    that level is enabled at construction time — raising the level afterwards
+    does not start capture on an existing sink.
+    """
+
+    def __init__(self, server_name: str, *, encoding: str) -> None:
+        """Create the pipe and start its reader.
+
+        Args:
+            server_name: MCP server name used in log records.
+            encoding: Encoding used to decode captured stderr bytes. The
+                error handler is always `_MCP_STDERR_CAPTURE_ERRORS`.
+        """
+        super().__init__()
+        self._server_name = server_name
+        self._encoding = encoding
+        self._capture = logger.isEnabledFor(logging.DEBUG)
+        self._decoder = (
+            codecs.getincrementaldecoder(encoding)(errors=_MCP_STDERR_CAPTURE_ERRORS)
+            if self._capture
+            else None
+        )
+        self._line = ""
+        self._truncated = False
+        self._read_fd_closed = False
+        # `_read_fd` is closed from the drain thread and from `wait_closed`;
+        # `_fd_lock` makes the close-once check atomic across the two.
+        self._fd_lock = threading.Lock()
+        # Set before `wait_closed` force-closes the read end, so the drain
+        # thread never issues another read against a freed fd number.
+        self._stopping = threading.Event()
+        self._read_fd, write_fd = os.pipe()
+        try:
+            self._writer = os.fdopen(write_fd, "wb", buffering=0)
+        except BaseException:
+            os.close(write_fd)
+            os.close(self._read_fd)
+            raise
+        try:
+            self._thread = threading.Thread(
+                target=self._drain,
+                name=f"mcp-stderr-{server_name}",
+                daemon=True,
+            )
+            self._thread.start()
+        except BaseException:
+            try:
+                self._writer.close()
+            finally:
+                self._close_read_fd()
+            raise
+
+    def fileno(self) -> int:
+        """Return the write descriptor to hand to the server subprocess."""
+        return self._writer.fileno()
+
+    def close(self) -> None:
+        """Close the parent's copy of the subprocess write descriptor."""
+        if self.closed:
+            return
+        # `getattr`: the finalizer reaches here for an instance whose
+        # `os.fdopen` failed, before `_writer` was ever assigned.
+        writer = getattr(self, "_writer", None)
+        try:
+            super().close()
+        finally:
+            if writer is not None:
+                writer.close()
+
+    async def wait_closed(self) -> None:
+        """Wait off the event loop until the pipe reader reaches EOF.
+
+        The join is bounded. If the drain thread is still blocked after
+        `_MCP_STDERR_DRAIN_JOIN_TIMEOUT`, the pipe's write end is held open by a
+        surviving server descendant. The read end is then closed to make the
+        blocked `os.read` return, and the thread is rejoined with the same
+        bound. Both bounds are necessary: a cross-thread close does not reliably
+        interrupt a reader inside `os.read`, so neither join can be unbounded.
+        """
+        self.close()
+        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
+        if not self._thread.is_alive():
+            return
+        self._stopping.set()
+        self._close_read_fd()
+        logger.debug(
+            "MCP server %r stderr pipe still held open after process exit; "
+            "forcing the drain thread closed",
+            self._server_name,
+        )
+        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
+        if self._thread.is_alive():
+            logger.warning(
+                "MCP server %r stderr drain thread did not exit after forced "
+                "pipe close",
+                self._server_name,
+            )
+
+    def _close_read_fd(self) -> None:
+        """Close the pipe read end exactly once.
+
+        Called from the drain thread's `finally` and from `wait_closed`, so the
+        flag check and the close are held under `_fd_lock`. Without it both
+        callers can pass an unlocked check and close twice, and between the two
+        closes the fd number is free for another thread to reuse — so the second
+        close would reap an unrelated descriptor.
+        """
+        with self._fd_lock:
+            if self._read_fd_closed:
+                return
+            self._read_fd_closed = True
+            try:
+                os.close(self._read_fd)
+            except OSError as exc:
+                logger.warning(
+                    "MCP server %r stderr pipe close failed: %s",
+                    self._server_name,
+                    exc,
+                )
+
+    def _drain(self) -> None:
+        """Read subprocess bytes so the server does not block on its stderr pipe.
+
+        Draining is unconditional; `_capture` only decides whether the bytes are
+        also logged. A drain that stops early while the server is still running
+        lets the pipe buffer fill and blocks the server's next write, so a
+        failure here is reported at `WARNING` even when capture is off.
+        """
+        try:
+            # Re-check before every read: once `wait_closed` has force-closed
+            # the read end, the fd number may already belong to another file.
+            while not self._stopping.is_set():
+                chunk = os.read(self._read_fd, _MCP_STDERR_READ_SIZE)
+                if not chunk:
+                    break
+                if self._capture:
+                    self._decode(chunk)
+            if self._capture:
+                self._decode(b"", final=True)
+                if self._line or self._truncated:
+                    self._emit_line()
+        except OSError as exc:
+            # EBADF covers the narrow race where `wait_closed` closes the read
+            # end between the `_stopping` check and the `os.read`.
+            if exc.errno != errno.EBADF:
+                logger.warning(
+                    "MCP server %r stderr drain stopped: %s. The server may "
+                    "block if it fills its stderr pipe.",
+                    self._server_name,
+                    exc,
+                )
+        except Exception:  # a dead drain thread blocks the server
+            # Without this the exception goes to `threading.excepthook`, which
+            # is invisible in the TUI, and nothing drains the child's stderr.
+            logger.exception(
+                "MCP server %r stderr drain failed unexpectedly",
+                self._server_name,
+            )
+        finally:
+            self._close_read_fd()
+
+    def _decode(self, data: bytes, *, final: bool = False) -> None:
+        """Decode one byte chunk without allowing malformed stderr to stop draining."""
+        if self._decoder is None:
+            return
+        try:
+            text = self._decoder.decode(data, final=final)
+        except UnicodeError as exc:
+            # Defensive: `_MCP_STDERR_CAPTURE_ERRORS` should keep this
+            # unreachable. Flush what was buffered before resetting, so a
+            # reader sees a truncated line rather than text silently spliced
+            # from either side of the discarded bytes.
+            self._decoder.reset()
+            if self._line or self._truncated:
+                self._emit_line()
+            logger.debug(
+                "MCP server %r stderr decode failed with %s: %s",
+                self._server_name,
+                self._encoding,
+                exc,
+            )
+            return
+        parts = text.split("\n")
+        for part in parts[:-1]:
+            self._append(part)
+            self._emit_line()
+        self._append(parts[-1])
+
+    def _append(self, text: str) -> None:
+        """Retain sanitized line content up to the configured bound."""
+        if self._truncated:
+            return
+        safe = "".join(
+            char for char in text if not unicodedata.category(char).startswith("C")
+        )
+        remaining = _MCP_STDERR_LINE_LIMIT - len(self._line)
+        self._line += safe[:remaining]
+        if len(safe) > remaining:
+            self._truncated = True
+
+    def _emit_line(self) -> None:
+        """Emit and reset the current complete line."""
+        line = self._line
+        if self._truncated:
+            content_limit = _MCP_STDERR_LINE_LIMIT - len(_MCP_STDERR_TRUNCATION_MARKER)
+            line = line[:content_limit] + _MCP_STDERR_TRUNCATION_MARKER
+        if line:
+            logger.debug("MCP server %r stderr: %s", self._server_name, line)
+        self._line = ""
+        self._truncated = False
+
+
+@asynccontextmanager
+async def _create_mcp_session(
+    connection: Connection,
+    *,
+    server_name: str,
+) -> AsyncIterator[ClientSession]:
+    """Create a session while routing stdio server diagnostics into DEBUG logs.
+
+    The stdio branch mirrors `langchain_mcp_adapters.sessions._create_stdio_session`
+    and exists only to pass `errlog`. Keep the two in sync when the adapter
+    changes its stdio setup.
+
+    Args:
+        connection: Adapter connection configuration.
+        server_name: MCP server name used in log records.
+
+    Yields:
+        An open MCP client session.
+    """
+    from langchain_mcp_adapters.sessions import create_session
+
+    if connection["transport"] != "stdio":
+        async with create_session(connection) as session:
+            yield session
+        return
+
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+
+    stdio = connection
+    encoding = stdio.get("encoding", "utf-8")
+    errors = stdio.get("encoding_error_handler", "strict")
+    params = StdioServerParameters(
+        command=stdio["command"],
+        args=stdio["args"],
+        # Already expanded: `_build_connection` runs `resolve_mcp_server_env`
+        # over `env` before the connection is built, with a richer grammar
+        # (`${VAR:-default}`) that raises on an unset reference. A second pass
+        # here could only re-scan resolved secrets and warn about a value that
+        # legitimately contains `${`.
+        env=stdio.get("env"),
+        cwd=stdio.get("cwd"),
+        encoding=encoding,
+        encoding_error_handler=errors,
+    )
+    sink = _MCPStderrSink(server_name, encoding=encoding)
+    try:
+        async with stdio_client(params, errlog=cast("TextIO", sink)) as (read, write):
+            # The child now holds its own dup of the write end, so drop the
+            # parent's copy. Without this the pipe never reaches EOF after the
+            # server exits and the drain thread blocks until forced closed.
+            # Safe here because `stdio_client` spawns the process during
+            # `__aenter__` and never touches `errlog` again.
+            sink.close()
+            async with ClientSession(
+                read,
+                write,
+                **(stdio.get("session_kwargs") or {}),
+            ) as session:
+                yield session
+    finally:
+        sink.close()
+        await sink.wait_closed()
 
 
 def _is_transient_session_error(exc: BaseException) -> bool:
@@ -410,14 +787,39 @@ class MCPSessionManager:
             )
             raise ValueError(msg) from exc
 
-        from langchain_mcp_adapters.sessions import create_session
-
         exit_stack = AsyncExitStack()
         try:
-            session = await exit_stack.enter_async_context(create_session(connection))
+            session = await exit_stack.enter_async_context(
+                _create_mcp_session(connection, server_name=server_name)
+            )
             await session.initialize()
-        except Exception:
-            await exit_stack.aclose()
+        except BaseException:
+            # Close the partially entered stack in *this* task before
+            # propagating. `create_session` enters an AnyIO task group whose
+            # cancel scope must be exited by the task that entered it; deferring
+            # teardown to async-generator finalization on another task raises
+            # "Attempted to exit cancel scope in a different task than it was
+            # entered in". Catch `BaseException` (not just `Exception`) so a
+            # `CancelledError` — e.g. from a crashed Streamable HTTP transport
+            # task group cancelling `session.initialize()` — also triggers the
+            # in-task teardown below instead of abandoning the session. The bare
+            # `raise` re-raises the original exception unchanged, so cancellation
+            # (and any other error) always propagates regardless; widening the
+            # catch only controls whether teardown runs, not whether the error
+            # propagates.
+            try:
+                await exit_stack.aclose()
+            except Exception:
+                # An ordinary cleanup failure must not mask the original error;
+                # the session is being discarded regardless. A `CancelledError`
+                # raised *by* `aclose()` is intentionally not caught here — it
+                # supersedes the original error, matching structured-cancellation
+                # semantics where an in-flight cancellation wins.
+                logger.warning(
+                    "Failed to close a partially initialized MCP session for %r",
+                    server_name,
+                    exc_info=True,
+                )
             raise
 
         return _MCPSessionEntry(session=session, exit_stack=exit_stack)
@@ -449,7 +851,7 @@ def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
 def _validate_server_config(server_name: str, server_config: dict[str, Any]) -> None:
     """Validate a single server configuration.
 
-    Performs only shape checks — `${VAR}` header interpolation is deferred
+    Performs only shape checks — `${VAR}` config interpolation is deferred
     to activation time so one unset env var only fails its own server
     rather than hiding every other MCP entry in the same file.
 
@@ -710,6 +1112,121 @@ def _json_error_snippet(
     return f"    {source}\n    {' ' * caret_col}^"
 
 
+def _load_mcp_config_json(config_path: str) -> dict[str, Any]:
+    """Load MCP configuration JSON with parser diagnostics.
+
+    Args:
+        config_path: Path to the MCP JSON configuration file.
+
+    Returns:
+        Parsed configuration dictionary.
+
+    Raises:
+        FileNotFoundError: If config file doesn't exist.
+        json.JSONDecodeError: If config file contains invalid JSON.
+    """
+    path = Path(config_path)
+
+    if not path.exists():
+        error_msg = f"MCP config file not found: {config_path}"
+        raise FileNotFoundError(error_msg)
+
+    try:
+        with path.open(encoding="utf-8") as file_obj:
+            return json.load(file_obj)
+    except json.JSONDecodeError as exc:
+        # Build a layered message: core reason, an actionable hint for common
+        # mistakes, then a caret snippet last so the auto-appended
+        # "line X column Y" suffix reads as the location of the caret.
+        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
+        hint = _json_error_hint(exc)
+        if hint is not None:
+            parts.append(hint)
+        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
+        if snippet is not None:
+            parts.append(snippet)
+        error_msg = "\n".join(parts)
+        raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
+
+
+def _validate_mcp_config_top_level(config: dict[str, Any]) -> None:
+    """Validate top-level MCP configuration fields.
+
+    Args:
+        config: Parsed MCP config dictionary.
+
+    Raises:
+        TypeError: If top-level fields have wrong types.
+        ValueError: If required top-level fields are missing.
+    """
+    if "mcpServers" not in config:
+        error_msg = (
+            "MCP config must contain 'mcpServers' field. "
+            'Expected format: {"mcpServers": {"server-name": {...}}}'
+        )
+        raise ValueError(error_msg)
+
+    if not isinstance(config["mcpServers"], dict):
+        error_msg = "'mcpServers' field must be a dictionary"
+        raise TypeError(error_msg)
+
+    if not config["mcpServers"]:
+        error_msg = "'mcpServers' field is empty - no servers configured"
+        raise ValueError(error_msg)
+
+
+def _validate_mcp_config_servers(config: dict[str, Any]) -> None:
+    """Validate every server in an MCP configuration.
+
+    Args:
+        config: Parsed MCP config dictionary.
+    """
+    for server_name, server_config in config["mcpServers"].items():
+        _validate_server_config(server_name, server_config)
+
+
+def _drop_invalid_mcp_config_servers(
+    config: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, str]]:
+    """Remove invalid server entries without rejecting valid siblings.
+
+    Callers use this only after config precedence has been resolved, so an
+    invalid winning definition is dropped instead of revealing a shadowed
+    lower-precedence server with the same name.
+
+    Args:
+        config: Parsed MCP config with a top-level `mcpServers` mapping.
+
+    Returns:
+        A tuple containing the config with only valid servers and a mapping of
+            dropped server names to validation errors.
+    """
+    valid: dict[str, Any] = {}
+    errors: dict[str, str] = {}
+    for name, server in config["mcpServers"].items():
+        try:
+            _validate_server_config(name, server)
+        except (ValueError, TypeError, RuntimeError) as exc:
+            errors[name] = str(exc)
+        else:
+            valid[name] = server
+    return {**config, "mcpServers": valid}, errors
+
+
+def _load_mcp_config_top_level(config_path: Path) -> dict[str, Any]:
+    """Load an MCP config file and validate only its top-level shape.
+
+    Args:
+        config_path: Config path to load.
+
+    Returns:
+        Parsed configuration dictionary with a valid `mcpServers` mapping.
+    """
+    config = _load_mcp_config_json(str(config_path))
+    _validate_mcp_config_top_level(config)
+    return config
+
+
 def load_mcp_config(config_path: str) -> dict[str, Any]:
     """Load and validate MCP configuration from a JSON file.
 
@@ -741,48 +1258,9 @@ def load_mcp_config(config_path: str) -> dict[str, Any]:
         json.JSONDecodeError: If config file contains invalid JSON.
         TypeError: If config fields have wrong types.
         ValueError: If config is missing required fields.
-        RuntimeError: If header env-var interpolation references an unset var.
-    """  # noqa: DOC502 - `_validate_server_config()` raises `RuntimeError` indirectly
-    path = Path(config_path)
-
-    if not path.exists():
-        error_msg = f"MCP config file not found: {config_path}"
-        raise FileNotFoundError(error_msg)
-
-    try:
-        with path.open(encoding="utf-8") as file_obj:
-            config = json.load(file_obj)
-    except json.JSONDecodeError as exc:
-        # Build a layered message: core reason, an actionable hint for common
-        # mistakes, then a caret snippet last so the auto-appended
-        # "line X column Y" suffix reads as the location of the caret.
-        parts = [f"Invalid JSON in MCP config file: {exc.msg}"]
-        hint = _json_error_hint(exc)
-        if hint is not None:
-            parts.append(hint)
-        snippet = _json_error_snippet(exc.doc, exc.lineno, exc.colno, pos=exc.pos)
-        if snippet is not None:
-            parts.append(snippet)
-        error_msg = "\n".join(parts)
-        raise json.JSONDecodeError(error_msg, exc.doc, exc.pos) from exc
-
-    if "mcpServers" not in config:
-        error_msg = (
-            "MCP config must contain 'mcpServers' field. "
-            'Expected format: {"mcpServers": {"server-name": {...}}}'
-        )
-        raise ValueError(error_msg)
-
-    if not isinstance(config["mcpServers"], dict):
-        error_msg = "'mcpServers' field must be a dictionary"
-        raise TypeError(error_msg)
-
-    if not config["mcpServers"]:
-        error_msg = "'mcpServers' field is empty - no servers configured"
-        raise ValueError(error_msg)
-
-    for server_name, server_config in config["mcpServers"].items():
-        _validate_server_config(server_name, server_config)
+    """  # noqa: DOC502 - raised indirectly by `_load_mcp_config_json` / `_validate_server_config` (which does shape-only checks; `${VAR}` config interpolation is deferred to activation time, so no RuntimeError here)
+    config = _load_mcp_config_top_level(Path(config_path))
+    _validate_mcp_config_servers(config)
 
     return config
 
@@ -804,8 +1282,46 @@ def _resolve_project_config_base(project_context: ProjectContext | None) -> Path
     return find_project_root() or Path.cwd()
 
 
+def filter_trusted_project_servers(
+    servers: Mapping[str, Any],
+    trust_lists: McpServerTrustLists,
+    *,
+    project_root: Path,
+    config_trusted: bool = False,
+) -> dict[str, Any]:
+    """Return only the project servers that survive the user's trust policy.
+
+    The single place the per-server trust rule lives, shared by the runtime
+    tool loader and the `mcp login` resolver so reject-precedence cannot drift
+    between them: a disabled name is dropped even from a `config_trusted`
+    config; otherwise a server is kept when the whole config is trusted or the
+    user's scoped approvals / env allowlist enable it (`is_enabled`).
+
+    Args:
+        servers: `mcpServers`-shaped mapping of name to definition.
+        trust_lists: The user's allow/deny policy.
+        project_root: Resolved project root owning `servers`, for scoped
+            fingerprint matching.
+        config_trusted: Whether the config as a whole is trusted (e.g.
+            `--trust-project-mcp`). Defaults to `False`.
+
+    Returns:
+        The kept subset of `servers`, in input order.
+    """
+    kept: dict[str, Any] = {}
+    for name, server in servers.items():
+        if name in trust_lists.disabled:
+            # Explicit reject always wins, even for a trusted config.
+            continue
+        if config_trusted or trust_lists.is_enabled(
+            name, project_root=project_root, server=server
+        ):
+            kept[name] = server
+    return kept
+
+
 MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
-    ("~/.deepagents/.mcp.json", "user-level"),
+    (PATHS.display(PATHS.profile.mcp_config_file), "user-level"),
     ("<project-root>/.deepagents/.mcp.json", "project subdir"),
     ("<project-root>/.mcp.json", "project root"),
 )
@@ -813,68 +1329,253 @@ MCP_CONFIG_DISCOVERY_PATHS: tuple[tuple[str, str], ...] = (
 
 Ordered from lowest to highest precedence. Each entry is `(path, label)`
 suitable for rendering in help screens and error messages. The runtime
-discovery in `discover_mcp_configs` builds the same paths from
-`Path.home()` and `_resolve_project_config_base()`.
+discovery in `discover_mcp_config_sources` builds the same paths from the
+immutable profile snapshot and `_resolve_project_config_base()`.
+
+The two kinds of entry are not interchangeable. The user-level path is already
+resolved and abbreviated for display, evaluated once at import. The two project
+entries are templates that still carry a `<project-root>` placeholder, because
+the project root is not known until a command runs. A renderer must not
+substitute into the first or assume the other two are real paths.
 """
 
 
-def discover_mcp_configs(
+class MCPConfigScope(StrEnum):
+    """Trust provenance assigned when an MCP config candidate is discovered."""
+
+    USER = "user"
+    """The exact `.mcp.json` selected by the immutable user profile root."""
+
+    PROJECT = "project"
+    """A repository-controlled `.mcp.json` that requires project trust."""
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveredMCPConfig:
+    """An MCP config path together with its discovery trust provenance."""
+
+    path: Path
+    scope: MCPConfigScope
+    project_root: Path | None = None
+
+    def __post_init__(self) -> None:
+        """Tie `project_root` to the scope that requires it.
+
+        `project_root` is the key that project-trust approvals are recorded
+        against, so a `PROJECT` config without one would be checked against a
+        re-derived fallback root instead of failing. Rejecting the combination
+        here keeps that from degrading into "trusted against the wrong root".
+
+        Raises:
+            ValueError: If the scope and `project_root` disagree.
+        """
+        if (self.scope is MCPConfigScope.PROJECT) != (self.project_root is not None):
+            need = (
+                "requires" if self.scope is MCPConfigScope.PROJECT else "must not carry"
+            )
+            msg = f"{self.scope} MCP config {need} a project root: {self.path}"
+            raise ValueError(msg)
+
+
+class MCPConfigIdentity(StrEnum):
+    """Whether two discovered config paths are the same underlying file."""
+
+    SAME = "same"
+    """The paths are lexically equal or resolve to one file."""
+
+    DIFFERENT = "different"
+    """The paths resolve to distinct files."""
+
+    UNKNOWN = "unknown"
+    """Resolution failed, so identity could not be determined."""
+
+
+def _same_config_location(first: Path, second: Path) -> MCPConfigIdentity:
+    """Return whether two discovered paths identify the same config.
+
+    Lexically identical paths match without filesystem access. `samefile`
+    compares filesystem identity, collapsing symlink and case aliases that
+    path resolution can preserve on case-insensitive filesystems. `UNKNOWN`
+    preserves an indeterminate identity error so the caller can fail closed
+    when scopes differ rather than retaining a possibly aliased user-trusted
+    path.
+
+    Returns:
+        The identity relationship between the two paths.
+    """
+    if first == second:
+        return MCPConfigIdentity.SAME
+    try:
+        identity_match = first.samefile(second)
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not determine whether %s and %s are the same MCP config; "
+            "the pair cannot be told apart",
+            first,
+            second,
+            exc_info=True,
+        )
+        return MCPConfigIdentity.UNKNOWN
+    return MCPConfigIdentity.SAME if identity_match else MCPConfigIdentity.DIFFERENT
+
+
+def _append_discovered_config(
+    found: list[DiscoveredMCPConfig], candidate: DiscoveredMCPConfig
+) -> None:
+    """Append a candidate, resolving collisions toward project provenance.
+
+    A collision never grants user trust and never drops a config: the same file
+    discovered twice keeps one record at project scope, and two files that
+    cannot be told apart both load at project scope.
+
+    Only project candidates can collide, because `discover_mcp_config_sources`
+    probes the single user candidate first and `found` is therefore empty when
+    it arrives. The collision branch below has no user-scope arm. A user candidate that
+    reached it would fall through and be dropped, so reject that ordering
+    instead.
+
+    Raises:
+        AssertionError: If a user candidate arrives after another entry, which
+            would mean the candidate ordering changed.
+    """
+    if candidate.scope is not MCPConfigScope.PROJECT:
+        if found:
+            msg = (
+                "The user MCP config must be discovered first; collision "
+                "handling has no user-scope branch."
+            )
+            raise AssertionError(msg)
+        found.append(candidate)
+        return
+    for index, existing in enumerate(found):
+        identity = _same_config_location(existing.path, candidate.path)
+        if identity is MCPConfigIdentity.DIFFERENT:
+            continue
+        if identity is MCPConfigIdentity.UNKNOWN and existing.scope is candidate.scope:
+            # Identity is unknown and the trust scope is the same either way,
+            # so keeping both entries changes nothing.
+            continue
+        # A configured home can equal a project root or its `.deepagents`
+        # directory. The standard project discovery provenance wins that
+        # collision so relocating the profile never self-trusts the repo's own
+        # MCP file.
+        if identity is MCPConfigIdentity.SAME:
+            # One file: move it to this discovery position so a profile
+            # collision cannot give an earlier path higher precedence.
+            if existing.scope is not candidate.scope:
+                # The user config and a project config are one file, so its
+                # servers stop being user-trusted and start asking for project
+                # approval. The user did not change anything to cause that, so
+                # say which collision did.
+                logger.warning(
+                    "MCP config %s is both the user profile config and a "
+                    "project config, so it now loads at project scope. Its "
+                    "servers require project trust approval. Set "
+                    "DEEPAGENTS_HOME to a directory outside %s to keep them "
+                    "user-trusted.",
+                    existing.path,
+                    candidate.project_root,
+                )
+            found.pop(index)
+            found.append(candidate)
+            return
+        # Identity is unknown, so these may be two distinct files. Demote the
+        # existing entry to project scope instead of dropping it: the user's
+        # servers must still load, just without user-level trust.
+        logger.warning(
+            "Demoting MCP config %s to project scope because it could not "
+            "be distinguished from %s",
+            existing.path,
+            candidate.path,
+        )
+        found[index] = DiscoveredMCPConfig(
+            existing.path,
+            MCPConfigScope.PROJECT,
+            candidate.project_root,
+        )
+        found.append(candidate)
+        return
+    found.append(candidate)
+
+
+def discover_mcp_config_sources(
     *,
     project_context: ProjectContext | None = None,
-) -> list[Path]:
-    """Find MCP config files from standard locations.
-
-    Checks the paths listed in `MCP_CONFIG_DISCOVERY_PATHS`, lowest to
-    highest precedence.
+) -> list[DiscoveredMCPConfig]:
+    """Discover MCP configs while preserving their trust scope.
 
     Args:
         project_context: Explicit project path context, if available.
 
     Returns:
-        Existing config file paths, ordered from lowest to highest precedence.
+        Existing configs in precedence order with immutable provenance.
     """
-    user_dir = Path.home() / ".deepagents"
     project_root = _resolve_project_config_base(project_context)
+    project = project_paths(project_root)
+    candidates = (
+        DiscoveredMCPConfig(PATHS.profile.mcp_config_file, MCPConfigScope.USER),
+        DiscoveredMCPConfig(
+            project.config_mcp_config_file,
+            MCPConfigScope.PROJECT,
+            project_root,
+        ),
+        DiscoveredMCPConfig(
+            project.root_mcp_config_file,
+            MCPConfigScope.PROJECT,
+            project_root,
+        ),
+    )
 
-    candidates = [
-        user_dir / ".mcp.json",
-        project_root / ".deepagents" / ".mcp.json",
-        project_root / ".mcp.json",
-    ]
-
-    found: list[Path] = []
-    for path in candidates:
+    found: list[DiscoveredMCPConfig] = []
+    for candidate in candidates:
         try:
-            if path.is_file():
-                found.append(path)
+            if candidate.path.is_file():
+                _append_discovered_config(found, candidate)
         except OSError:
-            logger.warning("Could not check MCP config %s", path, exc_info=True)
+            logger.warning(
+                "Could not check MCP config %s", candidate.path, exc_info=True
+            )
     return found
 
 
-def classify_discovered_configs(
-    config_paths: list[Path],
-) -> tuple[list[Path], list[Path]]:
-    """Split discovered config paths into user-level and project-level configs.
+@dataclass(frozen=True, slots=True)
+class MCPConfigSources:
+    """Discovered MCP configs partitioned by trust scope.
 
-    Args:
-        config_paths: Candidate config paths from discovery.
-
-    Returns:
-        Tuple of `(user_configs, project_configs)`.
+    Consumers take the views they need. Centralizing the split keeps
+    provenance from being re-derived from path shape at each call site, which
+    is how trust used to be inferred.
     """
-    user_dir = Path.home() / ".deepagents"
-    user: list[Path] = []
-    project: list[Path] = []
-    for path in config_paths:
-        try:
-            if path.resolve().is_relative_to(user_dir.resolve()):
-                user.append(path)
-            else:
-                project.append(path)
-        except (OSError, ValueError):
-            project.append(path)
-    return user, project
+
+    user_paths: tuple[Path, ...]
+    project_paths: tuple[Path, ...]
+    project_roots: Mapping[Path, Path]
+    """Trust root for each project path. Total over `project_paths`.
+
+    Read it with `[]`, never `.get(..., fallback)`. This mapping is the key
+    that project trust approvals are recorded and checked against, so a
+    re-derived fallback root would check trust against something the approval
+    was never granted for. A miss is a broken invariant and must be loud.
+    """
+
+    @classmethod
+    def from_sources(cls, found: Sequence[DiscoveredMCPConfig]) -> MCPConfigSources:
+        """Partition discovered configs by scope.
+
+        Returns:
+            The partitioned view of `found`.
+        """
+        project = [s for s in found if s.scope is MCPConfigScope.PROJECT]
+        return cls(
+            user_paths=tuple(s.path for s in found if s.scope is MCPConfigScope.USER),
+            project_paths=tuple(s.path for s in project),
+            # `DiscoveredMCPConfig` guarantees a project-scoped entry carries a
+            # root, so this mapping is total over `project_paths`. Wrapped so
+            # the frozen dataclass does not hand out a mutable dict.
+            project_roots=MappingProxyType(
+                {s.path: s.project_root for s in project if s.project_root is not None}
+            ),
+        )
 
 
 def extract_stdio_server_commands(
@@ -900,10 +1601,32 @@ def extract_stdio_server_commands(
     return results
 
 
+class ProjectServerSummary(NamedTuple):
+    """A project MCP server row shown to the user and gated for trust.
+
+    A `NamedTuple` (not a bare 3-tuple) so the three same-typed `str` slots get
+    field names — a `name`/`kind` swap can't type-check silently — while staying
+    tuple-compatible with existing unpacking and indexing.
+    """
+
+    name: str
+    """MCP server name."""
+
+    kind: str
+    """Transport kind from `_resolve_server_type`: `"stdio"`, `"http"`, or
+    `"sse"` for a well-formed entry. Typed `str`, not a `Literal`, because these
+    summaries are built from *unvalidated* configs (the trust prompt inspects
+    raw merged servers before validation), so a malformed `type`/`transport`
+    passes through verbatim (e.g. `{"type": "banana"}` yields `"banana"`)."""
+
+    summary: str
+    """`"<command> <args>"` for stdio entries, the URL for remote entries."""
+
+
 def extract_project_server_summaries(
     config: dict[str, Any],
-) -> list[tuple[str, str, str]]:
-    """Return `(name, kind, summary)` for every server in a project config.
+) -> list[ProjectServerSummary]:
+    """Return a `ProjectServerSummary` for every server in a project config.
 
     Used by the trust prompt and the untrusted-config skip warning so that
     both stdio servers (which spawn local commands) and remote servers
@@ -914,16 +1637,19 @@ def extract_project_server_summaries(
         config: Parsed MCP config dictionary.
 
     Returns:
-        List of `(server_name, kind, summary)`. `kind` is `"stdio"`,
-            `"http"`, `"sse"`, or `"unknown"`. `summary` is `"<command> <args>"`
-            for stdio entries and the URL for remote entries.
+        One `ProjectServerSummary` per server, in config order.
     """
-    results: list[tuple[str, str, str]] = []
+    results: list[ProjectServerSummary] = []
     servers = config.get("mcpServers", {})
     if not isinstance(servers, dict):
         return results
     for name, server in servers.items():
         if not isinstance(server, dict):
+            logger.debug(
+                "Skipping malformed MCP server entry %r: expected a table, got %s",
+                name,
+                type(server).__name__,
+            )
             continue
         kind = _resolve_server_type(server)
         if kind == "stdio":
@@ -933,7 +1659,7 @@ def extract_project_server_summaries(
             summary = str(server.get("url", ""))
         else:
             summary = ""
-        results.append((name, kind, summary))
+        results.append(ProjectServerSummary(name, kind, summary))
     return results
 
 
@@ -954,17 +1680,110 @@ def merge_mcp_configs(configs: list[dict[str, Any]]) -> dict[str, Any]:
     return {"mcpServers": merged}
 
 
-def load_mcp_config_lenient(config_path: Path) -> dict[str, Any] | None:
-    """Load an MCP config file, returning `None` on any error.
+def _merge_mcp_configs_with_sources(
+    configs: list[tuple[Path, dict[str, Any]]],
+) -> tuple[dict[str, Any], dict[str, Path]]:
+    """Merge MCP configs and retain the winning source for each server.
+
+    Args:
+        configs: `(path, config)` pairs in ascending precedence order.
+
+    Returns:
+        The merged config and a mapping from each server name to the path that
+        supplied its highest-precedence definition.
+    """
+    servers: dict[str, Any] = {}
+    sources: dict[str, Path] = {}
+    for path, config in configs:
+        config_servers = config.get("mcpServers")
+        if isinstance(config_servers, dict):
+            servers.update(config_servers)
+            for name in cast("dict[str, Any]", config_servers):
+                sources[name] = path
+    return {"mcpServers": servers}, sources
+
+
+def load_mcp_config_lenient(
+    config_path: Path, *, disabled_servers: Collection[str] = ()
+) -> dict[str, Any] | None:
+    """Load a single MCP config file, returning `None` on any error.
+
+    Disabled servers are removed before per-server validation, so explicitly
+    denied entries can neither block loading nor surface to a caller inspecting
+    the config. The single-file counterpart to `load_merged_mcp_configs_lenient`
+    (which the trust prompt uses); this one has no production caller today and is
+    retained as the standalone lenient loader.
 
     Args:
         config_path: Config path to load.
+        disabled_servers: Server names to remove before validation.
 
     Returns:
         The parsed config, or `None` if loading or validation fails.
     """
-    config, _ = load_mcp_config_with_error(config_path)
-    return config
+    config, _ = _load_mcp_config_top_level_with_error(config_path)
+    if config is None:
+        return None
+
+    servers = config["mcpServers"]
+    filtered = {
+        **config,
+        "mcpServers": {
+            name: server
+            for name, server in servers.items()
+            if name not in disabled_servers
+        },
+    }
+    try:
+        _validate_mcp_config_servers(filtered)
+    except (ValueError, TypeError, RuntimeError) as exc:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
+        return None
+    return filtered
+
+
+def load_merged_mcp_configs_lenient(
+    config_paths: Collection[Path], *, disabled_servers: Collection[str] = ()
+) -> dict[str, Any] | None:
+    """Load and validate project configs after resolving precedence.
+
+    The trust prompt must inspect the exact merged server definitions that a
+    whole-config approval can activate. Parsing each file with per-server
+    validation first can discard valid lower-precedence siblings when a bad
+    entry in that file is replaced by a valid higher-precedence definition.
+
+    Args:
+        config_paths: Project config paths in ascending precedence order.
+        disabled_servers: Server names to remove before validation.
+
+    Returns:
+        The merged, filtered config, or `None` when no config is usable. Invalid
+            winning server definitions are dropped without hiding valid siblings.
+    """
+    configs: list[dict[str, Any]] = []
+    for path in config_paths:
+        config, _ = _load_mcp_config_top_level_with_error(path)
+        if config is not None:
+            configs.append(config)
+    if not configs:
+        return None
+
+    merged = merge_mcp_configs(configs)
+    servers = merged["mcpServers"]
+    filtered = {
+        **merged,
+        "mcpServers": {
+            name: server
+            for name, server in servers.items()
+            if name not in disabled_servers
+        },
+    }
+    valid, errors = _drop_invalid_mcp_config_servers(filtered)
+    for name, error in errors.items():
+        logger.warning("Skipping invalid merged MCP server %r: %s", name, error)
+    if errors and not valid["mcpServers"]:
+        return None
+    return valid
 
 
 def load_mcp_config_with_error(
@@ -994,6 +1813,31 @@ def load_mcp_config_with_error(
         return None, str(exc)
 
 
+def _load_mcp_config_top_level_with_error(
+    config_path: Path,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Load an MCP config file, validating only its top-level structure.
+
+    Args:
+        config_path: Config path to load.
+
+    Returns:
+        `(parsed_config, None)` on success, `(None, None)` when the file
+        doesn't exist, or `(None, error_message)` on load/top-level validate
+        failure.
+    """
+    try:
+        return _load_mcp_config_top_level(config_path), None
+    except FileNotFoundError:
+        return None, None
+    except OSError as exc:
+        logger.warning("Skipping unreadable MCP config %s: %s", config_path, exc)
+        return None, f"Unreadable: {exc}"
+    except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        logger.warning("Skipping invalid MCP config %s: %s", config_path, exc)
+        return None, str(exc)
+
+
 def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None:
     """Verify that a stdio server's command exists on PATH.
 
@@ -1010,7 +1854,7 @@ def _check_stdio_server(server_name: str, server_config: dict[str, Any]) -> None
         raise RuntimeError(msg)
     if shutil.which(command) is None:
         msg = (
-            f"MCP server '{server_name}': command '{command}' not found on PATH. "
+            f"MCP server '{server_name}': configured command not found on PATH. "
             "Install it or check your MCP config."
         )
         raise RuntimeError(msg)
@@ -1036,17 +1880,47 @@ async def _check_remote_server(server_name: str, server_config: dict[str, Any]) 
         async with httpx.AsyncClient(timeout=2.0) as client:
             response = await client.head(url)
     except (httpx.HTTPError, httpx.InvalidURL, OSError) as exc:
+        # Name the failure *class* (e.g. `ConnectTimeout`, `InvalidURL`) so the
+        # failure mode stays diagnosable, but keep the URL redacted: `str(exc)`
+        # echoes the URL (which may carry `${VAR}`-injected credentials), while
+        # the class name never does.
         msg = (
-            f"MCP server '{server_name}': URL '{url}' is unreachable: {exc}. "
+            f"MCP server '{server_name}': configured URL is unreachable "
+            f"({type(exc).__name__}). "
             "Check that the URL is correct and the server is running."
         )
         raise RuntimeError(msg) from exc
     if response.status_code >= 500:  # noqa: PLR2004  # HTTP server-error band
         msg = (
-            f"MCP server '{server_name}': {url} returned HTTP "
+            f"MCP server '{server_name}': configured URL returned HTTP "
             f"{response.status_code}. Server may be down; retry later."
         )
         raise RuntimeError(msg)
+
+
+def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
+    """Return whether a supported config value contains an env reference.
+
+    Exceptions raised after interpolation may include resolved connection
+    values in their messages or traceback. Treat every environment-derived
+    value as potentially sensitive so those failures can be reported without
+    exposing the resolved value.
+
+    Args:
+        server_config: Raw, unresolved MCP server configuration.
+
+    Returns:
+        Whether a supported value contains a `${...}` reference.
+    """
+    scalar_values = [server_config.get("command"), server_config.get("url")]
+    sequence_values = server_config.get("args")
+    if isinstance(sequence_values, list):
+        scalar_values.extend(sequence_values)
+    for field in ("env", "headers"):
+        mapping = server_config.get(field)
+        if isinstance(mapping, dict):
+            scalar_values.extend(mapping.values())
+    return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
 async def _discover_tools(session: ClientSession) -> list[Any]:
@@ -1140,6 +2014,28 @@ def _normalize_mcp_arguments(
     return cleaned
 
 
+def _mcp_tool_name(server_name: str, tool_name: str) -> str:
+    """Compose a provider-safe MCP tool name.
+
+    Returns:
+        A deterministic name no longer than the strictest provider limit.
+    """
+    raw_name = f"{server_name}_{tool_name}"
+    sanitized = _MCP_TOOL_NAME_RE.sub("_", raw_name).strip("_") or "unnamed"
+    if sanitized == raw_name and len(sanitized) <= _MCP_TOOL_NAME_MAX_LENGTH:
+        return sanitized
+    digest = sha256(f"{server_name}\0{tool_name}".encode()).hexdigest()[
+        :_MCP_TOOL_NAME_HASH_LENGTH
+    ]
+    server = _MCP_TOOL_NAME_RE.sub("_", server_name).strip("_") or "unnamed"
+    tool = _MCP_TOOL_NAME_RE.sub("_", tool_name).strip("_") or "unnamed"
+    available = _MCP_TOOL_NAME_MAX_LENGTH - len(digest) - 2
+    tool_length = min(len(tool), available // 2)
+    server_length = min(len(server), available - tool_length)
+    tool_length = min(len(tool), available - server_length)
+    return f"{server[:server_length]}_{tool[:tool_length]}_{digest}"
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -1167,7 +2063,7 @@ def _build_cached_mcp_tool(
 
     original_tool_name = mcp_tool.name
     lc_tool_name = (
-        f"{server_name}_{original_tool_name}"
+        _mcp_tool_name(server_name, original_tool_name)
         if tool_name_prefix and server_name
         else original_tool_name
     )
@@ -1177,7 +2073,13 @@ def _build_cached_mcp_tool(
         mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
     )
     wrapped_meta = {"_meta": meta} if meta is not None else {}
-    metadata = {**base_meta, **wrapped_meta} or None
+    metadata = {
+        **base_meta,
+        **wrapped_meta,
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": server_name,
+        _MCP_ORIGINAL_TOOL_NAME_KEY: original_tool_name,
+    }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
         try:
@@ -1220,6 +2122,9 @@ def _build_cached_mcp_tool(
                     expected_session=session,
                 )
                 raise ToolException(str(reauth)) from exc
+            # `_handle_cached_mcp_tool_error` is the sole logging site for the
+            # `ToolException`s raised below; do not log here too, or every
+            # failure is reported twice.
             if not _is_transient_session_error(exc):
                 msg = (
                     f"MCP tool {lc_tool_name!r} failed on server "
@@ -1296,32 +2201,18 @@ def _build_cached_mcp_tool(
 _GLOB_METACHARS = frozenset("*?[")
 
 
-def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
-    """Return True if a single filter entry matches a tool name.
-
-    An entry containing `*`, `?`, or `[` is treated as an `fnmatch`-style glob;
-    otherwise it is matched literally. Each entry is tried against both the
-    bare MCP tool name and the server-prefixed form (`f"{prefix}{tool}"`), so
-    users can write either `read_*` or `fs_read_*`.
-
-    Args:
-        entry: Filter list entry from `allowedTools` / `disabledTools`.
-        tool_name: Adapter-supplied tool name (already server-prefixed).
-        prefix: Server prefix (`f"{server_name}_"`).
-
-    Returns:
-        True if the entry matches this tool under either match mode.
-    """
-    is_glob = any(ch in _GLOB_METACHARS for ch in entry)
-    if is_glob:
-        if fnmatch.fnmatchcase(tool_name, entry):
-            return True
-        if tool_name.startswith(prefix):
-            return fnmatch.fnmatchcase(tool_name[len(prefix) :], entry)
-        return False
-    if tool_name == entry:
-        return True
-    return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
+def _entry_matches_tool(
+    entry: str, tool_name: str, prefix: str, original_name: str | None = None
+) -> bool:
+    """Return True if a single filter entry matches a tool name."""
+    candidates = [tool_name]
+    if original_name is not None:
+        candidates.extend((original_name, f"{prefix}{original_name}"))
+    elif tool_name.startswith(prefix):
+        candidates.append(tool_name[len(prefix) :])
+    if any(ch in _GLOB_METACHARS for ch in entry):
+        return any(fnmatch.fnmatchcase(candidate, entry) for candidate in candidates)
+    return entry in candidates
 
 
 @overload
@@ -1374,14 +2265,15 @@ def _apply_tool_filter(
     prefix = f"{server_name}_"
     field_name = "allowedTools" if allowed is not None else "disabledTools"
 
-    def _any_entry_matches(tool_name: str, entry_list: list[str]) -> bool:
-        return any(_entry_matches_tool(e, tool_name, prefix) for e in entry_list)
+    def _original_name(tool: BaseTool) -> str | None:
+        metadata = tool.metadata or {}
+        value = metadata.get(_MCP_ORIGINAL_TOOL_NAME_KEY)
+        return value if isinstance(value, str) else None
 
-    missing = [
-        e
-        for e in entries
-        if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
-    ]
+    def _matches(entry: str, tool: BaseTool) -> bool:
+        return _entry_matches_tool(entry, tool.name, prefix, _original_name(tool))
+
+    missing = [e for e in entries if not any(_matches(e, tool) for tool in tools)]
     if missing:
         logger.warning(
             "MCP server '%s' %s entries matched no tools: %s",
@@ -1391,8 +2283,110 @@ def _apply_tool_filter(
         )
 
     if allowed is not None:
-        return [t for t in tools if _any_entry_matches(t.name, entries)]
-    return [t for t in tools if not _any_entry_matches(t.name, entries)]
+        return [
+            tool for tool in tools if any(_matches(entry, tool) for entry in entries)
+        ]
+    return [
+        tool for tool in tools if not any(_matches(entry, tool) for entry in entries)
+    ]
+
+
+_MCP_LOAD_CONCURRENCY = 8
+"""Upper bound on MCP servers preflighted/discovered concurrently.
+
+Independent servers are probed in parallel so graph load no longer scales
+linearly with server count, but the fan-out is capped so a large config cannot
+spawn an unbounded number of simultaneous socket/subprocess handshakes (or
+`asyncio.to_thread` `shutil.which` workers).
+"""
+
+
+def _warm_mcp_adapter_imports() -> None:
+    """Eagerly import MCP modules whose first import may block.
+
+    Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
+    blocking side effect of a first import happens off the server event loop
+    rather than where Blockbuster would reject it. Two known offenders:
+
+    - `langchain_mcp_adapters` runs a package-resource scan on first import.
+    - `mcp_auth` imports `httpx`, which transitively imports `rich`; `rich`
+      calls `os.getcwd()` in its module body (verified against the pinned
+      versions — the exact culprit may shift as dependencies change, but the
+      general risk of import-time I/O in this subtree does not).
+
+    Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
+    (remote-server preflight and the per-tool call path), where an import
+    failure is captured and reported per server. A failure to warm it must not
+    abort loading for every server — notably stdio-only configs, which never
+    import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
+    at the real use site. Runs only when at least one active MCP server exists.
+    """
+    from langchain_mcp_adapters import (
+        sessions as _sessions,  # noqa: F401
+        tools as _tools,  # noqa: F401
+    )
+
+    try:
+        from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
+    except Exception:  # warmup is a best-effort optimization; never abort load
+        logger.warning(
+            "Failed to warm mcp_auth import off the event loop; "
+            "deferring to per-server use",
+            exc_info=True,
+        )
+
+
+async def _gather_bounded[T](
+    factories: Sequence[Callable[[], Awaitable[T]]],
+    *,
+    limit: int,
+) -> list[T]:
+    """Await coroutine factories with bounded concurrency, preserving order.
+
+    Results are returned in submission order (not completion order), so callers
+    can zip them back against their inputs to keep deterministic ordering. If a
+    factory raises (including a cancellation/shutdown signal), the remaining
+    tasks are cancelled and awaited before the exception propagates, so no
+    background work is left running.
+
+    `asyncio.gather` propagates only the *first* task to finish with an
+    exception; when several tasks fail concurrently the rest are cancelled
+    during teardown and their exceptions would otherwise be discarded silently.
+    To keep concurrent failures debuggable, each dropped (non-cancellation)
+    sibling exception is logged at debug level before the first one propagates.
+
+    Args:
+        factories: Zero-arg callables each returning an awaitable to run.
+        limit: Maximum number of awaitables in flight at once. Values below 1
+            are clamped to 1.
+
+    Returns:
+        The awaited results in the same order as `factories`.
+    """
+    semaphore = asyncio.Semaphore(max(1, limit))
+
+    async def _run(factory: Callable[[], Awaitable[T]]) -> T:
+        async with semaphore:
+            return await factory()
+
+    tasks = [asyncio.create_task(_run(factory)) for factory in factories]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        for result in results:
+            if isinstance(result, BaseException) and not isinstance(
+                result, asyncio.CancelledError
+            ):
+                logger.debug(
+                    "MCP concurrent load: a sibling task failed while another "
+                    "failure was already propagating; logging the dropped "
+                    "exception for debugging",
+                    exc_info=result,
+                )
+        raise
 
 
 async def _load_tools_from_config(
@@ -1425,37 +2419,78 @@ async def _load_tools_from_config(
     Raises:
         RuntimeError: If `session_manager` is reconfigured incompatibly with
             sessions already active on it.
-    """  # noqa: DOC501, DOC502 - `RuntimeError` surfaces via `MCPSessionManager.configure`; `KeyboardInterrupt` / `SystemExit` / `CancelledError` are re-raised pass-throughs
+    """  # noqa: DOC502 - `RuntimeError` surfaces via `MCPSessionManager.configure`
+    # Warm the adapter imports off the event loop *here* (rather than in the
+    # caller) so a config with no active MCP servers — which returns before
+    # ever reaching this function — never pays the adapter-import cost.
+    await asyncio.to_thread(_warm_mcp_adapter_imports)
     from langchain_mcp_adapters.sessions import (
         SSEConnection,
         StdioConnection,
         StreamableHttpConnection,
-        create_session,
     )
     from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 
-    skipped: dict[str, tuple[MCPServerStatus, str]] = {}
+    server_items = list(config["mcpServers"].items())
+    # Resolve each server's transport once, up front. `_resolve_server_type` is
+    # pure, so this is a readability/DRY win over recomputing it in preflight,
+    # discovery, and the final fold-in loop below.
+    transports = {name: _resolve_server_type(cfg) for name, cfg in server_items}
+    # Names whose connection got an OAuth provider, recorded during preflight
+    # and folded into `MCPServerInfo.uses_oauth` at discovery. Preflight fully
+    # completes before discovery starts, so this is populated by then. Computed
+    # here rather than in `_discover_server` because the decision needs the
+    # *resolved* config — the token file stem is derived from the expanded URL.
+    oauth_servers: set[str] = set()
 
-    for server_name, server_config in config["mcpServers"].items():
-        server_type = _resolve_server_type(server_config)
+    async def _preflight_and_connect(
+        server_name: str,
+        server_config: dict[str, Any],
+    ) -> tuple[MCPServerStatus, str] | Connection:
+        """Preflight one server and build its connection config.
+
+        Per-server preflight/config failures are captured here so one bad
+        server never aborts loading the others.
+
+        Returns:
+            A `(status, error)` tuple when the server must be skipped, or a
+            ready `Connection` otherwise.
+        """
+        server_type = transports[server_name]
+        # Capture this from the *raw* config, before resolution below rebinds
+        # `server_config` to the expanded copy. Once `${...}` refs are expanded,
+        # a downstream setup error may echo the resolved (secret-bearing) value,
+        # so those messages are redacted; plain configs keep full detail.
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+        # Config env-var resolution is the only step that raises `TypeError`
+        # (non-string field). Keep it in its own `try` so an unexpected
+        # `TypeError` from the connectivity checks below — whose contract is
+        # `RuntimeError` only — surfaces as a real bug instead of being
+        # relabeled as a per-server config skip.
+        try:
+            server_config = resolve_mcp_server_env(server_name, server_config)
+        except (RuntimeError, TypeError) as exc:
+            logger.warning(
+                "MCP server '%s' skipped: config error: %s",
+                server_name,
+                exc,
+            )
+            return ("error", str(exc))
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 await _check_remote_server(server_name, server_config)
             elif server_type == "stdio":
-                _check_stdio_server(server_name, server_config)
+                # `shutil.which` makes blocking `os.access` calls; run it
+                # off the event loop so blockbuster doesn't reject it.
+                await asyncio.to_thread(_check_stdio_server, server_name, server_config)
         except RuntimeError as exc:
             logger.warning(
                 "MCP server '%s' skipped: pre-flight failed: %s",
                 server_name,
                 exc,
             )
-            skipped[server_name] = ("error", str(exc))
+            return ("error", str(exc))
 
-    connections: dict[str, Connection] = {}
-    for server_name, server_config in config["mcpServers"].items():
-        if server_name in skipped:
-            continue
-        server_type = _resolve_server_type(server_config)
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
                 if server_type == "http":
@@ -1470,33 +2505,42 @@ async def _load_tools_from_config(
                     )
 
                 if "headers" in server_config:
-                    from deepagents_code.mcp_auth import resolve_headers
+                    conn["headers"] = server_config["headers"]
 
-                    conn["headers"] = resolve_headers(
-                        server_config["headers"],
-                        server_name=server_name,
-                    )
+                from deepagents_code.mcp_auth import (
+                    FileTokenStorage,
+                    build_oauth_provider,
+                )
 
-                if server_config.get("auth") == "oauth":
-                    from deepagents_code.mcp_auth import (
-                        FileTokenStorage,
-                        build_oauth_provider,
-                    )
+                explicit_oauth = server_config.get("auth") == "oauth"
+                header_names = {
+                    name.lower() for name in (server_config.get("headers") or {})
+                }
+                has_authorization_header = "authorization" in header_names
+                storage = FileTokenStorage(
+                    server_name,
+                    server_url=server_config["url"],
+                )
+                stored_tokens = await storage.get_tokens()
 
-                    storage = FileTokenStorage(
+                if explicit_oauth and stored_tokens is None:
+                    # Config opted into OAuth but no tokens are stored yet —
+                    # require an upfront login before connecting.
+                    auth_msg = f"MCP server {server_name!r} needs re-authentication."
+                    logger.warning(
+                        "MCP server '%s' skipped: not authenticated.",
                         server_name,
-                        server_url=server_config["url"],
                     )
-                    if await storage.get_tokens() is None:
-                        auth_msg = (
-                            f"MCP server {server_name!r} needs re-authentication."
-                        )
-                        logger.warning(
-                            "MCP server '%s' skipped: not authenticated.",
-                            server_name,
-                        )
-                        skipped[server_name] = ("unauthenticated", auth_msg)
-                        continue
+                    return ("unauthenticated", auth_msg)
+
+                if explicit_oauth or (
+                    stored_tokens is not None and not has_authorization_header
+                ):
+                    # Attach the provider when the user opted in, or when a
+                    # prior login (possibly triggered by 401 auto-detection)
+                    # already stored tokens for this server. Static
+                    # Authorization headers take precedence over stored OAuth.
+                    oauth_servers.add(server_name)
                     conn["auth"] = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
@@ -1504,21 +2548,55 @@ async def _load_tools_from_config(
                         interactive=False,
                     )
 
-                connections[server_name] = conn
-            else:
-                connections[server_name] = StdioConnection(
-                    command=server_config["command"],
-                    args=server_config.get("args", []),
-                    env=server_config.get("env") or None,
-                    transport="stdio",
-                )
-        except (OSError, RuntimeError, TypeError, ValueError) as exc:
-            logger.warning(
-                "MCP server '%s' skipped: config/setup failed: %s",
-                server_name,
-                exc,
+                return conn
+            return StdioConnection(
+                command=server_config["command"],
+                args=server_config.get("args", []),
+                env=server_config.get("env") or None,
+                transport="stdio",
             )
-            skipped[server_name] = ("error", str(exc))
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            if redact_failure_details:
+                error = (
+                    f"MCP server {server_name!r}: setup failed after "
+                    "resolving environment variables."
+                )
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed (%s; details "
+                    "redacted because config uses environment interpolation)",
+                    server_name,
+                    exc.__class__.__name__,
+                )
+            else:
+                error = str(exc)
+                logger.warning(
+                    "MCP server '%s' skipped: config/setup failed",
+                    server_name,
+                    exc_info=exc,
+                )
+            return ("error", error)
+
+    # Preflight + connection build runs concurrently across servers (bounded).
+    # Results come back in submission order, so `skipped`/`connections` are
+    # assembled in config order and stay deterministic regardless of which
+    # server's probe finished first.
+    preflight_results = await _gather_bounded(
+        [
+            functools.partial(_preflight_and_connect, name, cfg)
+            for name, cfg in server_items
+        ],
+        limit=_MCP_LOAD_CONCURRENCY,
+    )
+
+    skipped: dict[str, tuple[MCPServerStatus, str]] = {}
+    connections: dict[str, Connection] = {}
+    for (server_name, _server_config), result in zip(
+        server_items, preflight_results, strict=True
+    ):
+        if isinstance(result, tuple):
+            skipped[server_name] = result
+        else:
+            connections[server_name] = result
 
     runtime_manager: MCPSessionManager | None = session_manager
     if runtime_manager is not None:
@@ -1526,44 +2604,116 @@ async def _load_tools_from_config(
     elif not stateless:
         runtime_manager = MCPSessionManager(connections=connections)
 
-    all_tools: list[BaseTool] = []
-    server_infos: list[MCPServerInfo] = []
+    async def _discover_server(
+        server_name: str,
+        server_config: dict[str, Any],
+        transport: str,
+    ) -> tuple[list[BaseTool], MCPServerInfo]:
+        """Discover one server's tools and build its `MCPServerInfo`.
 
-    for server_name, server_config in config["mcpServers"].items():
-        transport = _resolve_server_type(server_config)
-        if server_name in skipped:
-            status, error = skipped[server_name]
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=transport,
-                    status=status,
-                    error=error,
-                ),
-            )
-            continue
+        Both discovery failures (classified as auth vs. generic error) and
+        post-discovery tool-construction failures are captured as a non-`ok`
+        `MCPServerInfo` with no tools, so a single failing server never aborts
+        the load for the others. Cancellation/shutdown signals are re-raised so
+        the bounded runner can tear the whole load down.
+
+        Returns:
+            The server's LangChain tools plus its `MCPServerInfo` entry.
+        """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+        redact_failure_details = _config_uses_env_interpolation(server_config)
+
+        def _log_caught_exception(
+            level: int,
+            message: str,
+            caught: BaseException,
+        ) -> None:
+            """Log a caught exception without exposing resolved config values."""
+            if redact_failure_details:
+                rendered_message = message % server_name
+                logger.log(
+                    level,
+                    "%s (%s; details redacted because config uses environment "
+                    "interpolation)",
+                    rendered_message,
+                    caught.__class__.__name__,
+                )
+            else:
+                logger.log(level, message, server_name, exc_info=caught)
 
         try:
-            async with create_session(connections[server_name]) as discover_session:
+            async with _create_mcp_session(
+                connections[server_name], server_name=server_name
+            ) as discover_session:
                 await discover_session.initialize()
                 mcp_tools = await _discover_tools(discover_session)
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:
-            from deepagents_code.mcp_auth import find_reauth_required
+        except Exception as exc:  # noqa: BLE001 - isolate third-party discovery failures per server
+            from deepagents_code.mcp_auth import (
+                find_oauth_challenge,
+                find_reauth_required,
+                format_login_failure,
+            )
 
-            reauth = find_reauth_required(exc)
             status: MCPServerStatus
+            try:
+                reauth = find_reauth_required(exc)
+                challenge_url = (
+                    find_oauth_challenge(exc)
+                    if transport in _SUPPORTED_REMOTE_TYPES
+                    else None
+                )
+            except Exception as classify_exc:  # noqa: BLE001 - classification must not abort other servers
+                # Classifying the failure is best-effort. If a classifier
+                # itself raises, degrade this one server to a plain error
+                # rather than letting the exception abort tool loading for
+                # every remaining server.
+                reauth = None
+                challenge_url = None
+                _log_caught_exception(
+                    logging.DEBUG,
+                    "MCP server '%s': failed to classify discovery error",
+                    classify_exc,
+                )
+
             if reauth is not None:
                 # Tokens existed (we checked above) but the OAuth provider
                 # fell back to interactive reauth — the refresh attempt
                 # failed. Flag unauthenticated so the user is prompted to
-                # re-login, and keep the original exception only in debug logs
-                # so expected re-auth skips don't flood non-interactive output.
+                # re-login. This is an expected, already-classified outcome, so
+                # the actionable WARNING says everything useful; the full
+                # traceback adds no diagnostic value, so keep the DEBUG log to a
+                # concise, token-safe breadcrumb. Use `format_login_failure`
+                # rather than `exc.__class__.__name__`: these failures usually
+                # arrive wrapped in an anyio `ExceptionGroup`, so the bare root
+                # class name would just read "ExceptionGroup"; the helper walks
+                # the group/cause chain to name the nested culprit instead.
+                status = "unauthenticated"
+                error = f"{reauth} (token refresh failed)"
+                logger.warning(
+                    "MCP server '%s' skipped: %s",
+                    server_name,
+                    error,
+                )
+                logger.debug(
+                    "MCP server '%s' skipped: token refresh failed (%s)",
+                    server_name,
+                    format_login_failure(exc),
+                )
+            elif challenge_url is not None:
+                # A remote server answered with a 401 OAuth challenge
+                # (RFC 9728) that wasn't already handled as a token refresh —
+                # typically a server not opted into OAuth in config. Surface it
+                # as unauthenticated so the user can log in, rather than as an
+                # opaque connection error. Like the reauth case, this is a
+                # recognized outcome: keep the DEBUG log to a concise,
+                # token-safe breadcrumb (via `format_login_failure`, which
+                # names the nested culprit inside the anyio `ExceptionGroup`)
+                # rather than dumping the full challenge traceback.
                 status = "unauthenticated"
                 error = (
-                    f"{reauth} "
-                    "(token refresh failed; the original error is in debug logs)"
+                    f"MCP server {server_name!r} requires authentication; "
+                    f"run `dcode mcp login {server_name}`."
                 )
                 logger.warning(
                     "MCP server '%s' skipped: %s",
@@ -1571,105 +2721,186 @@ async def _load_tools_from_config(
                     error,
                 )
                 logger.debug(
-                    "MCP server '%s' skipped: tool discovery failed",
+                    "MCP server '%s' skipped: 401 OAuth challenge detected (%s)",
                     server_name,
-                    exc_info=True,
+                    format_login_failure(exc),
                 )
             else:
                 status = "error"
-                error = str(exc)
-                logger.warning(
-                    "MCP server '%s' skipped: tool discovery failed",
-                    server_name,
-                    exc_info=True,
+                error = (
+                    (
+                        f"MCP server {server_name!r}: tool discovery failed "
+                        "after resolving environment variables."
+                    )
+                    if redact_failure_details
+                    else str(exc)
                 )
+                _log_caught_exception(
+                    logging.WARNING,
+                    "MCP server '%s' skipped: tool discovery failed",
+                    exc,
+                )
+            return [], MCPServerInfo(
+                name=server_name,
+                transport=transport,
+                status=status,
+                error=error,
+            )
+
+        # Tool construction and filtering run after the discovery session has
+        # closed and can still fail (schema conversion, custom tool filters).
+        # Isolate them too so a construction error degrades this one server to
+        # an error entry instead of aborting the whole concurrent load — the
+        # same guarantee the discovery `try` above provides. Cancellation and
+        # shutdown signals still propagate so the bounded runner can tear down.
+        try:
+            if runtime_manager is None:
+                server_tools: list[BaseTool] = []
+                for mcp_tool in mcp_tools:
+                    tool = convert_mcp_tool_to_langchain_tool(
+                        None,
+                        mcp_tool,
+                        connection=connections[server_name],
+                        server_name=server_name,
+                    )
+                    tool.name = _mcp_tool_name(server_name, mcp_tool.name)
+                    tool.metadata = {
+                        **(tool.metadata or {}),
+                        "_deepagents_code_mcp": True,
+                        "_deepagents_code_mcp_server": server_name,
+                        _MCP_ORIGINAL_TOOL_NAME_KEY: mcp_tool.name,
+                    }
+                    server_tools.append(tool)
+            else:
+                server_tools = [
+                    _build_cached_mcp_tool(
+                        mcp_tool=mcp_tool,
+                        server_name=server_name,
+                        session_manager=runtime_manager,
+                        tool_name_prefix=True,
+                    )
+                    for mcp_tool in mcp_tools
+                ]
+
+            server_tools = _apply_tool_filter(server_tools, server_name, server_config)
+
+            # Pair each tool's input_schema by its LangChain (server-prefixed)
+            # name — the same form `server_tools` carries — so the lookup needs
+            # no string surgery and stays correct if `tool_name_prefix` ever
+            # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
+            # but Python's `frozen=True` does not freeze nested mutables; a
+            # shared reference would let one holder mutate every other's view.
+            schemas: dict[str, dict[str, Any] | None] = {}
+            for mcp_tool in mcp_tools:
+                tool_name = getattr(mcp_tool, "name", "")
+                try:
+                    raw_schema = getattr(mcp_tool, "inputSchema", None)
+                    schema_copy = (
+                        copy.deepcopy(raw_schema) if raw_schema is not None else None
+                    )
+                except (AttributeError, TypeError, RecursionError) as exc:
+                    logger.warning(
+                        "MCP tool %r on server %r: inputSchema access raised "
+                        "%s: %s; rendering with no parameters",
+                        tool_name,
+                        server_name,
+                        exc.__class__.__name__,
+                        exc,
+                    )
+                    schema_copy = None
+                lc_name = _mcp_tool_name(server_name, tool_name)
+                schemas[lc_name] = schema_copy
+
+            tool_infos: list[MCPToolInfo] = []
+            for tool in server_tools:
+                schema = schemas.get(tool.name)
+                if schema is None and schemas:
+                    logger.debug(
+                        "MCP tool %r on server %r: no schema matched in lookup "
+                        "(available keys: %s); rendering with no parameters",
+                        tool.name,
+                        server_name,
+                        list(schemas.keys())[:5],
+                    )
+                tool_infos.append(
+                    MCPToolInfo(
+                        name=tool.name,
+                        description=tool.description or "",
+                        input_schema=schema,
+                    ),
+                )
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # noqa: BLE001 - isolate third-party tool conversion failures per server
+            error = (
+                (
+                    f"MCP server {server_name!r}: tool construction failed "
+                    "after resolving environment variables."
+                )
+                if redact_failure_details
+                else str(exc)
+            )
+            _log_caught_exception(
+                logging.WARNING,
+                "MCP server '%s' skipped: tool construction failed",
+                exc,
+            )
+            return [], MCPServerInfo(
+                name=server_name,
+                transport=transport,
+                status="error",
+                error=error,
+            )
+
+        return server_tools, MCPServerInfo(
+            name=server_name,
+            transport=transport,
+            tools=tuple(tool_infos),
+            uses_oauth=server_name in oauth_servers,
+        )
+
+    # Discovery also runs concurrently (bounded) across the servers that
+    # survived preflight. Because `_gather_bounded` returns results in
+    # submission order and skipped servers are folded back in below by
+    # iterating `server_items` in config order, `server_infos` stays in config
+    # order and the returned tools stay sorted by tool name — regardless of
+    # which server's probe finished first.
+    discover_items = [
+        (server_name, server_config, transports[server_name])
+        for server_name, server_config in server_items
+        if server_name not in skipped
+    ]
+    discovery_results = await _gather_bounded(
+        [
+            functools.partial(_discover_server, name, cfg, transport)
+            for name, cfg, transport in discover_items
+        ],
+        limit=_MCP_LOAD_CONCURRENCY,
+    )
+    discovered: dict[str, tuple[list[BaseTool], MCPServerInfo]] = {
+        server_name: result
+        for (server_name, _cfg, _transport), result in zip(
+            discover_items, discovery_results, strict=True
+        )
+    }
+
+    all_tools: list[BaseTool] = []
+    server_infos: list[MCPServerInfo] = []
+    for server_name, _server_config in server_items:
+        if server_name in skipped:
+            status, error = skipped[server_name]
             server_infos.append(
                 MCPServerInfo(
                     name=server_name,
-                    transport=transport,
+                    transport=transports[server_name],
                     status=status,
                     error=error,
                 ),
             )
             continue
-
-        if runtime_manager is None:
-            server_tools = [
-                convert_mcp_tool_to_langchain_tool(
-                    None,
-                    mcp_tool,
-                    connection=connections[server_name],
-                    server_name=server_name,
-                    tool_name_prefix=True,
-                )
-                for mcp_tool in mcp_tools
-            ]
-        else:
-            server_tools = [
-                _build_cached_mcp_tool(
-                    mcp_tool=mcp_tool,
-                    server_name=server_name,
-                    session_manager=runtime_manager,
-                    tool_name_prefix=True,
-                )
-                for mcp_tool in mcp_tools
-            ]
-
-        server_tools = _apply_tool_filter(server_tools, server_name, server_config)
+        server_tools, server_info = discovered[server_name]
         all_tools.extend(server_tools)
-
-        # Pair each tool's input_schema by its LangChain (server-prefixed)
-        # name — the same form `server_tools` carries — so the lookup needs
-        # no string surgery and stays correct if `tool_name_prefix` ever
-        # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
-        # but Python's `frozen=True` does not freeze nested mutables; a
-        # shared reference would let one holder mutate every other's view.
-        schemas: dict[str, dict[str, Any] | None] = {}
-        for mcp_tool in mcp_tools:
-            tool_name = getattr(mcp_tool, "name", "")
-            try:
-                raw_schema = getattr(mcp_tool, "inputSchema", None)
-                schema_copy = (
-                    copy.deepcopy(raw_schema) if raw_schema is not None else None
-                )
-            except (AttributeError, TypeError, RecursionError) as exc:
-                logger.warning(
-                    "MCP tool %r on server %r: inputSchema access raised %s: %s; "
-                    "rendering with no parameters",
-                    tool_name,
-                    server_name,
-                    exc.__class__.__name__,
-                    exc,
-                )
-                schema_copy = None
-            lc_name = f"{server_name}_{tool_name}"
-            schemas[lc_name] = schema_copy
-
-        tool_infos: list[MCPToolInfo] = []
-        for tool in server_tools:
-            schema = schemas.get(tool.name)
-            if schema is None and schemas:
-                logger.debug(
-                    "MCP tool %r on server %r: no schema matched in lookup "
-                    "(available keys: %s); rendering with no parameters",
-                    tool.name,
-                    server_name,
-                    list(schemas.keys())[:5],
-                )
-            tool_infos.append(
-                MCPToolInfo(
-                    name=tool.name,
-                    description=tool.description or "",
-                    input_schema=schema,
-                ),
-            )
-        server_infos.append(
-            MCPServerInfo(
-                name=server_name,
-                transport=transport,
-                tools=tuple(tool_infos),
-            ),
-        )
+        server_infos.append(server_info)
 
     all_tools.sort(key=lambda tool: tool.name)
     return all_tools, None if stateless else runtime_manager, server_infos
@@ -1696,12 +2927,125 @@ async def get_mcp_tools(
     return await _load_tools_from_config(config)
 
 
+def _log_skipped_project_servers(
+    dropped: list[ProjectServerSummary],
+    *,
+    trust_project_mcp: bool | None,
+    config_trusted: bool,
+) -> None:
+    """Log project MCP servers that were dropped, explaining why.
+
+    Split out so the trust/drop loop stays readable. The message distinguishes an
+    explicit reject on an otherwise-trusted config from the untrusted-drop cases,
+    which themselves differ by whether trust was declined outright
+    (`--trust-project-mcp` off) or merely not yet granted.
+
+    Args:
+        dropped: `ProjectServerSummary` rows for each skipped server.
+        trust_project_mcp: The caller's tri-state trust flag.
+        config_trusted: Whether the project config was otherwise trusted (so the
+            only reason to drop is an explicit user-level deny entry).
+    """
+    skipped_list = "\n".join(
+        f"- {name} [{kind}]: {summary}" for name, kind, summary in dropped
+    )
+    if config_trusted:
+        logger.warning(
+            "Skipped project MCP servers rejected by user config "
+            "(disabled_project_servers):\n%s",
+            skipped_list,
+        )
+    elif trust_project_mcp is False:
+        logger.warning(
+            "Skipped untrusted project MCP servers:\n%s",
+            skipped_list,
+        )
+    else:
+        logger.warning(
+            "Skipped untrusted project MCP servers "
+            "(config changed or not yet approved):\n%s",
+            skipped_list,
+        )
+
+
+def _mcp_trust_list_notices(
+    trust_lists: McpServerTrustLists,
+) -> list[tuple[Path, str]]:
+    """Config-error entries surfacing a trust-list's read/migration problems.
+
+    The loader runs in non-interactive paths where a bare `logger.warning` has
+    no handler, so these must-see notices are rendered as visible config errors
+    via `_bad_config_infos`. Returned (rather than appended in place) so a
+    single trust-list load can surface them once for both the plugin and
+    project config paths instead of duplicating them per path.
+
+    Args:
+        trust_lists: The user's loaded allow/deny policy.
+
+    Returns:
+        `(path, message)` tuples for each detected problem, empty when clean.
+    """
+    from deepagents_code.model_config import DEFAULT_CONFIG_PATH
+
+    notices: list[tuple[Path, str]] = []
+    if trust_lists.read_error is not None:
+        # Surface the read failure as a visible config error (a bare
+        # logger.warning has no handler outside debug mode).
+        notices.append((DEFAULT_CONFIG_PATH, trust_lists.read_error))
+    if trust_lists.legacy_ignored:
+        # The removed flat allowlist stops loading these silently; make it
+        # visible since the loader runs in non-interactive paths where the
+        # migration warning would otherwise be unseen.
+        ignored = ", ".join(sorted(trust_lists.legacy_ignored))
+        notices.append(
+            (
+                DEFAULT_CONFIG_PATH,
+                (
+                    "[mcp].enabled_project_servers is no longer used; "
+                    "re-approve via the project MCP prompt to keep loading: "
+                    f"{ignored}"
+                ),
+            )
+        )
+    if trust_lists.legacy_env_ignored:
+        # The env var was renamed; make the set-but-ignored old name visible
+        # so its servers don't silently stop pre-approving.
+        notices.append(
+            (
+                Path("<env>"),
+                (
+                    f"{_env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS} is no "
+                    "longer used; it was renamed to "
+                    f"{_env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS}"
+                ),
+            )
+        )
+    if trust_lists.malformed_approvals:
+        # A corrupt saved approval would otherwise just silently re-prompt;
+        # surface it here (the loader runs in non-interactive paths where a
+        # bare logger.warning is unseen), mirroring the legacy notices above.
+        count = trust_lists.malformed_approvals
+        entry_word = "entry" if count == 1 else "entries"
+        notices.append(
+            (
+                DEFAULT_CONFIG_PATH,
+                (
+                    f"{count} [mcp].enabled_project_server_approvals {entry_word} "
+                    "could not be read and were ignored; re-approve via the "
+                    "project MCP prompt to keep loading affected servers"
+                ),
+            )
+        )
+    return notices
+
+
 async def resolve_and_load_mcp_tools(
     *,
     explicit_config_path: str | None = None,
     no_mcp: bool = False,
     trust_project_mcp: bool | None = None,
     project_context: ProjectContext | None = None,
+    additional_configs: tuple[dict[str, Any], ...] = (),
     stateless: bool = False,
     session_manager: MCPSessionManager | None = None,
 ) -> tuple[list[BaseTool], MCPSessionManager | None, list[MCPServerInfo]]:
@@ -1715,14 +3059,35 @@ async def resolve_and_load_mcp_tools(
         explicit_config_path: Extra config file to layer on top of
             auto-discovered configs.
         no_mcp: If `True`, disable all MCP loading.
-        trust_project_mcp: Controls project-level stdio server trust.
+        trust_project_mcp: Controls project-level server trust.
 
-            - `True`: always trust project configs, including stdio servers.
-            - `False`: drop stdio entries from project configs.
-            - `None`: consult the persistent trust store — trusted configs
-              load fully, untrusted project stdio servers are dropped.
+            Applies to stdio and remote (http/sse) servers alike — remote entries
+            are gated too because an attacker-controlled `.mcp.json` can SSRF or
+            exfiltrate `${VAR}` headers during the discovery preflight.
+
+            - `True`: grant whole-config trust (all servers load).
+            - `False` / `None`: no whole-config trust. `None` is treated
+                identically to `False` — the persistent trust store this once
+                consulted was removed, so project servers load only via the
+                user's scoped approvals / env allowlist described below.
+
+            Regardless of this flag, the user-level allow/deny policy
+            (`[mcp].enabled_project_server_approvals`,
+            `[mcp].disabled_project_servers`, and env equivalents via
+            `load_mcp_server_trust_lists`) is applied: scoped approvals load
+            from an otherwise-untrusted config only when the project root and
+            server fingerprint match, and explicitly denied servers are dropped
+            even from a trusted one.
         project_context: Explicit project path context for config discovery
             and trust resolution.
+        additional_configs: Config layers injected by higher-level composition,
+            such as plugin-provided MCP servers. Installing a plugin is treated
+            as the user's trust decision for its bundled servers, so these load
+            without per-server approval — but the user-level deny policy still
+            applies (an explicitly disabled server stays disabled), and if that
+            policy cannot be read the servers fail closed rather than bypass a
+            saved rejection. A malformed layer (non-dict, or a non-mapping
+            `mcpServers`) is skipped and surfaced as a config error.
         stateless: When `True`, do not return an owned runtime session manager.
         session_manager: Optional externally owned runtime session manager.
 
@@ -1738,9 +3103,10 @@ async def resolve_and_load_mcp_tools(
             types.
         ValueError: If `explicit_config_path` is missing required fields
             or declares an unsupported transport.
-        RuntimeError: If the merged MCP config is malformed, or header
-            env-var interpolation in `explicit_config_path` references an
-            unset variable.
+        RuntimeError: If the merged MCP config is malformed. (`${VAR}`
+            config interpolation is deferred to activation inside
+            `_load_tools_from_config`, which captures such failures into the
+            returned `server_infos` rather than raising here.)
     """  # noqa: DOC502 - FileNotFoundError / JSONDecodeError / TypeError / ValueError surface via `load_mcp_config`
     if no_mcp:
         return [], None, []
@@ -1748,13 +3114,16 @@ async def resolve_and_load_mcp_tools(
     config_load_errors: list[tuple[Path, str]] = []
 
     try:
-        config_paths = discover_mcp_configs(project_context=project_context)
+        config_sources = discover_mcp_config_sources(project_context=project_context)
     except (OSError, RuntimeError) as exc:
         logger.warning("MCP config auto-discovery failed", exc_info=True)
-        config_paths = []
+        config_sources = []
         config_load_errors.append((Path("<discovery>"), str(exc)))
 
-    user_configs, project_configs = classify_discovered_configs(config_paths)
+    sources = MCPConfigSources.from_sources(config_sources)
+    user_configs = sources.user_paths
+    project_configs = sources.project_paths
+    project_roots = sources.project_roots
     configs: list[dict[str, Any]] = []
 
     for path in user_configs:
@@ -1764,56 +3133,152 @@ async def resolve_and_load_mcp_tools(
         if config is not None:
             configs.append(config)
 
-    project_trusted: bool | None = None
+    # The user-level allow/deny policy (home config.toml + env) gates both
+    # plugin-provided and project `.mcp.json` servers. Load it once — and
+    # surface its read/migration notices once — so a plugin-only session and a
+    # project session behave identically and a read error is not reported
+    # twice. Sourced only from the user's own config (never the repo), so a
+    # committed `.mcp.json` cannot self-approve. Loaded lazily: skipped when
+    # there is neither a plugin layer nor a discovered project config to gate.
+    trust_lists: McpServerTrustLists | None = None
+    if additional_configs or project_configs:
+        from deepagents_code.model_config import load_mcp_server_trust_lists
+
+        trust_lists = load_mcp_server_trust_lists()
+        config_load_errors.extend(_mcp_trust_list_notices(trust_lists))
+
+    # Installing a plugin is the user's trust decision for every bundled
+    # component, including MCP servers. Still apply the user-level deny policy
+    # so an explicitly disabled server stays disabled. If that policy cannot be
+    # read, fail closed rather than potentially bypass a saved rejection. The
+    # `trust_lists is not None` guard holds whenever `additional_configs` is
+    # non-empty (the load above ran); it only narrows the type.
+    if additional_configs and trust_lists is not None:
+        plugin_project_root = _resolve_project_config_base(project_context)
+        for plugin_config in additional_configs:
+            if not isinstance(plugin_config, dict):
+                continue
+            plugin_servers = plugin_config.get("mcpServers")
+            if plugin_servers is None or (
+                isinstance(plugin_servers, dict) and not plugin_servers
+            ):
+                # No servers to contribute; nothing to trust-filter.
+                continue
+            if not isinstance(plugin_servers, dict):
+                # A present-but-malformed `mcpServers` (e.g. a list or string)
+                # is a plugin authoring mistake; surface it instead of dropping
+                # it silently, mirroring how project configs report bad shapes.
+                config_load_errors.append(
+                    (
+                        Path("<plugin>"),
+                        (
+                            "plugin 'mcpServers' must be a mapping of name to "
+                            "server definition, got "
+                            f"{type(plugin_servers).__name__}"
+                        ),
+                    )
+                )
+                continue
+            plugin_kept = filter_trusted_project_servers(
+                plugin_servers,
+                trust_lists,
+                project_root=plugin_project_root,
+                config_trusted=not trust_lists.load_failed,
+            )
+            plugin_dropped = [
+                name for name in plugin_servers if name not in plugin_kept
+            ]
+            if plugin_dropped:
+                logger.warning(
+                    "Skipped plugin MCP servers denied by an explicit disable or "
+                    "an unreadable trust policy: %s",
+                    ", ".join(sorted(plugin_dropped)),
+                )
+            if plugin_kept:
+                configs.append({**plugin_config, "mcpServers": plugin_kept})
+
+    loaded_project_configs: list[tuple[Path, dict[str, Any]]] = []
+
     for path in project_configs:
-        config, error = load_mcp_config_with_error(path)
+        config, error = _load_mcp_config_top_level_with_error(path)
         if error is not None:
             config_load_errors.append((path, error))
-        if config is None:
-            continue
+        if config is not None:
+            loaded_project_configs.append((path, config))
 
-        project_servers = extract_project_server_summaries(config)
-        if not project_servers:
-            configs.append(config)
-            continue
+    if loaded_project_configs and trust_lists is not None:
+        # `trust_lists` was loaded above because `project_configs` is non-empty
+        # here; the `is not None` guard only narrows the type. Its read/migration
+        # notices were already surfaced once at the shared load site.
+        project_config, server_sources = _merge_mcp_configs_with_sources(
+            loaded_project_configs
+        )
+        project_servers = extract_project_server_summaries(project_config)
 
-        if trust_project_mcp is True:
-            configs.append(config)
-            continue
+        # Whole-config trust comes only from the flag (`--trust-project-mcp`
+        # or the interactive approval prompt's decision). Without it, servers
+        # load solely via the user's scoped approvals below.
+        config_trusted = trust_project_mcp is True
 
-        if trust_project_mcp is None and project_trusted is None:
-            from deepagents_code.mcp_trust import (
-                compute_config_fingerprint,
-                is_project_mcp_trusted,
+        if trust_lists.load_failed:
+            # Fail closed: the user's allow/deny policy could not be read,
+            # so do not honor whole-config trust. Env-enabled names still
+            # survive because the trust-list loader discards scoped
+            # approvals when it records a read error.
+            config_trusted = False
+
+        # Resolve precedence before trust. If a higher-precedence file changes
+        # an approved server, rejecting that winning definition must not reveal
+        # the stale approved definition beneath it. Every server — even a
+        # malformed one — passes through the trust filter, so no entry can reach
+        # `configs` without a trust decision (defense in depth against a future
+        # validator that accepts a shape `extract_project_server_summaries`
+        # currently skips).
+        kept: dict[str, Any] = {}
+        for name, server in project_config["mcpServers"].items():
+            source = server_sources[name]
+            # Indexed, not `.get`: see `MCPConfigSources.project_roots`.
+            project_root = project_roots[source]
+            kept.update(
+                filter_trusted_project_servers(
+                    {name: server},
+                    trust_lists,
+                    project_root=project_root,
+                    config_trusted=config_trusted,
+                )
             )
 
-            project_root = str(_resolve_project_config_base(project_context).resolve())
-            fingerprint = compute_config_fingerprint(project_configs)
-            project_trusted = is_project_mcp_trusted(project_root, fingerprint)
+        if kept:
+            filtered = {**project_config, "mcpServers": kept}
+            valid, errors = _drop_invalid_mcp_config_servers(filtered)
+            for name, error in errors.items():
+                logger.warning(
+                    "Skipping invalid trusted project MCP server %r: %s",
+                    name,
+                    error,
+                )
+                config_load_errors.append((server_sources[name], error))
+            if valid["mcpServers"]:
+                configs.append(valid)
+        elif not project_servers:
+            # Nothing was trusted and no dict server produced a summary, so
+            # every entry is malformed. Re-validate the merged config (no second
+            # file read) to surface a precise per-server error instead of
+            # dropping the file silently.
+            try:
+                _validate_mcp_config_servers(project_config)
+            except (ValueError, TypeError, RuntimeError) as exc:
+                config_load_errors.append((loaded_project_configs[-1][0], str(exc)))
 
-        if project_trusted is True:
-            configs.append(config)
-            continue
-
-        # Untrusted project config: drop ALL servers (stdio + remote). Remote
-        # entries from an attacker-controlled .mcp.json can SSRF localhost or
-        # cloud metadata endpoints during the preflight HEAD probe, and any
-        # `${VAR}` references in their `headers` would exfiltrate the value
-        # to the attacker URL during the discovery handshake.
-        skipped = [
-            f"- {name} [{kind}]: {summary}" for name, kind, summary in project_servers
-        ]
-        skipped_list = "\n".join(skipped)
-        if trust_project_mcp is False:
-            logger.warning(
-                "Skipped untrusted project MCP servers:\n%s",
-                skipped_list,
-            )
-        else:
-            logger.warning(
-                "Skipped untrusted project MCP servers "
-                "(config changed or not yet approved):\n%s",
-                skipped_list,
+        # Servers dropped by the trust decision are logged only after
+        # precedence resolution, so shadowed definitions cannot be reported
+        # or loaded as if they were still active.
+        dropped = [summary for summary in project_servers if summary.name not in kept]
+        if dropped:
+            _log_skipped_project_servers(
+                dropped,
+                trust_project_mcp=trust_project_mcp,
+                config_trusted=config_trusted,
             )
 
     if explicit_config_path:
@@ -1842,9 +3307,19 @@ async def resolve_and_load_mcp_tools(
     if not merged.get("mcpServers"):
         return [], None, _bad_config_infos()
 
+    from deepagents_code.configuration.service import ManagedConfigError
     from deepagents_code.mcp_disabled import get_disabled_servers
 
-    disabled_names = get_disabled_servers()
+    try:
+        disabled_names = get_disabled_servers()
+    except ManagedConfigError:
+        # The managed deny list is unreadable, so no server can be shown to be
+        # permitted. Deny every one rather than start the servers an
+        # administrator may have blocked.
+        logger.error(  # noqa: TRY400
+            "Managed MCP policy is unreadable; disabling all MCP servers."
+        )
+        disabled_names = set(merged["mcpServers"])
     disabled_infos: list[MCPServerInfo] = []
     if disabled_names:
         active: dict[str, Any] = {}
@@ -1857,7 +3332,7 @@ async def resolve_and_load_mcp_tools(
                         if isinstance(server_config, dict)
                         else "unknown",
                         status="disabled",
-                        error="Disabled by user (`/mcp` F2 to re-enable).",
+                        error="Disabled by user (F2 to re-enable).",
                     ),
                 )
             else:

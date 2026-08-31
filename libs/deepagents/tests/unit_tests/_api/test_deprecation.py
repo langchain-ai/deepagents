@@ -215,14 +215,6 @@ def test_conftest_dedupe_targets_cover_known_deprecations() -> None:
     target_names = {getattr(t.fget if isinstance(t, property) else t, "__qualname__", repr(t)) for t in _DEDUPED_TARGETS}
 
     expected_subset = {
-        "BackendProtocol.ls_info",
-        "BackendProtocol.als_info",
-        "BackendProtocol.glob_info",
-        "BackendProtocol.aglob_info",
-        "BackendProtocol.grep_raw",
-        "BackendProtocol.agrep_raw",
-        "_NamespaceRuntimeCompat.runtime",
-        "_NamespaceRuntimeCompat.state",
         "get_default_model",
     }
     missing = expected_subset - target_names

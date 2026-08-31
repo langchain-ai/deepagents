@@ -115,7 +115,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.runtime import Runtime
 
-    from deepagents.backends.protocol import BACKEND_TYPES, BackendProtocol
+    from deepagents.backends.protocol import BackendProtocol
 
 from typing import NotRequired, TypedDict
 
@@ -126,10 +126,11 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
-from langgraph.prebuilt import ToolRuntime
 
-from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult, _resolve_backend
+from deepagents.backends.protocol import FILE_NOT_FOUND, FileDownloadResponse, LsResult
 from deepagents.backends.utils import to_posix_path
 from deepagents.middleware._utils import append_to_system_message
 
@@ -351,12 +352,18 @@ def _validate_skill_name(name: str, directory_name: str) -> tuple[bool, str]:
 
 
 def _parse_allowed_tools(raw_tools: object, skill_path: str) -> list[str]:
-    """Parse the `allowed-tools` frontmatter value into a list of tool names."""
+    """Parse the `allowed-tools` frontmatter value into a list of tool names.
+
+    Accepts either a space- or comma-separated string or a YAML list of strings.
+    Non-string list items and empty entries are skipped.
+    """
     if isinstance(raw_tools, str):
-        return [t.strip(",").strip() for t in raw_tools.split() if t.strip(",").strip()]
+        return [tool for tool in re.split(r"[\s,]+", raw_tools) if tool]
+    if isinstance(raw_tools, list):
+        return [t.strip() for t in raw_tools if isinstance(t, str) and t.strip()]
     if raw_tools is not None:
         logger.warning(
-            "Ignoring non-string 'allowed-tools' in %s (got %s)",
+            "Ignoring 'allowed-tools' in %s: expected a string or list, got %s",
             skill_path,
             type(raw_tools).__name__,
         )
@@ -426,9 +433,15 @@ def _parse_skill_metadata(
     description_str = description
     if len(description_str) > MAX_SKILL_DESCRIPTION_LENGTH:
         logger.warning(
-            "Description exceeds %d characters in %s, truncating",
-            MAX_SKILL_DESCRIPTION_LENGTH,
+            "Skill description in %s is %d characters, over the Agent Skills "
+            "spec limit of %d. Keeping only the first %d characters; the rest "
+            "is dropped from what the model sees when deciding whether to use "
+            "this skill. Shorten the 'description' field in the SKILL.md "
+            "frontmatter to stay within the limit.",
             skill_path,
+            len(description_str),
+            MAX_SKILL_DESCRIPTION_LENGTH,
+            MAX_SKILL_DESCRIPTION_LENGTH,
         )
         description_str = description_str[:MAX_SKILL_DESCRIPTION_LENGTH]
 
@@ -437,9 +450,14 @@ def _parse_skill_metadata(
     compatibility_str = str(frontmatter_data.get("compatibility", "")).strip() or None
     if compatibility_str and len(compatibility_str) > MAX_SKILL_COMPATIBILITY_LENGTH:
         logger.warning(
-            "Compatibility exceeds %d characters in %s, truncating",
-            MAX_SKILL_COMPATIBILITY_LENGTH,
+            "Skill compatibility in %s is %d characters, over the Agent Skills "
+            "spec limit of %d. Keeping only the first %d characters and dropping "
+            "the rest. Shorten the 'compatibility' field in the SKILL.md "
+            "frontmatter to stay within the limit.",
             skill_path,
+            len(compatibility_str),
+            MAX_SKILL_COMPATIBILITY_LENGTH,
+            MAX_SKILL_COMPATIBILITY_LENGTH,
         )
         compatibility_str = compatibility_str[:MAX_SKILL_COMPATIBILITY_LENGTH]
 
@@ -781,12 +799,15 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         source_labels: Display labels aligned by index with `sources`.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = SkillsState
 
     def __init__(
         self,
         *,
-        backend: BACKEND_TYPES,
+        backend: BackendProtocol,
         sources: Sequence[SkillSource],
         system_prompt: str | None = SKILLS_SYSTEM_PROMPT,
     ) -> None:
@@ -830,35 +851,6 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         self.sources: list[str] = [_source_path(s) for s in sources]
         self.source_labels: list[str] = [_derive_source_label(s) for s in sources]
         self.system_prompt_template = system_prompt
-
-    def _get_backend(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> BackendProtocol:
-        """Resolve backend from instance or factory.
-
-        Args:
-            state: Current agent state.
-            runtime: Runtime context for factory functions.
-            config: Runnable config to pass to backend factory.
-
-        Returns:
-            Resolved backend instance
-        """
-        if callable(self._backend):
-            # Construct an artificial tool runtime to resolve backend factory
-            tool_runtime = ToolRuntime(
-                state=state,
-                context=runtime.context,
-                stream_writer=runtime.stream_writer,
-                store=runtime.store,
-                config=config,
-                tool_call_id=None,
-            )
-            backend = _resolve_backend(self._backend, tool_runtime)
-            if backend is None:
-                msg = "SkillsMiddleware requires a valid backend instance"
-                raise AssertionError(msg)
-            return backend
-
-        return self._backend
 
     def _format_skills_locations(self) -> str:
         """Format skills locations for display in system prompt."""
@@ -938,7 +930,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
 
         return request.override(system_message=new_system_message)
 
-    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+    def before_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (synchronous).
 
         Loads skills once per session from all configured sources. If
@@ -960,8 +952,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 
@@ -984,7 +975,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
             update["skills_load_errors"] = skills_load_errors
         return update
 
-    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]
+    async def abefore_agent(self, state: SkillsState, runtime: Runtime, config: RunnableConfig) -> SkillsStateUpdate | None:  # ty: ignore[invalid-method-override]  # noqa: ARG002
         """Load skills metadata before agent execution (async).
 
         Loads skills once per session from all configured sources. If
@@ -1006,8 +997,7 @@ class SkillsMiddleware(AgentMiddleware[SkillsState, ContextT, ResponseT]):
         if "skills_metadata" in state:
             return None
 
-        # Resolve backend (supports both direct instances and factory functions)
-        backend = self._get_backend(state, runtime, config)
+        backend = self._backend
         all_skills: dict[str, SkillMetadata] = {}
         skills_load_errors: list[str] = []
 

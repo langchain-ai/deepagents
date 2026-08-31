@@ -8,7 +8,7 @@ Directory structure:
 
 Example file (researcher/AGENTS.md):
     ---
-    name: researcher
+    name: researcher  # optional; defaults to the folder name
     description: Research topics on the web before writing content
     model: anthropic:claude-haiku-4-5-20251001
     ---
@@ -18,6 +18,14 @@ Example file (researcher/AGENTS.md):
     ## Your Process
     1. Search for relevant information
     2. Summarize findings clearly
+
+The `name` field is optional; when omitted it defaults to the folder name
+(e.g. `researcher`). This diverges from the Agent Skills specification
+(`deepagents.middleware.skills`), which requires `name` in frontmatter and
+warns when it does not match the parent directory name. Subagents use the
+folder name as an implicit fallback instead because subagent definitions are
+already uniquely identified by their folder — requiring a redundant `name`
+field adds friction without adding information.
 """
 
 from __future__ import annotations
@@ -56,14 +64,26 @@ class SubagentMetadata(TypedDict):
     """Absolute path to the subagent definition file."""
 
 
-def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
+def _parse_subagent_file(
+    file_path: Path, *, fallback_name: str | None = None
+) -> SubagentMetadata | None:
     """Parse a subagent markdown file with YAML frontmatter.
 
     The file must have YAML frontmatter (delimited by ---) containing at minimum
-    'name' and 'description' fields. The body of the file becomes the system_prompt.
+    a 'description' field. The body of the file becomes the system_prompt.
+
+    Unlike the Agent Skills spec, `name` is optional here — when omitted the
+    folder name passed via `fallback_name` is used instead. Skills require
+    `name` in frontmatter and warn when it doesn't match the directory name;
+    subagents relax that to a fallback so users don't repeat the folder name
+    redundantly.
 
     Args:
         file_path: Path to the markdown file.
+        fallback_name: Name to use when the frontmatter omits `name` entirely.
+            A present-but-empty, whitespace-only, or non-string `name` is
+            treated as invalid and rejected rather than falling back, so a typo
+            surfaces loudly instead of being silently masked by the folder name.
 
     Returns:
         SubagentMetadata if parsing succeeds, None otherwise.
@@ -79,7 +99,7 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     if not match:
         logger.warning(
             "Skipping subagent %s: missing YAML frontmatter. The file must start "
-            "with a '---' delimited block containing 'name' and 'description'.",
+            "with a '---' delimited block containing at least 'description'.",
             file_path,
         )
         return None
@@ -95,27 +115,36 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
     # Validate frontmatter structure and required fields
     if not isinstance(frontmatter, dict):
         logger.warning(
-            "Skipping subagent %s: frontmatter must be a mapping with 'name' and "
-            "'description' fields.",
+            "Skipping subagent %s: frontmatter must be a mapping with a "
+            "'description' field.",
             file_path,
         )
         return None
 
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
+    name_value = frontmatter.get("name", fallback_name)
+    description_value = frontmatter.get("description")
     model = frontmatter.get("model")
 
-    # Validate types: name and description must be non-empty strings
-    # model is optional but must be string if present
-    name_valid = isinstance(name, str) and name
-    description_valid = isinstance(description, str) and description
+    # Validate types: name and description must be non-empty strings (leading and
+    # trailing whitespace is stripped, so a whitespace-only value is rejected).
+    # model is optional but must be a string if present.
+    name = (
+        name_value.strip()
+        if isinstance(name_value, str) and name_value.strip()
+        else None
+    )
+    description = (
+        description_value.strip()
+        if isinstance(description_value, str) and description_value.strip()
+        else None
+    )
     model_valid = model is None or isinstance(model, str)
 
-    if not (name_valid and description_valid and model_valid):
+    if name is None or description is None or not model_valid:
         invalid_fields: list[str] = []
-        if not name_valid:
+        if name is None:
             invalid_fields.append("name (non-empty string required)")
-        if not description_valid:
+        if description is None:
             invalid_fields.append("description (non-empty string required)")
         if not model_valid:
             invalid_fields.append("model (string required when present)")
@@ -125,6 +154,15 @@ def _parse_subagent_file(file_path: Path) -> SubagentMetadata | None:
             ", ".join(invalid_fields),
         )
         return None
+
+    if "name" not in frontmatter:
+        # Fallback engaged. Log it so a typo'd key (e.g. `nmae:`) that silently
+        # resolves to the folder name is at least diagnosable at debug level.
+        logger.debug(
+            "Subagent %s: 'name' omitted from frontmatter; using folder name %r.",
+            file_path,
+            name,
+        )
 
     return {
         "name": name,
@@ -186,19 +224,19 @@ def _load_subagents_from_dir(
                 )
             continue
 
-        subagent = _parse_subagent_file(subagent_file)
+        subagent = _parse_subagent_file(subagent_file, fallback_name=entry.name)
         if subagent:
             subagent["source"] = source
-            # The folder name and the frontmatter `name` are independent, so two
-            # folders can declare the same `name` and silently collapse to one
-            # entry. Iteration order is filesystem-dependent, so warn rather than
-            # let a definition vanish without explanation.
+            # The folder name and a declared `name` can differ, so two folders can
+            # resolve to the same subagent name and silently collapse to one entry.
+            # Iteration order is filesystem-dependent, so warn rather than let a
+            # definition vanish without explanation.
             existing = subagents.get(subagent["name"])
             if existing is not None:
                 logger.warning(
-                    "Subagent name collision in %s: %s and %s both declare "
-                    "name=%r. Using %s; give each subagent a unique 'name' in "
-                    "its frontmatter.",
+                    "Subagent name collision in %s: %s and %s both resolve to "
+                    "name=%r. Using %s; give each subagent a unique folder or "
+                    "frontmatter 'name'.",
                     agents_dir,
                     existing["path"],
                     subagent["path"],

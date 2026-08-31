@@ -1,13 +1,15 @@
 """Async tests for FilesystemBackend."""
 
+import time
 from pathlib import Path
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
+from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import EditResult, ReadResult, WriteResult
+from deepagents.backends.utils import format_grep_matches
 from deepagents.middleware.filesystem import FilesystemMiddleware
 
 
@@ -214,20 +216,11 @@ async def test_filesystem_backend_als_trailing_slash(tmp_path: Path):
 async def test_filesystem_backend_intercept_large_tool_result_async(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception in async context."""
     root = tmp_path
-    rt = ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id="test_fs",
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -509,6 +502,37 @@ async def test_filesystem_agrep_with_glob(tmp_path: Path):
     assert any("test.py" in p for p in py_files)
     assert any("main.py" in p for p in py_files)
     assert not any("test.txt" in p for p in py_files)
+
+
+async def test_filesystem_agrep_with_context(tmp_path: Path):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nneedle\nafter\n")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+    result = await backend.agrep("needle", path="/", context_lines=1)
+
+    assert result.matches is not None
+    assert format_grep_matches(result.matches, "content") == "/sample.txt:\n  1- before\n  2: needle\n  3- after"
+    with pytest.raises(ValueError, match="context_lines must be non-negative"):
+        await backend.agrep("needle", path="/", context_lines=-1)
+
+
+async def test_filesystem_agrep_with_context_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    target = tmp_path / "sample.txt"
+    target.write_text("before\nneedle\nafter\n")
+    backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+    def slow_grep(*_args: object, **_kwargs: object) -> None:
+        time.sleep(0.5)
+
+    monkeypatch.setattr(fs_module, "ASYNC_GREP_TIMEOUT", 0.01)
+    monkeypatch.setattr(backend, "grep", slow_grep)
+
+    result = await backend.agrep("needle", path="/", context_lines=1)
+
+    assert result.matches is None
+    assert result.error is not None
+    assert "timed out" in result.error
 
 
 async def test_filesystem_aglob_recursive(tmp_path: Path):

@@ -29,12 +29,12 @@ class SandboxInstallHint:
 
         Args:
             in_app: Whether to render the in-app slash command (`/install`)
-                rather than the CLI command (`dcode --install`).
+                rather than the CLI command (`dcode install`).
 
         Returns:
             The install command string.
         """
-        prefix = "/install" if in_app else "dcode --install"
+        prefix = "/install" if in_app else "dcode install"
         suffix = " --package" if self.kind == "package" else ""
         return f"{prefix} {self.name}{suffix}"
 

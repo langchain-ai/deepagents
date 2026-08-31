@@ -2,53 +2,53 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import shlex
+import shutil
+import signal
+import stat
+import subprocess
 import sys
+import sysconfig
+import tempfile
+import threading
 import time
-import tomllib
-from collections.abc import Mapping, Sequence  # noqa: TC003
+from collections.abc import Iterator, Mapping, Sequence  # noqa: TC003
+from contextlib import contextmanager, nullcontext
+from itertools import starmap
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, mock_open, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from packaging.version import InvalidVersion, Version
 
+from deepagents_code import _paths, update_check
 from deepagents_code._version import __version__
 from deepagents_code.extras_info import ExtrasIntrospectionError, installed_extra_names
 from deepagents_code.update_check import (
     CACHE_TTL,
-    DependencyChange,
+    ExtraInstallOutcome,
     InstallMethod,
     ShadowedDcode,
     ToolRequirementIntrospectionError,
     _extract_release_times,
     _install_extra_uv_tool_command,
-    _latest_from_releases,
     _note_install_baseline,
-    _parse_version,
-    _requires_prerelease_dependency,
+    _prerelease_constraints_file,
+    _prerelease_pin_requirements,
+    _terminate_install_process,
     _uv_tool_bin_dir,
+    _write_release_prerelease_pins,
+    cached_release_requires_prereleases,
     cleanup_update_logs,
-    clear_update_notified,
-    create_update_log_path,
-    dependency_refresh_command,
+    clear_resume_auto_update_deferral,
+    clear_startup_auto_update_failure,
     dependency_refresh_dry_run_command,
-    dependency_refresh_supported,
-    detect_install_method,
     detect_shadowed_dcode,
-    detect_shadowed_dcode_safe,
     editable_extra_hint,
-    editable_package_hint,
-    format_age_suffix,
-    format_dependency_changes,
-    format_installed_age_suffix,
-    format_release_age,
-    format_release_age_parenthetical,
-    format_sdk_age_suffix,
-    format_sdk_release_age,
+    format_log_follow_command,
     format_shadowed_dcode_fix_command,
     format_shadowed_dcode_warning,
     get_cached_update_available,
@@ -63,27 +63,31 @@ from deepagents_code.update_check import (
     install_package_command,
     is_auto_update_enabled,
     is_auto_update_explicitly_set,
+    is_installation_stale,
     is_installed_version_at_least,
     is_update_available,
-    is_valid_extra_name,
+    is_update_cache_fresh,
+    is_update_check_enabled,
     is_valid_package_name,
     mark_auto_update_default_acknowledged,
+    mark_startup_auto_update_failed,
     mark_update_notified,
     mark_version_seen,
-    parse_dependency_changes,
-    perform_dependency_refresh,
-    perform_dependency_refresh_dry_run,
     perform_install_extra,
     perform_install_package,
     perform_upgrade,
-    prerelease_upgrade_supported,
+    read_installed_distribution_version,
+    release_prerelease_pins,
     release_requires_prereleases,
-    set_auto_update,
+    safe_install_extra_recovery_command,
     should_announce_auto_update_default,
+    should_defer_startup_auto_update_for_resume,
     should_notify_update,
-    upgrade_command,
+    should_skip_startup_auto_update_after_failure,
+    update_install_lock,
     upgrade_install_command,
 )
+from unit_tests.conftest import redirect_managed_config
 
 
 @pytest.fixture
@@ -160,37 +164,6 @@ def _write_uv_receipt(
     )
 
 
-class TestParseVersion:
-    def test_basic(self) -> None:
-        assert _parse_version("1.2.3") == Version("1.2.3")
-
-    def test_single_digit(self) -> None:
-        assert _parse_version("0") == Version("0")
-
-    def test_whitespace(self) -> None:
-        assert _parse_version("  1.0.0  ") == Version("1.0.0")
-
-    def test_prerelease(self) -> None:
-        result = _parse_version("1.2.3rc1")
-        assert result == Version("1.2.3rc1")
-        assert result.is_prerelease
-
-    def test_alpha(self) -> None:
-        result = _parse_version("1.2.3a1")
-        assert result == Version("1.2.3a1")
-        assert result.is_prerelease
-
-    def test_empty_raises(self) -> None:
-        with pytest.raises(InvalidVersion):
-            _parse_version("")
-
-    def test_ordering(self) -> None:
-        assert _parse_version("1.0.0a1") < _parse_version("1.0.0a2")
-        assert _parse_version("1.0.0a2") < _parse_version("1.0.0b1")
-        assert _parse_version("1.0.0b1") < _parse_version("1.0.0rc1")
-        assert _parse_version("1.0.0rc1") < _parse_version("1.0.0")
-
-
 class TestInstalledVersionAtLeast:
     def test_true_when_distribution_metadata_matches_target(self) -> None:
         with patch("importlib.metadata.version", return_value="2.0.0"):
@@ -205,46 +178,97 @@ class TestInstalledVersionAtLeast:
             assert is_installed_version_at_least("2.0.0") is False
 
 
-class TestLatestFromReleases:
-    def test_stable_only(self) -> None:
-        releases = {
-            "1.0.0": [{"filename": "a.tar.gz"}],
-            "1.1.0a1": [{"filename": "b.tar.gz"}],
-            "0.9.0": [{"filename": "c.tar.gz"}],
-        }
-        assert _latest_from_releases(releases, include_prereleases=False) == "1.0.0"
+class TestReadInstalledDistributionVersion:
+    """Readback of the on-disk tool environment after an upgrade."""
 
-    def test_include_prereleases(self) -> None:
-        releases = {
-            "1.0.0": [{"filename": "a.tar.gz"}],
-            "1.1.0a1": [{"filename": "b.tar.gz"}],
-        }
-        assert _latest_from_releases(releases, include_prereleases=True) == "1.1.0a1"
+    @staticmethod
+    def _fake_tool_env(
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        *dist_info_names: str,
+    ) -> Path:
+        site_packages = tmp_path / "site-packages"
+        site_packages.mkdir(parents=True)
+        for name in dist_info_names:
+            (site_packages / name).mkdir()
+        monkeypatch.setattr(sysconfig, "get_path", lambda _key: str(site_packages))
+        return site_packages
 
-    def test_skips_empty_releases(self) -> None:
-        releases = {
-            "2.0.0": [],
-            "1.0.0": [{"filename": "a.tar.gz"}],
-        }
-        assert _latest_from_releases(releases, include_prereleases=False) == "1.0.0"
+    def test_reads_dist_info_from_disk(self, tmp_path, monkeypatch) -> None:
+        """The version comes from the dist-info directory, not `__version__`."""
+        self._fake_tool_env(tmp_path, monkeypatch, "deepagents_code-2.0.1.dist-info")
+        with patch("deepagents_code.update_check.__version__", "1.0.0"):
+            assert read_installed_distribution_version() == "2.0.1"
 
-    def test_skips_invalid_versions(self) -> None:
-        releases = {
-            "not-a-version": [{"filename": "a.tar.gz"}],
-            "1.0.0": [{"filename": "b.tar.gz"}],
-        }
-        assert _latest_from_releases(releases, include_prereleases=False) == "1.0.0"
+    def test_missing_dist_info_returns_none(self, tmp_path, monkeypatch) -> None:
+        self._fake_tool_env(tmp_path, monkeypatch)
+        assert read_installed_distribution_version() is None
 
-    def test_empty_releases(self) -> None:
-        assert _latest_from_releases({}, include_prereleases=False) is None
+    def test_multiple_dist_infos_are_ambiguous(self, tmp_path, monkeypatch) -> None:
+        self._fake_tool_env(
+            tmp_path,
+            monkeypatch,
+            "deepagents_code-2.0.0.dist-info",
+            "deepagents_code-2.0.1.dist-info",
+        )
+        assert read_installed_distribution_version() is None
 
-    def test_no_stable_releases(self) -> None:
-        releases = {
-            "1.0.0a1": [{"filename": "a.tar.gz"}],
-            "1.0.0b1": [{"filename": "b.tar.gz"}],
-        }
-        assert _latest_from_releases(releases, include_prereleases=False) is None
-        assert _latest_from_releases(releases, include_prereleases=True) == "1.0.0b1"
+    def test_unparseable_dist_info_version_returns_none(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        self._fake_tool_env(
+            tmp_path, monkeypatch, "deepagents_code-not.a.version.dist-info"
+        )
+        assert read_installed_distribution_version() is None
+
+    def test_unreadable_site_packages_returns_none(self, tmp_path, monkeypatch) -> None:
+        site_packages = self._fake_tool_env(tmp_path, monkeypatch)
+        site_packages.rmdir()
+        site_packages.write_text("not a directory", encoding="utf-8")
+        assert read_installed_distribution_version() is None
+
+    def test_windows_layout_resolves(self, tmp_path, monkeypatch) -> None:
+        """Windows tool envs live at `<prefix>/Lib/site-packages`, not POSIX's.
+
+        Regression guard for the hard-coded `lib/pythonX.Y/site-packages`
+        layout that made every Windows readback return `None`: the reader must
+        go through `sysconfig`'s purelib instead of building the path by hand.
+        """
+        site_packages = tmp_path / "Lib" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "deepagents_code-2.0.1.dist-info").mkdir()
+        monkeypatch.setattr(sysconfig, "get_path", lambda _key: str(site_packages))
+        assert read_installed_distribution_version() == "2.0.1"
+
+
+class TestCachedReleaseRequiresPrereleases:
+    def test_stale_cache_does_not_report_prerelease_pin(self, cache_file) -> None:
+        """Stale prerequisite metadata is not treated as authoritative."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time() - CACHE_TTL - 1,
+                    "release_prerelease_pins": {"99.0.0": ["deepagents==0.7.0a7"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is None
+
+    def test_invalid_cached_pin_is_rejected(self, cache_file) -> None:
+        """Untrusted cache directives never influence the upgrade command."""
+        cache_file.write_text(
+            json.dumps(
+                {
+                    "checked_at": time.time(),
+                    "release_prerelease_pins": {"99.0.0": ["-r /tmp/evil"]},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        assert cached_release_requires_prereleases("99.0.0") is None
 
 
 class TestCachedUpdateAvailable:
@@ -307,218 +331,54 @@ class TestCachedUpdateAvailable:
         assert get_cached_update_available() == (False, __version__)
 
 
-class TestGetLastUpdateCheckTime:
-    def test_reads_checked_at(self, cache_file) -> None:
-        """The stored `checked_at` epoch is returned as a float."""
-        now = time.time()
-        cache_file.write_text(json.dumps({"checked_at": now}), encoding="utf-8")
-        assert get_last_update_check_time() == pytest.approx(now)
+class TestIsUpdateCacheFresh:
+    """Unit tests for `is_update_cache_fresh`."""
 
-    def test_missing_cache_returns_none(self, cache_file) -> None:  # noqa: ARG002
-        """An absent cache yields `None`."""
-        assert get_last_update_check_time() is None
+    def test_recent_stamp_is_fresh(self) -> None:
+        """A stamp inside the TTL window is fresh."""
+        assert is_update_cache_fresh(time.time() - 60) is True
 
-    def test_corrupt_cache_returns_none(self, cache_file) -> None:
-        """Unparseable cache data fails soft to `None`."""
-        cache_file.write_text("{not valid json", encoding="utf-8")
-        assert get_last_update_check_time() is None
+    def test_expired_stamp_is_not_fresh(self) -> None:
+        """A stamp at or past the TTL boundary is not fresh."""
+        assert is_update_cache_fresh(time.time() - CACHE_TTL) is False
+        assert is_update_cache_fresh(time.time() - CACHE_TTL - 1) is False
 
-    def test_non_numeric_checked_at_returns_none(self, cache_file) -> None:
-        """A non-numeric (or boolean) `checked_at` is ignored."""
-        cache_file.write_text(json.dumps({"checked_at": "soon"}), encoding="utf-8")
-        assert get_last_update_check_time() is None
-        cache_file.write_text(json.dumps({"checked_at": True}), encoding="utf-8")
-        assert get_last_update_check_time() is None
+    def test_missing_stamp_is_not_fresh(self) -> None:
+        """No recorded check cannot be fresh."""
+        assert is_update_cache_fresh(None) is False
 
-    @pytest.mark.parametrize("checked_at", [float("nan"), float("inf"), 1e100])
-    def test_invalid_numeric_checked_at_returns_none(
-        self, cache_file, checked_at: float
-    ) -> None:
-        """Invalid numeric `checked_at` values are ignored."""
-        cache_file.write_text(json.dumps({"checked_at": checked_at}), encoding="utf-8")
-        assert get_last_update_check_time() is None
+    def test_separates_fresh_cache_from_missing_answer(self, cache_file) -> None:
+        """A pins-only cache is fresh yet yields no cached version answer.
+
+        `_write_release_prerelease_pins` seeds `checked_at` without any version
+        keys, so freshness and "has an answer" genuinely differ and callers
+        cannot infer staleness from a `None` answer.
+        """
+        _write_release_prerelease_pins("1.1.0", ["deepagents==0.7.0a2"])
+
+        assert get_cached_update_available() == (False, None)
+        assert is_update_cache_fresh(get_last_update_check_time()) is True
+        assert cache_file.exists()
 
 
 class TestGetLatestVersion:
-    def test_fresh_fetch(self, cache_file) -> None:
-        """Successful PyPI fetch writes cache and returns version."""
-        with patch("requests.get", return_value=_mock_pypi_response("2.0.0")):
-            result = get_latest_version()
-
-        assert result == "2.0.0"
-        assert cache_file.exists()
-        data = json.loads(cache_file.read_text())
-        assert data["version"] == "2.0.0"
-        assert "checked_at" in data
-
-    def test_fresh_fetch_caches_prerelease_dependency_requirement(
-        self, cache_file
-    ) -> None:
+    def test_fresh_fetch_caches_prerelease_dependency_pins(self, cache_file) -> None:
         """Stable dcode releases can intentionally pin pre-release dependencies."""
         with patch(
             "requests.get",
             return_value=_mock_pypi_response(
                 "2.0.0",
-                requires_dist=("deepagents==0.7.0a2",),
+                requires_dist=("deepagents==0.7.0a2", "litellm<1.93.0a0"),
             ),
         ):
             result = get_latest_version()
 
         assert result == "2.0.0"
-        assert release_requires_prereleases("2.0.0") is True
+        # Only the mandatory exact pre-release pin is cached; the pre-release
+        # upper bound on litellm is not a targeted constraint.
+        assert release_prerelease_pins("2.0.0") == ["deepagents==0.7.0a2"]
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"] == {"2.0.0": True}
-
-    def test_fresh_fetch_prerelease(self, cache_file) -> None:
-        """PyPI fetch with include_prereleases returns pre-release version."""
-        releases = {
-            "2.0.0": [{"filename": "a.tar.gz"}],
-            "2.1.0a1": [{"filename": "b.tar.gz"}],
-        }
-        with patch(
-            "requests.get",
-            return_value=_mock_pypi_response("2.0.0", releases=releases),
-        ):
-            result = get_latest_version(include_prereleases=True)
-
-        assert result == "2.1.0a1"
-        data = json.loads(cache_file.read_text())
-        assert data["version"] == "2.0.0"
-        assert data["version_prerelease"] == "2.1.0a1"
-
-    def test_cached_hit(self, cache_file) -> None:
-        """Fresh cache returns version without HTTP call."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "version": "1.5.0",
-                    "release_times": {__version__: "2026-04-01T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        with patch("requests.get") as mock_get:
-            result = get_latest_version()
-
-        assert result == "1.5.0"
-        mock_get.assert_not_called()
-
-    def test_cached_hit_missing_installed_release_time_triggers_fetch(
-        self, cache_file
-    ) -> None:
-        """Old cache files are refreshed so installed age notices have data."""
-        cache_file.write_text(
-            json.dumps({"version": "1.5.0", "checked_at": time.time()})
-        )
-        releases = {
-            "2.0.0": [{"filename": "a.tar.gz"}],
-            __version__: [{"filename": "installed.tar.gz"}],
-        }
-        with patch(
-            "requests.get",
-            return_value=_mock_pypi_response(
-                "2.0.0",
-                releases=releases,
-                release_times={__version__: "2026-04-01T12:00:00Z"},
-            ),
-        ) as mock_get:
-            result = get_latest_version()
-
-        assert result == "2.0.0"
-        mock_get.assert_called_once()
-        data = json.loads(cache_file.read_text())
-        assert data["release_times"][__version__] == "2026-04-01T12:00:00Z"
-
-    def test_cached_hit_missing_installed_release_time_falls_back_on_fetch_error(
-        self, cache_file
-    ) -> None:
-        """Age metadata refresh failures must not discard a fresh cached version."""
-        cache_file.write_text(
-            json.dumps({"version": "1.5.0", "checked_at": time.time()})
-        )
-        with patch("requests.get", side_effect=OSError("offline")) as mock_get:
-            result = get_latest_version()
-
-        assert result == "1.5.0"
-        mock_get.assert_called_once()
-
-    def test_cached_hit_prerelease(self, cache_file) -> None:
-        """Fresh cache returns pre-release version without HTTP call."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "version": "1.5.0",
-                    "version_prerelease": "1.6.0a1",
-                    "release_times": {__version__: "2026-04-01T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        with patch("requests.get") as mock_get:
-            result = get_latest_version(include_prereleases=True)
-
-        assert result == "1.6.0a1"
-        mock_get.assert_not_called()
-
-    def test_cached_null_prerelease_is_cache_hit(self, cache_file) -> None:
-        """Cache with null prerelease returns None without hitting PyPI."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "version": "1.5.0",
-                    "version_prerelease": None,
-                    "release_times": {__version__: "2026-04-01T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        with patch("requests.get") as mock_get:
-            result = get_latest_version(include_prereleases=True)
-
-        assert result is None
-        mock_get.assert_not_called()
-
-    def test_cached_missing_prerelease_key_triggers_fetch(self, cache_file) -> None:
-        """Cache without pre-release key triggers PyPI fetch."""
-        cache_file.write_text(
-            json.dumps({"version": "1.5.0", "checked_at": time.time()})
-        )
-        releases = {
-            "1.5.0": [{"filename": "a.tar.gz"}],
-            "1.6.0a1": [{"filename": "b.tar.gz"}],
-        }
-        with patch(
-            "requests.get",
-            return_value=_mock_pypi_response("1.5.0", releases=releases),
-        ):
-            result = get_latest_version(include_prereleases=True)
-
-        assert result == "1.6.0a1"
-
-    def test_stale_cache(self, cache_file) -> None:
-        """Expired cache triggers a new HTTP call."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "version": "1.0.0",
-                    "checked_at": time.time() - CACHE_TTL - 1,
-                }
-            )
-        )
-        with patch(
-            "requests.get", return_value=_mock_pypi_response("2.0.0")
-        ) as mock_get:
-            result = get_latest_version()
-
-        assert result == "2.0.0"
-        mock_get.assert_called_once()
-
-    def test_network_error(self, cache_file) -> None:  # noqa: ARG002  # fixture overrides CACHE_FILE
-        """Network failure returns None."""
-        with patch("requests.get", side_effect=OSError("no network")):
-            result = get_latest_version()
-
-        assert result is None
+        assert data["release_prerelease_pins"] == {"2.0.0": ["deepagents==0.7.0a2"]}
 
     def test_corrupt_cache(self, cache_file) -> None:
         """Malformed cache JSON triggers PyPI fetch instead of crashing."""
@@ -528,22 +388,14 @@ class TestGetLatestVersion:
 
         assert result == "3.0.0"
 
-    def test_cache_missing_version_key(self, cache_file) -> None:
-        """Cache with missing version key triggers PyPI fetch."""
-        cache_file.write_text(json.dumps({"checked_at": time.time()}))
-        with patch("requests.get", return_value=_mock_pypi_response("3.0.0")):
-            result = get_latest_version()
-
-        assert result == "3.0.0"
-
     def test_fresh_fetch_preserves_other_release_prerelease_entries(
         self, cache_file
     ) -> None:
-        """A refresh keeps cached pre-release answers for unrelated versions."""
+        """A refresh keeps cached pre-release pins for unrelated versions."""
         cache_file.write_text(
             json.dumps(
                 {
-                    "release_requires_prereleases": {"1.0.0": True},
+                    "release_prerelease_pins": {"1.0.0": ["deepagents==0.6.0a1"]},
                     "checked_at": time.time(),
                 }
             ),
@@ -554,7 +406,10 @@ class TestGetLatestVersion:
 
         assert result == "2.0.0"
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"] == {"1.0.0": True, "2.0.0": False}
+        assert data["release_prerelease_pins"] == {
+            "1.0.0": ["deepagents==0.6.0a1"],
+            "2.0.0": [],
+        }
 
     def test_fresh_fetch_non_dict_info_returns_cached(self, cache_file) -> None:
         """A PyPI payload whose `info` is not an object falls back to cache."""
@@ -579,80 +434,280 @@ class TestGetLatestVersion:
         assert not cache_file.exists()
 
 
-class TestRequiresPrereleaseDependency:
-    """Unit tests for the `Requires-Dist` pre-release detection helper."""
+class TestPrereleasePinRequirements:
+    """Unit tests for the targeted `Requires-Dist` pre-release pin extractor.
+
+    The supported contract is deliberately narrow: only a mandatory,
+    unconditional (marker-free), positive exact (`==`) pin of a pre-release
+    version is admitted, because that is the only shape safe to hand uv as a
+    first-party constraint without widening the candidate set. Everything
+    else — upper bounds, exclusions, extra-gated pins, interpreter/platform
+    markers — is ignored so a global `--prerelease allow` is never needed.
+    """
 
     @pytest.mark.parametrize(
         ("requirements", "expected"),
         [
-            (None, False),
-            ((), False),
-            (("deepagents==0.7.0",), False),
-            (("deepagents==0.7.0a2",), True),
-            (("deepagents>=0.7.0a2",), True),
-            (("deepagents~=0.7.0a2",), True),
-            # Operator-agnostic by design: even an exclusion of a pre-release
-            # flags the release. Errs toward enabling --prerelease (safe).
-            (("deepagents!=0.7.0a1",), True),
-            # Marker-gated pre-release pins still flag the release (conservative).
-            (('deepagents==0.7.0a2; extra=="x"',), True),
-            (("deepagents>=0.7.0,<0.8",), False),
-            (("deepagents",), False),  # no version specifier
-            (("requests>=2", "deepagents==0.7.0a2"), True),  # one of many
-            (("not a valid requirement !!!",), False),  # unparseable -> skipped
-            (("deepagents===not.a.version",), False),  # unparseable version
-            ((123, "deepagents==0.7.0a2"), True),  # non-str entry skipped
-            ((123, 456), False),  # all non-str entries
+            (None, []),
+            ((), []),
+            # (1) Unconditional exact pre-release pin is extracted (canonical).
+            (("deepagents==0.7.0a7",), ["deepagents==0.7.0a7"]),
+            (("deepagents==0.7.0rc1",), ["deepagents==0.7.0rc1"]),
+            # A valid `===` (arbitrary-equality) pin is also admitted and
+            # normalized to `==`.
+            (("deepagents===0.7.0a7",), ["deepagents==0.7.0a7"]),
+            # (2) A stable exact pin is ignored.
+            (("deepagents==0.7.0",), []),
+            # (3) A prerelease upper bound is ignored.
+            (("pydantic<2.14.0a0",), []),
+            (("deepagents>=0.7.0a2",), []),
+            (("deepagents~=0.7.0a2",), []),
+            # (4) A prerelease exclusion is ignored.
+            (("package!=1.0rc1",), []),
+            (("deepagents!=0.7.0a1",), []),
+            # (5) An extra-only prerelease requirement is ignored (not mandatory).
+            (('package==1.0rc1; extra == "unused-extra"',), []),
+            (('deepagents==0.7.0a2; extra=="x"',), []),
+            # (6) Environment markers are outside the unconditional-pin contract:
+            # both an applicable-looking and an inapplicable marker are ignored,
+            # because evaluating them here could target the wrong interpreter.
+            (('deepagents==0.7.0a7; python_version >= "3.8"',), []),
+            (('deepagents==0.7.0a7; python_version < "3.0"',), []),
+            # Compound specifiers are not a single positive exact pin.
+            (("deepagents>=0.7.0a2,<0.8",), []),
+            (("deepagents",), []),  # no version specifier
+            # One qualifying pin among many is still extracted.
+            (("requests>=2", "deepagents==0.7.0a2"), ["deepagents==0.7.0a2"]),
+            (("not a valid requirement !!!",), []),  # unparseable -> skipped
+            (("deepagents===not.a.version",), []),  # unparseable version
+            ((123, "deepagents==0.7.0a2"), ["deepagents==0.7.0a2"]),  # non-str skip
+            ((123, 456), []),  # all non-str entries
         ],
     )
-    def test_detects_prerelease_specifiers(self, requirements, expected) -> None:
-        assert _requires_prerelease_dependency(requirements) is expected
+    def test_extracts_targeted_pins(self, requirements, expected) -> None:
+        assert _prerelease_pin_requirements(requirements) == expected
+
+    def test_names_are_canonicalized(self) -> None:
+        """Pin names are normalized so downstream constraints match uv output."""
+        assert _prerelease_pin_requirements(("Deep_Agents==0.7.0a7",)) == [
+            "deep-agents==0.7.0a7"
+        ]
+
+    def test_multiple_pins_sorted(self) -> None:
+        """Several qualifying pins come back sorted and de-duplicated."""
+        assert _prerelease_pin_requirements(
+            ("zeta==2.0rc1", "alpha==1.0a1", "alpha==1.0a1")
+        ) == ["alpha==1.0a1", "zeta==2.0rc1"]
 
 
-class TestReleaseRequiresPrereleases:
-    """Unit tests for `release_requires_prereleases`."""
+class TestPrereleaseConstraintsFile:
+    """Unit tests for the temporary uv constraints-file context manager."""
 
-    def test_none_version_is_false(self) -> None:
-        """A missing version never needs the pre-release resolver."""
+    def test_empty_pins_yield_none(self) -> None:
+        """No pins means no file and a `None` handle for a single code path."""
+        with _prerelease_constraints_file([]) as path:
+            assert path is None
+
+    def test_writes_pins_and_cleans_up(self) -> None:
+        """The file lists one pin per line and is removed on exit."""
+        with _prerelease_constraints_file(["deepagents==0.7.0a7"]) as path:
+            assert path is not None
+            assert path.exists()
+            assert path.read_text(encoding="utf-8") == "deepagents==0.7.0a7\n"
+            captured = path
+        assert not captured.exists()
+
+    def test_removes_file_even_on_error(self) -> None:
+        """A raised body still triggers cleanup in `finally`."""
+        captured: Path | None = None
+        err = RuntimeError("install blew up")
+        with (  # noqa: PT012
+            pytest.raises(RuntimeError),
+            _prerelease_constraints_file(["deepagents==0.7.0a7"]) as path,
+        ):
+            captured = path
+            assert path is not None
+            assert path.exists()
+            raise err
+        assert captured is not None
+        assert not captured.exists()
+
+    def test_cleanup_error_is_swallowed(self, caplog) -> None:
+        """A failing unlink is logged, not raised — it can't mask a result."""
+        captured: Path | None = None
+        with caplog.at_level(logging.DEBUG, logger="deepagents_code.update_check"):
+            with (
+                patch(
+                    "deepagents_code.update_check.Path.unlink",
+                    side_effect=OSError("busy"),
+                ),
+                _prerelease_constraints_file(["deepagents==0.7.0a7"]) as path,
+            ):
+                assert path is not None
+                captured = path
+                # Exiting the context did not raise despite the unlink failure.
+            assert any(
+                "constraints file" in record.message for record in caplog.records
+            )
+        # The patched unlink blocked the context manager's own cleanup; remove
+        # the real temp file now that the patch is lifted so nothing leaks.
+        if captured is not None:
+            captured.unlink(missing_ok=True)
+
+    def test_write_failure_unlinks_and_raises(self) -> None:
+        """A failed write removes the temp file and propagates the OSError.
+
+        Distinct from the body-raise and unlink-failure paths: here the write to
+        the freshly created `mkstemp` file fails, so the context manager must
+        clean up the file and re-raise (callers treat that as a
+        constraint-generation failure rather than falling back to a global
+        `--prerelease allow`).
+        """
+        created: list[Path] = []
+        real_mkstemp = tempfile.mkstemp
+
+        def _tracking_mkstemp(
+            *, prefix: str | None = None, suffix: str | None = None
+        ) -> tuple[int, str]:
+            fd, name = real_mkstemp(prefix=prefix, suffix=suffix)
+            created.append(Path(name))
+            return fd, name
+
+        with (
+            patch(
+                "deepagents_code.update_check.tempfile.mkstemp",
+                side_effect=_tracking_mkstemp,
+            ),
+            patch(
+                "deepagents_code.update_check.os.fdopen",
+                side_effect=OSError("disk full"),
+            ),
+            pytest.raises(OSError, match="disk full"),
+            _prerelease_constraints_file(["deepagents==0.7.0a7"]),
+        ):
+            pass
+
+        assert created, "mkstemp should have created a file"
+        assert all(not path.exists() for path in created)
+
+
+class TestReleasePrereleasePins:
+    """Unit tests for `release_prerelease_pins` and its boolean wrapper."""
+
+    def test_none_version_is_empty(self) -> None:
+        """A missing version never needs pre-release admission."""
+        assert release_prerelease_pins(None) == []
         assert release_requires_prereleases(None) is False
 
-    def test_cache_hit_true(self, cache_file) -> None:
-        """A cached `True` short-circuits without a network call."""
+    def test_cache_hit_pins(self, cache_file) -> None:
+        """A cached pin list short-circuits without a network call."""
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a2"]}}),
+            encoding="utf-8",
+        )
+        with patch("requests.get") as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+            assert release_requires_prereleases("1.1.0") is True
+        get_mock.assert_not_called()
+
+    def test_cache_hit_empty(self, cache_file) -> None:
+        """A cached empty list short-circuits without a network call."""
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
+            encoding="utf-8",
+        )
+        with patch("requests.get") as get_mock:
+            assert release_prerelease_pins("1.1.0") == []
+            assert release_requires_prereleases("1.1.0") is False
+        get_mock.assert_not_called()
+
+    def test_legacy_boolean_cache_is_ignored(self, cache_file) -> None:
+        """The stale marker-agnostic boolean key is not read as authoritative.
+
+        A pre-migration cache may still carry `release_requires_prereleases`
+        booleans. Those cannot name a pin, so the new lookup ignores them and
+        re-fetches structured metadata instead.
+        """
         cache_file.write_text(
             json.dumps({"release_requires_prereleases": {"1.1.0": True}}),
             encoding="utf-8",
         )
-        with patch("requests.get") as get_mock:
-            assert release_requires_prereleases("1.1.0") is True
-        get_mock.assert_not_called()
-
-    def test_cache_hit_false(self, cache_file) -> None:
-        """A cached `False` short-circuits without a network call."""
-        cache_file.write_text(
-            json.dumps({"release_requires_prereleases": {"1.1.0": False}}),
-            encoding="utf-8",
-        )
-        with patch("requests.get") as get_mock:
-            assert release_requires_prereleases("1.1.0") is False
-        get_mock.assert_not_called()
-
-    def test_cache_miss_fetches_and_writes(self, cache_file) -> None:
-        """A cache miss fetches per-version metadata and caches the result."""
         with patch(
             "requests.get",
             return_value=_mock_pypi_response(
                 "1.1.0", requires_dist=("deepagents==0.7.0a2",)
             ),
         ) as get_mock:
-            assert release_requires_prereleases("1.1.0") is True
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_corrupt_cache_falls_through_to_fetch(self, cache_file) -> None:
+        """Undecodable cache JSON is ignored and structured metadata re-fetched."""
+        cache_file.write_text("{ not valid json", encoding="utf-8")
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_cached_non_string_entries_are_not_trusted(self, cache_file) -> None:
+        """A cached list with a non-string element re-fetches instead of trusting."""
+        cache_file.write_text(
+            json.dumps(
+                {"release_prerelease_pins": {"1.1.0": ["deepagents==0.7.0a2", 123]}}
+            ),
+            encoding="utf-8",
+        )
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_cached_out_of_contract_entry_is_revalidated(self, cache_file) -> None:
+        """A drifted/tampered cache entry is re-validated, not fed to uv verbatim.
+
+        The stored strings are written verbatim into a uv constraints file, which
+        honors directives like `-r`/`-c`. A value that no longer parses as a
+        targeted pin (here an `-r` injection) must not be trusted: the lookup
+        drops it, the length check fails, and it re-fetches structured metadata.
+        """
+        cache_file.write_text(
+            json.dumps({"release_prerelease_pins": {"1.1.0": ["-r /etc/passwd"]}}),
+            encoding="utf-8",
+        )
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
+        get_mock.assert_called_once()
+
+    def test_cache_miss_fetches_and_writes(self, cache_file) -> None:
+        """A cache miss fetches per-version metadata and caches the pins."""
+        with patch(
+            "requests.get",
+            return_value=_mock_pypi_response(
+                "1.1.0", requires_dist=("deepagents==0.7.0a2",)
+            ),
+        ) as get_mock:
+            assert release_prerelease_pins("1.1.0") == ["deepagents==0.7.0a2"]
         assert get_mock.call_args.args[0].endswith("/deepagents-code/1.1.0/json")
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"]["1.1.0"] is True
+        assert data["release_prerelease_pins"]["1.1.0"] == ["deepagents==0.7.0a2"]
 
     def test_bypass_cache_forces_fetch(self, cache_file) -> None:
         """`bypass_cache` re-fetches even when a cached value exists."""
         cache_file.write_text(
-            json.dumps({"release_requires_prereleases": {"1.1.0": False}}),
+            json.dumps({"release_prerelease_pins": {"1.1.0": []}}),
             encoding="utf-8",
         )
         with patch(
@@ -661,202 +716,37 @@ class TestReleaseRequiresPrereleases:
                 "1.1.0", requires_dist=("deepagents==0.7.0a2",)
             ),
         ) as get_mock:
-            result = release_requires_prereleases("1.1.0", bypass_cache=True)
-        assert result is True
+            result = release_prerelease_pins("1.1.0", bypass_cache=True)
+        assert result == ["deepagents==0.7.0a2"]
         get_mock.assert_called_once()
 
-    def test_network_failure_returns_false(self, cache_file) -> None:
-        """A PyPI failure conservatively reports stable-only resolution."""
+    def test_network_failure_returns_empty(self, cache_file) -> None:
+        """A PyPI failure conservatively reports no pre-release admission."""
         import requests
 
         with patch("requests.get", side_effect=requests.RequestException("boom")):
-            assert release_requires_prereleases("1.1.0") is False
+            assert release_prerelease_pins("1.1.0") == []
         # Nothing cached, so a later successful lookup can still self-correct.
         assert not cache_file.exists()
 
-    def test_missing_requests_returns_false(self, cache_file) -> None:
-        """Without `requests`, the lookup degrades to stable-only resolution."""
+    def test_missing_requests_returns_empty(self, cache_file) -> None:
+        """Without `requests`, the lookup degrades to no pre-release admission."""
         with patch.dict(sys.modules, {"requests": None}):
-            assert release_requires_prereleases("1.1.0") is False
+            assert release_prerelease_pins("1.1.0") == []
         assert not cache_file.exists()
 
-    def test_malformed_info_returns_false(self, cache_file) -> None:
-        """A payload with a non-object `info` is treated as no requirement."""
+    def test_malformed_info_returns_empty(self, cache_file) -> None:
+        """A payload with a non-object `info` is treated as no pins."""
         resp = MagicMock()
         resp.json.return_value = {"info": "not-a-dict"}
         resp.raise_for_status = MagicMock()
         with patch("requests.get", return_value=resp):
-            assert release_requires_prereleases("1.1.0") is False
+            assert release_prerelease_pins("1.1.0") == []
         data = json.loads(cache_file.read_text())
-        assert data["release_requires_prereleases"]["1.1.0"] is False
+        assert data["release_prerelease_pins"]["1.1.0"] == []
 
 
 class TestIsUpdateAvailable:
-    def test_newer_available(self) -> None:
-        with patch(
-            "deepagents_code.update_check.get_latest_version", return_value="99.0.0"
-        ):
-            available, latest = is_update_available()
-
-        assert available is True
-        assert latest == "99.0.0"
-
-    def test_current_version(self) -> None:
-        """User on the latest version sees `available=False` but keeps `latest`.
-
-        The version string is preserved so callers can distinguish "up to date"
-        from "PyPI unreachable" (which returns `latest=None`).
-        """
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version", return_value="0.0.1"
-            ),
-            patch("deepagents_code.update_check.__version__", "0.0.1"),
-        ):
-            available, latest = is_update_available()
-
-        assert available is False
-        assert latest == "0.0.1"
-
-    def test_ahead_of_pypi(self) -> None:
-        """Dev build ahead of PyPI should not flag an update."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version", return_value="0.0.1"
-            ),
-            patch("deepagents_code.update_check.__version__", "99.0.0"),
-        ):
-            available, latest = is_update_available()
-
-        assert available is False
-        assert latest == "0.0.1"
-
-    def test_fetch_failure(self) -> None:
-        with patch(
-            "deepagents_code.update_check.get_latest_version", return_value=None
-        ):
-            available, latest = is_update_available()
-
-        assert available is False
-        assert latest is None
-
-    def test_up_to_date_distinguishable_from_fetch_failure(self) -> None:
-        """Callers must distinguish `None` (fetch failed) from a version string.
-
-        An up-to-date install returns `(False, "1.2.3")` and a PyPI fetch
-        failure returns `(False, None)`; collapsing the two would conflate
-        transient network errors with being on the latest release.
-        """
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version", return_value="1.2.3"
-            ),
-            patch("deepagents_code.update_check.__version__", "1.2.3"),
-        ):
-            up_to_date = is_update_available()
-
-        with patch(
-            "deepagents_code.update_check.get_latest_version", return_value=None
-        ):
-            fetch_failed = is_update_available()
-
-        assert up_to_date == (False, "1.2.3")
-        assert fetch_failed == (False, None)
-
-    def test_prerelease_user_sees_newer_prerelease(self) -> None:
-        """User on alpha sees a newer alpha as available."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value="1.0.0a2",
-            ),
-            patch("deepagents_code.update_check.__version__", "1.0.0a1"),
-        ):
-            available, latest = is_update_available()
-
-        assert available is True
-        assert latest == "1.0.0a2"
-
-    def test_prerelease_user_sees_stable_release(self) -> None:
-        """User on alpha sees the stable release as available."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value="1.0.0",
-            ),
-            patch("deepagents_code.update_check.__version__", "1.0.0a1"),
-        ):
-            available, latest = is_update_available()
-
-        assert available is True
-        assert latest == "1.0.0"
-
-    def test_stable_user_does_not_see_prerelease(self) -> None:
-        """Stable user on current version sees no update available."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value="1.0.0",
-            ),
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-        ):
-            available, latest = is_update_available()
-
-        assert available is False
-        assert latest == "1.0.0"
-
-    def test_include_prereleases_kwarg_passed(self) -> None:
-        """Verify include_prereleases is True when installed version is pre-release."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value=None,
-            ) as mock_get,
-            patch("deepagents_code.update_check.__version__", "1.0.0a1"),
-        ):
-            is_update_available()
-
-        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=True)
-
-    def test_include_prereleases_false_for_stable(self) -> None:
-        """Verify include_prereleases is False when installed version is stable."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value=None,
-            ) as mock_get,
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-        ):
-            is_update_available()
-
-        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
-
-    def test_explicit_include_prereleases_overrides_stable_install(self) -> None:
-        """Explicit `include_prereleases=True` beats a stable installed version."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value=None,
-            ) as mock_get,
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-        ):
-            is_update_available(include_prereleases=True)
-
-        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=True)
-
-    def test_explicit_exclude_prereleases_overrides_prerelease_install(self) -> None:
-        """Explicit `include_prereleases=False` beats a pre-release install."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value=None,
-            ) as mock_get,
-            patch("deepagents_code.update_check.__version__", "1.0.0a1"),
-        ):
-            is_update_available(include_prereleases=False)
-
-        mock_get.assert_called_once_with(bypass_cache=False, include_prereleases=False)
-
     def test_invalid_installed_version(self) -> None:
         """Non-PEP 440 installed version disables update check gracefully."""
         with patch("deepagents_code.update_check.__version__", "not-a-version"):
@@ -865,100 +755,8 @@ class TestIsUpdateAvailable:
         assert available is False
         assert latest is None
 
-    def test_unparseable_pypi_version(self) -> None:
-        """Malformed PyPI version string does not crash."""
-        with (
-            patch(
-                "deepagents_code.update_check.get_latest_version",
-                return_value="not-a-version",
-            ),
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-        ):
-            available, latest = is_update_available()
-
-        assert available is False
-        assert latest is None
-
 
 class TestExtractReleaseTimes:
-    def test_stable_only(self) -> None:
-        payload = {
-            "releases": {
-                "1.0.0": [
-                    {
-                        "filename": "a.tar.gz",
-                        "upload_time_iso_8601": "2026-04-15T12:00:00Z",
-                    }
-                ],
-            },
-        }
-        times = _extract_release_times(payload, stable="1.0.0", prerelease=None)
-        assert times == {"1.0.0": "2026-04-15T12:00:00Z"}
-
-    def test_stable_and_prerelease(self) -> None:
-        payload = {
-            "releases": {
-                "1.0.0": [
-                    {
-                        "filename": "a.tar.gz",
-                        "upload_time_iso_8601": "2026-04-15T12:00:00Z",
-                    }
-                ],
-                "1.1.0a1": [
-                    {
-                        "filename": "b.tar.gz",
-                        "upload_time_iso_8601": "2026-04-18T09:30:00Z",
-                    }
-                ],
-            },
-        }
-        times = _extract_release_times(payload, stable="1.0.0", prerelease="1.1.0a1")
-        assert times == {
-            "1.0.0": "2026-04-15T12:00:00Z",
-            "1.1.0a1": "2026-04-18T09:30:00Z",
-        }
-
-    def test_includes_installed_version_when_provided(self) -> None:
-        payload = {
-            "releases": {
-                "1.0.0": [{"upload_time_iso_8601": "2026-04-15T12:00:00Z"}],
-                "0.9.0": [{"upload_time_iso_8601": "2026-04-01T12:00:00Z"}],
-            },
-        }
-        times = _extract_release_times(
-            payload, stable="1.0.0", prerelease=None, installed="0.9.0"
-        )
-        assert times == {
-            "1.0.0": "2026-04-15T12:00:00Z",
-            "0.9.0": "2026-04-01T12:00:00Z",
-        }
-
-    def test_releases_key_absent(self) -> None:
-        """Payload with no `releases` key yields an empty result."""
-        payload: dict[str, object] = {}
-        assert _extract_release_times(payload, stable="1.0.0", prerelease=None) == {}
-
-    def test_non_dict_releases_skipped(self) -> None:
-        """A non-dict `releases` value is ignored rather than crashing."""
-        payload: dict[str, object] = {"releases": []}
-        times = _extract_release_times(payload, stable="1.0.0", prerelease="1.1.0a1")
-        assert times == {}
-
-    def test_missing_release_entry(self) -> None:
-        """A version with no release entry is silently dropped."""
-        payload = {
-            "releases": {
-                "1.0.0": [
-                    {
-                        "filename": "a.tar.gz",
-                        "upload_time_iso_8601": "2026-04-15T12:00:00Z",
-                    }
-                ],
-            },
-        }
-        times = _extract_release_times(payload, stable="1.0.0", prerelease="1.1.0a1")
-        assert times == {"1.0.0": "2026-04-15T12:00:00Z"}
-
     def test_stable_lookup_independent_of_info_version(self) -> None:
         """Stable timestamp is read from `releases[stable]`, not `info.version`.
 
@@ -988,199 +786,22 @@ class TestExtractReleaseTimes:
         times = _extract_release_times(payload, stable="1.0.0", prerelease=None)
         assert times == {"1.0.0": "2026-04-15T12:00:00Z"}
 
-    def test_malformed_entries_skipped(self) -> None:
-        payload = {
-            "releases": {
-                "1.0.0": [{"filename": "no-timestamp"}],
-                "1.1.0a1": [{"upload_time_iso_8601": 12345}],
-            },
-        }
-        assert (
-            _extract_release_times(payload, stable="1.0.0", prerelease="1.1.0a1") == {}
-        )
-
 
 class TestGetReleaseTime:
-    def test_reads_cached_time(self, cache_file) -> None:
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "version": "1.0.0",
-                    "release_times": {"1.0.0": "2026-04-15T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        assert get_release_time("1.0.0") == "2026-04-15T12:00:00Z"
-
-    def test_unknown_version(self, cache_file) -> None:
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": "2026-04-15T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        assert get_release_time("9.9.9") is None
-
-    def test_missing_cache(self, cache_file) -> None:  # noqa: ARG002
-        """No cache file yet → no known release time."""
-        assert get_release_time("1.0.0") is None
-
-    def test_cache_without_release_times_key(self, cache_file) -> None:
-        """Cache entry lacking the `release_times` field returns `None`."""
-        cache_file.write_text(
-            json.dumps({"version": "1.0.0", "checked_at": time.time()})
-        )
-        assert get_release_time("1.0.0") is None
-
-    def test_release_times_is_list_not_dict(self, cache_file) -> None:
-        """A list-shaped `release_times` (wrong type) degrades to `None`."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": ["1.0.0", "2026-04-15T12:00:00Z"],
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        assert get_release_time("1.0.0") is None
-
     def test_corrupted_cache_json(self, cache_file) -> None:
         """Unparseable cache contents return `None` without raising."""
         cache_file.write_text("{not valid json")
         assert get_release_time("1.0.0") is None
 
-    def test_none_version_returns_none(self, cache_file) -> None:  # noqa: ARG002
-        """A `None` input short-circuits without touching the cache."""
-        assert get_release_time(None) is None
 
-
-class TestFormatReleaseAge:
-    def test_returns_released_prefix(self, cache_file) -> None:
-        from datetime import UTC, datetime, timedelta
-
-        iso = (datetime.now(tz=UTC) - timedelta(days=3)).isoformat()
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": iso},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        age = format_release_age("1.0.0")
-        assert age.startswith("released ")
-        assert age.endswith("ago")
-
-    def test_unknown_version_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        assert format_release_age("1.0.0") == ""
-
-    def test_empty_relative_timestamp_returns_empty(self, cache_file) -> None:
-        """When the relative-timestamp helper returns `""`, the wrapper does too."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": "not-a-timestamp"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
+class TestIsInstallationStale:
+    def test_false_when_editable_check_raises(self, cache_file) -> None:  # noqa: ARG002
+        """A raising editable check degrades to `False`, never aborting startup."""
         with patch(
-            "deepagents_code.sessions.format_relative_timestamp", return_value=""
+            "deepagents_code.config._is_editable_install",
+            side_effect=PermissionError("direct_url.json unreadable"),
         ):
-            assert format_release_age("1.0.0") == ""
-
-
-class TestFormatAgeSuffix:
-    def test_returns_separator_prefixed_age(self, cache_file) -> None:
-        """Known age is prefixed with `", "` for splicing into parentheticals."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": "2026-04-15T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        with patch(
-            "deepagents_code.sessions.format_relative_timestamp", return_value="3d ago"
-        ):
-            assert format_age_suffix("1.0.0") == ", released 3d ago"
-
-    def test_unknown_age_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        """Unknown age collapses to `""` so callers can concat unconditionally."""
-        assert format_age_suffix("1.0.0") == ""
-
-    def test_none_version_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        assert format_age_suffix(None) == ""
-
-
-class TestFormatReleaseAgeParenthetical:
-    def test_returns_parenthesized_release_age(self, cache_file) -> None:
-        """Known age is formatted for update-available lead sentences."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": "2026-04-15T12:00:00Z"},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        with patch(
-            "deepagents_code.sessions.format_relative_timestamp", return_value="3d ago"
-        ):
-            assert format_release_age_parenthetical("1.0.0") == " (released 3d ago)"
-
-    def test_unknown_age_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        assert format_release_age_parenthetical("1.0.0") == ""
-
-
-class TestFormatInstalledAgeSuffix:
-    def test_returns_days_old_for_versions_at_least_one_week_old(
-        self, cache_file
-    ) -> None:
-        """Installed version age is shown only after it crosses the threshold."""
-        from datetime import UTC, datetime, timedelta
-
-        iso = (datetime.now(tz=UTC) - timedelta(days=8)).isoformat()
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": iso},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        assert format_installed_age_suffix("1.0.0") == " (8 days old)"
-
-    def test_omits_versions_newer_than_one_week(self, cache_file) -> None:
-        from datetime import UTC, datetime, timedelta
-
-        iso = (datetime.now(tz=UTC) - timedelta(days=6)).isoformat()
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_times": {"1.0.0": iso},
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        assert format_installed_age_suffix("1.0.0") == ""
-
-    def test_unknown_age_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        assert format_installed_age_suffix("1.0.0") == ""
-
-
-class TestDetectInstallMethod:
-    def test_non_editable_non_uv_non_brew_returns_other(self) -> None:
-        """The fallback bucket is not a positive pip detection."""
-        with (
-            patch("deepagents_code.update_check.sys.prefix", "/tmp/dcode-venv"),
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-        ):
-            assert detect_install_method() == "other"
+            assert is_installation_stale() is False
 
 
 class TestUvToolBinDir:
@@ -1192,66 +813,6 @@ class TestUvToolBinDir:
     skipped auto-update restarts. Each candidate in uv's precedence list
     gets explicit coverage.
     """
-
-    def test_uv_tool_bin_dir_env_wins(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`UV_TOOL_BIN_DIR` overrides every other candidate."""
-        override = tmp_path / "uv-tool-bin"
-        override.mkdir()
-        xdg_bin = tmp_path / "xdg-bin"
-        xdg_bin.mkdir()
-        monkeypatch.setenv("UV_TOOL_BIN_DIR", str(override))
-        monkeypatch.setenv("XDG_BIN_HOME", str(xdg_bin))
-
-        assert _uv_tool_bin_dir() == override.resolve()
-
-    def test_xdg_bin_home_wins_when_uv_var_unset(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`XDG_BIN_HOME` is the second-precedence candidate per uv's docs.
-
-        Hits the branch users hit on Linux when they've adopted the XDG
-        Base Directory convention but haven't set uv-specific overrides.
-        Without this branch the detector would skip past XDG_BIN_HOME to
-        ~/.local/bin and silently warn on every successful upgrade.
-        """
-        xdg_bin = tmp_path / "xdg-bin"
-        xdg_bin.mkdir()
-        # Also create a `~/.local/bin` candidate to prove XDG_BIN_HOME
-        # wins even when later candidates exist.
-        home = tmp_path / "home"
-        (home / ".local" / "bin").mkdir(parents=True)
-        monkeypatch.delenv("UV_TOOL_BIN_DIR", raising=False)
-        monkeypatch.setenv("XDG_BIN_HOME", str(xdg_bin))
-        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-
-        assert _uv_tool_bin_dir() == xdg_bin.resolve()
-
-    def test_xdg_data_home_parent_bin_wins_when_only_xdg_data_set(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`$XDG_DATA_HOME/../bin` is uv's third-precedence candidate.
-
-        Pins the intermediate fallback rather than collapsing it into the
-        `~/.local/bin` default — a setup where the user has redirected
-        XDG_DATA_HOME (e.g. to a non-standard prefix) must land on the
-        sibling bin dir uv itself would target.
-        """
-        data_root = tmp_path / "alt-data-root"
-        data_root.mkdir()
-        sibling_bin = tmp_path / "bin"
-        sibling_bin.mkdir()
-        home = tmp_path / "home"
-        (home / ".local" / "bin").mkdir(parents=True)
-        monkeypatch.delenv("UV_TOOL_BIN_DIR", raising=False)
-        monkeypatch.delenv("XDG_BIN_HOME", raising=False)
-        monkeypatch.setenv("XDG_DATA_HOME", str(data_root))
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-
-        # `$XDG_DATA_HOME/../bin` resolves to `tmp_path/bin` (sibling).
-        assert _uv_tool_bin_dir() == sibling_bin.resolve()
 
     def test_local_bin_fallback_when_no_env_vars(
         self, tmp_path, monkeypatch: pytest.MonkeyPatch
@@ -1266,48 +827,6 @@ class TestUvToolBinDir:
         local_bin = home / ".local" / "bin"
         local_bin.mkdir(parents=True)
         monkeypatch.delenv("UV_TOOL_BIN_DIR", raising=False)
-        monkeypatch.delenv("XDG_BIN_HOME", raising=False)
-        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-
-        assert _uv_tool_bin_dir() == local_bin.resolve()
-
-    def test_returns_none_when_no_candidate_exists(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """No env vars and no `~/.local/bin` → `None`, not a bogus path.
-
-        Returning a non-existent path would make `detect_shadowed_dcode`
-        report every install as shadowed against a directory the user
-        couldn't possibly have on PATH. `None` is the right signal so the
-        detector short-circuits silently.
-        """
-        home = tmp_path / "home"
-        home.mkdir()
-        monkeypatch.delenv("UV_TOOL_BIN_DIR", raising=False)
-        monkeypatch.delenv("XDG_BIN_HOME", raising=False)
-        monkeypatch.delenv("XDG_DATA_HOME", raising=False)
-        monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
-
-        assert _uv_tool_bin_dir() is None
-
-    def test_skips_missing_candidate_and_falls_through(
-        self, tmp_path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A higher-precedence candidate that doesn't exist falls through.
-
-        An env var set to a non-existent path must not bind the answer to
-        that bad value — the helper should keep walking the precedence
-        list. This is what makes the env override safe to set
-        unconditionally in dotfiles even when the directory hasn't been
-        created yet.
-        """
-        missing = tmp_path / "does-not-exist"
-        # Deliberately do not mkdir.
-        home = tmp_path / "home"
-        local_bin = home / ".local" / "bin"
-        local_bin.mkdir(parents=True)
-        monkeypatch.setenv("UV_TOOL_BIN_DIR", str(missing))
         monkeypatch.delenv("XDG_BIN_HOME", raising=False)
         monkeypatch.delenv("XDG_DATA_HOME", raising=False)
         monkeypatch.setattr(Path, "home", classmethod(lambda _cls: home))
@@ -1359,70 +878,6 @@ class TestDetectShadowedDcode:
     upgrade` and the user silently relaunching into a pre-uv `dcode` earlier on
     PATH, so each branch of the comparison is covered explicitly.
     """
-
-    def test_returns_none_for_non_uv_install(self, tmp_path) -> None:
-        """Non-uv installs cannot describe an 'upgraded shim' location."""
-        uv_bin = tmp_path / "bin"
-        uv_bin.mkdir()
-        (uv_bin / "dcode").write_text("")
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="brew",
-            ),
-            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
-            patch("shutil.which", return_value=str(uv_bin / "dcode")),
-        ):
-            assert detect_shadowed_dcode() is None
-
-    def test_returns_none_when_path_resolves_into_uv_bin_dir(self, tmp_path) -> None:
-        """The happy path: PATH points at the directory uv installs into."""
-        uv_bin = tmp_path / "bin"
-        uv_bin.mkdir()
-        shim = uv_bin / "dcode"
-        shim.write_text("")
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
-            patch("shutil.which", return_value=str(shim)),
-        ):
-            assert detect_shadowed_dcode() is None
-
-    def test_checks_deepagents_code_when_dcode_is_healthy(self, tmp_path) -> None:
-        """A healthy `dcode` must not hide a shadowed `deepagents-code`."""
-        uv_bin = tmp_path / "uv-bin"
-        uv_bin.mkdir()
-        (uv_bin / "dcode").write_text("")
-        (uv_bin / "deepagents-code").write_text("")
-        stale_bin = tmp_path / "stale-bin"
-        stale_bin.mkdir()
-        stale = stale_bin / "deepagents-code"
-        stale.write_text("")
-
-        def _which(name: str) -> str | None:
-            if name == "dcode":
-                return str(uv_bin / "dcode")
-            if name == "deepagents-code":
-                return str(stale)
-            return None
-
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
-            patch("shutil.which", side_effect=_which),
-        ):
-            shadow = detect_shadowed_dcode()
-
-        assert shadow == ShadowedDcode(
-            shadowing_bin=stale,
-            upgraded_bin_dir=uv_bin.resolve(),
-        )
 
     def test_returns_none_for_uv_symlink_shim(self, tmp_path) -> None:
         """A uv-style symlink shim under the user bin dir is NOT a shadow.
@@ -1524,6 +979,117 @@ class TestDetectShadowedDcode:
         assert shadow.shadowing_bin == stale_shim
         assert shadow.upgraded_bin_dir == uv_bin.resolve()
 
+    def test_returns_none_for_convenience_symlink_to_upgraded_shim(
+        self, tmp_path
+    ) -> None:
+        """A symlink outside uv's bin dir pointing at uv's own shim is no shadow.
+
+        Users (and package managers) re-expose uv's shim from another bin dir on
+        PATH. The directory comparison alone flags that as a conflict, but the
+        launch it produces runs the upgraded entry point, so there is nothing to
+        fix — and reporting it made the caller skip the post-upgrade restart.
+        """
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        tool_internal_bin = tmp_path / "tools" / "deepagents-code" / "bin"
+        tool_internal_bin.mkdir(parents=True)
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        for name in ("dcode", "deepagents-code"):
+            real_entry_point = tool_internal_bin / name
+            real_entry_point.write_text("")
+            (uv_bin / name).symlink_to(real_entry_point)
+            (other_bin / name).symlink_to(real_entry_point)
+
+        def _which(name: str) -> str | None:
+            candidate = other_bin / name
+            return str(candidate) if candidate.exists() else None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+        ):
+            assert detect_shadowed_dcode() is None
+
+    def test_returns_none_for_windows_convenience_symlink_to_upgraded_shim(
+        self, tmp_path
+    ) -> None:
+        """A `.cmd` alias to uv's `.exe` shim is not a Windows PATH shadow."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        upgraded_shim = uv_bin / "dcode.exe"
+        upgraded_shim.write_text("")
+        alias = other_bin / "dcode.cmd"
+        alias.symlink_to(upgraded_shim)
+
+        def _which(name: str) -> str | None:
+            return str(alias) if name == "dcode" else None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(
+                os.environ,
+                {"UV_TOOL_BIN_DIR": str(uv_bin), "PATHEXT": ".exe;.cmd"},
+            ),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+            patch("shutil.which", side_effect=_which),
+        ):
+            assert detect_shadowed_dcode() is None
+
+    def test_reports_shadow_when_resolution_cannot_be_verified(self, tmp_path) -> None:
+        """An unresolvable PATH entry falls back to reporting the shadow.
+
+        `Path.resolve` is non-strict, so a missing target does not raise — an
+        `OSError` here means something abnormal (`ELOOP`, `EACCES` on a path
+        component), which no realistic fixture produces. Patch it directly: the
+        fallback direction is the point. Suppressing the warning on an
+        unverifiable alias could strand the user on an old binary with no
+        explanation, while a false positive only costs an extra notice.
+        """
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        stale = other_bin / "dcode"
+        stale.write_text("")
+
+        def _which(name: str) -> str | None:
+            return str(stale) if name == "dcode" else None
+
+        real_resolve = Path.resolve
+
+        def _resolve(self: Path, strict: bool = False) -> Path:
+            # Fail only for the shadowing entry point. Failing every `resolve`
+            # would also break `_uv_tool_bin_dir`, which bails out earlier and
+            # would make this pass for the wrong reason.
+            if self == stale:
+                msg = "too many levels of symlinks"
+                raise OSError(msg)
+            return real_resolve(self, strict)
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+            patch.object(Path, "resolve", _resolve),
+        ):
+            shadow = detect_shadowed_dcode()
+
+        assert shadow is not None
+        assert shadow.shadowing_bin == stale
+
     def test_returns_none_when_no_dcode_on_path(self, tmp_path) -> None:
         """Without any `dcode` on PATH there's nothing to be shadowed by."""
         uv_bin = tmp_path / "uv-bin"
@@ -1594,6 +1160,50 @@ class TestDetectShadowedDcode:
         assert command.replace("\n", "\n  ") in rendered
         assert "hash -r" in rendered
         assert "rm " not in rendered
+
+    def test_upgraded_bin_resolves_windows_shim_not_shadow_suffix(
+        self, tmp_path
+    ) -> None:
+        """The direct restart target uses uv's `.exe`, not a stale `.cmd`."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        upgraded_shim = uv_bin / "dcode.exe"
+        upgraded_shim.write_text("")
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode.cmd",
+            upgraded_bin_dir=uv_bin,
+            entry_point="dcode",
+        )
+
+        with (
+            patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+        ):
+            assert shadow.upgraded_bin == upgraded_shim
+
+    def test_upgraded_bin_does_not_search_current_directory_on_windows(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project-local shim cannot become the auto-update restart target."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        project_shim = project / "dcode.exe"
+        project_shim.write_text("")
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode.cmd",
+            upgraded_bin_dir=uv_bin,
+            entry_point="dcode",
+        )
+        monkeypatch.chdir(project)
+
+        with (
+            patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+        ):
+            assert shadow.upgraded_bin == uv_bin / "dcode"
+        assert shadow.upgraded_bin != project_shim
 
     def test_warning_text_quotes_fix_command_path(self, tmp_path) -> None:
         """The suggested PATH command must be safe to copy with odd paths."""
@@ -1692,52 +1302,14 @@ class TestDetectShadowedDcodeSafe:
     upgrade into a user-facing failure.
     """
 
-    def test_passes_through_shadow(self, tmp_path) -> None:
-        """A detected shadow flows through unchanged."""
-        shadow = ShadowedDcode(
-            shadowing_bin=tmp_path / "stale" / "dcode",
-            upgraded_bin_dir=tmp_path / "uv-bin",
-        )
-        with patch(
-            "deepagents_code.update_check.detect_shadowed_dcode",
-            return_value=shadow,
-        ):
-            assert detect_shadowed_dcode_safe() == shadow
-
-    def test_passes_through_none(self) -> None:
-        """The common "no shadow" answer flows through unchanged."""
-        with patch(
-            "deepagents_code.update_check.detect_shadowed_dcode",
-            return_value=None,
-        ):
-            assert detect_shadowed_dcode_safe() is None
-
-    def test_swallows_unexpected_exception(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """An unexpected raise becomes `None`, not a propagated crash.
-
-        This is the whole reason the wrapper exists: the success path that
-        calls it has already committed the upgrade, so a detector bug must not
-        surface as "update failed". The failure is logged at warning level so
-        it stays diagnosable.
-        """
-        with (
-            patch(
-                "deepagents_code.update_check.detect_shadowed_dcode",
-                side_effect=RuntimeError("boom"),
-            ),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
-        ):
-            assert detect_shadowed_dcode_safe() is None
-        assert any("Shadow detection failed" in r.message for r in caplog.records)
-
 
 class TestUpdateLogs:
-    def test_create_update_log_path_uses_log_dir(self, update_log_dir) -> None:
-        path = create_update_log_path()
-        assert path.parent == update_log_dir
-        assert path.name.endswith("-update.log")
+    def test_format_log_follow_command_escapes_powershell_quotes(self) -> None:
+        """PowerShell escapes a literal single quote by doubling it."""
+        with patch("deepagents_code.update_check.sys.platform", "win32"):
+            assert format_log_follow_command("C:\\o'brien.log") == (
+                "Get-Content -Wait -LiteralPath 'C:\\o''brien.log'"
+            )
 
     def test_cleanup_update_logs_removes_old_and_excess(self, update_log_dir) -> None:
         update_log_dir.mkdir(parents=True)
@@ -1778,294 +1350,10 @@ class TestUpdateLogs:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output = await perform_upgrade(log_path=log_path)
+            success, output, _installed = await perform_upgrade(log_path=log_path)
 
         assert success is True
         assert output == "ok"
-
-    async def test_perform_upgrade_ignores_log_close_failure(self, tmp_path) -> None:
-        """A close-time log flush failure must not fail a successful upgrade."""
-        log_path = tmp_path / "update.log"
-        opener = mock_open()
-        opener.return_value.close.side_effect = OSError("flush failed")
-
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            # `perform_upgrade` now calls `upgrade_install_command`, which
-            # reads the uv receipt and distribution metadata. Stub those
-            # out so the test can focus on the log-close-failure assertion
-            # rather than fight with the broad `pathlib.Path.open` mock.
-            patch(
-                "deepagents_code.update_check.upgrade_install_command",
-                return_value="printf 'ok\\n'",
-            ),
-            patch("pathlib.Path.open", opener),
-        ):
-            success, output = await perform_upgrade(log_path=log_path)
-
-        assert success is True
-        assert output == "ok"
-
-    async def test_perform_upgrade_refuses_other_install(self) -> None:
-        """Unknown non-editable installs must not upgrade a separate uv tool env."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="other",
-        ):
-            success, output = await perform_upgrade()
-
-        assert success is False
-        assert "Unsupported install method" in output
-
-    async def test_perform_upgrade_uses_uv_prerelease_command(self) -> None:
-        """Pre-release upgrades pass uv's explicit pre-release strategy.
-
-        Uses `uv tool install -U` (not `uv tool upgrade`) so any stale
-        `==<version>` pin in the receipt — left over from a prior install
-        or dependency refresh — is cleared, letting uv resolve to the
-        latest available release.
-        """
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_python",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output = await perform_upgrade(include_prereleases=True)
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U deepagents-code --prerelease allow"
-        )
-
-    async def test_perform_upgrade_allows_prereleases_for_target_dependency(
-        self, cache_file
-    ) -> None:
-        """A stable target that pins an alpha dependency opts uv into prereleases."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_requires_prereleases": {"1.1.0": True},
-                    "checked_at": time.time(),
-                }
-            ),
-            encoding="utf-8",
-        )
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_python",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output = await perform_upgrade(target_version="1.1.0")
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
-        )
-
-    async def test_perform_upgrade_fallback_pins_target_with_prerelease_deps(
-        self, cache_file
-    ) -> None:
-        """The bare fallback also avoids floating stable targets to app prereleases."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "release_requires_prereleases": {"1.1.0": True},
-                    "checked_at": time.time(),
-                }
-            ),
-            encoding="utf-8",
-        )
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                side_effect=ExtrasIntrospectionError("metadata unreadable"),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output = await perform_upgrade(target_version="1.1.0")
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
-        )
-
-    async def test_perform_upgrade_follows_installed_prerelease_channel(self) -> None:
-        """Omitted pre-release preference follows an installed pre-release."""
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0rc1"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_python",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output = await perform_upgrade()
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U deepagents-code --prerelease allow"
-        )
-
-    async def test_perform_upgrade_uses_unpinned_uv_install_by_default(self) -> None:
-        """Stable upgrades shell out to `uv tool install -U`, not `uv tool upgrade`.
-
-        `uv tool upgrade` respects the receipt's requirement string, so a
-        previously-pinned install (e.g. via `DEEPAGENTS_CODE_VERSION` or a
-        prior dependency refresh that wrote `==<version>` into the receipt)
-        would silently keep the user on the old version. Using `uv tool
-        install -U deepagents-code` (no version) rewrites the receipt to an
-        unpinned requirement and re-resolves to the latest release.
-        """
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_python",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output = await perform_upgrade()
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == "uv tool install -U deepagents-code"
-
-    async def test_perform_upgrade_preserves_installed_extras(self) -> None:
-        """An upgrade must not silently drop the user's installed extras.
-
-        The unpinned-install fix to the receipt-pin bug could otherwise
-        reinstall a bare `deepagents-code` and remove every extra the user
-        had set up. Receipt-aware command building keeps them in the
-        requirement so they survive the reinstall.
-        """
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset({"quickjs", "nvidia"}),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_python",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
-        ):
-            success, _output = await perform_upgrade()
-
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            "uv tool install -U 'deepagents-code[nvidia,quickjs]'"
-        )
 
     async def test_perform_upgrade_falls_back_when_receipt_introspection_fails(
         self,
@@ -2092,7 +1380,7 @@ class TestUpdateLogs:
                 return_value=(True, ""),
             ) as run_mock,
         ):
-            success, _output = await perform_upgrade()
+            success, _output, _installed = await perform_upgrade()
 
         assert success is True
         run_mock.assert_awaited_once()
@@ -2100,443 +1388,324 @@ class TestUpdateLogs:
         assert await_args is not None
         assert await_args.args[0] == "uv tool install -U deepagents-code"
 
-    async def test_perform_upgrade_fallback_warns_user_about_dropped_extras(
-        self,
+    def test_dependency_refresh_dry_run_ignores_phantom_metadata_extras(
+        self, tmp_path, monkeypatch
     ) -> None:
-        """The bare fallback surfaces the extras caveat to the user, not just logs.
+        """Base dependencies must not add unselected extras to the preview."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset({"media", "nvidia"}),
+        ):
+            command = dependency_refresh_dry_run_command(
+                version="1.2.3", python="/opt/dcode/bin/python"
+            )
 
-        When receipt introspection fails, `perform_upgrade` still upgrades via
-        the bare command but may drop extras / `--with` packages. The user's
-        only window into the upgrade is the progress stream, so the caveat must
-        be emitted there; a log-only warning is invisible in the TUI and the
-        user would discover the missing extra later as an unrelated-looking
-        import error.
+        assert command == (
+            "uv pip install --dry-run --python /opt/dcode/bin/python "
+            "-U deepagents-code==1.2.3"
+        )
+
+
+class TestUpdateInstallLock:
+    """Cross-process serialization of dcode self-upgrades."""
+
+    @pytest.fixture
+    def lock_file(self, tmp_path):
+        """Override UPDATE_LOCK_FILE to use a temporary path."""
+        path = tmp_path / "state" / "update.lock"
+        with patch("deepagents_code.update_check.UPDATE_LOCK_FILE", path):
+            yield path
+
+    @staticmethod
+    @contextmanager
+    def _lock_held_by_subprocess(path: Path) -> Iterator[None]:
+        """Hold `path` locked in another process for the body's duration.
+
+        Exercises the real cross-process exclusion rather than asserting on a
+        patched filelock: the child takes a plain `FileLock` on the same path,
+        the way a second `dcode` install would. A context manager so both pipes
+        and the child are always cleaned up — a leaked `stdout` raises
+        `ResourceWarning`, which `filterwarnings = ["error"]` turns into a
+        failure on whichever unrelated test happens to trigger the collection.
         """
-        progress_lines: list[str] = []
-        with (
-            patch("deepagents_code.update_check.__version__", "1.0.0"),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                side_effect=ExtrasIntrospectionError("metadata unreadable"),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ),
-        ):
-            success, _output = await perform_upgrade(progress=progress_lines.append)
+        script = (
+            "import sys\n"
+            "from filelock import FileLock\n"
+            "with FileLock(sys.argv[1], timeout=30):\n"
+            "    print('held', flush=True)\n"
+            "    sys.stdin.readline()\n"
+        )
+        with subprocess.Popen(
+            [sys.executable, "-c", script, str(path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        ) as proc:
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            try:
+                ready = proc.stdout.readline()
+                assert ready.strip() == "held", "helper never acquired the lock"
+                yield
+            finally:
+                # Closing stdin ends the child's `readline`, which releases the
+                # lock. `kill` on the way out covers a child wedged before it
+                # ever read, so a failure here cannot hang the suite.
+                try:
+                    proc.stdin.close()
+                    proc.wait(timeout=30)
+                except (OSError, subprocess.TimeoutExpired):
+                    proc.kill()
+                    proc.wait(timeout=30)
 
-        assert success is True
-        assert any("may not carry over" in line for line in progress_lines)
+    def test_holder_is_granted_the_lock(self, lock_file) -> None:  # noqa: ARG002
+        """The first caller may install."""
+        with update_install_lock() as holding:
+            assert holding is True
 
-    async def test_perform_upgrade_refuses_prerelease_for_brew(self) -> None:
-        """Pre-release channel switching is only safe for uv tool installs."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="brew",
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-            ) as run_mock,
-        ):
-            success, output = await perform_upgrade(include_prereleases=True)
+    def test_lock_is_released_on_exit(self, lock_file) -> None:  # noqa: ARG002
+        """A completed install leaves the lock free for the next one."""
+        with update_install_lock() as first:
+            assert first is True
+        with update_install_lock() as second:
+            assert second is True
 
-        assert success is False
-        assert "Pre-release updates aren't supported for this install" in output
-        # The refusal must short-circuit before shelling out to `brew`.
-        run_mock.assert_not_awaited()
+    def test_lock_is_released_after_an_exception(self, lock_file) -> None:  # noqa: ARG002
+        """A failed install must not wedge every later update attempt."""
+        msg = "install blew up"
 
-    def test_upgrade_command_prerelease(self) -> None:
-        """Manual fallback command includes uv's pre-release strategy.
+        def _fail_while_holding() -> None:
+            with update_install_lock() as holding:
+                assert holding is True
+                raise RuntimeError(msg)
 
-        Uses `uv tool install -U` (not `uv tool upgrade`): see the docstring
-        on `_UPGRADE_COMMANDS` for why we avoid the receipt-respecting
-        `upgrade` form.
+        with pytest.raises(RuntimeError, match=msg):
+            _fail_while_holding()
+
+        with update_install_lock() as retried:
+            assert retried is True
+
+    def test_lock_is_not_reentrant(self, lock_file) -> None:  # noqa: ARG002
+        """Re-entering must be refused, not silently granted.
+
+        The lock is a plain `threading.Lock` rather than an `RLock` precisely so
+        this is refused; swapping in an `RLock` would let one process start a
+        second install on top of a running one.
         """
-        assert (
-            upgrade_command(include_prereleases=True)
-            == "uv tool install -U deepagents-code --prerelease allow"
+        with update_install_lock() as outer:
+            assert outer is True
+            with update_install_lock() as inner:
+                assert inner is False
+
+    def test_second_thread_is_refused(self, lock_file) -> None:  # noqa: ARG002
+        """Two threads in one dcode process must not both install.
+
+        The file lock alone would not catch this: `update_install_lock` builds
+        its `FileLock` with `thread_local=False`, so a second thread would be
+        handed the same underlying lock. `_UPDATE_INSTALL_THREAD_LOCK` is what
+        refuses it.
+        """
+        second_thread_result: list[bool] = []
+        release_holder = threading.Event()
+        holder_ready = threading.Event()
+
+        def _hold() -> None:
+            with update_install_lock() as holding:
+                assert holding is True
+                holder_ready.set()
+                release_holder.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold)
+        holder.start()
+        try:
+            assert holder_ready.wait(timeout=30), "holder thread never acquired"
+            with update_install_lock() as holding:
+                second_thread_result.append(holding)
+        finally:
+            release_holder.set()
+            holder.join(timeout=30)
+
+        assert second_thread_result == [False]
+
+    def test_other_process_is_refused_while_lock_is_held(self, lock_file) -> None:
+        """A genuinely concurrent dcode process is excluded."""
+        with self._lock_held_by_subprocess(lock_file), update_install_lock() as holding:
+            assert holding is False
+
+    def test_lock_is_available_once_other_process_exits(self, lock_file) -> None:
+        """The winner's install does not lock this machine out afterwards."""
+        with self._lock_held_by_subprocess(lock_file):
+            pass
+
+        with update_install_lock() as holding:
+            assert holding is True
+
+    def test_lock_file_lands_in_the_installation_lock_directory(self) -> None:
+        """The production path is installation-scoped, not profile-scoped.
+
+        Checked in a subprocess because the autouse state-dir fixture patches
+        `UPDATE_LOCK_FILE` for every test in this suite, so the real value is
+        otherwise never asserted anywhere — and a lock file that resolved
+        somewhere per-process would exclude nothing.
+        """
+        probe = (
+            "from deepagents_code._paths import PATHS\n"
+            "from deepagents_code.update_check import UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE == PATHS.installation.locks_dir / 'update.lock')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
         )
 
-    def test_upgrade_command_pins_target_with_prerelease_deps(self) -> None:
-        """Manual fallback pins root dcode when prerelease deps are allowed."""
-        assert (
-            upgrade_command(
-                include_prereleases=True,
-                version="1.1.0",
+        assert result.stdout.strip() == "True"
+
+    def test_profiles_share_the_same_update_lock(self, tmp_path: Path) -> None:
+        """Two profile homes using this tool environment contend on one lock."""
+        probe = (
+            "from deepagents_code.update_check import UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE)\n"
+        )
+        paths = []
+        for profile in (tmp_path / "first", tmp_path / "second"):
+            env = os.environ.copy()
+            env["DEEPAGENTS_HOME"] = str(profile)
+            result = subprocess.run(
+                [sys.executable, "-c", probe],
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=True,
             )
-            == "uv tool install -U deepagents-code==1.1.0 --prerelease allow"
-        )
+            paths.append(result.stdout.strip())
 
-    def test_dependency_refresh_command_pins_current_version(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Dependency refresh keeps dcode on the running version."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        with patch(
-            "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset(),
+        assert paths[0] == paths[1]
+        assert str(tmp_path) not in paths[0]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_lock_directory_is_owner_only(self, tmp_path) -> None:
+        """A world-writable state dir would let any local user wedge updates."""
+        lock_path = tmp_path / "state" / "update.lock"
+        with (
+            patch("deepagents_code.update_check.UPDATE_LOCK_FILE", lock_path),
+            update_install_lock() as holding,
         ):
-            assert (
-                dependency_refresh_command(version="1.2.3")
-                == "uv tool install -U deepagents-code==1.2.3"
-            )
+            assert holding is True
 
-    def test_dependency_refresh_command_preserves_extras(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Dependency refresh must not drop already-installed extras."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        with patch(
-            "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset({"quickjs", "nvidia"}),
-        ):
-            assert (
-                dependency_refresh_command(
-                    version="1.2.3",
-                    include_prereleases=True,
-                )
-                == "uv tool install -U "
-                "'deepagents-code[nvidia,quickjs]==1.2.3' --prerelease allow"
-            )
+        assert stat.S_IMODE(lock_path.parent.stat().st_mode) == 0o700
 
-    def test_dependency_refresh_command_preserves_with_packages(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Dependency refresh must not drop packages installed via `--with`."""
-        _write_uv_receipt(
-            tmp_path,
-            (
-                '{ name = "deepagents-code" }, '
-                '{ name = "langchain-custom" }, '
-                '{ name = "langchain.another_provider" }'
-            ),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
+    def test_unusable_lock_directory_fails_open(self, tmp_path, caplog) -> None:
+        """Only an unusable *pair* of lock locations may disable the lock.
 
-        with patch(
-            "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset(),
-        ):
-            assert dependency_refresh_command(version="1.2.3") == (
-                "uv tool install -U deepagents-code==1.2.3 "
-                "--with langchain-custom --with langchain.another_provider"
-            )
-
-    def test_dependency_refresh_command_preserves_uv_python(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Dependency refresh must keep uv's recorded interpreter selection."""
-        _write_uv_receipt(
-            tmp_path,
-            '{ name = "deepagents-code" }',
-            python="3.13",
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-
-        with patch(
-            "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset(),
-        ):
-            assert dependency_refresh_command(version="1.2.3") == (
-                "uv tool install -U --python 3.13 deepagents-code==1.2.3"
-            )
-
-    def test_dependency_refresh_command_quotes_uv_python(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Recorded interpreter paths are shell-quoted before execution."""
-        _write_uv_receipt(
-            tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
-            python="/opt/Python 3.13/bin/python",
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-
-        with patch(
-            "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset(),
-        ):
-            assert dependency_refresh_command(version="1.2.3") == (
-                "uv tool install -U --python '/opt/Python 3.13/bin/python' "
-                "deepagents-code==1.2.3 --with langchain-custom"
-            )
-
-    def test_dependency_refresh_command_refuses_malformed_receipt(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Malformed uv receipts must not silently drop `--with` packages."""
-        tmp_path.joinpath("uv-receipt.toml").write_text(
-            "[tool\nrequirements = []\n",
-            encoding="utf-8",
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-
+        An unwritable installation directory alone now falls back to the
+        profile (see `TestUpdateLockLocationFallback`), so both must be
+        unusable before updates proceed unserialized.
+        """
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        fallback_blocker = tmp_path / "fallback-blocker"
+        fallback_blocker.write_text("not a directory", encoding="utf-8")
         with (
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
+                "deepagents_code.update_check.UPDATE_LOCK_FILE",
+                blocker / "update.lock",
             ),
-            pytest.raises(ToolRequirementIntrospectionError, match="Could not read"),
+            patch(
+                "deepagents_code.update_check.FALLBACK_UPDATE_LOCK_FILE",
+                fallback_blocker / "update.lock",
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
         ):
-            dependency_refresh_command(version="1.2.3")
+            assert holding is True
 
-    def test_dependency_refresh_command_refuses_unpreservable_with_requirement(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Unsupported receipt entries are refused instead of rewritten lossy."""
-        _write_uv_receipt(
-            tmp_path,
-            (
-                '{ name = "deepagents-code" }, '
-                '{ name = "langchain-custom", editable = "/tmp/pkg" }'
-            ),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        assert "could not create" in caplog.text
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_unchmodable_directory_still_locks(self, lock_file, caplog) -> None:
+        """A `chmod` refusal is a hardening failure, not a locking failure.
+
+        CIFS/exFAT mounts routinely refuse `chmod` while locking works fine.
+        Treating that as unusable would fail open on every launch forever.
+        """
+        with (
+            patch.object(Path, "chmod", side_effect=PermissionError("read-only")),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "Could not restrict permissions" in caplog.text
+        # The lock was genuinely taken, so a concurrent holder is still refused.
+        with self._lock_held_by_subprocess(lock_file), update_install_lock() as second:
+            assert second is False
+
+    def test_unacquirable_lock_fails_open(self, lock_file, caplog) -> None:  # noqa: ARG002
+        """`flock` refused by the OS must not disable updates permanently.
+
+        The realistic trigger — an NFS/SMB home directory, or a lock file left
+        root-owned by a `sudo dcode` — is permanent, so failing closed would
+        mean this machine never self-updates again. Distinct from the `Timeout`
+        branch directly above it in the source, which must keep yielding
+        `False`.
+        """
         with (
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
+                "filelock.FileLock.acquire",
+                side_effect=PermissionError("flock refused"),
             ),
-            pytest.raises(
-                ToolRequirementIntrospectionError,
-                match="cannot be preserved automatically",
-            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
         ):
-            dependency_refresh_command(version="1.2.3")
+            assert holding is True
 
-    def test_dependency_refresh_command_invalid_metadata_extra_reraised(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Malformed metadata extras surface through the typed error contract."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        with (
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset({"not a valid extra"}),
-            ),
-            pytest.raises(ExtrasIntrospectionError),
-        ):
-            dependency_refresh_command(version="1.2.3")
+        assert "could not acquire" in caplog.text
 
-    def test_dependency_refresh_dry_run_command_targets_current_python(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Dry-run planning resolves against the running tool environment."""
-        _write_uv_receipt(
-            tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        with patch(
-            "deepagents_code.extras_info.installed_extra_names",
-            return_value=frozenset({"quickjs"}),
-        ):
-            assert dependency_refresh_dry_run_command(
-                version="1.2.3",
-                include_prereleases=True,
-                python="/opt/Dcode Python/bin/python",
-            ) == (
-                "uv pip install --dry-run --python "
-                "'/opt/Dcode Python/bin/python' -U "
-                "'deepagents-code[quickjs]==1.2.3' langchain-custom "
-                "--prerelease allow"
-            )
-
-    async def test_perform_dependency_refresh_dry_run_uses_pinned_uv_pip_command(
+    def test_failed_release_is_logged_and_does_not_propagate(
         self,
+        lock_file,  # noqa: ARG002
+        caplog,
     ) -> None:
-        """Dependency dry run shells out without mutating the tool environment."""
+        """A release failure must not mask the install's own outcome.
+
+        It must still be logged: `UnixFileLock._release` drops its fd handle
+        before unlocking, so a raising `flock` leaks an fd that still holds the
+        lock, and every later attempt in the session reports a phantom
+        concurrent install. Without the log that is undiagnosable.
+        """
         with (
             patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
+                "filelock.FileLock.release",
+                side_effect=OSError("unlock failed"),
             ),
-            patch("shutil.which", return_value="/usr/bin/uv"),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
         ):
-            success, _output = await perform_dependency_refresh_dry_run()
+            assert holding is True
 
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            f"uv pip install --dry-run --python {shlex.quote(sys.executable)} "
-            f"-U deepagents-code=={__version__}"
-        )
+        assert "Failed to release the update lock" in caplog.text
 
-    async def test_perform_dependency_refresh_uses_pinned_uv_command(self) -> None:
-        """Dependency refresh shells out without allowing a dcode version bump."""
+    def test_missing_filelock_fails_open(self, lock_file, caplog) -> None:  # noqa: ARG002
+        """A clobbered `site-packages` must not raise out of the lock.
+
+        A self-upgrade replaces the environment this process imports from, so
+        this is the one function that has to survive it. Callers treat any
+        exception here as an update failure.
+        """
         with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch("shutil.which", return_value="/usr/bin/uv"),
-            patch(
-                "deepagents_code.extras_info.installed_extra_names",
-                return_value=frozenset(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_with_packages",
-                return_value=(),
-            ),
-            patch(
-                "deepagents_code.update_check._uv_tool_python",
-                return_value=None,
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-                return_value=(True, ""),
-            ) as run_mock,
+            patch.dict(sys.modules, {"filelock": None}),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
         ):
-            success, _output = await perform_dependency_refresh()
+            assert holding is True
 
-        assert success is True
-        run_mock.assert_awaited_once()
-        await_args = run_mock.await_args
-        assert await_args is not None
-        assert await_args.args[0] == (
-            f"uv tool install -U deepagents-code=={__version__}"
-        )
-
-    async def test_perform_dependency_refresh_reports_with_package_errors(
-        self,
-    ) -> None:
-        """Refresh refuses rather than dropping unknown `--with` packages."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch("shutil.which", return_value="/usr/bin/uv"),
-            patch(
-                "deepagents_code.update_check.dependency_refresh_command",
-                side_effect=ToolRequirementIntrospectionError("receipt broken"),
-            ),
-        ):
-            success, output = await perform_dependency_refresh()
-
-        assert success is False
-        assert "ToolRequirementIntrospectionError" in output
-        assert "receipt broken" in output
-
-    async def test_perform_dependency_refresh_refuses_brew(self) -> None:
-        """Brew cannot refresh deps without taking the app formula update."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="brew",
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-            ) as run_mock,
-        ):
-            success, output = await perform_dependency_refresh()
-
-        assert success is False
-        assert "dependency-only refresh is not supported" in output
-        run_mock.assert_not_awaited()
-
-    async def test_perform_dependency_refresh_refuses_editable(self) -> None:
-        """Editable installs can't be re-resolved as a tool environment."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="unknown",
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-            ) as run_mock,
-        ):
-            success, output = await perform_dependency_refresh()
-
-        assert success is False
-        assert "Editable install detected" in output
-        run_mock.assert_not_awaited()
-
-    async def test_perform_dependency_refresh_refuses_other(self) -> None:
-        """An unrecognized install method is refused, not guessed at."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="other",
-            ),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-            ) as run_mock,
-        ):
-            success, output = await perform_dependency_refresh()
-
-        assert success is False
-        assert "Unsupported install method detected" in output
-        run_mock.assert_not_awaited()
-
-    async def test_perform_dependency_refresh_refuses_when_uv_missing(self) -> None:
-        """A uv-managed install still needs `uv` on PATH to refresh."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch("shutil.which", return_value=None),
-            patch(
-                "deepagents_code.update_check._run_install_subprocess",
-                new_callable=AsyncMock,
-            ) as run_mock,
-        ):
-            success, output = await perform_dependency_refresh()
-
-        assert success is False
-        assert "`uv` not found on PATH." in output
-        run_mock.assert_not_awaited()
-
-    def test_prerelease_upgrade_supported_for_uv(self) -> None:
-        """The uv install method can be steered onto the pre-release channel."""
-        supported, reason = prerelease_upgrade_supported("uv")
-
-        assert supported is True
-        assert reason is None
-
-    @pytest.mark.parametrize("method", ["brew", "other", "unknown"])
-    def test_prerelease_upgrade_unsupported_for_non_uv(
-        self,
-        method: InstallMethod,
-    ) -> None:
-        """Non-uv installs are refused with a user-facing reason."""
-        supported, reason = prerelease_upgrade_supported(method)
-
-        assert supported is False
-        assert reason is not None
-        assert "aren't supported for this install" in reason
+        assert "filelock is unavailable" in caplog.text
 
 
 class TestUpgradeInstallCommand:
@@ -2571,7 +1740,7 @@ class TestUpgradeInstallCommand:
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
-            "deepagents_code.extras_info.installed_extra_names",
+            "deepagents_code.update_check._uv_tool_selected_extras",
             return_value=frozenset({"openai"}),
         ):
             assert upgrade_install_command(
@@ -2586,13 +1755,60 @@ class TestUpgradeInstallCommand:
         _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with patch(
-            "deepagents_code.extras_info.installed_extra_names",
+            "deepagents_code.update_check._uv_tool_selected_extras",
             return_value=frozenset({"quickjs", "nvidia"}),
         ):
             assert upgrade_install_command(include_prereleases=True) == (
                 "uv tool install -U 'deepagents-code[nvidia,quickjs]' "
                 "--prerelease allow"
             )
+
+    def test_targeted_flags_take_precedence_over_global_allow(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Constraints + strategy win over the `include_prereleases` global allow.
+
+        In the real `perform_upgrade` flow the targeted-pins path and the
+        `include_prereleases` channel are mutually exclusive, so this guards the
+        documented precedence directly: even with `include_prereleases=True`, a
+        supplied constraints file and strategy must emit the scoped form and
+        never a global `--prerelease allow`.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            cmd = upgrade_install_command(
+                include_prereleases=True,
+                constraints_path=Path("/tmp/pins.txt"),
+                prerelease_strategy="if-necessary-or-explicit",
+            )
+        assert "--constraints /tmp/pins.txt" in cmd
+        assert "--prerelease if-necessary-or-explicit" in cmd
+        assert "--prerelease allow" not in cmd
+
+    def test_quotes_constraints_path_with_spaces(self, tmp_path, monkeypatch) -> None:
+        """A constraints path containing spaces is shell-quoted, not word-split.
+
+        Every production path reaches this builder with a `mkstemp` path that has
+        no spaces, so a dropped `shlex.quote` would only surface on a temp dir
+        containing a space. Lock it explicitly.
+        """
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+        spaced = tmp_path / "dir with space" / "pins.txt"
+        with patch(
+            "deepagents_code.extras_info.installed_extra_names",
+            return_value=frozenset(),
+        ):
+            cmd = upgrade_install_command(
+                constraints_path=spaced,
+                prerelease_strategy="if-necessary-or-explicit",
+            )
+        assert f"--constraints {shlex.quote(str(spaced))}" in cmd
+        assert f"--constraints {spaced}" not in cmd
 
     def test_preserves_with_packages(self, tmp_path, monkeypatch) -> None:
         """Packages installed via `--with` must survive the unpinned reinstall."""
@@ -2647,7 +1863,11 @@ class TestUpgradeInstallCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
             pytest.raises(ExtrasIntrospectionError),
@@ -2670,7 +1890,11 @@ class TestUpgradeInstallCommand:
         monkeypatch.setattr("sys.prefix", str(tmp_path))
         with (
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 return_value=frozenset({"not a valid extra"}),
             ),
             pytest.raises(ExtrasIntrospectionError),
@@ -2681,145 +1905,25 @@ class TestUpgradeInstallCommand:
 class TestParseDependencyChanges:
     """`parse_dependency_changes` collapses uv's env diff into changes."""
 
-    def test_version_bump_pairs_removed_and_added(self) -> None:
-        """A `- old` / `+ new` pair for one package becomes one bump entry."""
-        output = (
-            "Resolved 120 packages in 12ms\n"
-            " - langchain-openai==1.3.2\n"
-            " + langchain-openai==1.5.0\n"
-            "Installed 1 executable: dcode\n"
-        )
-        assert parse_dependency_changes(output) == [
-            DependencyChange(name="langchain-openai", old="1.3.2", new="1.5.0"),
-        ]
-
-    def test_new_package_has_no_old(self) -> None:
-        """A lone `+` line is reported as a new package."""
-        assert parse_dependency_changes(" + httpx==0.28.1\n") == [
-            DependencyChange(name="httpx", old=None, new="0.28.1"),
-        ]
-
-    def test_removed_package_has_no_new(self) -> None:
-        """A lone `-` line is reported as a removed package."""
-        assert parse_dependency_changes(" - httpx==0.28.1\n") == [
-            DependencyChange(name="httpx", old="0.28.1", new=None),
-        ]
-
-    def test_preserves_first_seen_order(self) -> None:
-        """Packages keep the order uv first mentioned them in."""
-        output = " - b-pkg==1.0\n + b-pkg==2.0\n - a-pkg==1.0\n + a-pkg==2.0\n"
-        names = [change.name for change in parse_dependency_changes(output)]
-        assert names == ["b-pkg", "a-pkg"]
-
-    def test_ignores_non_diff_lines(self) -> None:
-        """Resolver chatter without `+`/`-` markers is skipped."""
-        assert parse_dependency_changes("Resolved 3 packages\nAudited 3\n") == []
-
 
 class TestFormatDependencyChanges:
     """`format_dependency_changes` renders an aligned summary."""
-
-    def test_empty_returns_empty_string(self) -> None:
-        """No changes renders to an empty string."""
-        assert format_dependency_changes([]) == ""
-
-    def test_renders_bump_new_and_removed(self) -> None:
-        """Each change kind gets its own rendering, column-aligned."""
-        changes = [
-            DependencyChange(name="langchain-openai", old="1.3.2", new="1.5.0"),
-            DependencyChange(name="httpx", old=None, new="0.28.1"),
-            DependencyChange(name="old-pkg", old="1.0", new=None),
-        ]
-        rendered = format_dependency_changes(changes)
-        assert "langchain-openai  1.3.2 -> 1.5.0" in rendered
-        assert "0.28.1 (new)" in rendered
-        assert "1.0 (removed)" in rendered
-        assert "httpx             0.28.1 (new)" in rendered
 
 
 class TestDependencyChangeKind:
     """`DependencyChange.kind` classifies the three legal shapes."""
 
-    def test_bumped_when_both_sides_present(self) -> None:
-        """Both `old` and `new` set is an in-place bump."""
-        assert DependencyChange(name="a", old="1.0", new="2.0").kind == "bumped"
-
-    def test_added_when_only_new(self) -> None:
-        """Only `new` set is a newly added package."""
-        assert DependencyChange(name="a", old=None, new="1.0").kind == "added"
-
-    def test_removed_when_only_old(self) -> None:
-        """Only `old` set is a removed package."""
-        assert DependencyChange(name="a", old="1.0", new=None).kind == "removed"
-
-    def test_empty_shape_is_rejected(self) -> None:
-        """`(None, None)` is meaningless and must raise rather than mis-render."""
-        with pytest.raises(ValueError, match="neither an old nor new version"):
-            _ = DependencyChange(name="a", old=None, new=None).kind
-
 
 class TestDependencyChangeAnnotations:
     """`parse_dependency_changes` tolerates uv's source annotations."""
-
-    def test_source_annotation_suffix_is_parsed(self) -> None:
-        """A non-PyPI source suffix doesn't hide the version change."""
-        output = (
-            " - example==0.1.0 (from file:///old)\n"
-            " + example==0.2.0 (from file:///new)\n"
-        )
-        assert parse_dependency_changes(output) == [
-            DependencyChange(name="example", old="0.1.0", new="0.2.0"),
-        ]
 
 
 class TestDependencyRefreshSupported:
     """`dependency_refresh_supported` gates the dependency-only refresh."""
 
-    def test_uv_is_supported(self) -> None:
-        """uv-managed installs can re-resolve dependencies in place."""
-        supported, reason = dependency_refresh_supported("uv")
-
-        assert supported is True
-        assert reason is None
-
-    @pytest.mark.parametrize(
-        ("method", "needle"),
-        [
-            ("unknown", "Editable install detected"),
-            ("brew", "Homebrew install detected"),
-            ("other", "Unsupported install method detected"),
-        ],
-    )
-    def test_non_uv_methods_are_refused_with_reason(
-        self,
-        method: InstallMethod,
-        needle: str,
-    ) -> None:
-        """Each non-uv method is refused with a distinct, user-facing reason."""
-        supported, reason = dependency_refresh_supported(method)
-
-        assert supported is False
-        assert reason is not None
-        assert needle in reason
-
 
 class TestInstallExtraCommand:
     """`install_extra_command` builds the promoted install-script string."""
-
-    def test_basic(self) -> None:
-        """Extras are passed to the install script through its environment."""
-        assert (
-            install_extras_command(["quickjs"])
-            == "curl -LsSf https://langch.in/dcode | "
-            "DEEPAGENTS_CODE_EXTRAS=quickjs bash"
-        )
-
-    def test_provider_extra(self) -> None:
-        assert (
-            install_extras_command(["fireworks"])
-            == "curl -LsSf https://langch.in/dcode | "
-            "DEEPAGENTS_CODE_EXTRAS=fireworks bash"
-        )
 
     def test_installed_extra_names_missing_distribution_returns_empty(self) -> None:
         """Display-only introspection stays forgiving when metadata is absent."""
@@ -2879,17 +1983,11 @@ class TestInstallExtraCommand:
         """UV recovery guidance matches the automatic context-preserving install."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            '{ name = "deepagents-code", extras = ["nvidia"] }, '
+            '{ name = "langchain-custom" }',
             python="/opt/Python 3.13/bin/python",
         )
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
         monkeypatch.setattr(
             "deepagents_code.update_check.detect_install_method", lambda: "uv"
         )
@@ -2918,40 +2016,13 @@ class TestInstallExtraCommand:
             "curl -LsSf https://langch.in/dcode | DEEPAGENTS_CODE_EXTRAS=quickjs bash"
         )
 
-    def test_uv_install_extra_command_refuses_invalid_metadata(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Malformed optional-dependency metadata must not drop existing extras."""
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=("not a valid requirement ; ;",),
-        )
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        with pytest.raises(ExtrasIntrospectionError, match="Could not parse"):
-            _install_extra_uv_tool_command(
-                "quickjs", distribution_name="deepagents-code"
-            )
-
     def test_uv_install_extra_command_preserves_installed_extras(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Installing a new extra keeps already-installed extras selected."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=(
-                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
-                'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
-            ),
-        )
+        """Installing a new extra keeps already-selected extras selected."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code", extras = ["nvidia"] }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
-        assert installed_extra_names("deepagents-code") == {"nvidia"}
         assert _install_extra_uv_tool_command(
             "baseten", distribution_name="deepagents-code"
         ) == (
@@ -2962,16 +2033,9 @@ class TestInstallExtraCommand:
     def test_uv_install_extra_command_dedupes_existing_extra(
         self, tmp_path, monkeypatch
     ) -> None:
-        """Installing an already-present extra does not duplicate it."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
+        """Installing an already-selected extra does not duplicate it."""
+        _write_uv_receipt(tmp_path, '{ name = "deepagents-code", extras = ["nvidia"] }')
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
         assert _install_extra_uv_tool_command(
             "nvidia", distribution_name="deepagents-code"
@@ -2980,49 +2044,17 @@ class TestInstallExtraCommand:
             f"'deepagents-code[nvidia]=={__version__}' --prerelease allow"
         )
 
-    def test_uv_install_extra_command_drops_composite_extras(
-        self, tmp_path, monkeypatch
-    ) -> None:
-        """Composite extras are not echoed back into uv reinstall commands."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-openai")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=(
-                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
-                'definitely-present-dcode-test-openai; extra == "all-providers"',
-            ),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        assert installed_extra_names("deepagents-code") == {"nvidia"}
-        assert _install_extra_uv_tool_command(
-            "baseten", distribution_name="deepagents-code"
-        ) == (
-            "uv tool install --reinstall -U "
-            f"'deepagents-code[baseten,nvidia]=={__version__}' --prerelease allow"
-        )
-
     def test_uv_install_extra_command_preserves_receipt_python_and_with_packages(
         self, tmp_path, monkeypatch
     ) -> None:
         """Installing an extra preserves the uv tool interpreter and `--with` deps."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-custom" }',
+            '{ name = "deepagents-code", extras = ["nvidia"] }, '
+            '{ name = "langchain-custom" }',
             python="/opt/Python 3.13/bin/python",
         )
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
         command = _install_extra_uv_tool_command(
             "baseten", distribution_name="deepagents-code"
@@ -3041,12 +2073,94 @@ class TestInstallExtraCommand:
             "DEEPAGENTS_CODE_EXTRAS=baseten,nvidia,quickjs bash"
         )
 
-    def test_rejects_shell_metacharacters(self) -> None:
-        assert not is_valid_extra_name("quickjs']; touch /tmp/pwned; '")
-        with pytest.raises(ValueError, match="Invalid extra name"):
-            install_extra_command("quickjs']; touch /tmp/pwned; '")
-        with pytest.raises(ValueError, match="Invalid extra name"):
-            install_extras_command(["quickjs", "bad;name"])
+    def test_uv_install_extra_command_preserves_composite_extras(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A composite extra selected in the receipt survives the reinstall.
+
+        `installed_extra_names` filtered composites out because build backends
+        flatten them in metadata. The receipt records the requirement as the user
+        wrote it, so `all-providers` must be echoed back — dropping it would
+        deselect every provider it expands to.
+        """
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code", extras = ["all-providers"] }',
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        assert _install_extra_uv_tool_command(
+            "daytona", distribution_name="deepagents-code"
+        ) == (
+            "uv tool install --reinstall -U "
+            f"'deepagents-code[all-providers,daytona]=={__version__}' "
+            "--prerelease allow"
+        )
+
+    def test_uv_install_extra_command_refuses_invalid_receipt_extras(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """A malformed receipt must not drop selected extras.
+
+        The selected set drives the rebuilt requirement, so an unreadable
+        receipt has to fail closed rather than silently reinstall a plain
+        `deepagents-code` and deselect everything the user asked for.
+        """
+        _write_uv_receipt(
+            tmp_path,
+            '{ name = "deepagents-code", extras = ["not a valid extra"] }',
+        )
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
+
+        with pytest.raises(ToolRequirementIntrospectionError, match="invalid extras"):
+            _install_extra_uv_tool_command(
+                "quickjs", distribution_name="deepagents-code"
+            )
+
+
+class TestSafeInstallExtraRecoveryCommand:
+    """`safe_install_extra_recovery_command` guards recovery-hint call sites."""
+
+    def test_returns_recovery_command_on_success(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            lambda _extra: "uv tool install recovery",
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "uv tool install recovery"
+        )
+
+    def test_falls_back_on_value_error(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=ValueError("bad extra")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
+    def test_falls_back_on_introspection_error(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=ExtrasIntrospectionError("metadata unreadable")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
+
+    def test_falls_back_on_unexpected_error(self, monkeypatch) -> None:
+        """Unexpected recovery errors must not escape the helper."""
+        monkeypatch.setattr(
+            "deepagents_code.update_check.install_extra_recovery_command",
+            MagicMock(side_effect=RuntimeError("metadata broken")),
+        )
+        assert (
+            safe_install_extra_recovery_command("quickjs", fallback="fallback cmd")
+            == "fallback cmd"
+        )
 
 
 class TestEditableExtraHint:
@@ -3067,84 +2181,17 @@ class TestEditableExtraHint:
 class TestInstallPackageCommand:
     """`install_package_command` builds a uv tool package install string."""
 
-    def test_basic_no_extras(self, tmp_path, monkeypatch) -> None:
-        """Clean metadata with no extras yields the version-pinned requirement."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        assert install_package_command(
-            "langchain-custom", distribution_name="deepagents-code"
-        ) == (
-            "uv tool install --reinstall -U "
-            f"deepagents-code=={__version__} --with langchain-custom "
-            "--prerelease allow"
-        )
-
-    def test_allows_pep508_name_separators(self, tmp_path, monkeypatch) -> None:
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-absent-dcode-test-quickjs-xyz; extra == "quickjs"',),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        assert install_package_command(
-            "langchain.custom_provider", distribution_name="deepagents-code"
-        ) == (
-            "uv tool install --reinstall -U "
-            f"deepagents-code=={__version__} --with langchain.custom_provider "
-            "--prerelease allow"
-        )
-
-    def test_preserves_installed_extras(self, tmp_path, monkeypatch) -> None:
-        """Adding a package keeps already-installed extras selected."""
-        _write_uv_receipt(tmp_path, '{ name = "deepagents-code" }')
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=(
-                'definitely-present-dcode-test-nvidia; extra == "nvidia"',
-                'definitely-absent-dcode-test-baseten-xyz; extra == "baseten"',
-            ),
-        )
-        monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
-
-        assert installed_extra_names("deepagents-code") == {"nvidia"}
-        assert install_package_command(
-            "langchain-custom", distribution_name="deepagents-code"
-        ) == (
-            "uv tool install --reinstall -U "
-            f"'deepagents-code[nvidia]=={__version__}' --with langchain-custom "
-            "--prerelease allow"
-        )
-
     def test_preserves_receipt_python_and_with_packages(
         self, tmp_path, monkeypatch
     ) -> None:
         """Adding a package keeps uv receipt interpreter and `--with` packages."""
         _write_uv_receipt(
             tmp_path,
-            '{ name = "deepagents-code" }, { name = "langchain-first" }',
+            '{ name = "deepagents-code", extras = ["nvidia"] }, '
+            '{ name = "langchain-first" }',
             python="/opt/Python 3.13/bin/python",
         )
-        _write_dist_info(tmp_path, "definitely-present-dcode-test-nvidia")
-        _write_dist_info(
-            tmp_path,
-            "deepagents-code",
-            requires=('definitely-present-dcode-test-nvidia; extra == "nvidia"',),
-        )
         monkeypatch.setattr("sys.prefix", str(tmp_path))
-        monkeypatch.syspath_prepend(str(tmp_path))
 
         command = install_package_command(
             "langchain-second", distribution_name="deepagents-code"
@@ -3271,71 +2318,33 @@ class TestInstallPackageCommand:
                 "langchain-new", distribution_name="deepagents-code"
             )
 
-    def test_refuses_missing_distribution(self) -> None:
-        """Reinstalls must not drop extras when metadata is unavailable."""
-        with pytest.raises(ExtrasIntrospectionError, match="cannot preserve"):
-            install_package_command(
-                "langchain-custom", distribution_name="missing-dcode-test"
-            )
-
-    def test_refuses_invalid_metadata(self, tmp_path, monkeypatch) -> None:
-        """Malformed optional-dependency metadata must not drop existing extras."""
-        _write_dist_info(
+    def test_refuses_invalid_receipt_extras(self, tmp_path, monkeypatch) -> None:
+        """A malformed receipt must not drop selected extras."""
+        _write_uv_receipt(
             tmp_path,
-            "deepagents-code",
-            requires=("not a valid requirement ; ;",),
+            '{ name = "deepagents-code", extras = ["not a valid extra"] }',
         )
-        monkeypatch.syspath_prepend(str(tmp_path))
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
 
-        with pytest.raises(ExtrasIntrospectionError, match="Could not parse"):
+        with pytest.raises(ToolRequirementIntrospectionError, match="invalid extras"):
             install_package_command(
                 "langchain-custom", distribution_name="deepagents-code"
             )
 
-    def test_rejects_shell_metacharacters(self) -> None:
-        """A bad package name raises before extras introspection runs.
+    def test_refuses_missing_receipt(self, tmp_path, monkeypatch) -> None:
+        """Reinstalls must not drop extras when the receipt is unavailable."""
+        monkeypatch.setattr("sys.prefix", str(tmp_path))
 
-        Validation precedes the distribution lookup, so the rejection holds
-        regardless of metadata availability.
-        """
-        with pytest.raises(ValueError, match="Invalid package name"):
-            install_package_command("langchain-custom; touch /tmp/pwned")
+        with pytest.raises(
+            ToolRequirementIntrospectionError, match="receipt not found"
+        ):
+            install_package_command(
+                "langchain-custom", distribution_name="deepagents-code"
+            )
 
 
 class TestPerformInstallExtra:
     """`perform_install_extra` execution paths."""
-
-    async def test_editable_install_refuses(self) -> None:
-        """Editable installs cannot accept extras via uv tool install."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="unknown",
-        ):
-            success, output = await perform_install_extra("quickjs")
-        assert success is False
-        assert "Editable install" in output
-        assert "uv tool install --editable" in output
-        assert "--with 'deepagents-code[quickjs]'" in output
-
-    async def test_brew_install_refuses(self) -> None:
-        """Homebrew formula doesn't expose extras."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="brew",
-        ):
-            success, output = await perform_install_extra("quickjs")
-        assert success is False
-        assert "Homebrew" in output
-
-    async def test_other_install_refuses(self) -> None:
-        """Unknown non-editable installs cannot be updated through uv tool."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="other",
-        ):
-            success, output = await perform_install_extra("quickjs")
-        assert success is False
-        assert "Unsupported install method" in output
 
     @pytest.mark.parametrize(
         ("method", "needle"),
@@ -3365,22 +2374,12 @@ class TestPerformInstallExtra:
             "deepagents_code.update_check.detect_install_method",
             return_value=method,
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert needle in output
         assert "ToolRequirementIntrospectionError" not in output
         assert "curl -LsSf https://langch.in/dcode" in output
         assert "DEEPAGENTS_CODE_EXTRAS=quickjs bash" in output
-
-    async def test_invalid_extra_refuses_before_detecting_install(self) -> None:
-        """Malformed forced extras must never reach command construction."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-        ) as detect:
-            success, output = await perform_install_extra("quickjs']; echo nope; '")
-        assert success is False
-        assert "Invalid extra name" in output
-        detect.assert_not_called()
 
     async def test_uv_install_runs(self, tmp_path) -> None:
         """`uv` method runs the subprocess and returns success."""
@@ -3401,7 +2400,9 @@ class TestPerformInstallExtra:
                 return_value="printf 'ok\\n'",
             ),
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
+            success, output, _safe = await perform_install_extra(
+                "quickjs", log_path=log_path
+            )
         assert success is True
         assert output == "ok"
 
@@ -3423,13 +2424,15 @@ class TestPerformInstallExtra:
                 return_value=frozenset(),
             ),
         ):
-            success, output = await perform_install_extra("quickjs")
+            success, output, _safe = await perform_install_extra("quickjs")
         assert success is False
         assert "ToolRequirementIntrospectionError" in output
         assert "non-table requirement" in output
 
-    async def test_uv_missing_returns_actionable_error(self) -> None:
-        """When `uv` is not on PATH, surface a clear error before exec."""
+    async def test_contended_lock_skips_receipt_read_and_subprocess(self) -> None:
+        """A concurrent mutation wins before this install reads the receipt."""
+        command = MagicMock()
+        run = AsyncMock()
         with (
             patch(
                 "deepagents_code.update_check.detect_install_method",
@@ -3437,24 +2440,72 @@ class TestPerformInstallExtra:
             ),
             patch(
                 "deepagents_code.update_check.shutil.which",
-                return_value=None,
+                return_value="/usr/bin/uv",
             ),
+            patch(
+                "deepagents_code.update_check.update_install_lock",
+                return_value=nullcontext(False),
+            ),
+            patch(
+                "deepagents_code.update_check._install_extra_uv_tool_command",
+                command,
+            ),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
         ):
-            success, output = await perform_install_extra("quickjs")
-        assert success is False
-        assert "uv" in output
-        assert "not found" in output
+            outcome = await perform_install_extra("quickjs")
+
+        assert isinstance(outcome, ExtraInstallOutcome)
+        assert outcome.success is False
+        assert "already running" in outcome.output
+        assert outcome.manual_recovery_safe is False
+        command.assert_not_called()
+        run.assert_not_awaited()
+
+    async def test_lock_wraps_command_generation_and_subprocess(self) -> None:
+        """Receipt inspection and the rebuild share one lock hold."""
+        events: list[str] = []
+
+        @contextmanager
+        def lock() -> Iterator[bool]:
+            events.append("acquire")
+            try:
+                yield True
+            finally:
+                events.append("release")
+
+        def command(_extra: str) -> str:
+            events.append("command")
+            return "uv tool install safe-command"
+
+        def run_subprocess(*_args: object, **_kwargs: object) -> tuple[bool, str]:
+            events.append("run")
+            return True, "installed"
+
+        run = AsyncMock(side_effect=run_subprocess)
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch("deepagents_code.update_check.update_install_lock", lock),
+            patch(
+                "deepagents_code.update_check._install_extra_uv_tool_command",
+                side_effect=command,
+            ),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            success, output, _safe = await perform_install_extra("quickjs")
+
+        assert (success, output) == (True, "installed")
+        assert events == ["acquire", "command", "run", "release"]
 
 
 class TestIsValidPackageName:
     """`is_valid_package_name` accepts PEP 508 names, rejects the rest."""
-
-    def test_accepts_plain_and_separated_names(self) -> None:
-        assert is_valid_package_name("langchain-custom")
-        assert is_valid_package_name("langchain.custom_provider")
-
-    def test_rejects_shell_metacharacters(self) -> None:
-        assert not is_valid_package_name("langchain-custom; touch /tmp/pwned")
 
     def test_rejects_option_injection_leading_dash(self) -> None:
         """A leading dash would smuggle uv options into `--with <name>`.
@@ -3468,74 +2519,13 @@ class TestIsValidPackageName:
         assert not is_valid_package_name("--force")
         assert not is_valid_package_name("-e.")
 
-    def test_rejects_boundary_separators_and_whitespace(self) -> None:
-        """Leading/trailing separators and internal whitespace are rejected."""
-        for bad in (".foo", "foo.", "-foo", "foo-", "_foo", "foo_", "foo bar"):
-            assert not is_valid_package_name(bad), bad
-
-    def test_rejects_non_ascii(self) -> None:
-        r"""The pattern is ASCII-only; a `\w`-based regex would wrongly accept."""
-        assert not is_valid_package_name("foöbar")
-
-    def test_rejects_empty(self) -> None:
-        assert not is_valid_package_name("")
-
 
 class TestEditablePackageHint:
     """`editable_package_hint` names the package without a raw `uv` command."""
 
-    def test_names_package_without_uv_command(self) -> None:
-        hint = editable_package_hint("langchain-custom")
-        assert "langchain-custom" in hint
-        # We intentionally don't surface raw `uv tool` commands to the user.
-        assert "uv tool" not in hint
-
 
 class TestPerformInstallPackage:
     """`perform_install_package` execution paths."""
-
-    async def test_editable_install_refuses(self) -> None:
-        """Editable installs cannot accept packages via uv tool install."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="unknown",
-        ):
-            success, output = await perform_install_package("langchain-custom")
-        assert success is False
-        assert "Editable install" in output
-        assert "langchain-custom" in output
-        # No raw `uv tool` command is surfaced to the user.
-        assert "uv tool" not in output
-
-    async def test_brew_install_refuses(self) -> None:
-        """Homebrew formula can't add packages to the tool env."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="brew",
-        ):
-            success, output = await perform_install_package("langchain-custom")
-        assert success is False
-        assert "Homebrew" in output
-
-    async def test_other_install_refuses(self) -> None:
-        """Unknown non-editable installs cannot be updated through uv tool."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-            return_value="other",
-        ):
-            success, output = await perform_install_package("langchain-custom")
-        assert success is False
-        assert "Unsupported install method" in output
-
-    async def test_invalid_package_refuses_before_detecting_install(self) -> None:
-        """Malformed package names must never reach command construction."""
-        with patch(
-            "deepagents_code.update_check.detect_install_method",
-        ) as detect:
-            success, output = await perform_install_package("custom; echo nope")
-        assert success is False
-        assert "Invalid package name" in output
-        detect.assert_not_called()
 
     async def test_uv_install_runs(self, tmp_path) -> None:
         """`uv` method runs the subprocess and returns success."""
@@ -3562,23 +2552,6 @@ class TestPerformInstallPackage:
         assert success is True
         assert output == "ok"
 
-    async def test_uv_missing_returns_actionable_error(self) -> None:
-        """When `uv` is not on PATH, surface a clear error before exec."""
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value=None,
-            ),
-        ):
-            success, output = await perform_install_package("langchain-custom")
-        assert success is False
-        assert "uv" in output
-        assert "not found" in output
-
     async def test_extras_introspection_failure_is_reported_and_logged(
         self, caplog
     ) -> None:
@@ -3599,7 +2572,11 @@ class TestPerformInstallPackage:
                 return_value="/usr/bin/uv",
             ),
             patch(
-                "deepagents_code.extras_info.installed_extra_names",
+                "deepagents_code.update_check._uv_tool_receipt_data",
+                return_value={},
+            ),
+            patch(
+                "deepagents_code.update_check._uv_tool_selected_extras",
                 side_effect=ExtrasIntrospectionError("metadata unreadable"),
             ),
             caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
@@ -3665,6 +2642,75 @@ class TestPerformInstallPackage:
         assert "ValueError" in output
         assert "Invalid deepagents-code version" in output
 
+    async def test_contended_lock_skips_receipt_read_and_subprocess(self) -> None:
+        """A concurrent mutation wins before this install reads the receipt."""
+        command = MagicMock()
+        run = AsyncMock()
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch(
+                "deepagents_code.update_check.update_install_lock",
+                return_value=nullcontext(False),
+            ),
+            patch("deepagents_code.update_check.install_package_command", command),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+
+        assert success is False
+        assert "already running" in output
+        command.assert_not_called()
+        run.assert_not_awaited()
+
+    async def test_lock_wraps_command_generation_and_subprocess(self) -> None:
+        """Receipt inspection and the package rebuild share one lock hold."""
+        events: list[str] = []
+
+        @contextmanager
+        def lock() -> Iterator[bool]:
+            events.append("acquire")
+            try:
+                yield True
+            finally:
+                events.append("release")
+
+        def command(_package: str) -> str:
+            events.append("command")
+            return "uv tool install safe-command"
+
+        def run_subprocess(*_args: object, **_kwargs: object) -> tuple[bool, str]:
+            events.append("run")
+            return True, "installed"
+
+        run = AsyncMock(side_effect=run_subprocess)
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch(
+                "deepagents_code.update_check.shutil.which",
+                return_value="/usr/bin/uv",
+            ),
+            patch("deepagents_code.update_check.update_install_lock", lock),
+            patch(
+                "deepagents_code.update_check.install_package_command",
+                side_effect=command,
+            ),
+            patch("deepagents_code.update_check._run_install_subprocess", run),
+        ):
+            success, output = await perform_install_package("langchain-custom")
+
+        assert (success, output) == (True, "installed")
+        assert events == ["acquire", "command", "run", "release"]
+
 
 class TestRunInstallSubprocessFailureModes:
     """Failure-mode coverage routed through `perform_install_extra`.
@@ -3673,77 +2719,52 @@ class TestRunInstallSubprocessFailureModes:
     public entry point of its own.
     """
 
-    async def test_timeout_kills_process(self, tmp_path) -> None:
-        """A subprocess that exceeds `_UPGRADE_TIMEOUT` is killed and reported."""
-        log_path = tmp_path / "install.log"
-        with (
-            patch("deepagents_code.update_check._UPGRADE_TIMEOUT", 0.05),
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value="/usr/bin/uv",
-            ),
-            patch(
-                "deepagents_code.update_check._install_extra_uv_tool_command",
-                return_value="sleep 5",
-            ),
+    async def test_terminate_falls_back_to_direct_kill_on_permission_error(
+        self,
+    ) -> None:
+        """When `killpg` is denied, the direct child is still reaped."""
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX-specific")
+        proc = await asyncio.create_subprocess_shell(
+            "sleep 30",
+            stdin=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        with patch(
+            "deepagents_code.update_check.os.killpg",
+            side_effect=PermissionError,
         ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
-        assert success is False
-        assert "timed out" in output
+            await _terminate_install_process(proc)
 
-    async def test_oserror_includes_exception_detail(self, tmp_path) -> None:
-        """An OSError during exec must surface the exception class + message."""
-        log_path = tmp_path / "install.log"
+        # The EPERM fallback (`proc.kill()`) must have reaped the child.
+        assert proc.returncode is not None
 
-        def _raise(*_args: object, **_kwargs: object) -> None:
-            raise FileNotFoundError(2, "No such file or directory", "uv")
+    async def test_terminate_closes_real_subprocess_transport(self) -> None:
+        """Cleanup leaves the real subprocess transport closed, not pending.
 
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value="/usr/bin/uv",
-            ),
-            patch(
-                "deepagents_code.update_check._install_extra_uv_tool_command",
-                return_value=(
-                    "uv tool install --reinstall -U 'deepagents-code[quickjs]'"
-                ),
-            ),
-            patch("asyncio.create_subprocess_shell", side_effect=_raise),
-        ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
-        assert success is False
-        assert "FileNotFoundError" in output
-        assert "No such file" in output
+        A subprocess transport that is merely reaped (`proc.wait()`) but never
+        closed lingers until GC. If the event loop has closed by then,
+        `BaseSubprocessTransport.__del__` retries the close on a dead loop and
+        raises "Event loop is closed" — the `PytestUnraisableExceptionWarning`
+        seen in CI. `_terminate_install_process` must close the transport while
+        the loop is still alive, so it is never `is_closing() == False` on
+        return.
+        """
+        if os.name != "posix":
+            pytest.skip("process groups are POSIX-specific")
+        proc = await asyncio.create_subprocess_shell(
+            "sleep 30",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.DEVNULL,
+            start_new_session=True,
+        )
+        await _terminate_install_process(proc)
 
-    async def test_nonzero_exit_returns_combined_output(self, tmp_path) -> None:
-        """A failing subprocess returns False with stderr in the output."""
-        log_path = tmp_path / "install.log"
-        with (
-            patch(
-                "deepagents_code.update_check.detect_install_method",
-                return_value="uv",
-            ),
-            patch(
-                "deepagents_code.update_check.shutil.which",
-                return_value="/usr/bin/uv",
-            ),
-            patch(
-                "deepagents_code.update_check._install_extra_uv_tool_command",
-                return_value="sh -c 'printf boom 1>&2; exit 1'",
-            ),
-        ):
-            success, output = await perform_install_extra("quickjs", log_path=log_path)
-        assert success is False
-        assert "boom" in output
+        assert proc.returncode is not None
+        transport = getattr(proc, "_transport", None)
+        assert transport is not None
+        assert transport.is_closing()
 
 
 def _mock_sdk_pypi_response(
@@ -3766,97 +2787,6 @@ def _mock_sdk_pypi_response(
 
 
 class TestGetSdkReleaseTime:
-    def test_returns_none_for_none_version(self, cache_file) -> None:  # noqa: ARG002
-        assert get_sdk_release_time(None) is None
-
-    def test_reads_from_cache(self, cache_file) -> None:
-        """A cached SDK release time short-circuits the PyPI fetch."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "sdk_release_times": {"0.5.0": "2026-04-01T12:00:00Z"},
-                }
-            )
-        )
-        with patch("requests.get") as mock_get:
-            assert get_sdk_release_time("0.5.0") == "2026-04-01T12:00:00Z"
-            mock_get.assert_not_called()
-
-    def test_fetches_on_cache_miss(self, cache_file) -> None:
-        """On cache miss the function hits PyPI and writes the result back."""
-        iso = "2026-04-10T09:30:00Z"
-        releases = {"0.5.0": [{"upload_time_iso_8601": iso}]}
-        with patch(
-            "requests.get",
-            return_value=_mock_sdk_pypi_response(releases=releases),
-        ):
-            assert get_sdk_release_time("0.5.0") == iso
-
-        data = json.loads(cache_file.read_text())
-        assert data["sdk_release_times"] == {"0.5.0": iso}
-
-    def test_unknown_version_returns_none(self, cache_file) -> None:  # noqa: ARG002
-        """A version PyPI doesn't know about yields `None` without raising."""
-        with patch(
-            "requests.get",
-            return_value=_mock_sdk_pypi_response(
-                releases={"0.4.0": [{"upload_time_iso_8601": "2026-01-01T00:00:00Z"}]}
-            ),
-        ):
-            assert get_sdk_release_time("9.9.9") is None
-
-    def test_network_error_returns_none(self, cache_file) -> None:  # noqa: ARG002
-        """A `requests` failure degrades to `None` without raising."""
-        import requests
-
-        with patch("requests.get", side_effect=requests.ConnectionError("boom")):
-            assert get_sdk_release_time("0.5.0") is None
-
-    def test_bypass_cache_refetches(self, cache_file) -> None:
-        """`bypass_cache=True` ignores the cached value and hits PyPI."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "sdk_release_times": {"0.5.0": "2026-01-01T00:00:00Z"},
-                }
-            )
-        )
-        fresh = "2026-04-15T12:00:00Z"
-        with patch(
-            "requests.get",
-            return_value=_mock_sdk_pypi_response(
-                releases={"0.5.0": [{"upload_time_iso_8601": fresh}]}
-            ),
-        ):
-            assert get_sdk_release_time("0.5.0", bypass_cache=True) == fresh
-
-        data = json.loads(cache_file.read_text())
-        assert data["sdk_release_times"]["0.5.0"] == fresh
-
-    def test_preserves_existing_sdk_entries(self, cache_file) -> None:
-        """Writing a new SDK timestamp leaves other cached versions intact."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "sdk_release_times": {"0.4.0": "2026-01-01T00:00:00Z"},
-                }
-            )
-        )
-        iso = "2026-04-10T09:30:00Z"
-        with patch(
-            "requests.get",
-            return_value=_mock_sdk_pypi_response(
-                releases={"0.5.0": [{"upload_time_iso_8601": iso}]}
-            ),
-        ):
-            assert get_sdk_release_time("0.5.0") == iso
-
-        data = json.loads(cache_file.read_text())
-        assert data["sdk_release_times"] == {
-            "0.4.0": "2026-01-01T00:00:00Z",
-            "0.5.0": iso,
-        }
-
     def test_overwrites_corrupt_cache(self, cache_file) -> None:
         """A corrupt cache JSON must be overwritten, not preserved.
 
@@ -3878,101 +2808,6 @@ class TestGetSdkReleaseTime:
         assert data["sdk_release_times"] == {"0.5.0": iso}
 
 
-class TestFormatSdkReleaseAge:
-    def test_returns_released_prefix(self, cache_file) -> None:
-        from datetime import UTC, datetime, timedelta
-
-        iso = (datetime.now(tz=UTC) - timedelta(days=2)).isoformat()
-        cache_file.write_text(json.dumps({"sdk_release_times": {"0.5.0": iso}}))
-        age = format_sdk_release_age("0.5.0")
-        assert age.startswith("released ")
-        assert age.endswith("ago")
-
-    def test_unknown_version_with_no_network_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        """Cache miss + PyPI failure collapses to `""` (no exception)."""
-        import requests
-
-        with patch("requests.get", side_effect=requests.ConnectionError("boom")):
-            assert format_sdk_release_age("0.5.0") == ""
-
-
-class TestFormatSdkAgeSuffix:
-    def test_returns_separator_prefixed_age(self, cache_file) -> None:
-        cache_file.write_text(
-            json.dumps({"sdk_release_times": {"0.5.0": "2026-04-10T12:00:00Z"}})
-        )
-        with patch(
-            "deepagents_code.sessions.format_relative_timestamp", return_value="1w ago"
-        ):
-            assert format_sdk_age_suffix("0.5.0") == ", released 1w ago"
-
-    def test_none_version_returns_empty(self, cache_file) -> None:  # noqa: ARG002
-        assert format_sdk_age_suffix(None) == ""
-
-
-class TestGetLatestVersionReleaseTimes:
-    def test_release_times_cached_on_fresh_fetch(self, cache_file) -> None:
-        """A fresh PyPI fetch captures stable upload_time_iso_8601 into the cache."""
-        with patch(
-            "requests.get",
-            return_value=_mock_pypi_response(
-                "2.0.0",
-                release_times={"2.0.0": "2026-04-15T12:00:00Z"},
-            ),
-        ):
-            get_latest_version()
-
-        data = json.loads(cache_file.read_text())
-        assert data["release_times"] == {"2.0.0": "2026-04-15T12:00:00Z"}
-
-    def test_installed_release_time_cached_on_fresh_fetch(self, cache_file) -> None:
-        """The current install's release timestamp is cached for age notices."""
-        releases = {
-            "2.0.0": [{"filename": "a.tar.gz"}],
-            __version__: [{"filename": "installed.tar.gz"}],
-        }
-        with patch(
-            "requests.get",
-            return_value=_mock_pypi_response(
-                "2.0.0",
-                releases=releases,
-                release_times={
-                    "2.0.0": "2026-04-15T12:00:00Z",
-                    __version__: "2026-04-01T12:00:00Z",
-                },
-            ),
-        ):
-            get_latest_version()
-
-        data = json.loads(cache_file.read_text())
-        assert data["release_times"][__version__] == "2026-04-01T12:00:00Z"
-
-    def test_release_times_cached_for_prerelease(self, cache_file) -> None:
-        """Prerelease fetch captures both stable and prerelease timestamps."""
-        releases = {
-            "2.0.0": [{"filename": "a.tar.gz"}],
-            "2.1.0a1": [{"filename": "b.tar.gz"}],
-        }
-        with patch(
-            "requests.get",
-            return_value=_mock_pypi_response(
-                "2.0.0",
-                releases=releases,
-                release_times={
-                    "2.0.0": "2026-04-15T12:00:00Z",
-                    "2.1.0a1": "2026-04-18T09:30:00Z",
-                },
-            ),
-        ):
-            get_latest_version(include_prereleases=True)
-
-        data = json.loads(cache_file.read_text())
-        assert data["release_times"] == {
-            "2.0.0": "2026-04-15T12:00:00Z",
-            "2.1.0a1": "2026-04-18T09:30:00Z",
-        }
-
-
 class TestSetAutoUpdate:
     @pytest.fixture
     def config_path(self, tmp_path):
@@ -3980,61 +2815,6 @@ class TestSetAutoUpdate:
         path = tmp_path / "config.toml"
         with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
-
-    def test_enable_creates_config(self, config_path) -> None:
-        """Creates config.toml with auto_update = true when file doesn't exist."""
-        set_auto_update(True)
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        assert data["update"]["auto_update"] is True
-
-    def test_disable(self, config_path) -> None:
-        """Sets auto_update = false."""
-        set_auto_update(True)
-        set_auto_update(False)
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        assert data["update"]["auto_update"] is False
-
-    def test_preserves_existing_config(self, config_path) -> None:
-        """Doesn't clobber unrelated config sections."""
-        import tomli_w
-
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with config_path.open("wb") as f:
-            tomli_w.dump({"ui": {"theme": "monokai"}}, f)
-
-        set_auto_update(True)
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        assert data["ui"]["theme"] == "monokai"
-        assert data["update"]["auto_update"] is True
-
-    def test_preserves_sibling_update_keys(self, config_path) -> None:
-        """Doesn't clobber sibling keys in [update] section."""
-        import tomli_w
-
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        with config_path.open("wb") as f:
-            tomli_w.dump({"update": {"check": False}}, f)
-
-        set_auto_update(True)
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        assert data["update"]["check"] is False
-        assert data["update"]["auto_update"] is True
-
-    def test_round_trip_with_is_auto_update_enabled(self, config_path) -> None:  # noqa: ARG002
-        """set_auto_update(True) makes is_auto_update_enabled() return True."""
-        set_auto_update(True)
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch.dict("os.environ", {}, clear=False),
-        ):
-            import os
-
-            os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-            assert is_auto_update_enabled() is True
 
 
 class TestIsAutoUpdateEnabled:
@@ -4044,101 +2824,6 @@ class TestIsAutoUpdateEnabled:
         path = tmp_path / "config.toml"
         with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
-
-    def test_default_is_true(self, config_path) -> None:  # noqa: ARG002
-        """Auto-update defaults to enabled (opt-out)."""
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch.dict("os.environ", {}, clear=False),
-        ):
-            import os
-
-            os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-            assert is_auto_update_enabled() is True
-
-    def test_env_var_enables(self, config_path) -> None:  # noqa: ARG002
-        """DEEPAGENTS_CODE_AUTO_UPDATE=1 enables auto-update."""
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "1"}),
-        ):
-            assert is_auto_update_enabled() is True
-
-    def test_env_var_disables(self, config_path) -> None:  # noqa: ARG002
-        """DEEPAGENTS_CODE_AUTO_UPDATE=0 opts out of auto-update."""
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "0"}),
-        ):
-            assert is_auto_update_enabled() is False
-
-    def test_config_disables(self, config_path) -> None:
-        """`[update].auto_update = false` opts out of auto-update."""
-        set_auto_update(False)
-        assert config_path.exists()
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            patch.dict("os.environ", {}, clear=False),
-        ):
-            import os
-
-            os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-            assert is_auto_update_enabled() is False
-
-    def test_empty_env_disables(self, config_path, monkeypatch) -> None:  # noqa: ARG002
-        """An explicitly-empty env value is treated as falsy (opt-out)."""
-        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "")
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            assert is_auto_update_enabled() is False
-
-    def test_unrecognized_env_falls_through_to_default(
-        self, config_path, monkeypatch, caplog
-    ) -> None:
-        """A garbage env value is ignored (with a warning) and uses the default.
-
-        Guards the `classify_env_bool(...) is None` branch: a typo'd disable
-        attempt must not be mistaken for a real value. With no config written
-        it falls through to the opt-out default of `True`.
-        """
-        assert not config_path.exists()  # no config backs the result
-        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "ture")
-        with (
-            patch("deepagents_code.config._is_editable_install", return_value=False),
-            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
-        ):
-            assert is_auto_update_enabled() is True
-        assert "expected bool" in caplog.text
-
-    def test_unrecognized_env_falls_through_to_config(
-        self, config_path, monkeypatch
-    ) -> None:
-        """A garbage env value yields to `config.toml` rather than overriding it."""
-        set_auto_update(False)
-        assert config_path.exists()
-        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "maybe")
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            assert is_auto_update_enabled() is False
-
-    def test_env_overrides_config_to_disable(self, config_path, monkeypatch) -> None:  # noqa: ARG002
-        """A falsy env var wins over `[update].auto_update = true`."""
-        set_auto_update(True)
-        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "0")
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            assert is_auto_update_enabled() is False
-
-    def test_env_overrides_config_to_enable(self, config_path, monkeypatch) -> None:  # noqa: ARG002
-        """A truthy env var wins over `[update].auto_update = false`."""
-        set_auto_update(False)
-        monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "1")
-        with patch("deepagents_code.config._is_editable_install", return_value=False):
-            assert is_auto_update_enabled() is True
-
-    def test_editable_install_always_disabled(self, config_path) -> None:
-        """Editable installs never auto-update, even with config set."""
-        set_auto_update(True)
-        assert config_path.exists()
-        with patch("deepagents_code.config._is_editable_install", return_value=True):
-            assert is_auto_update_enabled() is False
 
     def test_corrupt_config_fails_closed(
         self, config_path, monkeypatch, caplog
@@ -4160,6 +2845,103 @@ class TestIsAutoUpdateEnabled:
             assert is_auto_update_enabled() is False
         assert "disabling auto-update" in caplog.text
 
+    def test_malformed_update_section_fails_closed(
+        self, config_path, monkeypatch, caplog
+    ) -> None:
+        """A non-table `update` value disables auto-update without raising."""
+        config_path.write_text("update = false\n", encoding="utf-8")
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+        ):
+            assert is_auto_update_enabled() is False
+        assert "disabling auto-update" in caplog.text
+
+    @pytest.mark.parametrize(
+        "user_toml",
+        ["not [ valid toml", "update = false\n"],
+        ids=["corrupt-file", "non-table-update"],
+    )
+    @pytest.mark.parametrize("higher_source", ["managed", "environment"])
+    def test_higher_priority_enablement_survives_unreadable_user_config(
+        self,
+        config_path,
+        tmp_path,
+        monkeypatch,
+        user_toml,
+        higher_source,
+    ) -> None:
+        """A broken user layer cannot override a higher-priority opt-in."""
+        from deepagents_code.configuration import service
+
+        config_path.write_text(user_toml, encoding="utf-8")
+        monkeypatch.delenv("DEEPAGENTS_CODE_AUTO_UPDATE", raising=False)
+        if higher_source == "managed":
+            managed = tmp_path / "managed.toml"
+            managed.write_text(
+                "[update]\nauto_update = true\n",
+                encoding="utf-8",
+            )
+            redirect_managed_config(monkeypatch, managed)
+            service.invalidate_config_sources()
+        else:
+            monkeypatch.setenv("DEEPAGENTS_CODE_AUTO_UPDATE", "1")
+
+        with patch("deepagents_code.config._is_editable_install", return_value=False):
+            assert is_auto_update_enabled() is True
+
+
+class TestUpdateCheckEnvPresence:
+    @pytest.fixture
+    def config_path(self, tmp_path):
+        """Override DEFAULT_CONFIG_PATH to use a temporary file."""
+        path = tmp_path / "config.toml"
+        with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
+            yield path
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            pytest.param("1", False, id="set"),
+            pytest.param("", True, id="empty"),
+        ],
+    )
+    def test_presence_env_opts_out_when_declared(
+        self,
+        config_path,
+        monkeypatch: pytest.MonkeyPatch,
+        raw: str,
+        expected: bool,
+    ) -> None:
+        """A declared presence variable disables checks; a blank one does not."""
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", raw)
+
+        assert is_update_check_enabled() is expected
+
+    def test_whitespace_only_opt_out_is_rejected_loudly(
+        self,
+        config_path,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """An unusable opt-out must not be discarded without saying so.
+
+        The runtime reader once took the raw string's truthiness, so a variable
+        that degraded to whitespace disabled checks silently. Resolution now
+        treats it as unset, which only stays safe if the rejection is surfaced.
+        """
+        config_path.write_text("", encoding="utf-8")
+        monkeypatch.setenv("DEEPAGENTS_CODE_NO_UPDATE_CHECK", "   ")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"):
+            assert is_update_check_enabled() is True
+
+        assert any("whitespace-only" in record.message for record in caplog.records), (
+            "an ignored opt-out must be reported"
+        )
+
 
 class TestAutoUpdateDefaultMigration:
     @pytest.fixture
@@ -4176,21 +2958,6 @@ class TestAutoUpdateDefaultMigration:
         with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_explicit_config_is_not_default(self, config_path, state_file) -> None:  # noqa: ARG002
-        """An explicit config choice counts as explicitly set."""
-        set_auto_update(True)
-        import os
-
-        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-        assert is_auto_update_explicitly_set() is True
-        assert should_announce_auto_update_default() is False
-
-    def test_explicit_env_is_not_default(self, config_path, state_file) -> None:  # noqa: ARG002
-        """A recognized env value counts as explicitly set."""
-        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "1"}):
-            assert is_auto_update_explicitly_set() is True
-            assert should_announce_auto_update_default() is False
-
     def test_implicit_default_announces_once(self, config_path, state_file) -> None:  # noqa: ARG002
         """With no explicit choice, the migration notice fires exactly once."""
         import os
@@ -4200,15 +2967,6 @@ class TestAutoUpdateDefaultMigration:
         assert should_announce_auto_update_default() is True
         mark_auto_update_default_acknowledged()
         assert should_announce_auto_update_default() is False
-
-    def test_unrecognized_env_is_not_explicit(self, config_path, state_file) -> None:  # noqa: ARG002
-        """A garbage env token does not count as an explicit choice."""
-        import os
-
-        os.environ.pop("DEEPAGENTS_CODE_AUTO_UPDATE", None)
-        with patch.dict("os.environ", {"DEEPAGENTS_CODE_AUTO_UPDATE": "ture"}):
-            assert is_auto_update_explicitly_set() is False
-            assert should_announce_auto_update_default() is True
 
     def test_corrupt_state_refires_notice(self, config_path, state_file) -> None:  # noqa: ARG002
         """A corrupt state file fails open: the one-time notice fires again.
@@ -4302,6 +3060,133 @@ class TestAutoUpdateDefaultMigration:
             assert mark_auto_update_default_acknowledged() is False
 
 
+class TestStartupAutoUpdateFailureCooldown:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary file."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_recent_same_version_skips(self, state_file) -> None:  # noqa: ARG002
+        """A recent startup auto-update failure suppresses the same version."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            assert mark_startup_auto_update_failed("2.0.0") is True
+        with patch("deepagents_code.update_check.time.time", return_value=101.0):
+            assert should_skip_startup_auto_update_after_failure("2.0.0") is True
+
+    def test_different_version_does_not_skip(self, state_file) -> None:  # noqa: ARG002
+        """A failure marker is scoped to the failed target version."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            mark_startup_auto_update_failed("2.0.0")
+        with patch("deepagents_code.update_check.time.time", return_value=101.0):
+            assert should_skip_startup_auto_update_after_failure("2.0.1") is False
+
+    def test_expired_failure_does_not_skip(self, state_file) -> None:  # noqa: ARG002
+        """The startup failure cooldown expires after the configured window."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            mark_startup_auto_update_failed("2.0.0")
+        with patch(
+            "deepagents_code.update_check.time.time",
+            return_value=100.0 + CACHE_TTL + 1,
+        ):
+            assert should_skip_startup_auto_update_after_failure("2.0.0") is False
+
+    def test_clear_removes_matching_failure_marker(self, state_file) -> None:
+        """Clearing a matching marker preserves unrelated update state."""
+        mark_version_seen("1.0.0")
+        mark_startup_auto_update_failed("2.0.0")
+
+        clear_startup_auto_update_failure("2.0.0")
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["seen_version"] == "1.0.0"
+        assert "startup_auto_update_failed_version" not in data
+        assert "startup_auto_update_failed_at" not in data
+
+    def test_clear_ignores_different_version(self, state_file) -> None:
+        """Clearing a different version leaves the failure marker intact."""
+        mark_startup_auto_update_failed("2.0.0")
+
+        clear_startup_auto_update_failure("2.0.1")
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["startup_auto_update_failed_version"] == "2.0.0"
+
+    def test_corrupted_timestamp_does_not_skip(self, state_file) -> None:
+        """A hand-edited non-numeric timestamp must not crash or skip."""
+        state_file.write_text(
+            json.dumps(
+                {
+                    "startup_auto_update_failed_version": "2.0.0",
+                    "startup_auto_update_failed_at": "not-a-number",
+                }
+            ),
+            encoding="utf-8",
+        )
+        assert should_skip_startup_auto_update_after_failure("2.0.0") is False
+
+
+class TestResumeAutoUpdateGracePeriod:
+    @pytest.fixture
+    def state_file(self, tmp_path):
+        """Override UPDATE_STATE_FILE to use a temporary file."""
+        path = tmp_path / "update_state.json"
+        with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
+            yield path
+
+    def test_first_resume_starts_grace_period(self, state_file) -> None:
+        """The first resumed launch records and uses the grace period."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            assert should_defer_startup_auto_update_for_resume() is True
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["resume_auto_update_deferred_at"] == pytest.approx(100.0)
+
+    def test_repeated_resume_does_not_extend_grace_period(self, state_file) -> None:
+        """Repeated resumes preserve the first deferral timestamp."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            should_defer_startup_auto_update_for_resume()
+        with patch("deepagents_code.update_check.time.time", return_value=200.0):
+            assert should_defer_startup_auto_update_for_resume() is True
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert data["resume_auto_update_deferred_at"] == pytest.approx(100.0)
+
+    def test_expired_grace_period_runs_update_path(self, state_file) -> None:  # noqa: ARG002
+        """Resume-only use stops bypassing startup updates after seven days."""
+        from deepagents_code.update_check import RESUME_AUTO_UPDATE_GRACE_PERIOD
+
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            should_defer_startup_auto_update_for_resume()
+        with patch(
+            "deepagents_code.update_check.time.time",
+            return_value=100.0 + RESUME_AUTO_UPDATE_GRACE_PERIOD,
+        ):
+            assert should_defer_startup_auto_update_for_resume() is False
+
+    def test_normal_launch_resets_grace_period(self, state_file) -> None:
+        """A normal launch lets a later resume begin a fresh grace period."""
+        with patch("deepagents_code.update_check.time.time", return_value=100.0):
+            should_defer_startup_auto_update_for_resume()
+
+        clear_resume_auto_update_deferral()
+
+        data = json.loads(state_file.read_text(encoding="utf-8"))
+        assert "resume_auto_update_deferred_at" not in data
+        with patch("deepagents_code.update_check.time.time", return_value=200.0):
+            assert should_defer_startup_auto_update_for_resume() is True
+
+    def test_unwritable_marker_does_not_bypass_update(self, tmp_path) -> None:
+        """A persistence failure cannot create an unbounded resume bypass."""
+        state_file = tmp_path / "missing" / "update_state.json"
+        with (
+            patch("deepagents_code.update_check.UPDATE_STATE_FILE", state_file),
+            patch("pathlib.Path.mkdir", side_effect=OSError("read-only")),
+        ):
+            assert should_defer_startup_auto_update_for_resume() is False
+
+
 class TestShouldNotifyUpdate:
     @pytest.fixture
     def state_file(self, tmp_path):
@@ -4310,56 +3195,9 @@ class TestShouldNotifyUpdate:
         with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_no_file_returns_true(self, state_file) -> None:  # noqa: ARG002
-        """First-run case: no state file exists."""
-        assert should_notify_update("2.0.0") is True
-
-    def test_same_version_within_ttl(self, state_file) -> None:
-        """Same version notified recently — suppress."""
-        state_file.write_text(
-            json.dumps({"notified_at": time.time(), "notified_version": "2.0.0"})
-        )
-        assert should_notify_update("2.0.0") is False
-
-    def test_different_version_within_ttl(self, state_file) -> None:
-        """New version available — notify even within TTL window."""
-        state_file.write_text(
-            json.dumps({"notified_at": time.time(), "notified_version": "1.9.0"})
-        )
-        assert should_notify_update("2.0.0") is True
-
-    def test_same_version_ttl_expired(self, state_file) -> None:
-        """TTL expired — re-notify for same version."""
-        state_file.write_text(
-            json.dumps(
-                {
-                    "notified_at": time.time() - CACHE_TTL - 1,
-                    "notified_version": "2.0.0",
-                }
-            )
-        )
-        assert should_notify_update("2.0.0") is True
-
     def test_corrupt_json(self, state_file) -> None:
         """Malformed JSON — fail-open (show banner)."""
         state_file.write_text("not valid json")
-        assert should_notify_update("2.0.0") is True
-
-    def test_non_dict_json(self, state_file) -> None:
-        """JSON array instead of object — fail-open."""
-        state_file.write_text(json.dumps([1, 2, 3]))
-        assert should_notify_update("2.0.0") is True
-
-    def test_non_numeric_notified_at(self, state_file) -> None:
-        """notified_at is a string — treated as invalid, show banner."""
-        state_file.write_text(
-            json.dumps({"notified_at": "not-a-number", "notified_version": "2.0.0"})
-        )
-        assert should_notify_update("2.0.0") is True
-
-    def test_missing_notified_at_key(self, state_file) -> None:
-        """File exists but missing notified_at — defaults to 0, TTL expired."""
-        state_file.write_text(json.dumps({"notified_version": "2.0.0"}))
         assert should_notify_update("2.0.0") is True
 
 
@@ -4371,57 +3209,6 @@ class TestMarkUpdateNotified:
         with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_creates_file(self, state_file) -> None:
-        """Creates state file when none exists."""
-        mark_update_notified("2.0.0")
-        assert state_file.exists()
-        data = json.loads(state_file.read_text())
-        assert data["notified_version"] == "2.0.0"
-        assert isinstance(data["notified_at"], float)
-
-    def test_overwrites_previous(self, state_file) -> None:
-        """Overwrites previous notification marker."""
-        mark_update_notified("1.0.0")
-        mark_update_notified("2.0.0")
-        data = json.loads(state_file.read_text())
-        assert data["notified_version"] == "2.0.0"
-
-    def test_round_trip(self, state_file) -> None:  # noqa: ARG002
-        """Mark then should_notify returns False for same version."""
-        mark_update_notified("2.0.0")
-        assert should_notify_update("2.0.0") is False
-
-    def test_round_trip_different_version(self, state_file) -> None:  # noqa: ARG002
-        """Mark then should_notify returns True for different version."""
-        mark_update_notified("1.9.0")
-        assert should_notify_update("2.0.0") is True
-
-    def test_clear_makes_should_notify_true_again(
-        self,
-        state_file,  # noqa: ARG002
-    ) -> None:
-        """clear_update_notified undoes a previous mark."""
-        mark_update_notified("2.0.0")
-        assert should_notify_update("2.0.0") is False
-        clear_update_notified()
-        assert should_notify_update("2.0.0") is True
-
-    def test_clear_removes_marker_keys_from_state(self, state_file) -> None:
-        """clear_update_notified pops the keys rather than writing sentinels."""
-        mark_update_notified("2.0.0")
-        clear_update_notified()
-        data = json.loads(state_file.read_text())
-        assert "notified_at" not in data
-        assert "notified_version" not in data
-
-    def test_clear_preserves_other_state_keys(self, state_file) -> None:
-        """Clearing notification markers leaves unrelated keys intact."""
-        mark_version_seen("1.0.0")
-        mark_update_notified("2.0.0")
-        clear_update_notified()
-        data = json.loads(state_file.read_text())
-        assert data["seen_version"] == "1.0.0"
-
     def test_write_failure_does_not_raise(self, state_file) -> None:
         """Write failure is absorbed gracefully."""
         with patch(
@@ -4429,46 +3216,6 @@ class TestMarkUpdateNotified:
             type(state_file)("/nonexistent/readonly/path/state.json"),
         ):
             mark_update_notified("2.0.0")  # should not raise
-
-    def test_does_not_touch_cache_file(self, state_file, cache_file) -> None:
-        """Notification state is independent of version cache."""
-        cache_file.write_text(
-            json.dumps(
-                {
-                    "version": "2.0.0",
-                    "checked_at": time.time(),
-                }
-            )
-        )
-        mark_update_notified("2.0.0")
-        # Cache file should be untouched
-        cache_data = json.loads(cache_file.read_text())
-        assert "notified_at" not in cache_data
-        assert "notified_version" not in cache_data
-        # State file should have the marker
-        assert state_file.exists()
-        state_data = json.loads(state_file.read_text())
-        assert state_data["notified_version"] == "2.0.0"
-
-    def test_get_latest_version_does_not_clobber_notify(
-        self,
-        state_file,  # noqa: ARG002
-        cache_file,  # noqa: ARG002
-    ) -> None:
-        """get_latest_version writing cache doesn't destroy notification state."""
-        mark_update_notified("2.0.0")
-        with patch("requests.get", return_value=_mock_pypi_response("3.0.0")):
-            get_latest_version(bypass_cache=True)
-        # Notification marker should survive
-        assert should_notify_update("2.0.0") is False
-
-    def test_preserves_seen_version(self, state_file) -> None:
-        """Marking notification preserves existing seen_version data."""
-        mark_version_seen("1.0.0")
-        mark_update_notified("2.0.0")
-        data = json.loads(state_file.read_text())
-        assert data["seen_version"] == "1.0.0"
-        assert data["notified_version"] == "2.0.0"
 
 
 class TestGetSeenVersion:
@@ -4479,31 +3226,10 @@ class TestGetSeenVersion:
         with patch("deepagents_code.update_check.UPDATE_STATE_FILE", path):
             yield path
 
-    def test_no_file_returns_none(self, state_file) -> None:  # noqa: ARG002
-        """No state file -> None."""
-        assert get_seen_version() is None
-
-    def test_round_trip(self, state_file) -> None:  # noqa: ARG002
-        """Mark then get returns the same version."""
-        mark_version_seen("1.0.0")
-        assert get_seen_version() == "1.0.0"
-
     def test_corrupt_json_returns_none(self, state_file) -> None:
         """Corrupt state file -> None."""
         state_file.write_text("not json")
         assert get_seen_version() is None
-
-    def test_non_string_value_returns_none(self, state_file) -> None:
-        """Non-string seen_version -> None (type guard)."""
-        state_file.write_text(json.dumps({"seen_version": 123}))
-        assert get_seen_version() is None
-
-    def test_preserves_notification_keys(self, state_file) -> None:  # noqa: ARG002
-        """Marking seen preserves existing notification data."""
-        mark_update_notified("2.0.0")
-        mark_version_seen("1.0.0")
-        assert get_seen_version() == "1.0.0"
-        assert should_notify_update("2.0.0") is False
 
 
 class TestShouldShowWhatsNew:
@@ -4531,35 +3257,6 @@ class TestShouldShowWhatsNew:
         assert state_file.exists()
         data = json.loads(state_file.read_text())
         assert data["seen_version"] == "1.0.0"
-
-    def test_same_version_returns_false(self, state_file) -> None:  # noqa: ARG002
-        """Current version == seen version -> False."""
-        from deepagents_code.update_check import should_show_whats_new
-
-        mark_version_seen("1.0.0")
-        with patch("deepagents_code.update_check.__version__", "1.0.0"):
-            assert should_show_whats_new() is False
-
-    def test_newer_version_returns_true(self, state_file) -> None:  # noqa: ARG002
-        """Current version > seen version -> True."""
-        from deepagents_code.update_check import should_show_whats_new
-
-        mark_version_seen("1.0.0")
-        with patch("deepagents_code.update_check.__version__", "2.0.0"):
-            assert should_show_whats_new() is True
-
-    def test_coexists_with_notification_state(self, state_file) -> None:  # noqa: ARG002
-        """What's-new and notification state don't interfere."""
-        from deepagents_code.update_check import should_show_whats_new
-
-        mark_update_notified("2.0.0")
-        mark_version_seen("1.0.0")
-        with patch("deepagents_code.update_check.__version__", "2.0.0"):
-            assert should_show_whats_new() is True
-        # Notification throttle still works
-        assert should_notify_update("2.0.0") is False
-        # Notification throttle still works
-        assert should_notify_update("2.0.0") is False
 
     def test_first_run_suppresses_auto_update_notice(
         self,
@@ -4611,3 +3308,238 @@ class TestShouldShowWhatsNew:
         path = tmp_path / "config.toml"
         with patch("deepagents_code.update_check.DEFAULT_CONFIG_PATH", path):
             yield path
+
+
+def _build_wheel(
+    wheelhouse: Path,
+    name: str,
+    version: str,
+    *,
+    requires: tuple[str, ...] = (),
+    extras: tuple[str, ...] = (),
+) -> None:
+    """Write a minimal pure-Python wheel into `wheelhouse` for resolver tests.
+
+    Builds just enough of the wheel format (METADATA, WHEEL, RECORD, and an
+    empty top-level module) for uv to resolve against a `--find-links`
+    directory without a build backend or network access.
+    """
+    import base64
+    import hashlib
+    import zipfile
+
+    module = name.replace("-", "_")
+    dist_info = f"{module}-{version}.dist-info"
+    metadata_lines = [
+        "Metadata-Version: 2.1",
+        f"Name: {name}",
+        f"Version: {version}",
+    ]
+    metadata_lines.extend(f"Provides-Extra: {extra}" for extra in extras)
+    metadata_lines.extend(f"Requires-Dist: {req}" for req in requires)
+    metadata = "\n".join(metadata_lines) + "\n"
+    wheel_meta = (
+        "Wheel-Version: 1.0\n"
+        "Generator: test-suite\n"
+        "Root-Is-Purelib: true\n"
+        "Tag: py3-none-any\n"
+    )
+    files = {
+        f"{module}/__init__.py": "",
+        f"{dist_info}/METADATA": metadata,
+        f"{dist_info}/WHEEL": wheel_meta,
+    }
+
+    def _record_line(path: str, data: str) -> str:
+        digest = hashlib.sha256(data.encode("utf-8")).digest()
+        b64 = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+        return f"{path},sha256={b64},{len(data.encode('utf-8'))}"
+
+    record = "\n".join(starmap(_record_line, files.items()))
+    record += f"\n{dist_info}/RECORD,,\n"
+    files[f"{dist_info}/RECORD"] = record
+
+    wheel_path = wheelhouse / f"{module}-{version}-py3-none-any.whl"
+    with zipfile.ZipFile(wheel_path, "w") as zf:
+        for path, data in files.items():
+            zf.writestr(path, data)
+
+
+class TestTargetedPrereleaseResolution:
+    """End-to-end resolver check: targeted constraints beat global allow.
+
+    Uses a hand-built local wheelhouse so the resolution is deterministic and
+    needs no network. A stable app pins `core==1.0a1` and offers an optional
+    provider with a stable `1.0` and a pre-release `1.1rc1`. A global
+    `--prerelease allow` selects the RC provider (the #4524 failure mode);
+    targeted constraints plus `if-necessary-or-explicit` select the required
+    core pre-release while keeping the provider on its stable release.
+    """
+
+    def _resolve(self, wheelhouse: Path, *extra_args: str) -> str:
+        import subprocess
+
+        cmd = [
+            "uv",
+            "pip",
+            "install",
+            "--dry-run",
+            "--python",
+            sys.executable,
+            "--no-index",
+            "--offline",
+            "--find-links",
+            str(wheelhouse),
+            "app[provider]==1.0",
+            *extra_args,
+        ]
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        return f"{proc.stdout}\n{proc.stderr}"
+
+    @pytest.mark.skipif(
+        shutil.which("uv") is None, reason="uv is required for resolver test"
+    )
+    def test_targeted_constraints_keep_provider_stable(self, tmp_path) -> None:
+        wheelhouse = tmp_path / "wheelhouse"
+        wheelhouse.mkdir()
+        _build_wheel(
+            wheelhouse,
+            "app",
+            "1.0",
+            requires=("core==1.0a1", 'provider ; extra == "provider"'),
+            extras=("provider",),
+        )
+        _build_wheel(wheelhouse, "core", "1.0a1")
+        _build_wheel(wheelhouse, "provider", "1.0")
+        _build_wheel(wheelhouse, "provider", "1.1rc1")
+
+        # Global allow: the RC provider slips in (the regression #4524 exposed).
+        allow_output = self._resolve(wheelhouse, "--prerelease", "allow")
+        assert "provider==1.1rc1" in allow_output
+
+        # Targeted: pin core's prerelease via constraints + scoped strategy.
+        constraints = tmp_path / "constraints.txt"
+        constraints.write_text("core==1.0a1\n", encoding="utf-8")
+        targeted_output = self._resolve(
+            wheelhouse,
+            "--constraints",
+            str(constraints),
+            "--prerelease",
+            "if-necessary-or-explicit",
+        )
+        assert "core==1.0a1" in targeted_output
+        assert "provider==1.0" in targeted_output
+        assert "provider==1.1rc1" not in targeted_output
+
+
+class TestUpdateLockLocationFallback:
+    """The update lock must not fail open on every launch.
+
+    `UPDATE_LOCK_FILE` is derived from `sys.prefix`, which is unwritable for a
+    normal user on a system or root-owned install. Without a fallback the lock
+    would be skipped on every single launch, reinstating the concurrent
+    double-upgrade race it exists to prevent.
+    """
+
+    def test_prefers_the_installation_lock(self, tmp_path: Path) -> None:
+        shared = tmp_path / "shared" / "update.lock"
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+        ):
+            assert update_check._resolve_update_lock_file() == shared
+        assert shared.parent.is_dir()
+        assert not profile.parent.exists()
+
+    def test_falls_back_to_the_profile_lock(self, tmp_path: Path) -> None:
+        # An existing file where the lock directory should go reproduces the
+        # `mkdir` failure an unwritable prefix produces.
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        shared = blocker / "update.lock"
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+        ):
+            assert update_check._resolve_update_lock_file() == profile
+        assert profile.parent.is_dir()
+
+    def test_falls_back_when_existing_lock_dir_is_unwritable(
+        self, tmp_path: Path
+    ) -> None:
+        """A pre-existing unwritable lock dir passes `mkdir(exist_ok=True)` but
+        must not be selected — the fallback must be tried instead.
+        """  # noqa: D205
+        shared = tmp_path / "shared"
+        shared.mkdir()
+        profile = tmp_path / "profile" / "update.lock"
+        original_probe = _paths.probe_writable
+
+        def fake_probe(directory: Path, *, mode: int = 0o777) -> None:
+            if directory == shared:
+                msg = "Permission denied"
+                raise OSError(msg)
+            original_probe(directory, mode=mode)
+
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", shared / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            # `first_writable` lives in `_paths`, so that is the seam.
+            patch.object(_paths, "probe_writable", side_effect=fake_probe),
+        ):
+            assert update_check._resolve_update_lock_file() == profile
+        assert profile.parent.is_dir()
+
+    def test_returns_none_only_when_neither_is_usable(self, tmp_path: Path) -> None:
+        first = tmp_path / "a"
+        second = tmp_path / "b"
+        first.write_text("")
+        second.write_text("")
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", first / "update.lock"),
+            patch.object(
+                update_check, "FALLBACK_UPDATE_LOCK_FILE", second / "update.lock"
+            ),
+        ):
+            assert update_check._resolve_update_lock_file() is None
+
+    def test_lock_is_acquired_from_the_fallback_location(self, tmp_path: Path) -> None:
+        """A usable fallback yields a real lock, not a fail-open `True`."""
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        profile = tmp_path / "profile" / "update.lock"
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            update_check.update_install_lock() as acquired,
+        ):
+            assert acquired is True
+            assert profile.exists()
+
+    def test_the_fallback_lock_actually_excludes(self, tmp_path: Path) -> None:
+        """A fallback lock must serialize, not merely exist.
+
+        Asserting `acquired is True` and that the file appeared says nothing
+        about exclusion, which is the entire reason the fallback is preferred
+        over failing open.
+        """
+        blocker = tmp_path / "shared"
+        blocker.write_text("")
+        profile = tmp_path / "profile" / "update.lock"
+        profile.parent.mkdir(parents=True)
+
+        with (
+            patch.object(update_check, "UPDATE_LOCK_FILE", blocker / "update.lock"),
+            patch.object(update_check, "FALLBACK_UPDATE_LOCK_FILE", profile),
+            TestUpdateInstallLock._lock_held_by_subprocess(profile),
+            update_check.update_install_lock() as acquired,
+        ):
+            assert acquired is False

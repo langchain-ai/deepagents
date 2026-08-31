@@ -64,13 +64,14 @@ class TestResolveLangsmithApiKey:
         monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
         assert resolve_langsmith_api_key() is None
 
-    def test_returns_sandbox_key_first(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_ignores_sandbox_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # LANGSMITH_SANDBOX_API_KEY is intentionally NOT used; LANGSMITH_API_KEY wins.
         monkeypatch.setenv("LANGSMITH_SANDBOX_API_KEY", "sandbox-key")
         monkeypatch.setenv("LANGSMITH_API_KEY", "ls-key")
         monkeypatch.setenv("LANGCHAIN_API_KEY", "lc-key")
         value, name = resolve_langsmith_api_key()  # ty: ignore[not-iterable]
-        assert value == "sandbox-key"
-        assert name == "LANGSMITH_SANDBOX_API_KEY"
+        assert value == "ls-key"
+        assert name == "LANGSMITH_API_KEY"
 
     def test_falls_back_to_langsmith_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("LANGSMITH_SANDBOX_API_KEY", raising=False)

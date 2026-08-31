@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
     from textual.app import App
+    from textual.screen import Screen
 
 _PREVIEW_MAX_LENGTH = 40
 
@@ -104,7 +105,7 @@ def copy_text_with_feedback(
     app: App,
     text: str,
     *,
-    failure_noun: Literal["input", "selection"],
+    failure_noun: Literal["input", "prompt", "selection"],
     success_message: str | None = None,
 ) -> bool:
     """Copy text to the clipboard and surface the outcome as a toast.
@@ -116,7 +117,7 @@ def copy_text_with_feedback(
         app: The active Textual app, used for the clipboard backend and toasts.
         text: Text to copy.
         failure_noun: Noun used in the warning toast (e.g. `"input"`,
-            `"selection"`).
+            `"prompt"`, `"selection"`).
         success_message: Toast shown on success. When `None`, success is silent
             (used by the selection-copy path, which has no visible draft to
             confirm).
@@ -141,15 +142,22 @@ def copy_text_with_feedback(
     return success
 
 
-def copy_selection_to_clipboard(app: App) -> None:
-    """Copy selected text from app widgets to clipboard.
+def copy_selection_to_clipboard(app: App, *, screen: Screen) -> None:
+    """Copy selected text from one screen's widgets to the clipboard.
 
-    This queries all widgets for their text_selection and copies
-    any selected text to the system clipboard.
+    Selections live on the screen that owns them (`Screen.selections`) and
+    survive a modal being pushed on top, so a scan has to target exactly one
+    screen. `screen` is required rather than defaulting to the active screen
+    because this runs deferred, by which point the active screen may no longer
+    be the one the caller meant — the caller pins it at event time instead.
+
+    Args:
+        app: The active Textual app, used for the clipboard backend and toasts.
+        screen: Screen whose widgets are scanned for selections.
     """
     selected_texts = []
 
-    for widget in app.query("*"):
+    for widget in screen.query("*"):
         # Skip detached widgets before touching `text_selection` — the
         # property reads `widget.screen.selections`, which raises `NoScreen`
         # for transient toasts mid-mount. `hasattr` is not a safe precheck

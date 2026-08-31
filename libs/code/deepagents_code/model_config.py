@@ -7,10 +7,12 @@ structured way to define available models and providers.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import importlib.util
 import json
 import logging
 import os
+import sys
 import tempfile
 import threading
 import tomllib
@@ -24,13 +26,30 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
+from deepagents_code._git import find_git_common_dir
+from deepagents_code._paths import PATHS
+from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Iterable, Mapping
+
+    from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.service import ConfigSources
+    from deepagents_code.configuration.types import ProviderStatus
+    from deepagents_code.json_types import JsonValue
 
 logger = logging.getLogger(__name__)
 
 _ENV_PREFIX = "DEEPAGENTS_CODE_"
+_resolved_env_var_log_lock = threading.Lock()
+_resolved_env_var_log_names: set[str] = set()
+
+
+def reset_env_resolution_log() -> None:
+    """Allow successful prefixed environment resolutions to be logged again."""
+    with _resolved_env_var_log_lock:
+        _resolved_env_var_log_names.clear()
 
 
 def resolved_env_var_name(canonical: str) -> str:
@@ -88,8 +107,14 @@ def resolve_env_var(name: str) -> str | None:
                     name,
                     prefixed,
                 )
-            if val:
-                logger.debug("Resolved %s from %s", name, prefixed)
+            if val and logger.isEnabledFor(logging.DEBUG):
+                # `resolve_env_var` is called frequently; log each successful
+                # prefixed resolution only once per generation to avoid spam.
+                with _resolved_env_var_log_lock:
+                    should_log = name not in _resolved_env_var_log_names
+                    _resolved_env_var_log_names.add(name)
+                if should_log:
+                    logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
     return os.environ.get(name) or None
 
@@ -104,8 +129,81 @@ URL is used everywhere a user is sent to read about provider setup.
 """
 
 
+MANAGED_CONFIG_SOURCE = "managed config"
+"""Resolver provenance label for a value managed policy decided.
+
+Mirrors `configuration.service.MANAGED_SOURCE`, which this module cannot
+import at module scope without pulling the configuration service onto the
+import path of every `model_config` consumer. `test_model_config` asserts the
+two stay equal, so a rename on either side fails loudly instead of silently
+degrading `ModelNotAllowedError` to generic wording.
+"""
+
+
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
+
+
+class ModelNotAllowedError(ModelConfigError):
+    """Raised when a model is outside the effective `models.allowed` policy."""
+
+    def __init__(
+        self,
+        *,
+        model_spec: str | None,
+        source: str | None,
+        allowed_models: tuple[str, ...],
+        context: str | None = None,
+    ) -> None:
+        """Initialize an actionable policy error.
+
+        Args:
+            context: Where the offending spec was declared (e.g. a subagent name
+                and file path), prefixed to the message. Without it a rejection
+                inside a loop over many declaration files names only the model,
+                leaving the user to bisect by hand.
+            model_spec: The spec that was rejected, as the user supplied it (so
+                a bare model name is echoed back unqualified). Pass `None` when
+                no specific model was requested -- an empty allowlist blocking
+                default resolution -- so the message does not invent a spec the
+                user never typed.
+            source: Human-readable label for the configuration layer that
+                supplied the policy, as produced by the manifest resolver (e.g.
+                `'config.toml'`). `MANAGED_CONFIG_SOURCE` is compared literally
+                to select administrator wording; `None` yields generic wording.
+            allowed_models: The specs the policy permits. An empty tuple is a
+                deny-all policy and selects a distinct message.
+        """
+        if source == MANAGED_CONFIG_SOURCE:
+            policy = "the administrator-managed models.allowed policy"
+        elif source:
+            policy = f"models.allowed from {source}"
+        else:
+            policy = "the active models.allowed policy"
+        if model_spec is None:
+            message = f"No model can be used because {policy} allows no models."
+        elif not allowed_models:
+            message = (
+                f"Model {model_spec!r} is blocked because {policy} allows no models."
+            )
+        elif ModelSpec.try_parse(model_spec.strip()) is None:
+            message = (
+                f"Model {model_spec!r} cannot be matched against {policy}; "
+                "use a fully qualified provider:model spec."
+            )
+        else:
+            allowed = ", ".join(allowed_models)
+            message = (
+                f"Model {model_spec!r} is not included in {policy}. "
+                f"Allowed models: {allowed}."
+            )
+        if context:
+            message = f"{context}: {message}"
+        super().__init__(message)
+        self.model_spec = model_spec
+        self.source = source
+        self.allowed_models = allowed_models
+        self.context = context
 
 
 class NoCredentialsConfiguredError(ModelConfigError):
@@ -117,6 +215,18 @@ class NoCredentialsConfiguredError(ModelConfigError):
     start path in the TUI and CLI) `isinstance`-check this type to recover by
     launching the TUI with model creation deferred, rather than string-matching
     the formatted message.
+    """
+
+
+class NoAllowedModelCredentialsError(NoCredentialsConfiguredError):
+    """Raised when `models.allowed` is active but none of its models can auth.
+
+    A `NoCredentialsConfiguredError` so existing deferred-start recovery keeps
+    working, but distinguishable because the recovery differs: adding *any*
+    credential fixes the base case, while here only a credential for a provider
+    named in the allowlist helps. Handlers that would otherwise silently retry
+    surface this message instead, so `/auth` never accepts a key and then
+    appears to do nothing.
     """
 
 
@@ -304,7 +414,8 @@ class ProviderAuthStatus:
             return self.detail
         return (
             f"provider '{self.provider}' is not recognized. "
-            "Add it to ~/.deepagents/config.toml with an api_key_env field"
+            f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
+            "api_key_env field"
         )
 
 
@@ -383,6 +494,126 @@ class ModelSpec:
         return f"{self.provider}:{self.model}"
 
 
+def parse_model_allowlist(value: object) -> tuple[str, ...]:
+    """Parse an ordered model allowlist of exact specs and provider wildcards.
+
+    Args:
+        value: Raw TOML value to validate.
+
+    Returns:
+        Canonical entries in declaration order with duplicates removed. Each is
+        either an exact `provider:model` spec or a `provider:*` wildcard
+        permitting every model from that provider.
+
+    Raises:
+        TypeError: If the value is not a list.
+        ValueError: If an entry is not an exact `provider:model` string or
+            `provider:*` wildcard, or is a bare Bedrock model ID (see below).
+    """
+    from deepagents_code.config import _is_bedrock_model_id
+
+    if not isinstance(value, list):
+        msg = "expected a list of provider:model strings"
+        raise TypeError(msg)
+
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            msg = "every entry must be a non-empty provider:model string"
+            raise ValueError(msg)
+        normalized = entry.strip()
+        if _is_bedrock_model_id(normalized.lower()):
+            # A bare Bedrock ID such as `anthropic.claude-3-5-sonnet-v2:0`
+            # splits at its *version* colon, yielding a nonsense provider that
+            # no spec can ever match -- `create_model` normalizes the same
+            # input to `bedrock:<id>`. Left accepted, the allowlist would
+            # silently become deny-all, so demand the explicit prefix.
+            msg = (
+                f"invalid model spec {entry!r}; bare Bedrock model IDs must be "
+                f"written as 'bedrock:{normalized}'"
+            )
+            raise ValueError(msg)
+        if normalized.endswith(":*"):
+            provider = normalized[:-2].strip()
+            # Validate the prefix as a one-character model spec rather than
+            # accepting any non-empty string, so `o penai:*` and `:*` reject
+            # here instead of matching nothing (or everything) later. The
+            # `strip()` round-trip mirrors the exact-spec check below, which
+            # treats internal whitespace as noncanonical.
+            if (
+                not provider
+                or provider != provider.strip()
+                or any(ch.isspace() for ch in provider)
+                or ModelSpec.try_parse(f"{provider}:_") is None
+            ):
+                msg = (
+                    f"invalid model spec {entry!r}; a wildcard must name a "
+                    f"provider as 'provider:*'"
+                )
+                raise ValueError(msg)
+            canonical = f"{provider}:*"
+            if canonical not in seen:
+                seen.add(canonical)
+                allowed.append(canonical)
+            continue
+        if "*" in normalized:
+            msg = (
+                f"invalid model spec {entry!r}; '*' is only supported as a "
+                f"whole-provider wildcard ('provider:*')"
+            )
+            raise ValueError(msg)
+        parsed = ModelSpec.try_parse(normalized)
+        if (
+            parsed is None
+            or parsed.provider != parsed.provider.strip()
+            or parsed.model != parsed.model.strip()
+        ):
+            msg = f"invalid model spec {entry!r}; expected provider:model"
+            raise ValueError(msg)
+        canonical = str(parsed)
+        if canonical not in seen:
+            seen.add(canonical)
+            allowed.append(canonical)
+    return tuple(allowed)
+
+
+def _malformed_allowlist_source(
+    sources: object,
+    user_data: Mapping[str, Any],
+    config_path: Path,
+) -> str | None:
+    """Describe where a declared-but-unusable `models.allowed` came from.
+
+    Called only when the manifest resolver produced no tuple. A declaration
+    that survives to here failed `parse_model_allowlist`, so the caller turns
+    it into a deny-all policy instead of letting it vanish into "unrestricted".
+
+    Args:
+        sources: The loaded configuration sources (duck-typed to avoid a
+            circular import of the configuration service).
+        user_data: The user layer's TOML table, already emptied when the file
+            is unreadable.
+        config_path: Path the user layer was read from, for the label.
+
+    Returns:
+        A provenance label naming the layer and the defect, or `None` when
+            `models.allowed` was never declared and the policy is genuinely
+            absent.
+    """
+    managed_data = getattr(getattr(sources, "managed", None), "data", None)
+    for data, label in (
+        (managed_data, MANAGED_CONFIG_SOURCE),
+        (user_data, str(config_path)),
+    ):
+        if not isinstance(data, dict):
+            continue
+        models = data.get("models")
+        if isinstance(models, dict) and models.get("allowed") is not None:
+            return f"{label} ([models].allowed is malformed)"
+    return None
+
+
 class ModelProfileEntry(TypedDict):
     """Profile data for a model with override tracking."""
 
@@ -438,6 +669,13 @@ class ProviderConfig(TypedDict, total=False):
     capitalization.
     """
 
+    short_name: str
+    """Compact brand label for space-constrained UI (e.g. the `/model` Recent
+    tag), where the full `display_name` — which may carry a parenthetical
+    qualifier like `"OpenAI (Subscription login)"` — is too long. Optional;
+    when unset, callers fall back to `display_name`.
+    """
+
     api_key_url: str
     """Provider page where users can create or manage API keys.
 
@@ -490,20 +728,66 @@ class ProviderConfig(TypedDict, total=False):
     """
 
 
-DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
-"""Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
+DEFAULT_CONFIG_DIR = PATHS.profile.root
+"""User-level Deep Agents directory, optionally set by `DEEPAGENTS_HOME`."""
 
-DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
-"""Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
+DEFAULT_CONFIG_PATH = PATHS.profile.config_file
+"""Path to the selected profile's model configuration file."""
 
-DEFAULT_STATE_DIR = DEFAULT_CONFIG_DIR / ".state"
-"""Directory for app-managed internal state (`~/.deepagents/.state`).
+DEFAULT_STATE_DIR = PATHS.profile.state_dir
+"""Directory for app-managed internal state in the selected profile.
 
 Holds files the app writes for its own bookkeeping — OAuth tokens, the
 sessions database, version-check caches, input history. Kept separate from
-top-level user-facing config and agent directories so listing/iterating
-`~/.deepagents` doesn't conflate state with agents.
+top-level user-facing config and agent directories so listing the profile root
+doesn't conflate state with agents.
 """
+
+
+def default_cache_dir() -> Path:
+    """Return the OS-appropriate cache directory for Deep Agents Code.
+
+    Uses `~/Library/Caches` on macOS, `LOCALAPPDATA` on Windows (falling back
+    to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
+    absolute path (falling back to `~/.cache`). The XDG spec treats relative
+    `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
+    resolved against the launch directory. If the OS home directory cannot be
+    resolved to an absolute path, caches fall back to the selected profile's
+    `.state/cache` directory so an absolute `DEEPAGENTS_HOME` remains usable.
+
+    Platform-native locations are the convention for a long-lived app (this is
+    what `platformdirs` codifies and what `uv` itself does — its own cache is
+    `~/Library/Caches/uv` on macOS). The install script deliberately does not
+    follow this: as a portable one-shot POSIX bootstrap it uses XDG-style
+    `${XDG_CACHE_HOME:-~/.cache}` on every platform (like the rustup and uv
+    installers), so on macOS its `<cache>/deepagents-code/install.log` lands
+    under a different root than the update logs. That divergence is
+    intentional; do not "fix" one side to match the other without a concrete
+    need (e.g., a diagnostic command that collects both logs).
+
+    Returns:
+        Base cache directory, before the `deepagents-code` subdirectory.
+    """
+    if sys.platform == "win32":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return Path(local_app_data)
+    elif sys.platform != "darwin":
+        xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+        if xdg_cache_home and Path(xdg_cache_home).is_absolute():
+            return Path(xdg_cache_home)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return DEFAULT_STATE_DIR / "cache"
+    if not home.is_absolute():
+        return DEFAULT_STATE_DIR / "cache"
+    if sys.platform == "win32":
+        return home / "AppData" / "Local"
+    if sys.platform == "darwin":
+        return home / "Library" / "Caches"
+    return home / ".cache"
+
 
 RECENT_MODELS_FILENAME = "recent_models.json"
 """Filename under `DEFAULT_STATE_DIR` for the MRU list shown in `/model`."""
@@ -515,6 +799,52 @@ Sized to fit comfortably above the provider-grouped list in `/model` without
 pushing the rest of the catalog off-screen on a typical terminal.
 """
 
+LANGSMITH_GATEWAY_PROVIDERS: frozenset[str] = frozenset(
+    {"anthropic", "baseten", "fireworks", "google_genai", "openai"}
+)
+"""Providers whose LangChain integrations support LangSmith LLM Gateway env vars."""
+
+LANGSMITH_GATEWAY_HOST = "smith.langchain.com"
+"""Host identifying LangSmith's managed (SaaS) gateway.
+
+The single definition: compare against it through `is_langsmith_gateway_host`
+rather than testing it as a raw-URL substring, which also accepts lookalikes
+such as `smith.langchain.com.evil.example`.
+"""
+
+
+def is_langsmith_gateway_host(host: str | None) -> bool:
+    """Return whether a parsed hostname is the LangSmith managed gateway.
+
+    Matches the host exactly or as a subdomain (org-scoped gateway URLs). The
+    suffix match requires a dot boundary, so `notsmith.langchain.com` does not
+    qualify; a host that merely *contains* the gateway name earlier in the
+    string (`smith.langchain.com.evil.example`) is not a suffix and is
+    likewise rejected.
+
+    Case and a trailing root dot are normalized here rather than left to the
+    caller. Both callers reach this from a different parser, and a precondition
+    enforced only by a comment in each caller is the way the two drift apart.
+
+    Args:
+        host: A hostname, or `None` when the URL could not be parsed.
+
+    Returns:
+        `True` when the host is the gateway or a subdomain of it.
+    """
+    if host is None:
+        return False
+    normalized = host.strip().lower().removesuffix(".")
+    return normalized == LANGSMITH_GATEWAY_HOST or normalized.endswith(
+        f".{LANGSMITH_GATEWAY_HOST}"
+    )
+
+
+LANGSMITH_GATEWAY_ENV = "LANGSMITH_GATEWAY"
+LANGSMITH_GATEWAY_API_KEY_ENV = "LANGSMITH_GATEWAY_API_KEY"
+_LANGSMITH_GATEWAY_FALSE_VALUES = frozenset({"false", "0", "no"})
+
+
 PROVIDER_API_KEY_ENV: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "azure_openai": "AZURE_OPENAI_API_KEY",
@@ -522,12 +852,14 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    "google_anthropic_vertex": "GOOGLE_CLOUD_PROJECT",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
     "groq": "GROQ_API_KEY",
     "huggingface": "HUGGINGFACEHUB_API_TOKEN",
     "ibm": "WATSONX_APIKEY",
     "litellm": "LITELLM_API_KEY",
+    "meta": "MODEL_API_KEY",
     "mistralai": "MISTRAL_API_KEY",
     "nvidia": "NVIDIA_API_KEY",
     "openai": "OPENAI_API_KEY",
@@ -547,6 +879,70 @@ Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
 """
 
+RETRY_PARAM_BY_PROVIDER: dict[str, str | None] = {
+    "anthropic": "max_retries",
+    "azure_openai": "max_retries",
+    "baseten": "max_retries",
+    "bedrock": "max_retries",
+    "deepseek": "max_retries",
+    "fireworks": "max_retries",
+    "google_anthropic_vertex": "max_retries",
+    "google_genai": "max_retries",
+    "google_vertexai": "max_retries",
+    "groq": "max_retries",
+    "litellm": "max_retries",
+    "meta": "max_retries",
+    "mistralai": "max_retries",
+    "openai": "max_retries",
+    "openai_codex": "max_retries",
+    "openrouter": "max_retries",
+    "perplexity": "max_retries",
+    "together": "max_retries",
+    "xai": "max_retries",
+    # `None` means "checked, and this integration has no retry-count kwarg" --
+    # distinct from a provider absent from the table, which means dcode does
+    # not know. Only the absent case warrants the "SDK retries stay active"
+    # warning: a `None` provider has no SDK retry loop to multiply, so warning
+    # about it told the user to set `[retries.<provider>].param` to a kwarg
+    # their integration would drop.
+    #
+    # `cohere` is deliberately NOT listed here: `langchain_cohere`'s `BaseCohere`
+    # appears to expose `max_retries`, so it likely belongs above with a kwarg
+    # name rather than here. Left absent until someone can check it against an
+    # installed `langchain_cohere` -- absent warns, which is noisy but honest,
+    # whereas a wrong `None` would silently leave its SDK retries running.
+    "huggingface": None,
+    "ibm": None,
+    "nvidia": None,
+    "ollama": None,
+}
+"""Constructor kwargs used to disable provider-owned retry loops.
+
+dcode's model-node middleware owns the retry budget, so integrations with a
+known retry-count parameter receive their provider-specific disable value at
+construction time. A `None` value records an integration reported to
+have no retry-count parameter. Providers absent from this mapping are unknown
+to dcode and must declare one with `[retries.<provider>].param` in
+`config.toml`.
+
+A kwarg name is verified against that integration's chat model constructor,
+never inferred from the provider name. The `None` entries are the weaker claim:
+none of those packages is installed in this repo, so they rest on the
+integrations' own documentation. Re-check one before relying on it.
+"""
+
+RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}
+"""Non-zero provider-specific values that disable SDK retries.
+
+`google-genai` counts *total attempts*, not retries. Before 1.68.0 it read zero
+as unset and restored its own five-attempt default; from 1.68.0 on it coerces
+zero to one (`_api_client._retry_args`), so zero and one now behave alike. One is
+sent because it disables retries on both, and it is the only value that means
+"the initial request only" on every version.
+
+Other registered providers count retries, so zero disables them.
+"""
+
 LANGSMITH_SERVICE = "langsmith"
 """Service name for LangSmith tracing in `SERVICE_API_KEY_ENV`.
 
@@ -555,9 +951,18 @@ Storing a key for this service via `/auth` also enables tracing at startup
 name, so it gets special handling beyond a plain key copy.
 """
 
+TAVILY_SERVICE = "tavily"
+"""Service name for Tavily web search in `SERVICE_API_KEY_ENV`.
+
+Storing a key for this service via `/auth` gates the spawn-time `web_search`
+tool (see `server_graph._build_tools`), so a key added to a running server
+takes effect only after a respawn — the app offers that restart, and this
+constant is the single name its `/auth` handling compares against.
+"""
+
 SERVICE_API_KEY_ENV: dict[str, str] = {
     LANGSMITH_SERVICE: "LANGSMITH_API_KEY",
-    "tavily": "TAVILY_API_KEY",
+    TAVILY_SERVICE: "TAVILY_API_KEY",
 }
 """Non-model services configurable via `/auth`, mapped to their API-key env var.
 
@@ -578,6 +983,9 @@ source, model class, and request endpoint all differ. See
 
 CODEX_MODELS: frozenset[str] = frozenset(
     {
+        "gpt-5.6-luna",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
         "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
@@ -593,40 +1001,6 @@ the full `openai` API, so mirroring every openai model would surface specs the
 backend rejects at call time.
 """
 
-
-RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
-    "anthropic": "max_retries",
-    "azure_openai": "max_retries",
-    "baseten": "max_retries",
-    "bedrock": "max_retries",
-    "deepseek": "max_retries",
-    "fireworks": "max_retries",
-    "google_genai": "max_retries",
-    "google_vertexai": "max_retries",
-    "groq": "max_retries",
-    "litellm": "max_retries",
-    "mistralai": "max_retries",
-    "openai": "max_retries",
-    "openrouter": "max_retries",
-    "perplexity": "max_retries",
-    "together": "max_retries",
-    "xai": "max_retries",
-}
-"""Maps a provider to the constructor kwarg that sets its retry count.
-
-The value is the kwarg name to pass to the provider's chat model constructor.
-It is uniformly `max_retries` for every provider listed today, but this is a
-`dict` rather than a `set` of providers because retry-kwarg names diverge across
-the ecosystem -- some integrations expose a differently named kwarg -- and the
-value column lets a future provider register its own name without restructuring
-callers.
-
-Membership is verified against each provider's chat model constructor (e.g.
-`ChatGoogleGenerativeAI` exposes `max_retries`, not `retries`), not inferred
-from naming. Providers absent from this map either lack an integer retry-count
-kwarg or are not yet wired as a credential-resolvable provider in this module;
-a `[retries]` config for them is ignored with a warning by `_resolve_retry_kwargs`.
-"""
 
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # Each tuple lists every base-URL env var the provider's LangChain
@@ -650,6 +1024,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     #   huggingface   the integration and huggingface_hub both read
     #                 HF_INFERENCE_ENDPOINT.
     #   ibm           ChatWatsonx reads WATSONX_URL.
+    #   meta          ChatMetaModel reads MODEL_API_BASE.
     #   mistralai     ChatMistralAI reads MISTRAL_BASE_URL.
     #   nvidia        ChatNVIDIA reads NVIDIA_BASE_URL.
     #   openai        langchain_openai reads OPENAI_API_BASE; the openai SDK
@@ -683,6 +1058,7 @@ PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     "groq": ("GROQ_BASE_URL", "GROQ_API_BASE"),
     "huggingface": ("HF_INFERENCE_ENDPOINT",),
     "ibm": ("WATSONX_URL",),
+    "meta": ("MODEL_API_BASE",),
     "mistralai": ("MISTRAL_BASE_URL",),
     "nvidia": ("NVIDIA_BASE_URL",),
     "openai": ("OPENAI_BASE_URL", "OPENAI_API_BASE"),
@@ -724,7 +1100,9 @@ def _canonical_base_url_env(provider: str) -> str | None:
     return names[0] if names else None
 
 
-IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset(
+    {"google_anthropic_vertex", "google_vertexai"}
+)
 """Providers that support ambient auth outside app env-var checks.
 
 These providers can authenticate without the env var listed in
@@ -741,6 +1119,9 @@ OPTIONAL_AUTH_ENV: dict[str, str] = {"ollama": "OLLAMA_API_KEY"}
 
 PROVIDER_HOST_ENV: dict[str, str] = {"ollama": "OLLAMA_HOST"}
 """Provider-specific env vars that can point a local provider at a remote host."""
+
+PROVIDER_CUSTOM_HEADERS_ENV: dict[str, str] = {"anthropic": "ANTHROPIC_CUSTOM_HEADERS"}
+"""Provider SDK env vars that inject custom request headers (e.g. gateway auth)."""
 
 OLLAMA_DEFAULT_BASE_URL = "http://localhost:11434"
 """Default endpoint assumed when no `base_url` or `OLLAMA_HOST` is configured."""
@@ -760,7 +1141,124 @@ _builtin_providers_cache: dict[str, Any] | None = None
 _default_config_cache: ModelConfig | None = None
 _provider_profiles_cache: dict[str, dict[str, Any]] = {}
 _provider_profiles_lock = threading.Lock()
+_config_write_lock = USER_CONFIG_WRITE_LOCK
+"""Process-wide lock serializing read-modify-write transactions on `config.toml`.
+
+Any helper that reads the file, mutates a section, and atomically replaces it
+must hold this lock for the whole transaction. The atomic rename alone only
+prevents torn writes; without a lock covering read-through-replace, two
+overlapping writers (e.g. concurrent effort-selection workers) can each read the
+same snapshot and the last `replace()` silently drops the other's change.
+
+Because the hazard is on the whole-file replace (not per-section), *every* writer
+of `config.toml` must share this one lock — a second lock guarding the same file
+would not mutually exclude, so a `[effort]` write could still clobber a `[ui]`
+write. `configuration.writer.update_user_config` is the preferred wrapper and
+holds this same lock object; the helpers in this module still take it directly
+around their own read-modify-write.
+
+It is reentrant so a caller can hold it across several of these helpers without
+self-deadlock. Cross-process races are out of scope (mirrors the existing
+helpers)."""
+
+
+def _effective_source_label(config_path: Path) -> str:
+    """Return log context for a value that may have come from either layer.
+
+    `_load_effective_config_data` returns the *user* path alongside *merged*
+    data, so "Ignoring X in ~/.deepagents/config.toml" can name a file that does
+    not contain the offending value and send the reader to edit the wrong one.
+
+    Returns:
+        The user path, noting managed policy when it declares anything.
+    """
+    from deepagents_code.configuration.service import get_managed_snapshot
+
+    if get_managed_snapshot().data:
+        return f"{config_path} or managed config"
+    return str(config_path)
+
+
+def _load_effective_config_data(
+    config_path: Path | None,
+) -> tuple[dict[str, Any], Path]:
+    """Load user TOML plus managed policy for default-path reads.
+
+    Passing a non-`None` `config_path` excludes managed policy, so production
+    callers must pass `None`. The returned path is the user file while the data
+    is merged, so a caller logging about one value wants
+    `_effective_source_label` rather than the bare path.
+
+    Returns:
+        Effective data and resolved user path.
+
+    Raises:
+        OSError: If an explicitly requested user TOML is present but unusable.
+            A default-path read never raises for a bad user file, because
+            administrator policy must still apply.
+    """
+    is_default = config_path is None
+    resolved_path = DEFAULT_CONFIG_PATH if config_path is None else config_path
+    from deepagents_code.configuration.service import get_config_sources
+
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else resolved_path)
+    if not sources.user.status.usable:
+        detail = sources.user.status.detail or sources.user.status.health.value
+        if not is_default:
+            raise OSError(detail)
+        # The user owns `config.toml`, so raising here would let anyone drop
+        # administrator policy by writing one invalid byte into their own
+        # file. Keep the managed layer, which parsed cleanly, and report the
+        # user-side problem instead of failing the whole read.
+        logger.warning(
+            "Ignoring unusable config file %s (%s); managed policy still applies",
+            resolved_path,
+            detail,
+        )
+        return dict(sources.managed.data), resolved_path
+    dropped = sources.dropped_managed_detail()
+    if dropped is not None:
+        logger.error(
+            "Managed policy from %s is not being applied: %s",
+            sources.managed.status.path,
+            dropped,
+        )
+    data = sources.merged()[0] if is_default else sources.user.data
+    return dict(data), resolved_path
+
+
+def _user_config_layer_usable(config_path: Path | None = None) -> bool:
+    """Return whether the user TOML layer parsed cleanly.
+
+    `_load_effective_config_data` degrades a default-path read to managed-only
+    data instead of raising, so a caller that caches its result cannot tell a
+    complete read from a degraded one. Callers that cache for the process
+    lifetime have to ask.
+
+    Returns:
+        Whether the user layer is usable.
+    """
+    from deepagents_code.configuration.service import get_config_sources
+
+    is_default = config_path is None
+    resolved_path = DEFAULT_CONFIG_PATH if is_default else config_path
+    sources = get_config_sources(user_path=None if is_default else resolved_path)
+    return sources.user.status.usable
+
+
 _ollama_installed_models_cache: dict[str, list[str]] = {}
+_ollama_unreachable_endpoints: set[str] = set()
+"""Local endpoints (trailing slash stripped) whose daemon refused the TCP
+presence preflight.
+
+Lets `_get_ollama_installed_models` negatively-cache the empty result for a
+daemon that is definitively absent (connection refused) so it probes and logs
+"not detected" once per reload. A *reachable* daemon that merely has no models
+pulled yet -- and a daemon whose preflight is only ambiguous (a connect
+timeout, which defers to the HTTP probe) -- is still re-probed (its empty
+result is not cached), so a later `ollama pull` is discovered without
+`/reload`. Cleared by `clear_caches()`."""
 _ollama_model_profiles_cache: dict[tuple[str, str], dict[str, Any]] = {}
 _profiles_cache: Mapping[str, ModelProfileEntry] | None = None
 _profiles_override_cache: tuple[int, Mapping[str, ModelProfileEntry]] | None = None
@@ -777,9 +1275,33 @@ def clear_caches() -> None:
     _default_config_cache = None
     _provider_profiles_cache.clear()
     _ollama_installed_models_cache.clear()
+    _ollama_unreachable_endpoints.clear()
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
+    # The thread config cache holds `[threads]` from the same file. Its read
+    # path deliberately has no invalidator (see `load_thread_config`), so
+    # `/reload` is the only thing that picks up a hand edit -- dropping this
+    # call left one cache serving the pre-reload file for the process lifetime.
+    invalidate_thread_config_cache()
+
+
+def _invalidate_config_caches(config_path: Path) -> None:
+    """Drop cached views of `config.toml` after a committed write.
+
+    Two caches hold the file: this module's `[models]` snapshot, and the shared
+    process resolver every manifest reader resolves against. A writer that
+    clears only the first leaves the resolver serving the pre-write generation
+    for the life of the process, so the saved preference never takes effect.
+
+    Args:
+        config_path: Path the caller just wrote.
+    """
+    global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    _default_config_cache = None
+    from deepagents_code.configuration.writer import refresh_shared_resolver
+
+    refresh_shared_resolver(config_path)
     invalidate_thread_config_cache()
 
 
@@ -936,6 +1458,25 @@ def get_available_models() -> dict[str, list[str]]:
     if _available_models_cache is not None:
         return _available_models_cache
 
+    available = _discover_available_models(apply_allowlist=True)
+    _available_models_cache = available
+    return available
+
+
+def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]:
+    """Discover the model lineup before any allowlist filtering.
+
+    This is the `get_available_models` body with the policy filter factored
+    out so allowlist machinery can expand `provider:*` wildcards against the
+    discovered lineup without recursing back into its own filter.
+
+    Args:
+        apply_allowlist: Filter each provider's models through the active
+            `models.allowed` policy. Only allowlist internals pass `False`.
+
+    Returns:
+        Dictionary mapping provider names to lists of model identifiers.
+    """
     available: dict[str, list[str]] = {}
     config = ModelConfig.load()
 
@@ -1093,8 +1634,37 @@ def get_available_models() -> dict[str, list[str]]:
                     reordered[CODEX_PROVIDER] = codex_models
             available = reordered
 
-    _available_models_cache = available
+    if apply_allowlist and config.allowed_models is not None:
+        available = {
+            provider: [
+                model
+                for model in models
+                if config.is_model_allowed(f"{provider}:{model}")
+            ]
+            for provider, models in available.items()
+        }
+        available = {
+            provider: models for provider, models in available.items() if models
+        }
+
     return available
+
+
+def get_discovered_models(provider_name: str) -> list[str]:
+    """Get the discovered lineup for one provider, unfiltered by policy.
+
+    `get_available_models()` applies `models.allowed` itself, so allowlist
+    machinery expanding a `provider:*` wildcard cannot call it without
+    recursing. This reads the same discovery result with the filter off.
+
+    Args:
+        provider_name: The provider whose models to list.
+
+    Returns:
+        Model identifiers discovery knows about, empty when the provider
+            declares none and none were discovered.
+    """
+    return _discover_available_models(apply_allowlist=False).get(provider_name, [])
 
 
 def _build_entry(
@@ -1392,6 +1962,14 @@ def _ollama_discovery_enabled() -> bool:
 def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     """Return cached Ollama model names for `endpoint`.
 
+    The result is cached when the daemon returns models, and also when a local
+    daemon definitively refuses the TCP presence preflight, so the two startup
+    callers (`get_available_models` and `get_model_profiles`) share a single
+    probe and a single "not detected" log line per reload. A reachable daemon
+    that reports no models -- and one whose preflight is merely ambiguous (a
+    connect timeout) -- is left uncached so a later pull can still be discovered
+    without `/reload`.
+
     Args:
         endpoint: Base URL of the Ollama daemon. When `None`, defaults to
             `OLLAMA_DEFAULT_BASE_URL`.
@@ -1404,9 +1982,78 @@ def _get_ollama_installed_models(endpoint: str | None) -> list[str]:
     if cached is not None:
         return list(cached)
     models = _fetch_ollama_installed_models(endpoint)
-    if models:
+    if models or key in _ollama_unreachable_endpoints:
         _ollama_installed_models_cache[key] = models
     return list(models)
+
+
+def _ollama_host_reachable(
+    base: str, *, timeout: float = OLLAMA_DISCOVERY_TIMEOUT_SECONDS
+) -> bool:
+    """Return whether a TCP listener appears to accept connections at `base`.
+
+    A lightweight presence preflight so Ollama discovery can skip the HTTP
+    probe entirely when no daemon is running (e.g. Ollama is not installed).
+    The check opens and immediately closes a TCP connection to the endpoint's
+    host and port. A *definitive* failure -- connection refused, DNS error, or
+    sockets blocked under `pytest-socket` -- reports "not reachable" so
+    discovery falls back gracefully (and the caller may negatively cache it). A
+    *connect timeout* is ambiguous -- a present-but-slow or still-booting daemon
+    times out just like an absent one -- so it defers to the HTTP probe
+    (reports "reachable") rather than being cached as absent. An unexpected
+    (non-`OSError`) failure is additionally logged at warning so a real bug
+    isn't misreported as absence.
+
+    Args:
+        base: Base URL of the Ollama daemon, e.g. `http://localhost:11434`.
+        timeout: Socket connection timeout in seconds.
+
+    Returns:
+        `True` when a connection is established (a daemon appears present) or
+            when presence cannot be determined -- unparseable target or a
+            connect timeout -- so the caller defers to the HTTP probe; `False`
+            when the connection is definitively refused.
+    """
+    import socket
+
+    parsed = urlparse(base)
+    host = parsed.hostname
+    if not host:
+        # Can't determine a target host; let the HTTP probe make the decision.
+        return True
+    try:
+        port = parsed.port
+    except ValueError:
+        # Malformed port (out of range / non-numeric); defer to the HTTP probe.
+        return True
+    if port is None:
+        port = 443 if parsed.scheme == "https" else 80
+    # Expected transport failures split by how definitive they are. A refusal
+    # (`ECONNREFUSED` and friends -- an `OSError`) is a fast, certain "nothing
+    # is listening", so it reports absent and lets the caller negatively cache
+    # it. A connect *timeout* is ambiguous (present-but-slow vs. absent-and-
+    # firewalled), so it defers to the HTTP probe rather than being cached as
+    # absent and stuck until the next reload. `TimeoutError` is an `OSError`
+    # subclass, so its branch must precede the broad `OSError` one. Anything
+    # non-`OSError` is surfaced at warning so a real bug isn't misreported as
+    # "not detected"; `pytest-socket`'s `SocketBlockedError` inherits from
+    # `Exception` (not `OSError`), so the broad branch catches it. The socket
+    # is its own context manager, so `with` closes the probe connection.
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except TimeoutError:
+        return True
+    except OSError:
+        return False
+    except Exception as exc:  # noqa: BLE001  # see comment above
+        logger.warning(
+            "Ollama presence preflight raised unexpected %s for %s: %s",
+            type(exc).__name__,
+            base,
+            exc,
+        )
+        return False
 
 
 def _fetch_ollama_installed_models(
@@ -1446,6 +2093,18 @@ def _fetch_ollama_installed_models(
             base,
         )
         return []
+
+    # Presence preflight (local endpoints only -- remote hosts may be reachable
+    # only through a proxy that the HTTP probe honors but a raw socket does
+    # not). A dead/absent daemon (the common case when Ollama is not installed)
+    # refuses the connection; detecting that here lets us skip the HTTP probe
+    # and log a quiet "not detected" line instead of a misleading
+    # "discovery failed ... Connection refused" debug line.
+    if _is_local_endpoint(base) and not _ollama_host_reachable(base, timeout=timeout):
+        logger.debug("Ollama daemon not detected at %s; skipping discovery", base)
+        _ollama_unreachable_endpoints.add(base)
+        return []
+
     url = f"{base}/api/tags"
 
     headers = _ollama_discovery_headers(base, content_type=False)
@@ -1715,6 +2374,63 @@ def resolve_provider_credential(provider: str) -> str | None:
     return None
 
 
+def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
+    """Return `CONFIGURED` when LangSmith Gateway can authenticate a provider.
+
+    Credential preflight normally requires each provider's native API key
+    (for example `OPENAI_API_KEY`). Users who route traffic through the
+    LangSmith LLM Gateway often set only `LANGSMITH_GATEWAY` and
+    `LANGSMITH_GATEWAY_API_KEY`. Without this fallback, model selection and
+    startup treat those models as missing credentials even though the
+    gateway-aware chat integration will authenticate the request.
+
+    Example:
+        A user enables the gateway with:
+
+            LANGSMITH_GATEWAY=true
+            LANGSMITH_GATEWAY_API_KEY=lsv2_...
+
+        and has no `OPENAI_API_KEY`. Selecting `openai:gpt-5.5` should still
+        pass preflight because OpenAI is a gateway-supported provider and
+        both gateway env vars are present.
+
+    The gateway counts only when all of the following hold:
+
+    - `provider` is in `LANGSMITH_GATEWAY_PROVIDERS` (built-in chats that
+      actually read the gateway env vars)
+    - `LANGSMITH_GATEWAY` is set and is not a disable value
+      (`false` / `0` / `no`)
+    - `LANGSMITH_GATEWAY_API_KEY` is non-empty
+
+    Callers must still skip this path for `class_path` provider overrides:
+    those construct an arbitrary class that need not consume the gateway
+    variables, so their own `api_key_env` preflight has to stand alone.
+
+    Args:
+        provider: Provider name (e.g., `"openai"`, `"anthropic"`).
+
+    Returns:
+        A `CONFIGURED` status pointing at `LANGSMITH_GATEWAY_API_KEY`, or
+        `None` when the gateway cannot authenticate this provider.
+    """
+    gateway = os.getenv(LANGSMITH_GATEWAY_ENV)
+    gateway_key = os.getenv(LANGSMITH_GATEWAY_API_KEY_ENV)
+    if (
+        provider not in LANGSMITH_GATEWAY_PROVIDERS
+        or not gateway
+        or gateway.lower() in _LANGSMITH_GATEWAY_FALSE_VALUES
+        or not gateway_key
+    ):
+        return None
+    return ProviderAuthStatus(
+        state=ProviderAuthState.CONFIGURED,
+        provider=provider,
+        env_var=LANGSMITH_GATEWAY_API_KEY_ENV,
+        source=ProviderAuthSource.ENV,
+        detail="LangSmith Gateway credentials set",
+    )
+
+
 def _resolve_configured(provider: str, env_var: str) -> ProviderAuthStatus | None:
     """Return a `CONFIGURED` status if a stored or env credential is set.
 
@@ -1848,6 +2564,15 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
             configured = _resolve_configured(provider, env_var)
             if configured:
                 return configured
+            # The gateway fallback is only valid when the built-in,
+            # gateway-aware integration will actually be constructed. A
+            # `class_path` override builds an arbitrary custom class via
+            # `_create_model_from_class` that need not consume the gateway
+            # variables, so its own `api_key_env` preflight must stand.
+            if not provider_config.get("class_path"):
+                gateway_configured = _resolve_gateway_configured(provider)
+                if gateway_configured:
+                    return gateway_configured
             return ProviderAuthStatus(
                 state=ProviderAuthState.MISSING,
                 provider=provider,
@@ -1871,6 +2596,9 @@ def get_provider_auth_status(provider: str) -> ProviderAuthStatus:
         configured = _resolve_configured(provider, env_var)
         if configured:
             return configured
+        gateway_configured = _resolve_gateway_configured(provider)
+        if gateway_configured:
+            return gateway_configured
         if provider in IMPLICIT_AUTH_PROVIDERS:
             return ProviderAuthStatus(
                 state=ProviderAuthState.IMPLICIT,
@@ -2170,6 +2898,10 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
     clears every name when `base_url` is `None` (reset to the provider
     default). See `apply_stored_credentials` for the pairing rationale.
 
+    When switching to a provider-native key (no `base_url`), also clears the
+    provider's custom-headers env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`) so a
+    gateway-provisioned auth header isn't sent to the native endpoint.
+
     Args:
         provider: Provider name.
         base_url: The stored endpoint, or `None` to reset to the default.
@@ -2183,11 +2915,55 @@ def _apply_stored_base_url(provider: str, base_url: str | None) -> None:
         names.add(canonical)
     if not names:
         return
+    configured_base_url_survives = _configured_base_url_survives_env_clear(provider)
     for name in names:
         if base_url and name == canonical:
             os.environ[name] = base_url
         else:
             os.environ.pop(name, None)
+
+    # A provider SDK's custom-header env var (e.g. `ANTHROPIC_CUSTOM_HEADERS`)
+    # injects headers into every request. A gateway-provisioned environment
+    # often sets it to `X-Api-Key: <gateway-key>`, which overrides the SDK's
+    # own `api_key`-derived header. When switching to a provider-native key
+    # (no stored `base_url`), that header must also be cleared — otherwise the
+    # gateway key is sent to the native endpoint and rejected.
+    custom_headers_env = PROVIDER_CUSTOM_HEADERS_ENV.get(provider)
+    if custom_headers_env and not base_url:
+        if not configured_base_url_survives:
+            if os.environ.pop(custom_headers_env, None) is not None:
+                # Log the env var name only — never its value, which carries
+                # auth headers. Surfaces the removal for the user who set a
+                # header deliberately for the native endpoint and later wonders
+                # where it went.
+                logger.info(
+                    "Cleared %s while applying a provider-native %s key",
+                    custom_headers_env,
+                    provider,
+                )
+        elif os.environ.get(custom_headers_env) is not None:
+            # A provider base URL still routes (config or a prefixed env var),
+            # so the custom-header env is deliberately kept. Log the name only —
+            # never the value — so the retention is observable when a user later
+            # wonders why a gateway header is still in effect after applying a
+            # native key.
+            logger.debug(
+                "Kept %s: a %s base URL is still configured",
+                custom_headers_env,
+                provider,
+            )
+
+
+def _configured_base_url_survives_env_clear(provider: str) -> bool:
+    """Return whether endpoint config still routes after plain env cleanup."""
+    config = ModelConfig.load()
+    provider_cfg = config.providers.get(provider)
+    if provider_cfg and provider_cfg.get("base_url"):
+        return True
+    for env_var in get_base_url_env_vars(provider):
+        if os.environ.get(f"{_ENV_PREFIX}{env_var}"):
+            return True
+    return False
 
 
 def warn_on_split_credential_source(provider: str) -> None:
@@ -2243,6 +3019,112 @@ def warn_on_split_credential_source(provider: str) -> None:
         )
 
 
+def _ranked_models_section(
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    status: ProviderStatus,
+) -> RankedProviderValue[object]:
+    """Read the raw `[models]` root for callsite structural validation.
+
+    Returns:
+        A durable ranked provider containing the raw section when declared.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Unset
+
+    result = Found(data["models"]) if status.usable and "models" in data else Unset()
+    return RankedProviderValue(rank, True, status, result)
+
+
+def _resolve_models_section(
+    sources: ConfigSources,
+    *,
+    user_data: Mapping[str, Any],
+) -> object:
+    """Resolve the model namespace before model-specific validation.
+
+    Returns:
+        The deep-merged raw section, or an empty table when neither tier sets it.
+    """
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        USER_RANK,
+        resolve_ranked,
+    )
+
+    resolved = resolve_ranked(
+        (
+            _ranked_models_section(
+                sources.managed.data,
+                rank=MANAGED_RANK,
+                status=sources.managed.status,
+            ),
+            _ranked_models_section(
+                user_data,
+                rank=USER_RANK,
+                status=sources.user.status,
+            ),
+        ),
+        strategy="deep_merge",
+    )
+    return {} if resolved is None else resolved.value
+
+
+def _resolve_model_file_option(
+    option: ConfigOption[object],
+    sources: ConfigSources,
+    *,
+    user_data: Mapping[str, Any],
+) -> tuple[object | None, str | None]:
+    """Resolve one stored model option without admitting the env tier.
+
+    `ModelConfig` describes persisted choices. In particular its
+    `auto_classifier_model` field intentionally does not reflect the runtime
+    environment override, so this reader constructs only the two file tiers.
+
+    Returns:
+        The ranked file value and its source, or `(None, None)` when both tiers
+        abstain.
+    """
+    from deepagents_code.configuration.providers import ranked_toml_value
+    from deepagents_code.configuration.resolver import (
+        MANAGED_RANK,
+        USER_RANK,
+        resolve_ranked,
+    )
+
+    managed_section = sources.managed.data.get("models")
+    managed_data = (
+        {"models": managed_section} if isinstance(managed_section, dict) else {}
+    )
+    user_section = user_data.get("models")
+    typed_user_data = {"models": user_section} if isinstance(user_section, dict) else {}
+    resolved = resolve_ranked(
+        (
+            ranked_toml_value(
+                option,
+                managed_data,
+                rank=MANAGED_RANK,
+                durable=True,
+                status=sources.managed.status,
+            ),
+            ranked_toml_value(
+                option,
+                typed_user_data,
+                rank=USER_RANK,
+                durable=True,
+                status=sources.user.status,
+            ),
+        ),
+        strategy=option.merge_strategy.value,
+    )
+    if resolved is None:
+        return None, None
+    source = " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
+    return resolved.value, source
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """Parsed model configuration from `config.toml`.
@@ -2261,10 +3143,81 @@ class ModelConfig:
     providers: Mapping[str, ProviderConfig] = field(default_factory=dict)
     """Read-only mapping of provider names to their configurations."""
 
+    auto_classifier_model: str | None = None
+    """The stored Auto classifier model (from config file `[models].auto_classifier`).
+
+    Carries the raw string with only a `str` type guard, so a blank or
+    unbuildable spec reaches this field. Its only *value* consumer is the
+    `/auto model` picker's `(default)` marker, which needs the stored text
+    rather than a resolved model, so this field never rewrites or drops a value:
+    `_validate` logs a warning when the text lacks a `provider:` prefix,
+    `config.resolve_auto_classifier_model_with_problem` rejects a blank or
+    non-string value at launch, and a spec that cannot be built fails closed at
+    review time.
+
+    Not the resolution path — a `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export
+    or `--auto-classifier-model` flag outranks this value at launch, so it may
+    differ from the classifier Auto actually reviews with.
+    """
+
+    summarization_default_model: str | None = None
+    """The default summary model from `[models].summarization_default`.
+
+    Not the resolution path -- `--summarization-model` outranks this value at
+    launch, so it may differ from the model summaries are actually generated
+    with. Stored unvalidated: `_validate` only warns when the spec omits a
+    `provider:` prefix, because `create_model`'s provider auto-detection makes
+    a bare name legitimate.
+    """
+
+    allowed_models: tuple[str, ...] | None = None
+    """Ordered model specs and provider wildcards the policy permits.
+
+    Three states, and the difference between the last two matters:
+
+    - `None` -- no policy is active; every model is allowed.
+    - `()` -- a policy is active and permits **nothing**. Model construction
+      and default resolution both fail closed.
+    - non-empty -- only these entries are permitted, in preference order
+      (`_get_default_model_spec` walks the tuple in declaration order). An
+      entry is either an exact `provider:model` spec or a `provider:*`
+      wildcard permitting every model from that provider; a wildcard is never
+      selected as a default itself, but models it admits remain candidates.
+
+    Test `is None`, never truthiness: `if not config.allowed_models` conflates
+    "unrestricted" with "deny all" and inverts the policy.
+    """
+
+    allowed_models_source: str | None = None
+    """Configuration layer that supplied `allowed_models`.
+
+    A resolver provenance label such as `MANAGED_CONFIG_SOURCE` or
+    `'config.toml'`. Compared literally against `MANAGED_CONFIG_SOURCE` to
+    select administrator wording in errors and in the model selector, so it
+    tracks that constant rather than being free-form. `None` exactly when
+    `allowed_models` is `None`.
+    """
+
     def __post_init__(self) -> None:
-        """Freeze the providers dict into a read-only proxy."""
+        """Freeze the providers dict into a read-only proxy.
+
+        Raises:
+            ValueError: If `allowed_models` and `allowed_models_source` disagree
+                about whether a policy is active.
+        """
         if not isinstance(self.providers, MappingProxyType):
             object.__setattr__(self, "providers", MappingProxyType(self.providers))
+        # The pair varies together: every consumer reads the source only to
+        # describe an active policy. Guarding here mirrors
+        # `ProviderAuthStatus.__post_init__` and makes an incoherent policy
+        # unconstructible rather than silently mis-attributed.
+        if (self.allowed_models is None) != (self.allowed_models_source is None):
+            msg = (
+                "allowed_models and allowed_models_source must both be set or "
+                f"both be None (got {self.allowed_models!r} from "
+                f"{self.allowed_models_source!r})"
+            )
+            raise ValueError(msg)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:
@@ -2274,12 +3227,21 @@ class ModelConfig:
         lifetime of the process. Use `clear_caches()` to reset.
 
         Args:
-            config_path: Path to config file. Defaults to ~/.deepagents/config.toml.
+            config_path: Path to config file. Defaults to
+                ~/.deepagents/config.toml. Passing a path also excludes managed
+                policy from this read, so production callers must pass `None`.
 
         Returns:
-            Parsed `ModelConfig` instance.
-                Returns empty config if file is missing, unreadable, or contains
-                invalid TOML syntax.
+            Parsed `ModelConfig` instance. A user file that is missing,
+                unreadable, contains invalid TOML syntax, or is structurally
+                invalid (valid TOML of the wrong shape, e.g. a scalar
+                `[models]`) drops only the user layer: managed values still
+                apply on the default path. The result is empty only when
+                neither layer supplies values. An explicit `config_path` reads
+                that file alone, with no managed layer.
+
+        Raises:
+            RuntimeError: If required model options are missing from the manifest.
         """
         global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
         is_default = config_path is None
@@ -2289,39 +3251,187 @@ class ModelConfig:
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
 
-        if not config_path.exists():
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.service import get_config_sources
+        from deepagents_code.configuration.types import ProviderHealth
 
+        # `0o400`, not `0o444`: the question is whether the *owner* has made
+        # the file unavailable. A file readable only by other users is not the
+        # case this guard describes, and a privileged process could read it.
+        stat_error: str | None = None
         try:
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        except tomllib.TOMLDecodeError as e:
+            user_mode = config_path.stat().st_mode if config_path.exists() else None
+        except OSError as exc:
+            # Not necessarily a permission problem, so report what happened
+            # rather than asserting one cause.
+            stat_error = f"{type(exc).__name__}: {exc}"
+            user_mode = 0
+        user_unreadable = user_mode is not None and user_mode & 0o400 == 0
+        if user_unreadable:
+            logger.warning(
+                "Could not read config file %s: %s",
+                config_path,
+                stat_error or "owner has removed read permission",
+            )
+
+        # `None` on the default path: that is what includes managed policy.
+        sources = get_config_sources(user_path=None if is_default else config_path)
+        if sources.user.status.health is ProviderHealth.CORRUPT:
             logger.warning(
                 "Config file %s has invalid TOML syntax: %s. "
                 "Ignoring config file. Fix the file or delete it to reset.",
                 config_path,
+                sources.user.status.detail or "unknown parse error",
+            )
+        elif sources.user.status.health is ProviderHealth.UNREADABLE:
+            logger.warning(
+                "Could not read config file %s: %s",
+                config_path,
+                sources.user.status.detail or "unknown read error",
+            )
+        dropped = sources.dropped_managed_detail()
+        if dropped is not None:
+            logger.error(
+                "Managed policy from %s is not being applied: %s",
+                sources.managed.status.path,
+                dropped,
+            )
+        # Do not let a privileged process read a config the owning user has
+        # made unavailable, but preserve administrator-managed policy.
+        user_data = {} if user_unreadable else sources.user.data
+        # A warning below describes the effective ranked value, so it must not
+        # assert that the value sits in the user's file.
+        source_label = (
+            f"{config_path} or managed config"
+            if sources.managed.data
+            else str(config_path)
+        )
+
+        allowed_models: tuple[str, ...] | None = None
+        allowed_models_source: str | None = None
+        allowed_option = get_option("models.allowed")
+        if allowed_option is None:
+            msg = "models.allowed is missing from the config manifest"
+            raise RuntimeError(msg)
+        allowed_value, allowed_source = _resolve_model_file_option(
+            allowed_option,
+            sources,
+            user_data=user_data,
+        )
+        if isinstance(allowed_value, tuple):
+            allowed_models = cast("tuple[str, ...]", allowed_value)
+            allowed_models_source = allowed_source
+        elif (
+            declared := _malformed_allowlist_source(sources, user_data, config_path)
+        ) is not None:
+            # `models.allowed` has no manifest default, so an unparseable list
+            # resolves to `None` -- which means *unrestricted*. Failing open on
+            # a security control because of a typo is the wrong default, so a
+            # declaration that produced no usable value becomes deny-all. The
+            # managed layer additionally refuses to start
+            # (`ENFORCED_MANAGED_KEYS`); this covers the user layer, where the
+            # only other signal is a log line nobody reads.
+            logger.error(
+                "Ignoring malformed [models].allowed from %s; blocking all "
+                "models until it is fixed or removed",
+                declared,
+            )
+            allowed_models = ()
+            allowed_models_source = declared
+
+        try:
+            models_section = cast(
+                "Any", _resolve_models_section(sources, user_data=user_data)
+            )
+            # Preserve the structural diagnostic before resolving children.
+            # Calling `.get` intentionally raises for an effective scalar root,
+            # exactly as the tolerant legacy reader did.
+            models_section.get("default")
+
+            option_keys = (
+                "models.default",
+                "models.recent",
+                "models.summarization_default",
+                "models.auto_classifier",
+                "models.providers",
+            )
+            options = {key: get_option(key) for key in option_keys}
+            if any(option is None for option in options.values()):
+                msg = "model options are missing from the config manifest"
+                raise RuntimeError(msg)
+            resolved = {
+                key: _resolve_model_file_option(
+                    cast("ConfigOption[object]", option),
+                    sources,
+                    user_data=user_data,
+                )[0]
+                for key, option in options.items()
+            }
+
+            user_models = user_data.get("models")
+            if isinstance(user_models, dict):
+                for key in ("default", "recent"):
+                    option_key = f"models.{key}"
+                    if resolved[option_key] is None and key in user_models:
+                        # Provider coercion already rejected this tier. Replay
+                        # the existing callsite diagnostic without making the
+                        # raw value authoritative again.
+                        _toml_model_spec(
+                            user_models[key],
+                            key=key,
+                            path=config_path,
+                            source_label=source_label,
+                        )
+
+            # Coerce each resolved field to the shape the readers below assume.
+            # Callsite validation remains separate from provider coercion where
+            # it needs model-specific context and warning text.
+            config = cls(
+                default_model=_toml_model_spec(
+                    resolved["models.default"],
+                    key="default",
+                    path=config_path,
+                    source_label=source_label,
+                ),
+                recent_model=_toml_model_spec(
+                    resolved["models.recent"],
+                    key="recent",
+                    path=config_path,
+                    source_label=source_label,
+                ),
+                summarization_default_model=_toml_model_spec(
+                    resolved["models.summarization_default"],
+                    key="summarization_default",
+                    path=config_path,
+                    source_label=source_label,
+                ),
+                auto_classifier_model=(
+                    resolved["models.auto_classifier"]
+                    if isinstance(resolved["models.auto_classifier"], str)
+                    else None
+                ),
+                providers=_toml_providers_table(
+                    resolved["models.providers"]
+                    if resolved["models.providers"] is not None
+                    else {},
+                    path=config_path,
+                    source_label=source_label,
+                ),
+                allowed_models=allowed_models,
+                allowed_models_source=allowed_models_source,
+            )
+        except (AttributeError, TypeError) as e:
+            # Syntactically valid TOML can still have the wrong shape (e.g. a
+            # scalar `[models]`). Treat it like any other unreadable config
+            # rather than letting it crash callers (e.g. the /auth modal on
+            # Ctrl+R) that assume load() is total and never raises.
+            logger.warning(
+                "Config file %s is structurally invalid: %s. "
+                "Ignoring config file. Fix the file or delete it to reset.",
+                config_path,
                 e,
             )
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
-        except (PermissionError, OSError) as e:
-            logger.warning("Could not read config file %s: %s", config_path, e)
-            fallback = cls()
-            if is_default:
-                _default_config_cache = fallback
-            return fallback
-
-        models_section = data.get("models", {})
-        config = cls(
-            default_model=models_section.get("default"),
-            recent_model=models_section.get("recent"),
-            providers=models_section.get("providers", {}),
-        )
+            config = cls()
 
         # Validate config consistency
         config._validate()
@@ -2337,21 +3447,29 @@ class ModelConfig:
         Issues warnings for invalid configurations but does not raise exceptions,
         allowing the app to continue with potentially degraded functionality.
         """
-        # Warn if default_model is set but doesn't use provider:model format
-        if self.default_model and ":" not in self.default_model:
-            logger.warning(
-                "default_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.default_model,
-            )
-
-        # Warn if recent_model is set but doesn't use provider:model format
-        if self.recent_model and ":" not in self.recent_model:
-            logger.warning(
-                "recent_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.recent_model,
-            )
+        # Warn if a model field is set but doesn't use provider:model format
+        model_fields = (
+            ("default_model", self.default_model, "anthropic:claude-sonnet-4-5"),
+            ("recent_model", self.recent_model, "anthropic:claude-sonnet-4-5"),
+            (
+                "summarization_default_model",
+                self.summarization_default_model,
+                "openai:gpt-5.4-mini",
+            ),
+            (
+                "auto_classifier_model",
+                self.auto_classifier_model,
+                "anthropic:claude-sonnet-4-5",
+            ),
+        )
+        for field_name, spec, example in model_fields:
+            if spec and ":" not in spec:
+                logger.warning(
+                    "%s '%s' should use provider:model format (e.g., '%s')",
+                    field_name,
+                    spec,
+                    example,
+                )
 
         # Validate enabled field type and class_path format / params references
         for name, provider in self.providers.items():
@@ -2377,6 +3495,15 @@ class ModelConfig:
                     "(expected a string). Falling back to the default label.",
                     name,
                     display_name,
+                )
+
+            short_name = cast("object", provider.get("short_name"))
+            if short_name is not None and not isinstance(short_name, str):
+                logger.warning(
+                    "Provider '%s' has non-string 'short_name' value %r "
+                    "(expected a string). Falling back to the display name.",
+                    name,
+                    short_name,
                 )
 
             api_key_url = cast("object", provider.get("api_key_url"))
@@ -2409,6 +3536,121 @@ class ModelConfig:
                         name,
                         key,
                     )
+
+    def is_model_allowed(self, model_spec: str) -> bool:
+        """Return whether an exact model spec is allowed by active policy.
+
+        A spec is permitted when it appears in `allowed_models` verbatim or a
+        `provider:*` wildcard entry names its provider.
+        """
+        if self.allowed_models is None:
+            return True
+        parsed = ModelSpec.try_parse(model_spec.strip())
+        return parsed is not None and (
+            str(parsed) in self.allowed_models
+            or f"{parsed.provider}:*" in self.allowed_models
+        )
+
+    def canonical_model_spec(self, model_spec: str) -> str | None:
+        """Resolve a user-typed spec to the form the policy gate matches on.
+
+        Mirrors `create_model`'s provider resolution, including the custom
+        provider, Bedrock, and leading-colon branches, so a preflight check
+        agrees with the authoritative gate instead of rejecting a bare name
+        that `create_model` would infer a provider for and allow.
+
+        Args:
+            model_spec: A spec as the user typed it, bare name included.
+
+        Returns:
+            The canonical `provider:model` string, or `None` when no provider
+                can be established -- which policy treats as unmatchable.
+        """
+        from deepagents_code.config import detect_provider
+
+        normalized = model_spec.strip()
+        if not normalized:
+            return None
+        inferred = detect_provider(normalized)
+        parsed = ModelSpec.try_parse(normalized)
+        if parsed and parsed.provider in self.providers:
+            provider, model_name = parsed.provider, parsed.model
+        elif inferred == "bedrock":
+            provider, model_name = inferred, normalized
+        elif parsed:
+            provider, model_name = parsed.provider, parsed.model
+        elif ":" in normalized:
+            _, _, after = normalized.partition(":")
+            if not after:
+                return None
+            model_name = after
+            provider = detect_provider(model_name) or ""
+        else:
+            model_name = normalized
+            provider = inferred or ""
+        return f"{provider}:{model_name}" if provider else None
+
+    def policy_error(
+        self,
+        model_spec: str | None,
+        *,
+        context: str | None = None,
+        canonicalize: bool = False,
+    ) -> ModelNotAllowedError | None:
+        """Build the policy error blocking a spec, or `None` when it is allowed.
+
+        The one place that turns this config's policy fields into an error, so
+        callers that need the *message* without raising (a launch advisory, a
+        selector footer) cannot drift from callers that raise.
+
+        Args:
+            model_spec: The spec to check, or `None` to ask for the error that
+                describes a deny-all policy blocking default resolution.
+            context: Where the spec was declared, prefixed to the message.
+            canonicalize: Infer a provider for a bare name before matching, the
+                way `create_model` does. Set this on preflight checks against
+                text a user typed; leave it off where the caller already holds a
+                canonical spec, so resolution stays off hot paths such as the
+                recent-models cache.
+
+        Returns:
+            The error to raise or render, or `None` when no policy blocks this.
+        """
+        if self.allowed_models is None:
+            return None
+        if model_spec is not None:
+            candidate = model_spec
+            if canonicalize:
+                # Fall back to the raw text when no provider can be inferred:
+                # it stays unmatchable, and the message then advises a fully
+                # qualified spec, which is the actionable advice.
+                candidate = self.canonical_model_spec(model_spec) or model_spec
+            if self.is_model_allowed(candidate):
+                return None
+        # The message quotes what the user supplied, not the canonical form, so
+        # it echoes back the text they can see in front of them.
+        return ModelNotAllowedError(
+            model_spec=model_spec,
+            source=self.allowed_models_source,
+            allowed_models=self.allowed_models,
+            context=context,
+        )
+
+    def require_model_allowed(
+        self, model_spec: str, *, context: str | None = None
+    ) -> None:
+        """Raise when an exact model spec is outside active policy.
+
+        Args:
+            model_spec: The spec to check.
+            context: Where the spec was declared, prefixed to the message.
+
+        Raises:
+            ModelNotAllowedError: If `model_spec` is not in the active allowlist.
+        """  # noqa: DOC502 - propagates from `policy_error`
+        error = self.policy_error(model_spec, context=context)
+        if error is not None:
+            raise error
 
     def is_provider_enabled(self, provider_name: str) -> bool:
         """Check whether a provider should appear in the model switcher.
@@ -2567,6 +3809,19 @@ class ModelConfig:
         name = provider.get("display_name") if provider else None
         return name if isinstance(name, str) else None
 
+    def get_provider_short_name(self, provider_name: str) -> str | None:
+        """Get the configured compact brand name for a provider.
+
+        Args:
+            provider_name: The provider to look up.
+
+        Returns:
+            Compact brand name if configured, None otherwise.
+        """
+        provider = self.providers.get(provider_name)
+        name = provider.get("short_name") if provider else None
+        return name if isinstance(name, str) else None
+
     def get_provider_api_key_url(self, provider_name: str) -> str | None:
         """Get the configured API-key management URL for a provider.
 
@@ -2631,6 +3886,37 @@ class ModelConfig:
                 result.update(overrides)
         return result
 
+    def get_effective_kwargs(
+        self,
+        provider_name: str,
+        *,
+        model_name: str | None = None,
+        overrides: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Resolve the effective configured and runtime model kwargs.
+
+        This mirrors the ordering used when constructing a model: provider and
+        per-model `params`, then the resolved `base_url`, then runtime
+        overrides. Consumers that need to reason about an actual request (such
+        as cache policy checks) must use this rather than inspecting one source
+        of settings in isolation.
+
+        Args:
+            provider_name: Provider whose configuration should be resolved.
+            model_name: Optional model name for per-model params.
+            overrides: Per-request params, which take highest precedence.
+
+        Returns:
+            Effective model kwargs.
+        """
+        result = self.get_kwargs(provider_name, model_name=model_name)
+        base_url = self.get_base_url(provider_name)
+        if base_url:
+            result["base_url"] = base_url
+        if overrides:
+            result.update(overrides)
+        return result
+
     def get_profile_overrides(
         self, provider_name: str, *, model_name: str | None = None
     ) -> dict[str, Any]:
@@ -2662,7 +3948,7 @@ class ModelConfig:
 def _save_toml_field(
     section: str,
     field: str,
-    value: str,
+    value: str | bool,
     config_path: Path | None = None,
 ) -> bool:
     """Read-modify-write a `[section].<field>` key in the config file.
@@ -2670,7 +3956,7 @@ def _save_toml_field(
     Args:
         section: TOML table name (e.g., `'models'`, `'agents'`).
         field: Key within the table (e.g., `'default'`, `'recent'`).
-        value: String value to persist.
+        value: String or boolean value to persist.
         config_path: Path to config file.
 
             Defaults to `~/.deepagents/config.toml`.
@@ -2682,30 +3968,39 @@ def _save_toml_field(
         config_path = DEFAULT_CONFIG_PATH
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        # Read existing config or start fresh
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
+            # Read existing config or start fresh
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
 
-        if section not in data:
-            data[section] = {}
-        data[section][field] = value
+            existing_section = data.get(section)
+            existing = (
+                existing_section.get(field)
+                if isinstance(existing_section, dict)
+                else None
+            )
+            unchanged = type(existing) is type(value) and existing == value
+            if not unchanged:
+                if section not in data:
+                    data[section] = {}
+                data[section][field] = value
 
-        # Write to temp file then rename to prevent corruption if write is interrupted
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            # Clean up temp file on any failure
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+                # Write to temp file then rename so an interrupted write can't corrupt
+                fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        tomli_w.dump(data, f)
+                    Path(tmp_path).replace(config_path)
+                except BaseException:
+                    # Clean up temp file on any failure
+                    with contextlib.suppress(OSError):
+                        Path(tmp_path).unlink()
+                    raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
         # payload; `ValueError` covers things like `os.fdopen` on a
@@ -2714,18 +4009,36 @@ def _save_toml_field(
         logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
-        # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
+
+
+def save_goal_auto_accept_criteria(
+    enabled: bool,
+    config_path: Path | None = None,
+) -> bool:
+    """Persist whether Auto mode applies generated goal criteria without review.
+
+    Args:
+        enabled: Whether Auto should accept goal criteria automatically.
+        config_path: Path to config file. Defaults to
+            `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+    """
+    return _save_toml_field(
+        "goals",
+        "auto_accept_criteria",
+        enabled,
+        config_path,
+    )
 
 
 def _save_model_field(
     field: str, model_spec: str, config_path: Path | None = None
 ) -> bool:
-    """Read-modify-write a `[models].<field>` key in the config file.
-
-    Thin wrapper around `_save_toml_field` for the `[models]` section.
+    """Enforce `models.allowed`, then read-modify-write a `[models].<field>` key.
 
     Args:
         field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
@@ -2736,7 +4049,17 @@ def _save_model_field(
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
-    """
+
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy. Distinct from the `False` return so callers
+            do not report a policy refusal as a filesystem problem; best-effort
+            callers that genuinely cannot act on it suppress it explicitly.
+    """  # noqa: DOC502 - propagates from `_save_model_field`
+    # `load(config_path)` skips the managed layer, so an explicit path checks
+    # only the user allowlist. Every production caller passes `None`; keep it
+    # that way or this refusal stops enforcing administrator policy.
+    ModelConfig.load(config_path).require_model_allowed(model_spec)
     return _save_toml_field("models", field, model_spec, config_path)
 
 
@@ -2755,10 +4078,44 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("default", model_spec, config_path)
+
+
+def save_auto_classifier_model(
+    model_spec: str, config_path: Path | None = None
+) -> bool:
+    """Persist the model the Auto approval classifier reviews actions with.
+
+    Writes `[models].auto_classifier`, the persistent counterpart of the
+    session-only `/auto model` switch. Both `--auto-classifier-model` and a
+    `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` export outrank the stored value at
+    launch (flag > env > this key), so a successful write does not guarantee the
+    next launch reviews with it.
+
+    Args:
+        model_spec: The classifier model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if save succeeded, False if it failed due to I/O errors.
+
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
+    Note:
+        This function does not preserve comments in the config file.
+    """  # noqa: DOC502 - propagates from `_save_model_field`
+    return _save_model_field("auto_classifier", model_spec, config_path)
 
 
 def clear_default_model(config_path: Path | None = None) -> bool:
@@ -2773,69 +4130,305 @@ def clear_default_model(config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        True if the key was removed (or was already absent), False on I/O error.
+        True if the key was removed or was already absent, False when the config
+            file could not be read or written or its `[models]` section is not a
+            table. See `_clear_model_field` for the full contract.
+    """
+    return _clear_model_field("default", config_path)
+
+
+def clear_auto_classifier_model(config_path: Path | None = None) -> bool:
+    """Remove the stored Auto classifier model from the config file.
+
+    Deletes the `[models].auto_classifier` key so future launches review gated
+    actions with the main agent model, unless `--auto-classifier-model` or
+    `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` supplies one — both outrank this key,
+    so clearing it does not guarantee the main agent model is used.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed or was already absent, False when the config
+            file could not be read or written or its `[models]` section is not a
+            table. See `_clear_model_field` for the full contract.
+
+    Note:
+        This function does not preserve comments in the config file.
+    """
+    return _clear_model_field("auto_classifier", config_path)
+
+
+def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
+    """Delete a `[models].<field>` key from the config file.
+
+    Args:
+        field: Key name under the `[models]` table (e.g., `'default'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        True if the key was removed, or was already absent because the file or
+            its `[models]` table does not exist. False on I/O error, on
+            unparseable TOML, and when `[models]` is present but is not a table
+            — nothing can be deleted from those and the file needs hand repair,
+            so callers must not report a clean clear.
+
+    Note:
+        This function does not preserve comments in the config file.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return True  # Nothing to clear
-
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        with _config_write_lock:
+            if not config_path.exists():
+                return True  # Nothing to clear
 
-        models_section = data.get("models")
-        if not isinstance(models_section, dict) or "default" not in models_section:
-            return True  # Already absent
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
 
-        del models_section["default"]
+            models_section = data.get("models")
+            if models_section is None:
+                # No `[models]` table at all — an ordinary config that simply
+                # never stored a model. Nothing to clear and nothing to report.
+                return True
+            if not isinstance(models_section, dict):
+                # Valid TOML of the wrong shape (e.g. a scalar `models = 1`).
+                # There is no key to delete and the file needs hand repair, so
+                # report failure: `True` is this contract's clean-clear signal,
+                # and callers relay it to the user as "cleared".
+                logger.warning(
+                    "Config file %s has a non-table [models] section (%s); "
+                    "cannot clear models.%s",
+                    config_path,
+                    type(models_section).__name__,
+                    field,
+                )
+                return False
+            if field not in models_section:
+                return True  # Already absent
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            del models_section[field]
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
-        logger.exception("Could not clear default model preference")
+        logger.exception("Could not clear models.%s preference", field)
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
+        return True
+
+
+def save_effort_for_model(
+    model_spec: str,
+    effort: str,
+    config_path: Path | None = None,
+) -> bool:
+    """Persist the selected reasoning effort for a model.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        effort: Reasoning effort label selected by the user.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if save succeeded, `False` if it failed.
+    """
+    return _update_effort_for_model(model_spec, effort, config_path)
+
+
+def load_effort_for_model(
+    model_spec: str,
+    config_path: Path | None = None,
+) -> str | None:
+    """Load the selected reasoning effort for a model.
+
+    Reads managed config merged over `config.toml`, so a managed `[effort]`
+    still applies when the user file is unusable.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`. Passing a path also excludes
+            managed policy from this read, so production callers must pass
+            `None`.
+
+    Returns:
+        The persisted effort label, or `None`. `None` is returned both when no
+        preference is stored and when neither layer can supply one (unreadable
+        file, invalid TOML, or a malformed `[effort]` section); the two cases
+        are not distinguished by the return value, but a read failure is always
+        logged rather than swallowed silently.
+    """
+    try:
+        data, config_path = _load_effective_config_data(config_path)
+        effort_section = data.get("effort")
+        if effort_section is None:
+            return None  # No preference stored; not a failure.
+        if not isinstance(effort_section, dict):
+            logger.warning(
+                "Ignoring malformed [effort] in %s: expected a table, got %s",
+                _effective_source_label(config_path),
+                type(effort_section).__name__,
+            )
+            return None
+        by_model = effort_section.get("by_model")
+        if by_model is None:
+            return None
+        if not isinstance(by_model, dict):
+            logger.warning(
+                "Ignoring malformed [effort.by_model] in %s: expected a table, got %s",
+                _effective_source_label(config_path),
+                type(by_model).__name__,
+            )
+            return None
+        effort = by_model.get(model_spec)
+        if effort is None:
+            return None
+        if not isinstance(effort, str):
+            logger.warning(
+                "Ignoring malformed reasoning effort for %s in %s: expected a "
+                "string, got %s",
+                model_spec,
+                _effective_source_label(config_path),
+                type(effort).__name__,
+            )
+            return None
+        return effort.strip() or None
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.exception(
+            "Could not load reasoning effort preference for %s", model_spec
+        )
+        return None
+
+
+def clear_effort_for_model(
+    model_spec: str,
+    config_path: Path | None = None,
+) -> bool:
+    """Remove the selected reasoning effort for a model.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `True` if the entry was removed or absent, `False` if clearing failed.
+    """
+    return _update_effort_for_model(model_spec, None, config_path)
+
+
+def _update_effort_for_model(
+    model_spec: str,
+    effort: str | None,
+    config_path: Path | None = None,
+) -> bool:
+    """Read-modify-write one entry in `[effort.by_model]`.
+
+    Args:
+        model_spec: Model in `provider:model` format.
+        effort: Reasoning effort label to save, or `None` to clear it.
+        config_path: Path to config file.
+
+    Returns:
+        `True` if the update succeeded, `False` if it failed.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+    if effort is None and not config_path.exists():
+        return True
+
+    def _require_table(value: object, name: str) -> dict:
+        if not isinstance(value, dict):
+            msg = f"{name} must be a table"
+            raise TypeError(msg)
+        return value
+
+    try:
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            effort_section = _require_table(data.setdefault("effort", {}), "[effort]")
+            by_model = _require_table(
+                effort_section.setdefault("by_model", {}), "[effort.by_model]"
+            )
+
+            if effort is None:
+                if model_spec not in by_model:
+                    return True
+                del by_model[model_spec]
+                if not by_model:
+                    del effort_section["by_model"]
+                if not effort_section:
+                    del data["effort"]
+            else:
+                by_model[model_spec] = effort
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        logger.exception(
+            "Could not update reasoning effort preference for %s", model_spec
+        )
+        return False
+    else:
+        _invalidate_config_caches(config_path)
         return True
 
 
 def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
     """Check if a warning key is suppressed in the config file.
 
-    Reads the `[warnings].suppress` list from `config.toml` and checks
-    whether `key` is present.
+    Reads the `[warnings].suppress` list from managed config merged over
+    `config.toml` and checks whether `key` is present. A managed suppression
+    still applies when the user file is unusable.
 
     Args:
         key: Warning identifier to check (e.g., `'ripgrep'`).
         config_path: Path to config file.
 
-            Defaults to `~/.deepagents/config.toml`.
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers must
+            pass `None`.
 
     Returns:
         `True` if the warning is suppressed, `False` otherwise (including
-            when the file is missing, unreadable, or has no
-            `[warnings]` section).
+            when neither layer supplies the key, or the `[warnings]` section is
+            missing or malformed).
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-
     try:
-        if not config_path.exists():
-            return False
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, config_path = _load_effective_config_data(config_path)
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug(
             "Could not read config file %s for warning suppression check",
@@ -2844,7 +4437,19 @@ def is_warning_suppressed(key: str, config_path: Path | None = None) -> bool:
         )
         return False
 
-    suppress_list = data.get("warnings", {}).get("suppress", [])
+    # A hand-edited `warnings = [...]` (or any non-table) would make the
+    # chained `.get` below raise `AttributeError`; fail open instead so a
+    # typo can never silently mute a warning.
+    warnings_section = data.get("warnings", {})
+    if not isinstance(warnings_section, dict):
+        logger.debug(
+            "[warnings] in %s should be a table, got %s",
+            config_path,
+            type(warnings_section).__name__,
+        )
+        return False
+
+    suppress_list = warnings_section.get("suppress", [])
     if not isinstance(suppress_list, list):
         logger.debug(
             "[warnings].suppress in %s should be a list, got %s",
@@ -2868,47 +4473,91 @@ def suppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section). Callers that surface
+            the failure to the user should prefer `suppress_warning_reason`,
+            which distinguishes those causes.
+    """
+    return suppress_warning_reason(key, config_path) is None
+
+
+def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | None:
+    """Suppress a warning, reporting *why* the save failed when it does.
+
+    Same write as `suppress_warning`. The distinct causes matter because they
+    have different fixes: a malformed `[warnings]` section is one line of TOML
+    the user can correct, while telling them to check file permissions -- the
+    only advice a bare `False` supports -- sends them to `chmod` a file that
+    was never unwritable.
+
+    Args:
+        key: Warning identifier to suppress (e.g., `'ripgrep'`).
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`.
+
+    Returns:
+        `None` when the save succeeded, otherwise a short phrase naming the
+            cause, suitable for interpolating into a user-facing message.
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
 
-        if "warnings" not in data:
-            data["warnings"] = {}
-        suppress_list = data["warnings"].get("suppress", [])
-        if not isinstance(suppress_list, list):
-            logger.debug(
-                "[warnings].suppress in %s should be a list, got %s",
-                config_path,
-                type(suppress_list).__name__,
-            )
-            suppress_list = []
-        if key not in suppress_list:
-            suppress_list.append(key)
-        data["warnings"]["suppress"] = suppress_list
+            if "warnings" not in data:
+                data["warnings"] = {}
+            # A hand-edited `warnings = [...]` (or any non-table) would make
+            # `.get("suppress")` below raise `AttributeError`, and the callers'
+            # detached tasks cannot surface a raised exception — report the
+            # failure so the caller can fall back to an in-app warning.
+            if not isinstance(data["warnings"], dict):
+                # Warning, not debug: this is a user-fixable config error whose
+                # only other symptom is a preference that silently fails to
+                # save.
+                logger.warning(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(data["warnings"]).__name__,
+                )
+                return f"[warnings] in {config_path} is not a table"
+            suppress_list = data["warnings"].get("suppress", [])
+            if not isinstance(suppress_list, list):
+                logger.debug(
+                    "[warnings].suppress in %s should be a list, got %s",
+                    config_path,
+                    type(suppress_list).__name__,
+                )
+                suppress_list = []
+            if key not in suppress_list:
+                suppress_list.append(key)
+            data["warnings"]["suppress"] = suppress_list
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
-    except (OSError, tomllib.TOMLDecodeError):
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except tomllib.TOMLDecodeError:
         logger.exception("Could not save warning suppression for '%s'", key)
-        return False
-    return True
+        return f"{config_path} is not valid TOML"
+    except OSError:
+        logger.exception("Could not save warning suppression for '%s'", key)
+        return f"{config_path} could not be written"
+    _invalidate_config_caches(config_path)
+    return None
 
 
 def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
@@ -2925,44 +4574,1321 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
             Defaults to `~/.deepagents/config.toml`.
 
     Returns:
-        `True` if save succeeded, `False` if it failed due to I/O errors.
+        `True` if save succeeded, `False` if it failed (I/O error, unparseable
+            file, or a malformed `[warnings]` section).
     """
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
     try:
-        if not config_path.exists():
-            return True  # nothing to remove
+        with _config_write_lock:
+            if not config_path.exists():
+                return True  # nothing to remove
 
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
 
-        suppress_list = data.get("warnings", {}).get("suppress", [])
-        if not isinstance(suppress_list, list):
-            logger.debug(
-                "[warnings].suppress in %s should be a list, got %s",
-                config_path,
-                type(suppress_list).__name__,
-            )
-            return True  # treat as nothing to remove
-        if key not in suppress_list:
-            return True  # already unsuppressed
+            warnings_section = data.get("warnings", {})
+            if not isinstance(warnings_section, dict):
+                logger.debug(
+                    "[warnings] in %s should be a table, got %s",
+                    config_path,
+                    type(warnings_section).__name__,
+                )
+                return False
+            suppress_list = warnings_section.get("suppress", [])
+            if not isinstance(suppress_list, list):
+                logger.debug(
+                    "[warnings].suppress in %s should be a list, got %s",
+                    config_path,
+                    type(suppress_list).__name__,
+                )
+                return True  # treat as nothing to remove
+            if key not in suppress_list:
+                return True  # already unsuppressed
 
-        suppress_list.remove(key)
-        data.setdefault("warnings", {})["suppress"] = suppress_list
+            suppress_list.remove(key)
+            warnings_section["suppress"] = suppress_list
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
+    _invalidate_config_caches(config_path)
+    return True
+
+
+class _McpProjectScope(NamedTuple):
+    """A resolved MCP trust identity and whether it is Git-common scoped.
+
+    A `NamedTuple` (mirroring `_git.RepositoryMetadata`) so the boolean slot is
+    self-documenting at every call site instead of a load-bearing positional.
+    """
+
+    identity: str
+    """Normalized trust identity: a Git common directory or an exact root."""
+
+    git_common_dir: bool
+    """Whether `identity` is a validated Git common-directory path."""
+
+
+@dataclass(frozen=True, order=True)
+class McpProjectServerApproval:
+    """A project-scoped, definition-bound MCP server approval.
+
+    Membership in a `McpServerTrustLists.approvals` set *is* the trust decision
+    (`is_enabled` reconstructs an approval and tests `approval in approvals`), so
+    value equality must line up between the write side
+    (`add_enabled_project_mcp_servers`) and the read side (`is_enabled`). Build new
+    approvals through `create` and persisted ones through `from_toml`, never the raw
+    constructor. Legacy unmarked entries intentionally retain their exact-worktree
+    scope, while new entries reconstruct the same transport-aware scope on both
+    sides. `order=True` exists only so `sorted()` yields deterministic TOML output.
+
+    The raw constructor only enforces non-emptiness (`__post_init__`), not that
+    `project_root` is normalized or that `fingerprint` is a real digest. A
+    hand-built instance is therefore *safe but useless*: with a mismatched root
+    or fingerprint it simply never equals a `create`/`from_toml` peer, so it
+    fails closed (nothing is trusted) rather than granting stray access — but it
+    also won't authorize anything. Always go through the factories.
+    """
+
+    project_root: str
+    """Shared fixed-URL identity or exact worktree-scoped identity."""
+
+    name: str
+    """MCP server name within the project config."""
+
+    fingerprint: str
+    """Fingerprint of the approved MCP server definition."""
+
+    git_common_dir: bool = field(default=False, kw_only=True)
+    """Whether `project_root` is a persisted Git common-directory identity."""
+
+    def __post_init__(self) -> None:
+        """Reject degenerate approvals so a bad one can't silently never match.
+
+        An empty `project_root`, `name`, or `fingerprint` can only ever equal a
+        malformed peer, so forbid the state entirely rather than let it persist.
+
+        Raises:
+            ValueError: If any field is empty or whitespace-only.
+        """
+        if not (
+            self.project_root.strip() and self.name.strip() and self.fingerprint.strip()
+        ):
+            msg = (
+                "McpProjectServerApproval requires non-empty project_root, name, "
+                "and fingerprint"
+            )
+            raise ValueError(msg)
+
+    @classmethod
+    def _create_for_scope(
+        cls,
+        *,
+        scope: _McpProjectScope,
+        name: str,
+        server: JsonValue,
+    ) -> McpProjectServerApproval:
+        """Build an approval from one already-resolved trust scope.
+
+        Args:
+            scope: Normalized identity and Git-common marker.
+            name: MCP server name.
+            server: Parsed MCP server definition to fingerprint.
+
+        Returns:
+            The normalized, definition-bound approval.
+        """
+        return cls(
+            project_root=scope.identity,
+            name=name.strip(),
+            fingerprint=fingerprint_mcp_server_config(server),
+            git_common_dir=scope.git_common_dir,
+        )
+
+    @classmethod
+    def create(
+        cls, *, project_root: str | Path | None, name: str, server: JsonValue
+    ) -> McpProjectServerApproval | None:
+        """Build an approval, normalizing the root and fingerprinting `server`.
+
+        Remote servers with fixed URLs use the validated Git common directory so
+        their approvals can be shared across linked worktrees. Local commands and
+        remote definitions with interpolated URLs use the exact resolved worktree
+        because their behavior can differ between checkouts.
+
+        Args:
+            project_root: Project root to normalize.
+            name: MCP server name.
+            server: Parsed MCP server definition to fingerprint.
+
+        Returns:
+            The approval, or `None` when `project_root` cannot be normalized.
+        """
+        scope = _normalize_mcp_project_scope(
+            project_root,
+            share_across_worktrees=_mcp_server_uses_remote_transport(server),
+        )
+        if scope is None:
+            return None
+        return cls._create_for_scope(scope=scope, name=name, server=server)
+
+    @classmethod
+    def from_toml(cls, item: Mapping[str, object]) -> McpProjectServerApproval | None:
+        """Deserialize a persisted approval table, normalizing the root.
+
+        Legacy entries without `git_common_dir` remain scoped to their exact
+        stored worktree. Marked entries retain their exact Git identity, so stale
+        metadata cannot redirect them to an enclosing repository.
+
+        Args:
+            item: A parsed TOML table with `project_root`, `name`, and
+                `fingerprint` string fields plus an optional `git_common_dir`
+                boolean.
+
+        Returns:
+            The approval, or `None` for a malformed table — fail-closed for an
+            allowlist.
+        """
+        project_root = item.get("project_root")
+        name = item.get("name")
+        fingerprint = item.get("fingerprint")
+        git_common_dir = item.get("git_common_dir", False)
+        if not (
+            isinstance(project_root, str)
+            and project_root.strip()
+            and isinstance(name, str)
+            and name.strip()
+            and isinstance(fingerprint, str)
+            and fingerprint.strip()
+            and isinstance(git_common_dir, bool)
+        ):
+            return None
+
+        if git_common_dir:
+            normalized_root = _normalize_persisted_git_common_dir(project_root)
+            normalized_is_common = True
+        else:
+            scope = _normalize_mcp_project_scope(
+                project_root, share_across_worktrees=False
+            )
+            if scope is None:
+                return None
+            normalized_root, normalized_is_common = scope.identity, scope.git_common_dir
+        if normalized_root is None:
+            return None
+        return cls(
+            project_root=normalized_root,
+            name=name.strip(),
+            fingerprint=fingerprint.strip(),
+            git_common_dir=normalized_is_common,
+        )
+
+    def as_toml(self) -> dict[str, str | bool]:
+        """Return a TOML-serializable representation."""
+        item: dict[str, str | bool] = {
+            "project_root": self.project_root,
+            "name": self.name,
+            "fingerprint": self.fingerprint,
+        }
+        if self.git_common_dir:
+            item["git_common_dir"] = True
+        return item
+
+
+def _normalize_mcp_project_scope(
+    project_root: str | Path | None,
+    *,
+    share_across_worktrees: bool,
+) -> _McpProjectScope | None:
+    """Resolve an MCP trust identity and whether it is Git-common scoped.
+
+    Args:
+        project_root: Project root path to normalize.
+        share_across_worktrees: Whether a validated Git common directory may be
+            used instead of the exact worktree root.
+
+    Returns:
+        One of three outcomes:
+
+        - `(<git-common-dir>, True)` when `share_across_worktrees` is set and the
+          resolved root validates as a Git worktree.
+        - `(<resolved-root>, False)` otherwise.
+        - `(<unresolved-expanded-root>, False)` when `resolve()` raises `OSError`;
+          the returned string is the expanded-but-unresolved path. A transient
+          resolve failure on only one of the write/read sides then yields
+          different identity strings and a spurious re-prompt (fail-closed),
+          never a false match.
+
+        Returns `None` only when `project_root` is `None`, cannot be expanded, or
+        resolution detects a path loop (`RuntimeError`).
+    """
+    if project_root is None:
+        return None
+    try:
+        expanded_root = Path(project_root).expanduser()
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not expand MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+
+    try:
+        resolved_root = expanded_root.resolve()
+    except OSError:
+        logger.warning(
+            "Could not resolve MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return _McpProjectScope(str(expanded_root), False)
+    except RuntimeError:
+        logger.warning(
+            "Could not resolve MCP project root %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+
+    if share_across_worktrees:
+        common_dir = find_git_common_dir(resolved_root)
+        if common_dir is not None:
+            return _McpProjectScope(str(common_dir), True)
+    return _McpProjectScope(str(resolved_root), False)
+
+
+def _normalize_persisted_git_common_dir(project_root: str) -> str | None:
+    """Normalize a marked Git identity without following or rediscovering it.
+
+    Args:
+        project_root: Persisted Git common-directory path.
+
+    Returns:
+        The absolute lexical path, or `None` for an invalid stored identity.
+    """
+    try:
+        expanded_root = Path(project_root).expanduser()
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Could not expand persisted MCP Git identity %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+    if not expanded_root.is_absolute():
+        logger.warning(
+            "Persisted MCP Git identity %s is not absolute; dropping approval",
+            project_root,
+        )
+        return None
+    try:
+        return os.path.abspath(expanded_root)  # noqa: PTH100  # do not follow links
+    except (OSError, RuntimeError, ValueError):
+        logger.warning(
+            "Could not normalize persisted MCP Git identity %s",
+            project_root,
+            exc_info=True,
+        )
+        return None
+
+
+_REMOTE_MCP_TRANSPORTS = frozenset(
+    {"http", "sse", "streamable_http", "streamable-http"}
+)
+
+
+def _mcp_server_uses_remote_transport(server: JsonValue) -> bool:
+    """Return whether `server` is confidently a remote-only definition.
+
+    Malformed, ambiguous, or environment-dependent definitions stay
+    worktree-scoped. A definition containing `command` is never shared even if it
+    also contains a remote transport field, and an interpolated URL can resolve to
+    different endpoints from different worktree `.env` files.
+
+    Args:
+        server: Parsed MCP server definition.
+
+    Returns:
+        Whether approvals for the definition may be shared across worktrees.
+    """
+    if not isinstance(server, dict) or "command" in server:
+        return False
+    url = server.get("url")
+    if not isinstance(url, str) or "${" in url:
+        return False
+    transport = server.get("type") or server.get("transport")
+    return transport is None or (
+        isinstance(transport, str) and transport in _REMOTE_MCP_TRANSPORTS
+    )
+
+
+def normalize_mcp_project_root(project_root: str | Path | None) -> str | None:
+    """Normalize an exact project root for persisted MCP trust comparisons.
+
+    Args:
+        project_root: Project root path to normalize.
+
+    Returns:
+        The resolved absolute project root (or the expanded, unresolved path when
+        `resolve()` raises `OSError`), or `None` when `project_root` is
+        unavailable.
+    """
+    scope = _normalize_mcp_project_scope(project_root, share_across_worktrees=False)
+    return scope.identity if scope is not None else None
+
+
+def fingerprint_mcp_server_config(server: JsonValue) -> str:
+    """Return a stable fingerprint for an MCP server definition.
+
+    The contract is a JSON-serializable value (in practice the `dict` parsed
+    from `.mcp.json`, though a malformed entry may be any JSON scalar/array); a
+    non-serializable input raises `TypeError` from `json.dumps`. `sort_keys=True`
+    makes the digest independent of key order, so reordering fields in the config
+    does not force a re-prompt.
+
+    Args:
+        server: Parsed MCP server config (a JSON-serializable value).
+
+    Returns:
+        A SHA-256 fingerprint over the canonical JSON representation.
+    """
+    encoded = json.dumps(
+        server,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+@dataclass(frozen=True)
+class McpServerTrustLists:
+    """User-level allow/deny lists for project MCP servers.
+
+    Sourced only from the user's own configuration — the home `config.toml`, the
+    global `~/.deepagents/.env`, and shell-exported env — never from a repo, so a
+    committed `.mcp.json` cannot self-approve. Persisted approvals for fixed
+    remote URLs bind to one validated local Git repository. Local commands and
+    interpolated remote URLs bind to the exact resolved worktree. All include the
+    server definition's fingerprint. Env-sourced approvals remain explicit
+    process-wide name approvals.
+
+    The "reject wins" invariant — a name in both approval and rejection data is
+    only rejected — is enforced in `__post_init__`, so every instance is disjoint
+    no matter how it was constructed; callers need not pre-subtract.
+    """
+
+    enabled: frozenset[str]
+    """Env-sourced server names pre-approved for any project config."""
+
+    disabled: frozenset[str]
+    """Server names always rejected; reject wins over approvals and over trust."""
+
+    read_error: str | None = field(default=None, compare=False)
+    """Non-`None` when the user's `config.toml` existed but its trust policy
+    could not be fully read: the file was unreadable/unparseable, its `[mcp]`
+    value was not a table, or its `disabled_project_servers` was a wrong type
+    that could not be interpreted as a deny list. Callers must treat this as
+    fail-closed (do not grant whole-config project trust) and surface it, rather
+    than proceeding with a deny list that may not have loaded — use `load_failed`
+    for that check. Note the resolved `enabled`/`disabled` sets are not
+    necessarily empty here: names from a still-readable source (the env vars)
+    continue to apply. Excluded from equality so a failed load still compares
+    equal to empty lists for tests that only care about the resolved names."""
+
+    approvals: frozenset[McpProjectServerApproval] = field(
+        default_factory=frozenset, kw_only=True
+    )
+    """Project-scoped approvals loaded from user `config.toml`."""
+
+    legacy_ignored: frozenset[str] = field(
+        default_factory=frozenset, compare=False, kw_only=True
+    )
+    """Names found in a legacy `[mcp].enabled_project_servers` list that this
+    build no longer honors. Non-empty means the user relied on the removed flat
+    allowlist, so those servers silently stopped loading; callers should surface
+    it (a bare `logger.warning` is invisible outside debug mode) so
+    non-interactive paths can explain the change. Diagnostic, not resolved
+    policy — excluded from equality like `read_error`."""
+
+    legacy_env_ignored: bool = field(default=False, compare=False, kw_only=True)
+    """`True` when the removed `DEEPAGENTS_CODE_ENABLED_PROJECT_MCP_SERVERS` env
+    var is set. It was renamed to the `DANGEROUSLY_`-prefixed var and is no longer
+    read, so its names silently stopped pre-approving. The diagnostic twin of
+    `legacy_ignored` for the env surface; callers should surface the rename so the
+    change is not silent. Excluded from equality like `read_error`."""
+
+    malformed_approvals: int = field(default=0, compare=False, kw_only=True)
+    """Count of `[mcp].enabled_project_server_approvals` rows that were dropped as
+    malformed (wrong-typed key, non-table entry, a table missing/blank
+    `project_root`/`name`/`fingerprint`, or an invalid Git identity marker).
+    Non-zero means a persisted approval
+    could not be read, so its server silently re-prompts; callers should surface
+    it (a bare `logger.warning` is invisible outside debug mode) for parity with
+    `legacy_ignored`. Diagnostic, not resolved policy — excluded from equality."""
+
+    def __post_init__(self) -> None:
+        """Enforce reject precedence by stripping disabled names from both sets.
+
+        A rejected name must never survive in `enabled` or `approvals`, whatever
+        the caller passed, so a future allow-first consumer can't be tricked
+        into loading a denied server. Frozen dataclass, so assign via
+        `object.__setattr__`.
+        """
+        if self.enabled & self.disabled:
+            object.__setattr__(self, "enabled", self.enabled - self.disabled)
+        if any(approval.name in self.disabled for approval in self.approvals):
+            object.__setattr__(
+                self,
+                "approvals",
+                frozenset(
+                    approval
+                    for approval in self.approvals
+                    if approval.name not in self.disabled
+                ),
+            )
+
+    @property
+    def load_failed(self) -> bool:
+        """Whether the user's trust policy failed to load (see `read_error`).
+
+        Callers gating on trust MUST check this and fail closed: a failed load
+        means a configured deny may be missing, so whole-config project trust
+        must not be honored. Named so the fail-closed contract is discoverable
+        rather than resting on every caller remembering the `read_error`
+        sentinel.
+        """
+        return self.read_error is not None
+
+    def is_enabled(
+        self,
+        name: str,
+        *,
+        project_root: str | Path | None,
+        server: JsonValue,
+    ) -> bool:
+        """Return whether `server` is approved by name or scoped fingerprint.
+
+        Args:
+            name: MCP server name.
+            project_root: Resolved project root for the config that defined it.
+            server: Parsed MCP server config for fingerprint comparison.
+
+        Returns:
+            `True` when the server is approved and not disabled.
+        """
+        if not name.strip():
+            # A blank name can only come from a malformed config. Fail closed
+            # here rather than let `McpProjectServerApproval.create` raise
+            # `ValueError` from its non-empty invariant out of the trust filter.
+            return False
+        # These membership tests use the raw (unstripped) `name`, while the
+        # approval path below strips it via `create`. Reject precedence for a
+        # whitespace-padded name (e.g. `" docs "` vs `disabled={"docs"}`) does
+        # NOT rest on this check — it survives only because `__post_init__`
+        # already stripped every disabled name out of `enabled` and `approvals`
+        # (it compares the always-stripped `approval.name`). Keep that stripping
+        # in sync with this check: a padded name sails past both lines here.
+        if name in self.disabled:
+            return False
+        if name in self.enabled:
+            return True
+        approval = McpProjectServerApproval.create(
+            project_root=project_root, name=name, server=server
+        )
+        if approval is None:
+            return False
+        if approval in self.approvals:
+            return True
+        if not approval.git_common_dir:
+            return False
+
+        # Approvals written before remote servers gained a shared Git identity
+        # have no marker and remain bound to their original worktree. Honor that
+        # exact-root entry there without broadening it to sibling worktrees.
+        legacy_scope = _normalize_mcp_project_scope(
+            project_root, share_across_worktrees=False
+        )
+        if legacy_scope is None:
+            return False
+        legacy_approval = McpProjectServerApproval._create_for_scope(
+            scope=legacy_scope, name=name, server=server
+        )
+        return legacy_approval in self.approvals
+
+
+def _parse_csv_env(name: str) -> list[str] | None:
+    """Parse a comma-separated env var into a list of trimmed, non-empty names.
+
+    Returns:
+        The parsed list when the variable is set (possibly empty after
+            trimming), or `None` when the variable is unset so callers can
+            distinguish "unset, fall back to TOML" from "set but empty".
+    """
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _toml_model_spec(
+    value: object, *, key: str, path: Path, source_label: str | None = None
+) -> str | None:
+    """Return a `[models]` model spec, or `None` when it is not a string.
+
+    Args:
+        value: The raw TOML value.
+        key: The key name inside `[models]`, for log context.
+        path: The config file the value came from, for log context.
+        source_label: Overrides `path` in the log when the value came from a
+            merge of both layers, so the message does not name a file that may
+            not hold it. See `_effective_source_label`.
+
+    Returns:
+        The spec string, or `None` when the value cannot be one.
+    """
+    if value is None or isinstance(value, str):
+        return value
+    logger.warning(
+        "Ignoring [models].%s in %s: expected a string, got %s",
+        key,
+        source_label or path,
+        type(value).__name__,
+    )
+    return None
+
+
+def _toml_providers_table(
+    value: object, *, path: Path, source_label: str | None = None
+) -> dict[str, Any]:
+    """Return the `[models.providers]` table, or an empty one when unusable.
+
+    Args:
+        value: The raw TOML value.
+        path: The config file the value came from, for log context.
+        source_label: Overrides `path` in the log when the value came from a
+            merge of both layers. See `_effective_source_label`.
+
+    Returns:
+        The providers table, empty when the value is not a table.
+    """
+    if isinstance(value, dict):
+        return cast("dict[str, Any]", value)
+    logger.warning(
+        "Ignoring [models].providers in %s: expected a table, got %s",
+        source_label or path,
+        type(value).__name__,
+    )
+    return {}
+
+
+def _toml_str_list(
+    value: object, *, key: str, config_path: Path
+) -> tuple[list[str], bool]:
+    """Coerce a raw TOML value into a list of trimmed, non-empty server names.
+
+    A bare string is *split on commas* (e.g. `disabled_project_servers = "a, b"`
+    yields `["a", "b"]`), so a scalar written in the TOML parses identically to
+    the comma-separated env form in `_parse_csv_env` — the two forms can never
+    silently diverge into one bogus `"a, b"` token that matches no server. Non-
+    string list elements are dropped (with a log) while the surrounding valid
+    names survive. A genuinely wrong type (number, table, bool) cannot be
+    interpreted as names at all: it yields an empty list *and* flags `malformed`,
+    so a caller enforcing a deny list can fail closed rather than silently drop
+    the rejection.
+
+    Args:
+        value: The raw value read from the `[mcp]` table (or `None` when the
+            key is absent).
+        key: The TOML key name, used only for log context.
+        config_path: The config file the value came from, for log context.
+
+    Returns:
+        `(names, malformed)`. `names` are the trimmed, non-empty server names.
+            `malformed` is `True` only when `value` is present but neither a
+            string nor a list (so it could not be read as names); it is `False`
+            for an absent value, a string, or any list — even one whose non-
+            string elements were dropped.
+    """
+    if value is None:
+        return [], False
+    if isinstance(value, str):
+        # Split on commas so a bare string parses exactly like the env form; a
+        # single name with no comma still yields a one-element list.
+        return [item.strip() for item in value.split(",") if item.strip()], False
+    if not isinstance(value, list):
+        logger.warning(
+            "[mcp].%s in %s should be a list of strings, got %s; ignoring it",
+            key,
+            config_path,
+            type(value).__name__,
+        )
+        return [], True
+    result: list[str] = []
+    discarded = 0
+    for item in value:
+        if isinstance(item, str) and item.strip():
+            result.append(item.strip())
+        else:
+            discarded += 1
+    if discarded:
+        logger.warning(
+            "[mcp].%s in %s: ignored %d non-string or empty entr%s",
+            key,
+            config_path,
+            discarded,
+            "y" if discarded == 1 else "ies",
+        )
+    return result, False
+
+
+def _toml_project_server_approvals(
+    value: object, *, config_path: Path
+) -> tuple[list[McpProjectServerApproval], int]:
+    """Parse `[mcp].enabled_project_server_approvals` entries.
+
+    Args:
+        value: Raw TOML value from the `[mcp]` table.
+        config_path: Config file the value came from, for log context.
+
+    Returns:
+        `(approvals, dropped)`: the well-formed project-scoped approvals and the
+            count of malformed rows ignored. Dropping is fail-closed for an
+            allowlist; the count lets callers surface the loss (a bare
+            `logger.warning` is invisible outside debug mode) so a corrupt saved
+            approval doesn't just silently re-prompt.
+    """
+    if value is None:
+        return [], 0
+    if not isinstance(value, list):
+        logger.warning(
+            "[mcp].enabled_project_server_approvals in %s should be a list of "
+            "tables; ignoring it",
+            config_path,
+        )
+        # Count the whole-key type error as one dropped diagnostic so it is
+        # surfaced rather than only logged.
+        return [], 1
+
+    approvals: list[McpProjectServerApproval] = []
+    dropped = 0
+    for item in value:
+        if not isinstance(item, dict):
+            logger.warning(
+                "[mcp].enabled_project_server_approvals in %s ignored a "
+                "non-table entry",
+                config_path,
+            )
+            dropped += 1
+            continue
+        approval = McpProjectServerApproval.from_toml(
+            cast("Mapping[str, object]", item)
+        )
+        if approval is None:
+            logger.warning(
+                "[mcp].enabled_project_server_approvals in %s ignored a "
+                "malformed entry",
+                config_path,
+            )
+            dropped += 1
+            continue
+        approvals.append(approval)
+    return approvals, dropped
+
+
+def _ranked_mcp_section(
+    data: Mapping[str, Any],
+    *,
+    rank: int,
+    status: ProviderStatus,
+    path: Path,
+    managed: bool,
+) -> RankedProviderValue[Mapping[str, Any]]:
+    """Coerce one provider's `[mcp]` root without losing its health.
+
+    Returns:
+        A ranked table, `Unset`, or `Invalid` for a shadowing scalar root.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    if not status.usable or "mcp" not in data:
+        result = Unset()
+    else:
+        raw = data["mcp"]
+        if isinstance(raw, dict):
+            result = Found(cast("Mapping[str, Any]", raw))
+        else:
+            context = f"managed config {path}" if managed else str(path)
+            result = Invalid(
+                f"[mcp] in {context} must be a table, got {type(raw).__name__}"
+            )
+            logger.warning(
+                "[mcp] in %s should be a table, got %s; treating project "
+                "configs as untrusted",
+                "managed config" if managed else path,
+                type(raw).__name__,
+            )
+    return RankedProviderValue(rank, True, status, result)
+
+
+def _ranked_mcp_approvals(
+    section: RankedProviderValue[Mapping[str, Any]],
+    *,
+    path: Path,
+    managed: bool,
+) -> tuple[RankedProviderValue[dict[str, Any]], int]:
+    """Coerce one file tier's scoped approvals into composite grant leaves.
+
+    Returns:
+        The typed provider plus its malformed-row diagnostic count.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    section_result = section.result
+    if isinstance(section_result, Invalid):
+        result = Invalid(section_result.reason)
+        return (
+            RankedProviderValue(section.rank, section.durable, section.status, result),
+            0,
+        )
+    if not isinstance(section_result, Found):
+        return (
+            RankedProviderValue(section.rank, section.durable, section.status, Unset()),
+            0,
+        )
+    key = "enabled_project_server_approvals"
+    table = cast("Mapping[str, Any]", section_result.value)
+    if key not in table:
+        return (
+            RankedProviderValue(section.rank, section.durable, section.status, Unset()),
+            0,
+        )
+    raw = table[key]
+    approvals, dropped = _toml_project_server_approvals(raw, config_path=path)
+    if managed and not isinstance(raw, list):
+        reason = (
+            f"[mcp].{key} in {path} must be a list of approval entries; "
+            "refusing to proceed with an unenforced managed allow list"
+        )
+        logger.warning(
+            "Malformed [mcp].%s in managed config %s; treating project "
+            "configs as untrusted",
+            key,
+            path,
+        )
+        return (
+            RankedProviderValue(
+                section.rank,
+                section.durable,
+                section.status,
+                Invalid(reason),
+            ),
+            dropped,
+        )
+    value = {
+        "approvals": approvals,
+        **({"enabled": []} if managed else {}),
+    }
+    return (
+        RankedProviderValue(
+            section.rank,
+            section.durable,
+            section.status,
+            Found(value),
+        ),
+        dropped,
+    )
+
+
+def _ranked_mcp_names(
+    section: RankedProviderValue[Mapping[str, Any]],
+    *,
+    key: str,
+    path: Path,
+    managed: bool,
+    fail_closed: bool,
+) -> RankedProviderValue[list[str]]:
+    """Coerce one file tier's comma/list server names.
+
+    Returns:
+        A typed name-list provider. Wrong-typed deny lists are `Invalid`;
+        permissive legacy names instead become an empty `Found` value.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import Found, Invalid, Unset
+
+    section_result = section.result
+    if isinstance(section_result, Invalid):
+        result = Invalid(section_result.reason)
+    elif not isinstance(section_result, Found):
+        result = Unset()
+    else:
+        table = cast("Mapping[str, Any]", section_result.value)
+        if key not in table:
+            return RankedProviderValue(
+                section.rank, section.durable, section.status, Unset()
+            )
+        names, malformed = _toml_str_list(
+            table[key],
+            key=key,
+            config_path=path,
+        )
+        if malformed and fail_closed:
+            qualifier = "managed " if managed else ""
+            reason = (
+                f"[mcp].{key} in {path} must be a list of strings; refusing "
+                f"to proceed with an unenforced {qualifier}deny list"
+            )
+            if managed:
+                logger.warning(
+                    "Malformed [mcp].%s in managed config %s; treating "
+                    "project configs as untrusted",
+                    key,
+                    path,
+                )
+            result = Invalid(reason)
+        else:
+            result = Found(names)
+    return RankedProviderValue(section.rank, section.durable, section.status, result)
+
+
+def _ranked_mcp_env_names(
+    name: str,
+    *,
+    rank: int,
+    composite: bool,
+) -> RankedProviderValue[Any]:
+    """Coerce one MCP comma-list environment provider.
+
+    Returns:
+        A ranked list, or a composite enabled-name leaf for approval resolution.
+    """
+    from deepagents_code.configuration.resolver import RankedProviderValue
+    from deepagents_code.configuration.types import (
+        Found,
+        ProviderHealth,
+        ProviderStatus,
+        Unset,
+    )
+
+    names = _parse_csv_env(name)
+    status = ProviderStatus(
+        f"env ({name})" if names is not None else "environment",
+        None,
+        ProviderHealth.OK,
+    )
+    result = (
+        Unset() if names is None else Found({"enabled": names} if composite else names)
+    )
+    return RankedProviderValue(rank, False, status, result)
+
+
+def load_mcp_server_trust_lists(
+    config_path: Path | None = None,
+) -> McpServerTrustLists:
+    """Load per-server project MCP allow/deny lists from user-level config.
+
+    Security boundary: this reads the `[mcp]` table only from the user-level
+    `config.toml` (`DEFAULT_CONFIG_PATH`, i.e. `~/.deepagents/config.toml`) and
+    the `DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` /
+    `DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS` process env vars — never from
+    a project's `.mcp.json` or any repo-committed file. There is no
+    project-level `config.toml` discovery, so an attacker who commits a
+    malicious `.mcp.json` plus an in-repo config cannot pre-approve their own
+    servers; the approval must live in the user's home config. This mirrors
+    Claude Code's "untrusted folder → only non-checked-in settings" rule.
+
+    Source resolution differs by list, matching each one's security direction:
+
+    - managed config (highest precedence): an administrator `[mcp]` table
+        outranks every source below. An explicit managed
+        `enabled_project_server_approvals` list replaces both the env-enabled
+        names and the user's remembered approvals. Managed denies union with
+        the rest.
+    - `enabled` (permissive): the env var is an explicit process-wide name
+        allowlist.
+    - `approvals` (permissive): TOML approvals bind fixed remote URLs to one
+        validated local Git repository (shared across its worktrees). Local commands
+        and interpolated remote URLs bind to an exact worktree. All include a
+        server-definition fingerprint and remain active alongside env-enabled names,
+        so setting the process-wide escape hatch does not discard choices remembered
+        by the interactive prompt. An explicit managed approvals list is the one
+        exception: it replaces both.
+        Legacy flat TOML
+        `enabled_project_servers` entries are ignored because they cannot be safely
+        scoped.
+    - `disabled` (restrictive): the env var *unions* with the TOML list — denies
+        accumulate and a lower-effort source can never silently empty a deny
+        entry set in the other, which would be a fail-open. There is
+        deliberately no way to *remove* a configured deny via env.
+
+    Rejection wins: a name appearing in approval and disabled data is reported
+    only in `disabled`.
+
+    Args:
+        config_path: Config file to read. Defaults to `DEFAULT_CONFIG_PATH`;
+            callers should not point this at a project path — doing so would
+            defeat the boundary above. Passing a path also excludes managed
+            policy from this read, so production callers must pass `None`.
+
+    Returns:
+        The resolved `McpServerTrustLists`. A missing file yields empty lists
+            (the normal "unset" case). `read_error` is set (so callers can fail
+            closed instead of treating a broken config as "nothing denied") when
+            the file exists but cannot be read/parsed, when `[mcp]` is not a
+            table, or when `disabled_project_servers` is a wrong type that cannot
+            be read as a deny list; env-sourced names still apply in that case.
+            The same three conditions in the managed file set it too, because a
+            deny list an administrator set must never fail open.
+
+    Raises:
+        RuntimeError: If required MCP options are missing from the manifest.
+    """
+    is_default = config_path is None
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import (
+        ENVIRONMENT_RANK,
+        MANAGED_RANK,
+        USER_RANK,
+        resolve_ranked,
+    )
+    from deepagents_code.configuration.service import get_config_sources
+    from deepagents_code.configuration.types import Invalid
+
+    # `None` on the default path: that is what includes managed policy.
+    sources = get_config_sources(user_path=None if is_default else config_path)
+    managed_path = sources.managed.status.path or config_path
+    managed_section = _ranked_mcp_section(
+        sources.managed.data,
+        rank=MANAGED_RANK,
+        status=sources.managed.status,
+        path=managed_path,
+        managed=True,
+    )
+    user_section = _ranked_mcp_section(
+        sources.user.data,
+        rank=USER_RANK,
+        status=sources.user.status,
+        path=config_path,
+        managed=False,
+    )
+
+    approvals_option = get_option("mcp.enabled_project_server_approvals")
+    disabled_option = get_option("mcp.disabled_project_servers")
+    legacy_option = get_option("mcp.enabled_project_servers")
+    if approvals_option is None or disabled_option is None or legacy_option is None:
+        msg = "MCP trust options are missing from the config manifest"
+        raise RuntimeError(msg)
+
+    managed_approvals, managed_malformed = _ranked_mcp_approvals(
+        managed_section,
+        path=managed_path,
+        managed=True,
+    )
+    user_approvals, user_malformed = _ranked_mcp_approvals(
+        user_section,
+        path=config_path,
+        managed=False,
+    )
+    env_approvals = _ranked_mcp_env_names(
+        _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        rank=ENVIRONMENT_RANK,
+        composite=True,
+    )
+    resolved_approvals = resolve_ranked(
+        (managed_approvals, env_approvals, user_approvals),
+        strategy=approvals_option.merge_strategy.value,
+    )
+
+    managed_disabled = _ranked_mcp_names(
+        managed_section,
+        key="disabled_project_servers",
+        path=managed_path,
+        managed=True,
+        fail_closed=True,
+    )
+    user_disabled = _ranked_mcp_names(
+        user_section,
+        key="disabled_project_servers",
+        path=config_path,
+        managed=False,
+        fail_closed=True,
+    )
+    env_disabled = _ranked_mcp_env_names(
+        _env_vars.DISABLED_PROJECT_MCP_SERVERS,
+        rank=ENVIRONMENT_RANK,
+        composite=False,
+    )
+    resolved_disabled = resolve_ranked(
+        (managed_disabled, env_disabled, user_disabled),
+        strategy=disabled_option.merge_strategy.value,
+    )
+
+    legacy_provider = _ranked_mcp_names(
+        user_section,
+        key="enabled_project_servers",
+        path=config_path,
+        managed=False,
+        fail_closed=False,
+    )
+    resolved_legacy = resolve_ranked(
+        (legacy_provider,),
+        strategy=legacy_option.merge_strategy.value,
+    )
+    legacy_ignored = resolved_legacy.value if resolved_legacy is not None else []
+    if legacy_ignored:
+        logger.warning(
+            "[mcp].enabled_project_servers in %s is ignored; run "
+            "the project MCP approval prompt again to save "
+            "project-scoped approvals",
+            config_path,
+        )
+
+    # Accumulated, not overwritten: both layers can fail, and both errors must
+    # reach the user.
+    read_errors: list[str] = []
+    if not sources.user.status.usable:
+        # The file exists but is unreadable/unparseable. Record it so callers
+        # fail closed rather than silently proceeding with an empty deny list.
+        read_errors.append(
+            f"Could not read MCP trust lists from {config_path}: "
+            f"{sources.user.status.detail or sources.user.status.health.value}"
+        )
+        logger.warning(
+            "Could not read %s for MCP server trust lists; treating project "
+            "configs as untrusted",
+            config_path,
+        )
+    elif isinstance(user_section.result, Invalid):
+        read_errors.append(user_section.result.reason)
+    elif isinstance(user_disabled.result, Invalid):
+        read_errors.append(user_disabled.result.reason)
+
+    managed_status = sources.managed.status
+    if not managed_status.usable:
+        read_errors.append(
+            f"Could not enforce MCP trust lists from {managed_status.path}: "
+            f"{managed_status.detail or managed_status.health.value}"
+        )
+        # A managed file that cannot be read may have carried an explicit
+        # approvals list, whose whole purpose is to drop the env bypass. Leaving
+        # this false let `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` grants return,
+        # so corrupting the file converted a managed suppression into a permit.
+        # A deny list that cannot be read denies everything.
+    elif isinstance(managed_section.result, Invalid):
+        read_errors.append(managed_section.result.reason)
+    else:
+        if isinstance(managed_approvals.result, Invalid):
+            read_errors.append(managed_approvals.result.reason)
+        if isinstance(managed_disabled.result, Invalid):
+            read_errors.append(managed_disabled.result.reason)
+    # The old name was renamed to the `DANGEROUSLY_`-prefixed var and is no
+    # longer read; flag it set-but-ignored so callers can explain the rename
+    # instead of the names silently ceasing to pre-approve.
+    legacy_env_ignored = _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in os.environ
+    if legacy_env_ignored:
+        logger.warning(
+            "%s is no longer used; it was renamed to %s",
+            _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS,
+            _env_vars.DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
+        )
+
+    # Process-wide env names and scoped TOML approvals are independent grants.
+    # Keep both active so the escape hatch cannot make the interactive prompt's
+    # successfully persisted choices ineffective on the next launch.
+    approval_value = (
+        cast("dict[str, Any]", resolved_approvals.value)
+        if resolved_approvals is not None
+        else {}
+    )
+    resolved_enabled = cast("list[str]", approval_value.get("enabled", []))
+    resolved_approval_rows = cast(
+        "list[McpProjectServerApproval]", approval_value.get("approvals", [])
+    )
+    # `_ranked_mcp_approvals` propagates a shadowing `[mcp]` root into its own
+    # result, so this covers both a wrong-typed approvals list and a malformed
+    # `[mcp]` root. Requiring the section itself to be `Found` would let a
+    # corrupt managed file convert a suppression into a permit.
+    managed_approval_invalid = isinstance(managed_approvals.result, Invalid)
+    enabled = frozenset(
+        ()
+        if not managed_status.usable or managed_approval_invalid
+        else resolved_enabled
+    )
+    read_error = "; ".join(read_errors) if read_errors else None
+    approvals = frozenset(() if read_errors else resolved_approval_rows)
+    disabled = frozenset(
+        cast("list[str]", resolved_disabled.value)
+        if resolved_disabled is not None
+        else ()
+    )
+    # Corner: when `read_error` is set because `config.toml` was unreadable,
+    # the user-file deny list is lost, so a name that is both TOML-`disabled` and
+    # exported in `DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS` would survive here —
+    # "reject wins" does not hold in that one corner. It requires a
+    # self-contradicting config plus the explicit `DANGEROUSLY_` opt-in, and the
+    # read error is surfaced to the user, so it stays an accepted footgun rather
+    # than a silent fail-open.
+    # Reject precedence is enforced by `McpServerTrustLists.__post_init__`, so no
+    # subtraction here.
+    return McpServerTrustLists(
+        enabled=enabled,
+        disabled=disabled,
+        approvals=approvals,
+        read_error=read_error,
+        legacy_ignored=frozenset(legacy_ignored),
+        legacy_env_ignored=legacy_env_ignored,
+        malformed_approvals=user_malformed + managed_malformed,
+    )
+
+
+def add_enabled_project_mcp_servers(
+    names: Iterable[str],
+    config_path: Path | None = None,
+    *,
+    project_root: str | Path | None = None,
+    server_configs: Mapping[str, JsonValue] | None = None,
+) -> bool:
+    """Persist project-scoped MCP server approvals.
+
+    Backs the interactive approval prompt's "always allow" choice: the given
+    names are added to the user-level `config.toml` allowlist with each server
+    definition's fingerprint. Fixed remote URLs use the local Git repository
+    identity and are shared by its linked worktrees. Local commands and
+    interpolated remote URLs use the exact worktree root. A different clone or
+    changed definition asks again.
+
+    Defaults to the user-level config (`DEFAULT_CONFIG_PATH`), the sole source
+    `load_mcp_server_trust_lists` reads the allowlist from — so writing to the
+    user's home config is what preserves the read-side trust boundary (a
+    committed `.mcp.json` can never self-approve). Any name being persisted is
+    also pruned from the deprecated flat `[mcp].enabled_project_servers` key
+    (the key is removed once empty), migrating callers off the ignored legacy
+    list. The write is atomic (`tempfile.mkstemp` + `Path.replace`) and holds
+    `_config_write_lock` across the whole read-modify-write, matching
+    `suppress_warning`.
+
+    Args:
+        names: Server names to add to the allowlist. Blank/whitespace-only
+            names are ignored; a call with no usable names is a no-op success.
+        config_path: Config file to write. Defaults to `DEFAULT_CONFIG_PATH`
+            (`~/.deepagents/config.toml`). Callers should not point this at a
+            project path: the loader only ever reads the user-level config, so
+            an allowlist written elsewhere is never honored.
+        project_root: Project root whose MCP server definitions were approved.
+        server_configs: Current server definitions keyed by server name.
+
+    Returns:
+        `True` if the save succeeded (or there was nothing to add), `False` on
+            I/O, parse failure, an unknown server name, or missing
+            project/server context.
+    """
+    if config_path is None:
+        config_path = DEFAULT_CONFIG_PATH
+
+    clean_names = [name.strip() for name in names if name and name.strip()]
+    if not clean_names:
+        return True
+
+    if project_root is None or server_configs is None:
+        logger.error(
+            "Cannot save enabled project MCP servers without project root and "
+            "server definitions"
+        )
+        return False
+
+    approvals_to_add: list[McpProjectServerApproval] = []
+    for name in clean_names:
+        if name not in server_configs:
+            logger.error("Cannot save unknown project MCP server %r", name)
+            return False
+        approval = McpProjectServerApproval.create(
+            project_root=project_root,
+            name=name,
+            server=server_configs[name],
+        )
+        if approval is None:
+            logger.error("Could not normalize project root for MCP server %r", name)
+            return False
+        approvals_to_add.append(approval)
+
+    try:
+        # Hold the shared lock across read-through-replace: the atomic rename
+        # alone only prevents torn writes, not the lost update where a
+        # concurrent config.toml writer reads the same snapshot and its
+        # `replace()` lands last, silently dropping this approval. See the
+        # `_config_write_lock` contract; `suppress_warning` guards the same way.
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+
+            mcp_section = data.get("mcp")
+            if not isinstance(mcp_section, dict):
+                mcp_section = {}
+            existing, _ = _toml_project_server_approvals(
+                mcp_section.get("enabled_project_server_approvals"),
+                config_path=config_path,
+            )
+            merged = set(existing) | set(approvals_to_add)
+            mcp_section["enabled_project_server_approvals"] = [
+                approval.as_toml() for approval in sorted(merged)
+            ]
+            legacy, legacy_malformed = _toml_str_list(
+                mcp_section.get("enabled_project_servers"),
+                key="enabled_project_servers",
+                config_path=config_path,
+            )
+            if legacy and not legacy_malformed:
+                migrated = set(clean_names)
+                remaining = [name for name in legacy if name not in migrated]
+                if remaining:
+                    mcp_section["enabled_project_servers"] = remaining
+                else:
+                    mcp_section.pop("enabled_project_servers", None)
+            data["mcp"] = mcp_section
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
+    except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
+        # Matches `suppress_warning`: `TypeError` covers `tomli_w.dump`
+        # rejecting a non-serializable payload; `ValueError` covers things like
+        # `os.fdopen` on a closed fd. Folding them in keeps the `bool` contract
+        # intact so the caller degrades to a "could not remember" warning
+        # instead of crashing with a raw traceback.
+        logger.exception(
+            "Could not save enabled project MCP servers to %s", config_path
+        )
+        return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -3013,11 +5939,9 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     """
     global _thread_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
 
-    if config_path is None:
-        if _thread_config_cache is not None:
-            return _thread_config_cache
-        config_path = DEFAULT_CONFIG_PATH
-    use_default = config_path == DEFAULT_CONFIG_PATH
+    use_default = config_path is None
+    if use_default and _thread_config_cache is not None:
+        return _thread_config_cache
 
     columns = dict(THREAD_COLUMN_DEFAULTS)
     relative_time = True
@@ -3025,14 +5949,10 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
     scope = "cwd"
 
     try:
-        if not config_path.exists():
-            result = ThreadConfig(columns, relative_time, sort_order, scope)
-            if use_default:
-                _thread_config_cache = result
-            return result
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, _ = _load_effective_config_data(config_path)
         threads_section = data.get("threads", {})
+        if not isinstance(threads_section, dict):
+            threads_section = {}
 
         # columns
         raw_columns = threads_section.get("columns", {})
@@ -3062,7 +5982,13 @@ def load_thread_config(config_path: Path | None = None) -> ThreadConfig:
         return ThreadConfig(columns, relative_time, sort_order, scope)
 
     result = ThreadConfig(columns, relative_time, sort_order, scope)
-    if use_default:
+    # The `except` above no longer fires for a bad user file on the default
+    # path: `_load_effective_config_data` logs it and returns managed-only data
+    # instead of raising, so that guard stopped protecting the cache. Without
+    # this check the degraded result was cached for the process lifetime and
+    # survived the user repairing `config.toml`, because nothing on the read
+    # path calls `invalidate_thread_config_cache`.
+    if use_default and _user_config_layer_usable():
         _thread_config_cache = result
     return result
 
@@ -3079,19 +6005,18 @@ def load_thread_columns(config_path: Path | None = None) -> dict[str, bool]:
     Args:
         config_path: Path to config file.
 
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
     Returns:
         Dict mapping column names to visibility booleans.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-
     result = dict(THREAD_COLUMN_DEFAULTS)
     try:
-        if not config_path.exists():
-            return result
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        columns = data.get("threads", {}).get("columns", {})
+        data, _ = _load_effective_config_data(config_path)
+        threads = data.get("threads", {})
+        columns = threads.get("columns", {}) if isinstance(threads, dict) else {}
         if isinstance(columns, dict):
             for key in result:
                 if key in columns and isinstance(columns[key], bool):
@@ -3117,31 +6042,33 @@ def save_thread_columns(
         config_path = DEFAULT_CONFIG_PATH
 
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
 
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
 
-        if "threads" not in data:
-            data["threads"] = {}
-        data["threads"]["columns"] = columns
+            if "threads" not in data:
+                data["threads"] = {}
+            data["threads"]["columns"] = columns
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -3151,17 +6078,17 @@ def load_thread_relative_time(config_path: Path | None = None) -> bool:
     Args:
         config_path: Path to config file.
 
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
     Returns:
         True if timestamps should display as relative time.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
     try:
-        if not config_path.exists():
-            return True
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        value = data.get("threads", {}).get("relative_time")
+        data, _ = _load_effective_config_data(config_path)
+        threads = data.get("threads", {})
+        value = threads.get("relative_time") if isinstance(threads, dict) else None
         if isinstance(value, bool):
             return value
     except (OSError, tomllib.TOMLDecodeError):
@@ -3182,28 +6109,30 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
-        if "threads" not in data:
-            data["threads"] = {}
-        data["threads"]["relative_time"] = enabled
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+            if "threads" not in data:
+                data["threads"] = {}
+            data["threads"]["relative_time"] = enabled
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -3213,22 +6142,179 @@ def load_thread_sort_order(config_path: Path | None = None) -> str:
     Args:
         config_path: Path to config file.
 
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
     Returns:
         `"updated_at"` or `"created_at"`.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
     try:
-        if not config_path.exists():
-            return "updated_at"
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
-        value = data.get("threads", {}).get("sort_order")
+        data, _ = _load_effective_config_data(config_path)
+        threads = data.get("threads", {})
+        value = threads.get("sort_order") if isinstance(threads, dict) else None
         if value in {"updated_at", "created_at"}:
             return value
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read thread sort_order config", exc_info=True)
     return "updated_at"
+
+
+STARTUP_MODE_MANUAL = "manual"
+"""Startup approval mode that keeps human-in-the-loop approvals enabled."""
+
+STARTUP_MODE_AUTO = "auto"
+"""Startup approval mode that uses classifier-backed action review."""
+
+STARTUP_MODE_YOLO = "yolo"
+"""Startup approval mode that executes gated actions without review."""
+
+VALID_STARTUP_MODES = frozenset(
+    {STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO, STARTUP_MODE_YOLO}
+)
+"""Accepted values for the `[startup].mode` config option."""
+
+RECENT_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO})
+"""Modes the app may restore implicitly from `[startup].recent`."""
+
+_RECENT_AUTO_NOT_RESTORED_NOTICE = (
+    "Auto was not restored for this session because its guidance notice is "
+    "missing or out of date. Press Shift+Tab to review it and re-enable Auto."
+)
+"""User-facing copy for a remembered Auto that the notice gate declined."""
+
+_recent_auto_not_restored_notice: str | None = None
+"""One-shot TUI notice populated when the notice gate declines a stored Auto."""
+
+
+def consume_recent_auto_not_restored_notice() -> str | None:
+    """Return and clear the pending not-restored notice, if any."""
+    global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+    notice = _recent_auto_not_restored_notice
+    _recent_auto_not_restored_notice = None
+    return notice
+
+
+DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
+"""Fail-closed startup mode.
+
+Returned when no mode resolves, when `[startup]` is absent or is not a table,
+when the config is unreadable, and when a stored recent Auto is not restorable.
+"""
+
+
+def is_recent_startup_mode_restorable(mode: str) -> bool:
+    """Return whether an app-managed recent mode may be restored.
+
+    Auto restoration requires the current versioned education notice. Manual
+    remains safe to restore without one. No caller prompts: `False` means the
+    caller falls back to `manual`.
+
+    Args:
+        mode: Candidate value from `[startup].recent`.
+
+    Returns:
+        Whether startup may restore the mode.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        return False
+    if mode != STARTUP_MODE_AUTO:
+        return True
+
+    # Function-local: `approval_mode` imports this module, so a module-level
+    # import would close the cycle.
+    from deepagents_code.approval_mode import has_auto_mode_notice
+
+    return has_auto_mode_notice()
+
+
+def load_startup_mode(config_path: Path | None = None) -> str:
+    """Load the startup approval mode from config.toml.
+
+    An explicit `[startup].mode` outranks the app-managed `[startup].recent`
+    value. An invalid explicit mode fails closed to `manual` and never consults
+    `recent`. `recent` restores `manual`, or classifier-backed `auto` once the
+    current notice has been shown. Unrestricted `yolo` must stay explicitly
+    configured.
+
+    Args:
+        config_path: Path to config file.
+
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
+
+    Returns:
+        `"manual"`, `"auto"`, or `"yolo"`; falls back to `"manual"` when
+        unset, unreadable, or invalid.
+    """
+    try:
+        data, _ = _load_effective_config_data(config_path)
+        startup = data.get("startup")
+        if not isinstance(startup, dict):
+            return DEFAULT_STARTUP_MODE
+        # TOML values carry any type. The isinstance guards here and on
+        # `recent` below keep an array or table out of the frozenset membership
+        # tests, which would raise `TypeError: unhashable type` — uncaught by
+        # the handler below — and crash startup.
+        value = startup.get("mode")
+        if isinstance(value, str) and value in VALID_STARTUP_MODES:
+            return value
+        if value is not None:
+            logger.warning(
+                "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo')",
+                value,
+            )
+            return DEFAULT_STARTUP_MODE
+        recent = startup.get("recent")
+        # Re-test membership here so only an invalid value takes the warning
+        # below; a valid-but-notice-blocked Auto is a normal fail-closed, and
+        # gets its own diagnostic instead of being reported as a config error.
+        if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
+            if is_recent_startup_mode_restorable(recent):
+                return recent
+            # The only exit that discards a *valid* user-earned preference.
+            # Without this it is indistinguishable from the feature not working:
+            # a notice-version bump silently returns every Auto user to Manual.
+            global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+            logger.warning(
+                "Not restoring [startup].recent=%r: the Auto notice is missing "
+                "or out of date; starting in %s",
+                recent,
+                DEFAULT_STARTUP_MODE,
+            )
+            _recent_auto_not_restored_notice = _RECENT_AUTO_NOT_RESTORED_NOTICE
+            return DEFAULT_STARTUP_MODE
+        if recent is not None:
+            logger.warning(
+                "Ignoring [startup].recent=%r (expected 'manual' or 'auto')",
+                recent,
+            )
+    except (OSError, tomllib.TOMLDecodeError):
+        logger.debug("Could not read startup mode config", exc_info=True)
+    return DEFAULT_STARTUP_MODE
+
+
+def save_recent_startup_mode(mode: str, config_path: Path | None = None) -> bool:
+    """Save the most recently selected safe startup approval mode.
+
+    Args:
+        mode: `"manual"` or `"auto"`.
+        config_path: Path to config file.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+
+    Raises:
+        ValueError: If `mode` is not `"manual"` or `"auto"`. `yolo` must stay
+            explicitly configured, so it is never stored as a recent mode.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        msg = f"Invalid recent startup mode: {mode!r}"
+        raise ValueError(msg)
+    return _save_toml_field("startup", "recent", mode, config_path)
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:
@@ -3252,28 +6338,30 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
-        if "threads" not in data:
-            data["threads"] = {}
-        data["threads"]["sort_order"] = sort_order
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except Exception:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+            if "threads" not in data:
+                data["threads"] = {}
+            data["threads"]["sort_order"] = sort_order
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except Exception:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -3296,25 +6384,26 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
     try:
-        config_path.parent.mkdir(parents=True, exist_ok=True)
-        if config_path.exists():
-            with config_path.open("rb") as f:
-                data = tomllib.load(f)
-        else:
-            data = {}
-        if "threads" not in data:
-            data["threads"] = {}
-        data["threads"]["scope"] = scope
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            # Clean up temp file on any failure, including interrupts.
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+        with _config_write_lock:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            if config_path.exists():
+                with config_path.open("rb") as f:
+                    data = tomllib.load(f)
+            else:
+                data = {}
+            if "threads" not in data:
+                data["threads"] = {}
+            data["threads"]["scope"] = scope
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                # Clean up temp file on any failure, including interrupts.
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # `TypeError`/`ValueError` cover `tomli_w.dump` rejecting a payload
         # from a pre-existing config that does not round-trip; folding them in
@@ -3322,6 +6411,7 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not save thread scope preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -3340,9 +6430,13 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("recent", model_spec, config_path)
 
 
@@ -3370,7 +6464,9 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
 
     Returns:
         Ordered list of recent `provider:model` specs, most recent first.
-            Capped at `RECENT_MODELS_LIMIT` and de-duplicated.
+            Capped at `RECENT_MODELS_LIMIT` and de-duplicated. Entries outside
+            `models.allowed` are dropped, so the result can be shorter than the
+            file -- or empty despite a populated cache.
     """
     path = _recent_models_path(state_dir)
     if not path.exists():
@@ -3383,10 +6479,16 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
     raw = data.get("models") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         return []
+    config = ModelConfig.load()
     seen: set[str] = set()
     out: list[str] = []
     for entry in raw:
-        if not isinstance(entry, str) or ":" not in entry or entry in seen:
+        if (
+            not isinstance(entry, str)
+            or ":" not in entry
+            or entry in seen
+            or not config.is_model_allowed(entry)
+        ):
             continue
         seen.add(entry)
         out.append(entry)
@@ -3403,14 +6505,24 @@ def touch_recent_model(model_spec: str, state_dir: Path | None = None) -> bool:
     error so callers can degrade silently — recents are a nice-to-have, not
     a correctness requirement.
 
+    A spec outside `models.allowed` also returns `False`. That refusal is
+    deliberately silent here: the MRU is a derived cache, and the visible
+    consequence (the spec not appearing under Recent) is already explained by
+    the selector's policy empty state.
+
     Args:
         model_spec: The `provider:model` string just selected.
         state_dir: Override for the state directory (test hook).
 
     Returns:
-        `True` on success, `False` on I/O error or invalid spec.
+        `True` on success, `False` on I/O error, an invalid spec, or a spec
+            outside `models.allowed`.
     """
-    if not model_spec or ":" not in model_spec:
+    if (
+        not model_spec
+        or ":" not in model_spec
+        or not ModelConfig.load().is_model_allowed(model_spec)
+    ):
         return False
     existing = load_recent_models(state_dir)
     deduped = [entry for entry in existing if entry != model_spec]
@@ -3505,36 +6617,36 @@ def clear_default_agent(config_path: Path | None = None) -> bool:
     if config_path is None:
         config_path = DEFAULT_CONFIG_PATH
 
-    if not config_path.exists():
-        return True
-
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        with _config_write_lock:
+            if not config_path.exists():
+                return True
 
-        agents_section = data.get("agents")
-        if not isinstance(agents_section, dict) or "default" not in agents_section:
-            return True
+            with config_path.open("rb") as f:
+                data = tomllib.load(f)
 
-        del agents_section["default"]
+            agents_section = data.get("agents")
+            if not isinstance(agents_section, dict) or "default" not in agents_section:
+                return True
 
-        fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(fd, "wb") as f:
-                tomli_w.dump(data, f)
-            Path(tmp_path).replace(config_path)
-        except BaseException:
-            with contextlib.suppress(OSError):
-                Path(tmp_path).unlink()
-            raise
+            del agents_section["default"]
+
+            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    tomli_w.dump(data, f)
+                Path(tmp_path).replace(config_path)
+            except BaseException:
+                with contextlib.suppress(OSError):
+                    Path(tmp_path).unlink()
+                raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # See `_save_toml_field` for why `TypeError` / `ValueError` are
         # folded into the bool return contract.
         logger.exception("Could not clear default agent preference")
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -3560,24 +6672,21 @@ def _load_agents_field(field: str, config_path: Path | None = None) -> str | Non
         field: Key under the `[agents]` table (e.g., `'recent'`, `'default'`).
         config_path: Path to config file.
 
-            Defaults to `~/.deepagents/config.toml`.
+            Defaults to `~/.deepagents/config.toml`. Passing a path also
+            excludes managed policy from this read, so production callers
+            must pass `None`.
 
     Returns:
         The trimmed string value, or `None` if the file, section, or key
         is missing or the file is unreadable.
     """
-    if config_path is None:
-        config_path = DEFAULT_CONFIG_PATH
-    if not config_path.exists():
-        return None
     try:
-        with config_path.open("rb") as f:
-            data = tomllib.load(f)
+        data, _ = _load_effective_config_data(config_path)
     except (OSError, tomllib.TOMLDecodeError):
         logger.warning("Could not read agents.%s from config", field, exc_info=True)
         return None
     agents_section = data.get("agents", {})
-    value = agents_section.get(field)
+    value = agents_section.get(field) if isinstance(agents_section, dict) else None
     if isinstance(value, str) and value.strip():
         return value.strip()
     return None

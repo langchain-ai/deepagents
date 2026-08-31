@@ -1,7 +1,7 @@
 """Integration tests for `BaseSandbox` file operations.
 
 This module tests the core file operations implemented in `BaseSandbox`:
-- write(): Create new files
+- write(): Create new files and overwrite existing files
 - read(): Read file contents
 - edit(): String replacement in files
 - ls(): List directory contents
@@ -68,20 +68,18 @@ class TestSandboxOperations:
         exec_result = sandbox.execute(f"cat {test_path}")
         assert exec_result.output.strip() == content
 
-    def test_write_existing_file_fails(self, sandbox: SandboxBackendProtocol) -> None:
-        """Test that writing to an existing file returns an error."""
+    def test_write_existing_file_overwrites(
+        self, sandbox: SandboxBackendProtocol
+    ) -> None:
+        """Test that writing to an existing file overwrites its content."""
         test_path = "/tmp/test_sandbox_ops/existing.txt"
-        # Create file first
         sandbox.write(test_path, "First content")
 
-        # Try to write again
         result = sandbox.write(test_path, "Second content")
 
-        assert result.error is not None
-        assert "already exists" in result.error.lower()
-        # Verify original content unchanged
+        assert result.error is None
         exec_result = sandbox.execute(f"cat {test_path}")
-        assert exec_result.output.strip() == "First content"
+        assert exec_result.output.strip() == "Second content"
 
     def test_write_special_characters(self, sandbox: SandboxBackendProtocol) -> None:
         """Test writing content with special characters and escape sequences."""

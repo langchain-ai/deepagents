@@ -21,12 +21,13 @@ from langchain.agents.structured_output import ToolStrategy
 from langchain.tools import ToolRuntime
 from langchain_core.callbacks import BaseCallbackHandler, CallbackManagerForLLMRun
 from langchain_core.language_models import BaseChatModel, LanguageModelInput
-from langchain_core.messages import AIMessage, HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableConfig, RunnableLambda
 from langchain_core.tools import BaseTool, tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.graph import END, START, MessagesState, StateGraph
+from langgraph.types import Command
 from langsmith import Client
 from langsmith.run_helpers import tracing_context
 from pydantic import BaseModel, Field
@@ -489,6 +490,108 @@ class TestSubAgents:
         assert "child done" in tool_messages[0].content
         assert captured_child_states, "Child subagent should have received state"
         assert "shared_value" not in captured_child_states[0]
+
+    def test_private_state_from_custom_state_schema_does_not_propagate_to_subagent(self) -> None:
+        """Private fields on `create_deep_agent(state_schema=...)` should not reach subagents."""
+
+        class _ParentState(AgentState):
+            parent_secret: Annotated[str | None, PrivateStateAttr]
+            public_value: str | None
+
+        captured_subagent_states: list[dict[str, Any]] = []
+
+        @tool
+        def seed_parent_state(runtime: ToolRuntime) -> Command:
+            """Seed parent state."""
+            return Command(
+                update={
+                    "parent_secret": "parent-secret",
+                    "public_value": "parent-public",
+                    "messages": [ToolMessage(content="seeded", tool_call_id=runtime.tool_call_id)],
+                }
+            )
+
+        @tool
+        def capture_subagent_state(query: str, runtime: ToolRuntime) -> str:
+            """Capture subagent state."""
+            captured_subagent_states.append(dict(runtime.state))
+            return f"captured {query}"
+
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "seed_parent_state",
+                                "args": {},
+                                "id": "call_seed_parent_state",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {
+                                    "description": "Capture the incoming state",
+                                    "subagent_type": "child",
+                                },
+                                "id": "call_child",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="done"),
+                ]
+            )
+        )
+        child_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "capture_subagent_state",
+                                "args": {"query": "state"},
+                                "id": "call_capture_subagent_state",
+                                "type": "tool_call",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="child done"),
+                ]
+            )
+        )
+
+        parent_agent = create_deep_agent(
+            model=parent_model,
+            tools=[seed_parent_state],
+            checkpointer=InMemorySaver(),
+            state_schema=_ParentState,
+            subagents=[
+                SubAgent(
+                    name="child",
+                    description="Captures its incoming state.",
+                    system_prompt="Capture the incoming state and complete the task.",
+                    model=child_model,
+                    tools=[capture_subagent_state],
+                )
+            ],
+        )
+
+        parent_agent.invoke(
+            {"messages": [HumanMessage(content="seed state and run the child subagent")]},
+            config={"configurable": {"thread_id": "test_private_state_schema_parent_to_child"}},
+        )
+
+        assert captured_subagent_states, "Child subagent should have captured state"
+        assert captured_subagent_states[0]["public_value"] == "parent-public"
+        assert "parent_secret" not in captured_subagent_states[0]
 
     def test_agent_with_structured_output_tool_strategy(self) -> None:
         """Test that an agent with ToolStrategy properly generates structured output.

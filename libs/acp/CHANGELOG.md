@@ -2,6 +2,25 @@
 
 # Changelog
 
+## [0.0.11](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.10...deepagents-acp==0.0.11) (2026-08-27)
+
+### Features
+
+- Stream visible reasoning as thought chunks. ([#5880](https://github.com/langchain-ai/deepagents/issues/5880))
+
+## [0.0.10](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.9...deepagents-acp==0.0.10) (2026-08-12)
+
+### Features
+
+- Added support for loading persistent ACP sessions ([#5365](https://github.com/langchain-ai/deepagents/issues/5365)).
+
+## [0.0.9](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.8...deepagents-acp==0.0.9) (2026-07-07)
+
+
+### Bug Fixes
+
+* **acp:** defer interrupt state reads until stream closes ([#4542](https://github.com/langchain-ai/deepagents/issues/4542)) ([35199ab](https://github.com/langchain-ai/deepagents/commit/35199ab22b2111474d1f46b3ad7cc677d82ed46b))
+
 ## [0.0.8](https://github.com/langchain-ai/deepagents/compare/deepagents-acp==0.0.7...deepagents-acp==0.0.8) (2026-06-03)
 
 ### Bug Fixes

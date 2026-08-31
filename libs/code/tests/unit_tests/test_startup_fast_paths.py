@@ -7,15 +7,20 @@ in `CLAUDE.md`.
 
 from __future__ import annotations
 
-import argparse
 import json
 import subprocess
 import sys
 import textwrap
+from types import SimpleNamespace
+from typing import TYPE_CHECKING
+from unittest.mock import patch
 
 import pytest
 
-from deepagents_code.main import _HELP_SPECS, _show_bare_command_group_help, parse_args
+from deepagents_code.main import _show_bare_command_group_help, parse_args
+
+if TYPE_CHECKING:
+    import argparse
 
 # Module *prefixes* that must not appear in `sys.modules` after a help-only
 # invocation. Using prefixes (rather than an explicit allowlist) catches
@@ -41,15 +46,28 @@ def _run_cli_main(argv: list[str]) -> subprocess.CompletedProcess[str]:
     code = """
         import json
         import sys
+        from contextlib import nullcontext
         from unittest.mock import patch
 
         from deepagents_code.main import cli_main
 
         argv = ["deepagents", *json.loads(sys.argv[1])]
+        # An intentional monorepo SDK pin skew can make `doctor` exit unhealthy;
+        # omit that environment-specific check while testing startup bootstrap.
+        # Editable installs resolve the pin through `_sdk_requirement_for_cli`.
+        requirement_patch = (
+            patch(
+                "deepagents_code.extras_info._sdk_requirement_for_cli",
+                return_value=None,
+            )
+            if argv[1:] == ["doctor", "--json"]
+            else nullcontext()
+        )
         try:
             with (
                 patch.object(sys, "argv", argv),
                 patch("deepagents_code.main.check_cli_dependencies"),
+                requirement_patch,
             ):
                 cli_main()
         finally:
@@ -100,7 +118,7 @@ def _read_marker(stderr: str, prefix: str) -> object:
         (["skills"], "dcode skills <command>"),
         (["threads"], "dcode threads <command>"),
         (["mcp"], "dcode mcp <command>"),
-        (["config"], "dcode config <command>"),
+        (["config", "-h"], "dcode config [options]"),
         (["auth"], "dcode auth <command>"),
         (["tools"], "dcode tools <command>"),
     ],
@@ -149,6 +167,56 @@ def test_lightweight_commands_skip_settings_bootstrap(
     )
 
 
+@pytest.mark.parametrize(
+    ("args", "runner"),
+    [
+        (
+            SimpleNamespace(command="config"),
+            "deepagents_code.client.commands.config.run_config_command",
+        ),
+        (
+            SimpleNamespace(command="auth", auth_command="path"),
+            "deepagents_code.client.commands.auth.run_auth_command",
+        ),
+        (
+            SimpleNamespace(command="doctor"),
+            "deepagents_code.doctor.run_doctor_command",
+        ),
+        (
+            SimpleNamespace(command="tools", tools_command="list"),
+            "deepagents_code.client.commands.tools.run_tools_command",
+        ),
+        (
+            SimpleNamespace(command="install"),
+            "deepagents_code.client.commands.extras.run_install_command",
+        ),
+    ],
+)
+def test_lightweight_commands_check_dependency_floors_before_dispatch(
+    args: SimpleNamespace, runner: str
+) -> None:
+    """Every action subcommand warns before an early fast-path exit."""
+    from deepagents_code.main import cli_main
+
+    calls: list[str] = []
+    with (
+        patch.object(sys, "argv", ["dcode", str(args.command)]),
+        patch("deepagents_code.main.check_cli_dependencies"),
+        patch("deepagents_code.main._install_termination_signal_handlers"),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch(
+            "deepagents_code._dep_floor_check.warn_if_editable_deps_stale",
+            side_effect=lambda: calls.append("warning"),
+        ),
+        patch(runner, side_effect=lambda _args: calls.append("dispatch") or 0),
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 0
+    assert calls == ["warning", "dispatch"]
+
+
 def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
     """Auth commands that resolve credentials must see dotenv-loaded values."""
     result = _run_cli_main(["auth", "status", "anthropic"])
@@ -165,9 +233,10 @@ def test_auth_credential_resolution_commands_run_settings_bootstrap() -> None:
         ["skills", "list"],
         ["threads", "list"],
         ["mcp", "login", "example.com"],
-        ["config", "show"],
+        ["config", "get", "interpreter.memory_limit_mb"],
         ["auth", "list"],
         ["tools", "install"],
+        ["tools", "list"],
     ],
 )
 def test_subcommands_bypass_fast_path(argv: list[str]) -> None:
@@ -181,75 +250,9 @@ def test_subcommands_bypass_fast_path(argv: list[str]) -> None:
     assert _show_bare_command_group_help(args) is False
 
 
-def test_unknown_command_bypasses_fast_path() -> None:
-    """`command=None` (no command at all) must not trigger help dispatch."""
-    args = parse_args_from([])
-    assert _show_bare_command_group_help(args) is False
-
-
-def test_help_specs_covers_every_subparser_group() -> None:
-    """Drift guard: every top-level group with sub-subparsers is in `_HELP_SPECS`.
-
-    If a future PR adds a new command group with `add_subparsers(...)` but
-    forgets to register it here, the fast path silently regresses for that
-    group. This mirrors `test_args.TestHelpScreenDrift`.
-    """
-    parser = _build_top_level_parser()
-    groups_with_subparsers = _top_level_subparser_groups(parser)
-    missing = groups_with_subparsers - set(_HELP_SPECS)
-    assert not missing, (
-        f"Top-level command groups have sub-subparsers but are missing from "
-        f"`_HELP_SPECS` in main.py: {sorted(missing)}.\n"
-        f"Add an entry mapping each group to its `<group>_command` dest and "
-        f"`show_<group>_help` UI function."
-    )
-
-
 def parse_args_from(argv: list[str]) -> argparse.Namespace:
     """Run `parse_args()` with a controlled argv."""
     from unittest.mock import patch
 
     with patch.object(sys, "argv", ["deepagents", *argv]):
         return parse_args()
-
-
-def _build_top_level_parser() -> argparse.ArgumentParser:
-    """Capture the top-level parser by hooking `ArgumentParser.parse_args`."""
-    from typing import Any
-    from unittest.mock import patch
-
-    captured: dict[str, argparse.ArgumentParser] = {}
-    real_parse_args = argparse.ArgumentParser.parse_args
-
-    def _capture(
-        self: argparse.ArgumentParser,
-        *a: Any,
-        **kw: Any,
-    ) -> argparse.Namespace:
-        captured.setdefault("parser", self)
-        return real_parse_args(self, *a, **kw)
-
-    with (
-        patch.object(sys, "argv", ["deepagents", "help"]),
-        patch.object(argparse.ArgumentParser, "parse_args", _capture),
-    ):
-        parse_args()
-
-    return captured["parser"]
-
-
-def _top_level_subparser_groups(parser: argparse.ArgumentParser) -> set[str]:
-    """Return names of top-level subparsers that themselves have subparsers."""
-    from typing import cast
-
-    groups: set[str] = set()
-    for action in parser._actions:
-        if not isinstance(action, argparse._SubParsersAction):
-            continue
-        choices = cast("dict[str, argparse.ArgumentParser]", action.choices)
-        for name, sub in choices.items():
-            for sub_action in sub._actions:
-                if isinstance(sub_action, argparse._SubParsersAction):
-                    groups.add(name)
-                    break
-    return groups

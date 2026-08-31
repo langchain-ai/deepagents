@@ -39,10 +39,34 @@ Screen {
     display: block;
 }
 
-/* Chat area - main scrollable messages area */
+/*
+ * Hide a footer whose owning row is hidden — folded into a collapsed tool
+ * group, replaced by an approval prompt, or superseded by the diff that took
+ * the row's place.
+ *
+ * Must stay *below* the `-visible` rule above: both selectors are two classes,
+ * so Textual breaks the specificity tie by source order and the later rule
+ * wins. Moving this block up lets a timestamp linger over an invisible tool.
+ *
+ * These hide via a class rather than by assigning `display` so the footer keeps
+ * its own `-visible` class and returns to the `/timestamps` preference once the
+ * row comes back. One class per reason, never a shared one: a footer can be
+ * hidden for more than one reason at once, and releasing one must not reveal it
+ * while another still applies.
+ */
+.message-timestamp-footer.-tool-group-collapsed-accessory,
+.message-timestamp-footer.-tool-awaiting-approval-accessory,
+.message-timestamp-footer.-tool-superseded-accessory {
+    display: none;
+}
+
+/* Chat area - main scrollable messages area.
+   No horizontal padding so message blocks span the same full width as the
+   input box below (whose border is flush to both edges). The scrollbar is
+   toggled at runtime via the /scrollbar command (off by default). */
 #chat {
     height: 1fr;
-    padding: 1 2 0 2;
+    padding: 1 0 0 0;
     background: $background;
 }
 
@@ -122,8 +146,9 @@ Screen {
 
 /* Status bar */
 #status-bar {
-    height: 1;
+    height: 2;
     dock: bottom;
+    padding: 0;
 }
 
 /* Tool approval widgets */
@@ -135,34 +160,36 @@ Screen {
     color: $text-muted;
 }
 
-/* Diff styling — used by EditFileApprovalWidget (fg + bg + padding) */
+/* Diff styling — used by EditFileApprovalWidget._render_string_lines
+   (fg + bg + padding) */
 .diff-removed {
     height: auto;
     color: $text-error;
-    background: $error-muted;
+    background: $error 10%;
     padding: 0 1;
 }
 
 .diff-added {
     height: auto;
     color: $text-success;
-    background: $success-muted;
+    background: $success 10%;
     padding: 0 1;
 }
 
-.diff-context {
-    height: auto;
-    color: $text-muted;
-    padding: 0 1;
-}
-
-/* Diff line backgrounds — used by compose_diff_lines (bg only, fg via Content) */
+/* Diff row styling — used by compose_diff_lines.
+   Row backgrounds set bg only; fg comes from Content. */
 .diff-line-removed {
-    background: $error-muted;
+    background: $error 10%;
 }
 
 .diff-line-added {
-    background: $success-muted;
+    background: $success 10%;
+}
+
+/* Hunk separator: a centered glyph, not a tinted row — no background. */
+.diff-hunk-break {
+    width: 1fr;
+    text-align: center;
 }
 
 /* Mode-specific borders for UserMessage */
@@ -203,7 +230,7 @@ ToolCallMessage.-ascii {
     border-left: ascii $panel;
 }
 
-ToolCallMessage.-ascii:hover {
+ToolCallMessage.-ascii.-row-actionable:hover {
     border-left: ascii $secondary;
 }
 
@@ -249,8 +276,19 @@ ToolCallMessage.-ascii:hover {
     background: $surface;
 }
 
-/* Goal review widget */
-.goal-review-menu {
+/* Persistent goal status */
+.goal-status-panel {
+    height: auto;
+    max-height: 5;
+    margin: 0 1;
+    padding: 0 1;
+    color: $text;
+    background: $surface-darken-1;
+    border-left: thick $primary;
+}
+
+/* Shared inline prompt shell */
+.inline-prompt {
     height: auto;
     margin: 1 0;
     padding: 0 1;
@@ -258,12 +296,30 @@ ToolCallMessage.-ascii:hover {
     border: solid $success;
 }
 
-.goal-review-menu .goal-review-title {
+.inline-prompt .inline-prompt-title {
     text-style: bold;
     color: $success;
     margin-bottom: 0;
 }
 
+.inline-prompt .inline-prompt-help {
+    color: $text-muted;
+    text-style: italic;
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+.inline-prompt .inline-prompt-input {
+    & .text-area--cursor-line {
+        background: transparent;
+    }
+
+    & .text-area--cursor-gutter {
+        background: transparent;
+    }
+}
+
+/* Goal review widget */
 .goal-review-menu .goal-review-content {
     height: auto;
     max-height: 12;
@@ -304,45 +360,7 @@ ToolCallMessage.-ascii:hover {
     background: transparent;
 }
 
-.goal-review-menu .goal-review-help {
-    color: $text-muted;
-    text-style: italic;
-    margin-top: 0;
-    margin-bottom: 0;
-}
-
-.goal-review-menu AskUserTextArea {
-    & .text-area--cursor-line {
-        background: transparent;
-    }
-
-    & .text-area--cursor-gutter {
-        background: transparent;
-    }
-}
-
 /* Ask user widget */
-.ask-user-menu {
-    height: auto;
-    margin: 1 0;
-    padding: 0 1;
-    background: $surface;
-    border: solid $success;
-}
-
-.ask-user-menu .ask-user-title {
-    text-style: bold;
-    color: $success;
-    margin-bottom: 0;
-}
-
-.ask-user-menu .ask-user-help {
-    color: $text-muted;
-    text-style: italic;
-    margin-top: 0;
-    margin-bottom: 0;
-}
-
 .ask-user-menu .ask-user-questions {
     height: auto;
     padding: 0 1;
@@ -353,13 +371,20 @@ ToolCallMessage.-ascii:hover {
     margin-bottom: 1;
 }
 
-.ask-user-menu .ask-user-question-active {
+.ask-user-menu .ask-user-question-inactive {
+    opacity: 0.5;
+}
+
+/* Multi-question prompts mark the active question with a left border;
+inactive questions keep the same total left inset so text does not shift
+horizontally when focus moves between questions. Single-question prompts
+stay borderless and flush-left. */
+.ask-user-menu-multi .ask-user-question-active {
     border-left: thick $success;
     padding-left: 1;
 }
 
-.ask-user-menu .ask-user-question-inactive {
-    opacity: 0.5;
+.ask-user-menu-multi .ask-user-question-inactive {
     padding-left: 2;
 }
 
@@ -381,22 +406,36 @@ ToolCallMessage.-ascii:hover {
     background: transparent;
 }
 
-.ask-user-menu .ask-user-other-input {
-    margin: 1 1 0 1;
+/* Keep custom multi-select answers compact: the field follows its checkbox on
+   the same line instead of opening a full-width box beneath it. */
+.ask-user-menu .ask-user-other-slot {
     height: auto;
-    min-height: 3;
-    max-height: 10;
+    width: 1fr;
+    margin: 0;
+    padding: 0;
+}
+
+.ask-user-menu .ask-user-other-slot > .ask-user-inline-other-choice,
+.ask-user-menu .ask-user-other-slot > .ask-user-inline-other-choice > .inline-prompt-option-label {
+    width: auto;
+}
+
+.ask-user-menu .ask-user-other-slot .ask-user-other-input {
+    width: 1fr;
+    margin: 0;
+    padding: 0;
+    height: auto;
+    min-height: 1;
+    max-height: 6;
+    border: none;
     background: transparent;
 }
 
-.ask-user-menu AskUserTextArea {
-    & .text-area--cursor-line {
-        background: transparent;
-    }
-
-    & .text-area--cursor-gutter {
-        background: transparent;
-    }
+/* Beat TextArea DEFAULT_CSS `height: 1fr` while allowing multiline answers. */
+.ask-user-menu .ask-user-other-slot AskUserTextArea.ask-user-other-input {
+    height: auto;
+    min-height: 1;
+    max-height: 6;
 }
 
 /* ChatTextArea: override TextArea's built-in $surface background */

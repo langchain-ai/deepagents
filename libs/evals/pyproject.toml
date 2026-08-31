@@ -19,34 +19,38 @@ classifiers = [
 dependencies = [
     # SDK — local editable in dev (see [tool.uv.sources]), versioned for published package
     "deepagents>=0.6.12",
-    "langchain>=1.3.11,<2.0.0",
+    "langchain>=1.3.12,<2.0.0",
     "deepagents-code>=0.1.27",
-    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, harbor>=0.13.2)
-    "harbor[langsmith]>=0.13.2,<0.14.0",
+    # Harbor runtime, with the built-in LangSmith sandbox env (`-e langsmith`, introduced in harbor 0.13.2).
+    # 0.20+: managed-Python agent venv. harbor-langsmith 0.3.0+ is the piece that honors
+    # experiment_name (no job-id suffix), so shards of a leaf converge on one queryable experiment;
+    # pin its floor explicitly since harbor's extra leaves it unconstrained.
+    "harbor[langsmith]>=0.20.0,<0.21.0",
+    "harbor-langsmith>=0.3.0,<0.4.0",
     # LangSmith for observability
-    "langsmith>=0.9.3,<0.10.0",
+    "langsmith>=0.10.9",
     # Sandbox runtimes
     "dockerfile-parse>=2.0.1",
     "modal>=1.4.3",
     # LangChain model providers (evals run against many providers)
-    "langchain-anthropic>=1.4.7,<1.5.0",
+    "langchain-anthropic>=1.5.4,<2.0.0",
     "langchain-baseten>=0.2.1,<0.3.0",
     "langchain-deepseek>=1.1.0,<1.2.0",
-    "langchain-fireworks>=1.4.3,<1.5.0",
-    "langchain-google-genai>=4.2.6,<4.3.0",
+    "langchain-fireworks>=1.4.4,<1.5.0",
+    "langchain-google-genai>=4.3.0,<5.0.0",
     "langchain-groq>=1.1.3,<1.2.0",
-    "langchain-mistralai>=1.1.5,<1.2.0",
-    "langchain-nvidia-ai-endpoints>=1.4.2,<1.5.0",
+    "langchain-mistralai>=1.1.6,<1.2.0",
+    "langchain-nvidia-ai-endpoints>=1.4.3,<1.5.0",
     "langchain-ollama>=1.1.0,<1.2.0",
-    "langchain-openai>=1.3.3,<1.4.0",
-    "langchain-openrouter>=0.2.4,<0.3.0",
+    "langchain-openai>=1.4.0,<2.0.0",
+    "langchain-openrouter>=0.2.6,<0.3.0",
     "langchain-xai>=1.2.2,<1.3.0",
     # Eval-specific dependencies
     "datasets>=5.0.0",
-    "nltk>=3.9.4",
+    "nltk>=3.10.0",
     "openevals>=0.2.0",
     "tiktoken>=0.13.0",
-    "langchain-quickjs>=0.3.2,<0.4.0",
+    "langchain-quickjs>=0.3.3,<0.4.0",
 ]
 
 [project.scripts]
@@ -80,7 +84,7 @@ Slack = "https://www.langchain.com/join-community"
 Reddit = "https://www.reddit.com/r/LangChain/"
 
 [build-system]
-requires = ["setuptools>=82.0.1"]
+requires = ["setuptools>=83.0.0"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -94,7 +98,17 @@ deepagents_evals = ["categories.json"]
 environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
+    # linux/aarch64 is the `research` (DRBench) category's runner: its task images are
+    # published for arm64 only, and they run on the runner via `sandbox_env: docker`, so
+    # the eval harness itself has to install there. Without this, `uv sync --locked`
+    # refuses with "current Python platform is not compatible with the lockfile's
+    # supported environments".
+    "sys_platform == 'linux' and platform_machine == 'aarch64'",
 ]
+# Deliberately NOT listing linux/aarch64 here. `required-environments` makes uv insist a
+# prebuilt wheel exists for every dependency on that platform; several transitive deps
+# ship none for aarch64 and would have to build from sdist, which locks fine but would
+# fail this check. Resolution coverage above is what the runner needs.
 required-environments = [
     "sys_platform == 'darwin' and platform_machine == 'arm64'",
     "sys_platform == 'linux' and platform_machine == 'x86_64'",
@@ -106,6 +120,18 @@ override-dependencies = [
     "python-multipart>=0.0.32",
     # CVE-2026-0994: JSON recursion depth bypass DoS in <= 6.33.4
     "protobuf>=7.35.1",
+    # tox-dev/filelock#675: in 3.29.7 an `AsyncFileLock` acquire raises a spurious
+    # "Deadlock" whenever another asyncio task on the same loop already holds that
+    # path. Harbor takes exactly that lock around its Docker image builds, so every
+    # trial that starts while a peer is still building dies. Fixed in 3.30.3.
+    # `deepagents-code` caps filelock at `<3.30` and 3.29.7 is the last 3.29, so an
+    # override is the only way to reach the fix. Leave that cap alone: 3.30+ runs a
+    # blocking temp-dir probe at import time, which trips Blockbuster on the dcode
+    # async server startup path. This override is safe because it is scoped to the
+    # eval harness, where harbor imports filelock eagerly in a plain process with no
+    # Blockbuster active, and it does not reach the sandbox venv, which installs
+    # `deepagents-code` directly and so resolves filelock under that cap.
+    "filelock>=3.30.3",
 ]
 
 [tool.uv.sources]
@@ -186,6 +212,11 @@ ban-relative-imports = "all"
 "deepagents_harbor/langsmith.py" = [
     "T201",    # `print` found — CI-facing integration layer, print is the expected output
 ]
+"harbor_adapters/contextbench/templates/*" = [
+    "INP001",  # Standalone script copied into each task's sandbox, not an importable module
+    "T201",    # `print` is the verifier's stdout diagnostic channel (captured in verifier logs)
+    "D",       # Docstring conventions — a copied-into-sandbox script, not library API
+]
 
 [tool.ruff.lint.isort]
 force-single-line = false
@@ -194,4 +225,8 @@ known-first-party = ["deepagents_evals", "deepagents_harbor"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+]
 asyncio_mode = "auto"

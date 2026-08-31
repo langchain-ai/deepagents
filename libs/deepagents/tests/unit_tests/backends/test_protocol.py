@@ -6,7 +6,6 @@ instead of silently returning None.
 
 import asyncio
 import errno
-import warnings
 from unittest.mock import patch
 
 import pytest
@@ -17,10 +16,10 @@ from deepagents.backends.protocol import (
     DEFAULT_GREP_TIMEOUT,
     BackendProtocol,
     DeleteResult,
-    GlobResult,
     GrepResult,
-    LsResult,
+    ReadResult,
     SandboxBackendProtocol,
+    _method_accepts_max_count,
     _supports_delete,
 )
 
@@ -137,83 +136,8 @@ class TestSupportsDelete:
         assert _supports_delete(MyBackend()) is True
 
 
-class TestDeprecatedMethodsRouteToNewNames:
-    """Old method names warn and delegate to the new implementations."""
-
-    def test_ls_info_delegates_to_ls(self) -> None:
-        class MyBackend(BackendProtocol):
-            def ls(self, path: str) -> LsResult:
-                return LsResult(entries=[{"path": path}])
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert MyBackend().ls_info("/") == [{"path": "/"}]
-        assert any("ls_info" in str(x.message) for x in w)
-
-    def test_ls_info_raises_for_new_only_ls_behavior(self) -> None:
-        class MyBackend(BackendProtocol):
-            def ls(self, path: str) -> LsResult:
-                return LsResult(error="error")
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            with pytest.raises(NotImplementedError, match="new `ls` API"):
-                MyBackend().ls_info("/")
-        assert any("ls_info" in str(x.message) for x in w)
-
-    def test_grep_raw_delegates_to_grep(self) -> None:
-        class MyBackend(BackendProtocol):
-            def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:
-                return GrepResult(error="error")
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert MyBackend().grep_raw("x") == "error"
-        assert any("grep_raw" in str(x.message) for x in w)
-
-    def test_glob_info_delegates_to_glob(self) -> None:
-        class MyBackend(BackendProtocol):
-            def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-                return GlobResult(matches=[{"path": f"{path}/{pattern}"}])
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert MyBackend().glob_info("*.py") == [{"path": "//*.py"}]
-        assert any("glob_info" in str(x.message) for x in w)
-
-
-class TestLegacySubclassOverrideRouting:
-    """New method names detect legacy overrides and delegate back."""
-
-    def test_ls_routes_to_ls_info_override(self) -> None:
-        class LegacyBackend(BackendProtocol):
-            def ls_info(self, path: str) -> list[dict[str, str]]:
-                return [{"path": path}]
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert LegacyBackend().ls("/") == LsResult(entries=[{"path": "/"}])
-        assert any("ls_info" in str(x.message) for x in w)
-
-    def test_grep_routes_to_grep_raw_override(self) -> None:
-        class LegacyBackend(BackendProtocol):
-            def grep_raw(self, pattern: str, path: str | None = None, glob: str | None = None) -> list[dict[str, str | int]] | str:
-                return [{"path": "/f", "line": 1, "text": pattern}]
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert LegacyBackend().grep("x") == GrepResult(matches=[{"path": "/f", "line": 1, "text": "x"}])
-        assert any("grep_raw" in str(x.message) for x in w)
-
-    def test_glob_routes_to_glob_info_override(self) -> None:
-        class LegacyBackend(BackendProtocol):
-            def glob_info(self, pattern: str, path: str = "/") -> list[dict[str, str]]:
-                return [{"path": f"{path}/{pattern}"}]
-
-        with warnings.catch_warnings(record=True) as w:
-            warnings.simplefilter("always")
-            assert LegacyBackend().glob("*.py") == GlobResult(matches=[{"path": "//*.py"}])
-        assert any("glob_info" in str(x.message) for x in w)
+class TestAdditionalAsyncWrappersPropagateNotImplemented:
+    """Additional async wrappers propagate NotImplementedError."""
 
     async def test_aupload_files(self, backend: BareBackend) -> None:
         with pytest.raises(NotImplementedError):
@@ -257,6 +181,30 @@ class TestAgrepTimeout:
         """`NotImplementedError` from `grep` still propagates through the timeout wrapper."""
         with pytest.raises(NotImplementedError):
             await backend.agrep("pattern")
+
+    async def test_agrep_caps_legacy_grep_result(self) -> None:
+        """The inherited async wrapper caps results from an old `grep` signature."""
+
+        class LegacyBackend(BackendProtocol):
+            def grep(  # ty: ignore[invalid-method-override]  # Intentionally models the old public signature.
+                self,
+                pattern: str,
+                path: str | None = None,
+                glob: str | None = None,
+            ) -> GrepResult:
+                return GrepResult(
+                    matches=[
+                        {"path": "/one.txt", "line": 1, "text": pattern},
+                        {"path": "/two.txt", "line": 1, "text": pattern},
+                        {"path": "/three.txt", "line": 1, "text": pattern},
+                    ]
+                )
+
+        result = await LegacyBackend().agrep("needle", max_count=2)
+
+        assert result.matches is not None
+        assert len(result.matches) == 2
+        assert result.truncated is True
 
 
 def _runtime_error_from_eloop_context() -> RuntimeError:
@@ -305,3 +253,91 @@ class TestMapFileOperationError:
         assert _map_exception_to_standard_error(ValueError("unexpected encoding")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("invalid literal for int()")) == "invalid_path"
         assert _map_exception_to_standard_error(ValueError("Path traversal not allowed")) == "invalid_path"
+
+
+class TestMethodAcceptsMaxCount:
+    """`_method_accepts_max_count` decides whether the cap is forwarded or applied post-hoc."""
+
+    def test_explicit_keyword_param_detected(self) -> None:
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None, *, max_count: int | None = None) -> GrepResult:
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is True
+
+    def test_var_keyword_param_detected(self) -> None:
+        """A `**kwargs` grep is treated as accepting the cap (forwarded, not post-hoc)."""
+
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None, **kwargs: object) -> GrepResult:
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is True
+
+    def test_missing_param_not_detected(self) -> None:
+        class Backend(BackendProtocol):
+            def grep(self, pattern: str, path: str | None = None, glob: str | None = None) -> GrepResult:  # ty: ignore[invalid-method-override]
+                return GrepResult(matches=[])
+
+        assert _method_accepts_max_count(Backend, "grep") is False
+
+
+class TestReadResultPaginationInvariants:
+    """`ReadResult.__post_init__` rejects malformed pagination-field combinations."""
+
+    def test_no_pagination_is_valid(self) -> None:
+        """A bare result and an error result carry no window and must not raise."""
+        assert ReadResult().start_line is None
+        assert ReadResult(error="boom").total_lines is None
+
+    def test_full_valid_window(self) -> None:
+        """A well-formed window with matching metadata is accepted."""
+        result = ReadResult(total_lines=5, start_line=2, end_line=3, next_offset=3)
+        assert result.next_offset == result.end_line
+
+    def test_terminal_window_has_no_next_offset(self) -> None:
+        """The final page (`next_offset` unset) is valid even when it reaches EOF."""
+        result = ReadResult(total_lines=3, start_line=2, end_line=3, next_offset=None)
+        assert result.next_offset is None
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"start_line": 1}, id="start_without_end"),
+            pytest.param({"end_line": 1}, id="end_without_start"),
+            pytest.param({"next_offset": 5}, id="next_offset_without_window"),
+            pytest.param({"total_lines": 10}, id="total_without_window"),
+            pytest.param({"start_line": 3, "end_line": 2}, id="start_after_end"),
+            pytest.param({"start_line": 0, "end_line": 2}, id="start_below_one"),
+            pytest.param(
+                {"start_line": 1, "end_line": 5, "total_lines": 3},
+                id="total_below_end",
+            ),
+            pytest.param(
+                {"start_line": 1, "end_line": 3, "next_offset": 99},
+                id="next_offset_not_end_line",
+            ),
+        ],
+    )
+    def test_malformed_combinations_raise(self, kwargs: dict[str, int]) -> None:
+        with pytest.raises(ValueError, match="ReadResult"):
+            ReadResult(**kwargs)
+
+    def test_no_lines_requested_valid_window(self) -> None:
+        """The zero-line flag is valid on its own with empty file data."""
+        result = ReadResult(file_data={"content": "", "encoding": "utf-8"}, no_lines_requested=True)
+        assert result.no_lines_requested is True
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            pytest.param({"error": "boom"}, id="with_error"),
+            pytest.param({"start_line": 1, "end_line": 1}, id="with_window"),
+            pytest.param({"total_lines": 3, "start_line": 1, "end_line": 1}, id="with_total"),
+            pytest.param({"start_line": 1, "end_line": 1, "next_offset": 1}, id="with_next_offset"),
+        ],
+    )
+    def test_no_lines_requested_rejects_other_dispositions(self, kwargs: dict) -> None:
+        """A never-inspected window cannot also claim an error or a line range."""
+        with pytest.raises(ValueError, match="no_lines_requested"):
+            ReadResult(no_lines_requested=True, **kwargs)

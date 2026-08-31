@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:fe6924e4eea11cea6c782b09a609e7f8ab603eb1d717ffcb6d777e1ee3538ff5",
+  "claims": [
+    {
+      "id": "claim_ba483a6bfba643e7bb12e38c42644451",
+      "statement": "Every package places \"error\" first in its pytest filterwarnings so any warning not on the reviewed allowlist fails the run.",
+      "evidence": [
+        {
+          "resource": "repo://libs/DEVELOPMENT.md#L181-L189",
+          "version": "repo-lines-v1:sha256:584d3db7e4749dcc4bf2fe195a2c5c63a1b49633b2d901049ff7df70c4d22509:eyJzZWxlY3RlZExpbmVDb3VudCI6OSwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiNTg5NDk4NGRkN2ZkNDI3YTY3ZWFiNDlkMDY1NTUyYzgwZjlhZDJiMmU5MGZjNWUwMTZkYWQ3MTg5ZjQxYzg3MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiOTNiODc5MGJlNjRjYmFkMjlhYjg1ZDJiNjlmODNkYmVkZjNlZGE3MDg3NWY3Y2FkZGViYjg1NjdiYzI4ZjdkYSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjcyZGU2YjFkMTgyNTI1ZjYwM2I1MDU3ODgyYmNhZDA5MzNmZmFlNWRhZDhhMjlhYjdiYzBjYWY2YzI1YjdlMiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiYTM4MjQ3NDcwYjFmOWZhNzZhZGFlN2Q3YTQ4OTVlMzAxZjFkZTY5MGM2N2YxOGE2ODZmNTE0ZWQ0MjI5ZTAwMSJ9"
+        },
+        {
+          "resource": "repo://libs/deepagents/pyproject.toml#L138-L154",
+          "version": "repo-lines-v1:sha256:396e64a0c63912f4bbdc8c0587a3eb6e6b754a42e23ca739cb3530b6f439dbee:eyJzZWxlY3RlZExpbmVDb3VudCI6MTcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE3NzBkM2QxOWEzZTMwZmZjMGI1YWJiYzMzZjVjYzI4NWNlMjFmMjJjZTYzMWFiZDEwYmYwNzcxODVkNmNmY2QiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjA3NjQxZWQ4MWNjOGM3NDFlZGViMjc3MTQ0NDU4OTk3MGE4NjdmZmYxOTg0NjNjNTQ0MjJlOTU4OGVlMjIzMDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjNiYmI5Yjc1YjJjNGZiNjVkNmM2MjEzZDdkOTA0OWNjYjk2NWM5YzhhYThlNWNlMzg0ZDIzNWI0MGRkYzAwMjcifQ"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-08-28T11:44:48.051Z"
+  }
+}

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import replace
 from pathlib import Path
@@ -822,6 +823,29 @@ async def test_send_message_uses_plain_text(tmp_path: Path) -> None:
     assert "parse_mode" not in params
     assert params["text"] == "hello *world*"
     assert params["chat_id"] == "123"
+
+
+async def test_send_message_debug_logs_are_payload_safe(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    transport = RecordingTransport()
+    channel = TelegramChannel(
+        _make_config(tmp_path),
+        transport=cast("_TelegramTransport", transport),
+    )
+    conversation_id = "private-chat-123"
+    text = "private message contents"
+
+    with caplog.at_level(logging.DEBUG, logger="deepagents_talon.channels.telegram"):
+        await channel.send_message(conversation_id, text)
+
+    assert "telegram.outbound.text.started" in caplog.text
+    assert "telegram.outbound.text.completed" in caplog.text
+    assert '"chunk_count": 1' in caplog.text
+    assert f'"text_chars": {len(text)}' in caplog.text
+    assert conversation_id not in caplog.text
+    assert text not in caplog.text
 
 
 async def test_send_message_chunks_long_text(tmp_path: Path) -> None:

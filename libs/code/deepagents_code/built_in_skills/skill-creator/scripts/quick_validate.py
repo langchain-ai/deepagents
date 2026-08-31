@@ -2,11 +2,11 @@
 """Quick validation script for skills - minimal version.
 
 For deepagents CLI, skills are located at:
-~/.deepagents/<agent>/skills/<skill-name>/
+$DEEPAGENTS_HOME/<agent>/skills/<skill-name>/
 
 Example:
 ```python
-python quick_validate.py ~/.deepagents/agent/skills/my-skill
+python quick_validate.py "${DEEPAGENTS_HOME:-$HOME/.deepagents}/agent/skills/my-skill"
 ```
 """
 
@@ -62,7 +62,7 @@ def validate_skill(skill_path):
     }
 
     # Check for unexpected properties (excluding nested keys under metadata)
-    unexpected_keys = set(frontmatter.keys()) - ALLOWED_PROPERTIES
+    unexpected_keys = {str(key) for key in frontmatter if key not in ALLOWED_PROPERTIES}
     if unexpected_keys:
         unexpected_str = ", ".join(sorted(unexpected_keys))
         allowed_str = ", ".join(sorted(ALLOWED_PROPERTIES))

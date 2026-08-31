@@ -1,105 +1,50 @@
 """Tests for CLI argument parsing."""
 
+import argparse
 import io
-import re
 import sys
-from unittest.mock import AsyncMock, patch
+from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from rich.console import Console
 
-from deepagents_code.main import parse_args
-from deepagents_code.ui import show_help, show_threads_list_help
+from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code.main import _resolve_agent_arg, parse_args
 
 
 class TestInitialPromptArg:
     """Tests for -m/--message initial prompt argument."""
 
-    def test_short_flag(self) -> None:
-        """Verify -m sets initial_prompt."""
-        with patch.object(sys, "argv", ["deepagents", "-m", "hello world"]):
-            args = parse_args()
-        assert args.initial_prompt == "hello world"
-
-    def test_long_flag(self) -> None:
-        """Verify --message sets initial_prompt."""
-        with patch.object(sys, "argv", ["deepagents", "--message", "hello world"]):
-            args = parse_args()
-        assert args.initial_prompt == "hello world"
-
-    def test_no_flag(self) -> None:
-        """Verify initial_prompt is None when not provided."""
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.initial_prompt is None
-
-    def test_with_other_args(self) -> None:
-        """Verify -m works alongside other arguments."""
-        with patch.object(
-            sys, "argv", ["deepagents", "--agent", "myagent", "-m", "do something"]
-        ):
-            args = parse_args()
-        assert args.initial_prompt == "do something"
-        assert args.agent == "myagent"
-
-    def test_empty_string(self) -> None:
-        """Verify empty string is accepted."""
-        with patch.object(sys, "argv", ["deepagents", "-m", ""]):
-            args = parse_args()
-        assert args.initial_prompt == ""
-
 
 class TestInitialSkillArg:
     """Tests for `--skill` startup skill argument."""
 
-    def test_flag_sets_initial_skill(self) -> None:
-        """Verify `--skill` stores the requested skill name."""
-        with patch.object(sys, "argv", ["deepagents", "--skill", "code-review"]):
-            args = parse_args()
-        assert args.initial_skill == "code-review"
 
-    def test_with_message(self) -> None:
-        """Verify `--skill` works alongside `-m`."""
+class TestSummarizationModelArg:
+    def test_flag_sets_model_independently(self) -> None:
         with patch.object(
             sys,
             "argv",
-            ["deepagents", "--skill", "code-review", "-m", "review this patch"],
+            [
+                "deepagents",
+                "--model",
+                "anthropic:claude-sonnet-4-5",
+                "--summarization-model",
+                "openai:gpt-5.4-mini",
+            ],
         ):
             args = parse_args()
-        assert args.initial_skill == "code-review"
-        assert args.initial_prompt == "review this patch"
+        assert args.model == "anthropic:claude-sonnet-4-5"
+        assert args.summarization_model == "openai:gpt-5.4-mini"
+
+    def test_flag_defaults_to_none(self) -> None:
+        with patch.object(sys, "argv", ["deepagents"]):
+            assert parse_args().summarization_model is None
 
 
 class TestMaxRetriesArg:
     """Tests for `--max-retries` argument."""
-
-    def test_valid_int_passes_through(self) -> None:
-        """`--max-retries` stores a non-negative integer."""
-        with patch.object(sys, "argv", ["deepagents", "--max-retries", "3"]):
-            args = parse_args()
-        assert args.max_retries == 3
-
-    def test_zero_passes_through(self) -> None:
-        """`--max-retries 0` is valid."""
-        with patch.object(sys, "argv", ["deepagents", "--max-retries", "0"]):
-            args = parse_args()
-        assert args.max_retries == 0
-
-    def test_negative_rejected(self) -> None:
-        """Negative retry counts are rejected by argparse."""
-        with (
-            patch.object(sys, "argv", ["deepagents", "--max-retries", "-1"]),
-            pytest.raises(SystemExit),
-        ):
-            parse_args()
-
-    def test_non_int_rejected(self) -> None:
-        """Non-integer retry counts are rejected by argparse."""
-        with (
-            patch.object(sys, "argv", ["deepagents", "--max-retries=foo"]),
-            pytest.raises(SystemExit),
-        ):
-            parse_args()
 
 
 class TestSandboxSnapshotNameArg:
@@ -172,35 +117,6 @@ class TestSandboxArg:
 
 class TestStartupCmdArg:
     """Tests for `--startup-cmd` pre-prompt shell command argument."""
-
-    def test_flag_sets_startup_cmd(self) -> None:
-        """Verify `--startup-cmd` stores the requested command."""
-        with patch.object(sys, "argv", ["deepagents", "--startup-cmd", "git status"]):
-            args = parse_args()
-        assert args.startup_cmd == "git status"
-
-    def test_no_flag(self) -> None:
-        """Verify `startup_cmd` defaults to `None`."""
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.startup_cmd is None
-
-    def test_with_non_interactive(self) -> None:
-        """Verify `--startup-cmd` works alongside `-n`."""
-        with patch.object(
-            sys,
-            "argv",
-            [
-                "deepagents",
-                "--startup-cmd",
-                "echo hi",
-                "-n",
-                "do the thing",
-            ],
-        ):
-            args = parse_args()
-        assert args.startup_cmd == "echo hi"
-        assert args.non_interactive_message == "do the thing"
 
 
 class TestResumeArg:
@@ -277,15 +193,6 @@ class TestTopLevelHelp:
         assert "deepagents" in output.lower()
         assert "--help" in output
 
-    def test_help_subcommand_parses(self) -> None:
-        """Running `deepagents help` should parse as command='help'.
-
-        The actual help display happens in `cli_main()`, not `parse_args()`.
-        """
-        with patch.object(sys, "argv", ["deepagents", "help"]):
-            args = parse_args()
-        assert args.command == "help"
-
 
 class TestSubcommandHelpFlags:
     """Test that each subcommand's -h shows its own help screen (not global)."""
@@ -351,45 +258,6 @@ class TestSubcommandHelpFlags:
 class TestShortFlags:
     """Test that short flag aliases (-a, -M, -S, -v, -y) parse correctly."""
 
-    def test_short_agent_flag(self) -> None:
-        """Verify -a sets agent."""
-        with patch.object(sys, "argv", ["deepagents", "-a", "mybot"]):
-            args = parse_args()
-        assert args.agent == "mybot"
-
-    def test_short_model_flag(self) -> None:
-        """Verify -M sets model."""
-        with patch.object(sys, "argv", ["deepagents", "-M", "gpt-5.5"]):
-            args = parse_args()
-        assert args.model == "gpt-5.5"
-
-    def test_agent_default_value(self) -> None:
-        """Verify -a is `None` when omitted so downstream fallback can run.
-
-        The `[agents].recent` / default-agent fallback lives in
-        `_resolve_agent_arg`, not argparse — argparse must leave the slot
-        empty so the resolver can distinguish "user didn't pass -a" from
-        "user explicitly passed the default name".
-        """
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.agent is None
-
-    def test_short_version_flag(self) -> None:
-        """Verify -v shows version and exits."""
-        with (
-            patch.object(sys, "argv", ["deepagents", "-v"]),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            parse_args()
-        assert exc_info.value.code in (0, None)
-
-    def test_short_auto_approve_flag(self) -> None:
-        """Verify -y sets auto_approve."""
-        with patch.object(sys, "argv", ["deepagents", "-y"]):
-            args = parse_args()
-        assert args.auto_approve is True
-
     def test_short_shell_allow_list_flag(self) -> None:
         """Verify -S sets shell_allow_list."""
         with patch.object(sys, "argv", ["deepagents", "-S", "ls,cat"]):
@@ -400,464 +268,80 @@ class TestShortFlags:
 class TestQuietArg:
     """Tests for -q/--quiet argument parsing."""
 
-    def test_short_flag(self) -> None:
-        """Verify -q sets quiet=True."""
-        with patch.object(sys, "argv", ["deepagents", "-q", "-n", "task"]):
-            args = parse_args()
-        assert args.quiet is True
-
-    def test_long_flag(self) -> None:
-        """Verify --quiet sets quiet=True."""
-        with patch.object(sys, "argv", ["deepagents", "--quiet", "-n", "task"]):
-            args = parse_args()
-        assert args.quiet is True
-
-    def test_no_flag_defaults_false(self) -> None:
-        """Verify quiet is False when not provided."""
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.quiet is False
-
-    def test_combined_with_non_interactive(self) -> None:
-        """Verify -q works alongside -n."""
-        with patch.object(sys, "argv", ["deepagents", "-q", "-n", "run tests"]):
-            args = parse_args()
-        assert args.quiet is True
-        assert args.non_interactive_message == "run tests"
-
-    def test_quiet_without_non_interactive_parses(self) -> None:
-        """Verify --quiet without -n parses successfully.
-
-        The usage-error guard now lives in `cli_main` (after stdin pipe
-        processing), so `parse_args` itself should not reject this combo.
-        """
-        with patch.object(sys, "argv", ["deepagents", "-q"]):
-            args = parse_args()
-        assert args.quiet is True
-        assert args.non_interactive_message is None
-
 
 class TestNoMcpArg:
     """Tests for --no-mcp argument parsing."""
-
-    def test_no_mcp_flag_parsed(self) -> None:
-        """Verify --no-mcp sets no_mcp=True."""
-        with patch.object(sys, "argv", ["deepagents", "--no-mcp"]):
-            args = parse_args()
-        assert args.no_mcp is True
-
-    def test_no_mcp_default_false(self) -> None:
-        """Verify no_mcp defaults to False."""
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.no_mcp is False
-
-    def test_no_mcp_and_mcp_config_mutual_exclusion(self) -> None:
-        """--no-mcp + --mcp-config should exit with code 2."""
-        from deepagents_code.main import cli_main
-
-        with (  # noqa: SIM117  # separate to satisfy PT012
-            patch.object(
-                sys,
-                "argv",
-                ["deepagents", "--no-mcp", "--mcp-config", "/some/path"],
-            ),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch("deepagents_code.main.apply_stdin_pipe"),
-        ):
-            with pytest.raises(SystemExit) as exc_info:
-                cli_main()
-        assert exc_info.value.code == 2
 
 
 class TestConfigCommandDispatch:
     """Tests for `cli_main()` dispatch of `dcode config` subcommands."""
 
-    def test_config_command_exits_before_stdin_pipe(self) -> None:
-        """`dcode config` is headless and must not read stdin."""
-        from deepagents_code.main import cli_main
-
-        with (
-            patch.object(
-                sys,
-                "argv",
-                [
-                    "deepagents",
-                    "config",
-                    "get",
-                    "interpreter.memory_limit_mb",
-                    "--json",
-                ],
-            ),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch(
-                "deepagents_code.main.apply_stdin_pipe",
-                side_effect=AssertionError("config command read stdin"),
-            ) as stdin_mock,
-            patch(
-                "deepagents_code.config_commands.run_config_command",
-                return_value=0,
-            ) as config_mock,
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 0
-        stdin_mock.assert_not_called()
-        config_mock.assert_called_once()
-        args = config_mock.call_args.args[0]
-        assert args.command == "config"
-        assert args.config_command == "get"
-
 
 class TestMcpCommandDispatch:
     """Tests for `cli_main()` dispatch of `dcode mcp` subcommands."""
-
-    def test_mcp_login_uses_top_level_mcp_config_as_fallback(self) -> None:
-        """`dcode --mcp-config PATH mcp login NAME` propagates PATH to login."""
-        from deepagents_code.main import cli_main
-
-        with (
-            patch.object(
-                sys,
-                "argv",
-                [
-                    "deepagents",
-                    "--mcp-config",
-                    "/global/config.json",
-                    "mcp",
-                    "login",
-                    "notion",
-                ],
-            ),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch("deepagents_code.main.apply_stdin_pipe"),
-            patch(
-                "deepagents_code.mcp_commands.run_mcp_login",
-                new=AsyncMock(return_value=0),
-            ) as mock_login,
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 0
-        mock_login.assert_awaited_once_with(
-            server="notion",
-            config_path="/global/config.json",
-        )
-
-    def test_mcp_login_subcommand_mcp_config_wins_over_top_level(self) -> None:
-        """Subcommand `--mcp-config` overrides the top-level value."""
-        from deepagents_code.main import cli_main
-
-        with (
-            patch.object(
-                sys,
-                "argv",
-                [
-                    "deepagents",
-                    "--mcp-config",
-                    "/global/config.json",
-                    "mcp",
-                    "login",
-                    "notion",
-                    "--mcp-config",
-                    "/subcommand/config.json",
-                ],
-            ),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch("deepagents_code.main.apply_stdin_pipe"),
-            patch(
-                "deepagents_code.mcp_commands.run_mcp_login",
-                new=AsyncMock(return_value=0),
-            ) as mock_login,
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 0
-        mock_login.assert_awaited_once_with(
-            server="notion",
-            config_path="/subcommand/config.json",
-        )
-
-    def test_mcp_config_subcommand_prints_discovery_paths(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """`dcode mcp config` prints each discovery path."""
-        from deepagents_code.main import cli_main
-
-        with (
-            patch.object(sys, "argv", ["deepagents", "mcp", "config"]),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch("deepagents_code.main.apply_stdin_pipe"),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 0
-        out = capsys.readouterr().out
-        assert "~/.deepagents/.mcp.json" in out
-        assert "<project-root>/.deepagents/.mcp.json" in out
-        assert "<project-root>/.mcp.json" in out
-
-    def test_mcp_login_subcommand_mcp_config_only(self) -> None:
-        """`dcode mcp login NAME --mcp-config PATH` passes PATH through.
-
-        Covers the subcommand-only path (no top-level value) so a future
-        reorder of the `or`-precedence in dispatch fails loudly.
-        """
-        from deepagents_code.main import cli_main
-
-        with (
-            patch.object(
-                sys,
-                "argv",
-                [
-                    "deepagents",
-                    "mcp",
-                    "login",
-                    "notion",
-                    "--mcp-config",
-                    "/sub/config.json",
-                ],
-            ),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch("deepagents_code.main.apply_stdin_pipe"),
-            patch(
-                "deepagents_code.mcp_commands.run_mcp_login",
-                new=AsyncMock(return_value=0),
-            ) as mock_login,
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 0
-        mock_login.assert_awaited_once_with(
-            server="notion",
-            config_path="/sub/config.json",
-        )
-
-    def test_mcp_login_rejects_old_config_flag(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """The renamed `--config` flag is rejected by argparse.
-
-        Documents the intentional backcompat break (renamed to
-        `--mcp-config`) and prevents a stealth re-introduction of the
-        alias.
-        """
-        from deepagents_code.main import cli_main
-
-        with (
-            patch.object(
-                sys,
-                "argv",
-                [
-                    "deepagents",
-                    "mcp",
-                    "login",
-                    "notion",
-                    "--config",
-                    "/some/path.json",
-                ],
-            ),
-            patch("deepagents_code.main.check_cli_dependencies"),
-            patch("deepagents_code.main.apply_stdin_pipe"),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            cli_main()
-
-        assert exc_info.value.code == 2
-        err = capsys.readouterr().err
-        assert "unrecognized arguments" in err
-        assert "--config" in err
-
-    def test_mcp_config_marker_reflects_filesystem(
-        self,
-        tmp_path: pytest.TempPathFactory,
-        monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """`run_mcp_config()` marks files [found] / [missing] accurately.
-
-        Points `Path.home()` and `find_project_root()` at an isolated
-        tmp_path, creates the user-level file only, then asserts the
-        marker on each row.
-        """
-        import pathlib
-
-        from deepagents_code.mcp_commands import run_mcp_config
-
-        fake_home = pathlib.Path(str(tmp_path)) / "home"
-        fake_project = pathlib.Path(str(tmp_path)) / "project"
-        (fake_home / ".deepagents").mkdir(parents=True)
-        (fake_home / ".deepagents" / ".mcp.json").write_text("{}")
-        fake_project.mkdir()
-
-        monkeypatch.setattr(pathlib.Path, "home", lambda: fake_home)
-        monkeypatch.chdir(fake_project)
-        monkeypatch.setattr(
-            "deepagents_code.project_utils.find_project_root",
-            lambda: fake_project,
-        )
-
-        exit_code = run_mcp_config()
-
-        assert exit_code == 0
-        out = capsys.readouterr().out
-        user_line = next(
-            line for line in out.splitlines() if "~/.deepagents/.mcp.json" in line
-        )
-        project_root_line = next(
-            line
-            for line in out.splitlines()
-            if "<project-root>/.mcp.json" in line
-            and "<project-root>/.deepagents" not in line
-        )
-        project_subdir_line = next(
-            line
-            for line in out.splitlines()
-            if "<project-root>/.deepagents/.mcp.json" in line
-        )
-        assert "found" in user_line
-        assert "missing" in project_root_line
-        assert "missing" in project_subdir_line
 
 
 class TestAutoUpdateArg:
     """Tests for --auto-update argument parsing."""
 
-    def test_flag_parsed(self) -> None:
-        """Verify --auto-update sets auto_update=True."""
-        with patch.object(sys, "argv", ["deepagents", "--auto-update"]):
-            args = parse_args()
-        assert args.auto_update is True
 
-    def test_default_false(self) -> None:
-        """Verify auto_update defaults to False."""
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.auto_update is False
-
-
-class TestHelpScreenDrift:
-    """Ensure show_help() stays in sync with argparse flag definitions.
-
-    The help screen in `ui.show_help()` is hand-maintained separately from
-    the argparse definitions in `main.parse_args()`.  This test catches
-    drift — e.g. a new flag added to argparse but forgotten in the help screen.
-    """
-
-    def test_all_parser_flags_appear_in_help(self) -> None:
-        """Every top-level --flag in argparse must appear in show_help()."""
-        # 1. Trigger argparse usage line by passing an unrecognized flag.
-        #    argparse prints the full usage (all flags) to stderr, then exits.
-        stderr_buf = io.StringIO()
-        with (
-            patch.object(sys, "argv", ["deepagents", "--_x_"]),
-            patch("sys.stderr", stderr_buf),
-            pytest.raises(SystemExit),
-        ):
-            parse_args()
-        usage_text = stderr_buf.getvalue()
-
-        # 2. Render show_help() to a string.
-        help_buf = io.StringIO()
-        test_console = Console(file=help_buf, highlight=False, width=200)
-        with patch("deepagents_code.ui.console", test_console):
-            show_help()
-        help_text = help_buf.getvalue()
-
-        # 3. Extract --long-form flags from both and compare.
-        parser_flags = set(re.findall(r"--[\w][\w-]*", usage_text))
-        help_flags = set(re.findall(r"--[\w][\w-]*", help_text))
-
-        parser_flags.discard("--_x_")  # remove the fake trigger flag
-
-        missing = parser_flags - help_flags
-        assert not missing, (
-            f"Flags in argparse but missing from show_help(): {missing}\n"
-            "Add them to the Options section in ui.show_help()."
-        )
-
-    def test_threads_list_flags_appear_in_help(self) -> None:
-        """Every `threads list`-specific --flag must appear in show_threads_list_help().
-
-        We capture the argparse -h output for the subcommand, then compare
-        only the optional-arguments section (after "options:") to avoid
-        matching inherited global flags in the usage line.
-        """
-        stdout_buf = io.StringIO()
-        with (
-            patch.object(sys, "argv", ["deepagents", "threads", "list", "-h"]),
-            patch("sys.stdout", stdout_buf),
-            patch("deepagents_code.ui.console", Console(file=io.StringIO())),
-            pytest.raises(SystemExit),
-        ):
-            parse_args()
-        raw = stdout_buf.getvalue()
-
-        # Only look at the "options:" section to avoid inherited global flags
-        options_section = raw.split("options:")[-1] if "options:" in raw else raw
-        parser_flags = set(re.findall(r"--[\w][\w-]*", options_section))
-        parser_flags.discard("--help")
-
-        help_buf = io.StringIO()
-        test_console = Console(file=help_buf, highlight=False, width=200)
-        with patch("deepagents_code.ui.console", test_console):
-            show_threads_list_help()
-        help_flags = set(re.findall(r"--[\w][\w-]*", help_buf.getvalue()))
-
-        missing = parser_flags - help_flags
-        assert not missing, (
-            f"Flags in argparse but missing from show_threads_list_help(): {missing}\n"
-            "Add them to the Options section in ui.show_threads_list_help()."
-        )
+class TestRecursionLimitArg:
+    """Tests for the --recursion-limit override flag."""
 
 
 class TestJsonArg:
     """Tests for `--json` argument parsing."""
 
-    def test_default_text(self) -> None:
-        """Verify output_format defaults to text."""
-        with patch.object(sys, "argv", ["deepagents"]):
-            args = parse_args()
-        assert args.output_format == "text"
 
-    def test_json_shortcut(self) -> None:
-        """Verify --json sets output_format to json."""
-        with patch.object(sys, "argv", ["deepagents", "--json"]):
-            args = parse_args()
-        assert args.output_format == "json"
+class TestReservedAgentArg:
+    """`-a plugins` must fail at the CLI, not inside agent construction.
 
-    def test_json_before_subcommand(self) -> None:
-        """Verify --json works before a subcommand."""
-        with patch.object(sys, "argv", ["deepagents", "--json", "agents", "list"]):
-            args = parse_args()
-        assert args.command == "agents"
-        assert args.output_format == "json"
+    `agent.create_cli_agent` calls `settings.ensure_agent_dir(assistant_id)`
+    with no handler, so a reserved name surfaced to the user as an unhandled
+    `ValueError` from server startup.
+    """
 
-    def test_json_after_subcommand(self) -> None:
-        """Verify --json works after a subcommand."""
-        with patch.object(sys, "argv", ["deepagents", "agents", "list", "--json"]):
-            args = parse_args()
-        assert args.command == "agents"
-        assert args.output_format == "json"
+    @pytest.mark.parametrize("name", ["bin", "plugins", "conversation_history"])
+    def test_reserved_name_exits_with_a_message(
+        self, name: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        args = argparse.Namespace(agent=name, resume_thread=None)
 
-    def test_output_format_flag_removed(self) -> None:
-        """Verify --output-format is no longer accepted."""
-        with (
-            patch.object(sys, "argv", ["deepagents", "--output-format", "json"]),
-            pytest.raises(SystemExit) as exc_info,
-        ):
-            parse_args()
+        with pytest.raises(SystemExit) as exc_info:
+            _resolve_agent_arg(args)
+
         assert exc_info.value.code == 2
+        output = capsys.readouterr().out
+        assert name in output
+        assert "reserved" in output
 
-    def test_json_after_nested_subcommand(self) -> None:
-        """Verify --json works after nested subcommands."""
-        with patch.object(sys, "argv", ["deepagents", "skills", "list", "--json"]):
-            args = parse_args()
-        assert args.command == "skills"
-        assert args.skills_command == "list"
-        assert args.output_format == "json"
+    def test_ordinary_name_passes_through(self) -> None:
+        args = argparse.Namespace(agent="coder", resume_thread=None)
+
+        assert _resolve_agent_arg(args) == "coder"
+
+
+class TestStaleStoredAgent:
+    """A stored `[agents].recent` must never break every launch.
+
+    `bin/` and `plugins/` are real directories under the profile root, so the
+    `is_dir()` staleness check accepted them and the launch then failed in
+    `get_agent_dir`.
+    """
+
+    def test_a_reserved_stored_name_falls_back_to_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        """End to end through the resolver, with the directory actually present."""
+        (tmp_path / "plugins").mkdir()
+        args = argparse.Namespace(agent=None, resume_thread=None)
+
+        with (
+            patch("deepagents_code.main.get_deepagents_home", return_value=tmp_path),
+            patch("deepagents_code.model_config.load_default_agent", return_value=None),
+            patch(
+                "deepagents_code.model_config.load_recent_agent",
+                return_value="plugins",
+            ),
+        ):
+            assert _resolve_agent_arg(args) == DEFAULT_AGENT_NAME

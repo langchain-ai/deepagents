@@ -70,25 +70,18 @@ on:
           - "anthropic:claude-opus-4-5-20251101"
           - "anthropic:claude-opus-4-6"
           - "anthropic:claude-opus-4-7"
-          - "baseten:zai-org/GLM-5"
           - "baseten:MiniMaxAI/MiniMax-M2.5"
-          - "baseten:moonshotai/Kimi-K2.5"
           - "baseten:moonshotai/Kimi-K2.6"
           - "baseten:nvidia/Nemotron-120B-A12B"
           - "baseten:Qwen/Qwen3-Coder-480B-A35B-Instruct"
           - "fireworks:accounts/fireworks/models/deepseek-v3p2"
           - "fireworks:accounts/fireworks/models/deepseek-v3-0324"
           - "fireworks:accounts/fireworks/models/deepseek-v4-pro"
-          - "fireworks:accounts/fireworks/models/kimi-k2p5"
           - "fireworks:accounts/fireworks/models/kimi-k2p6"
-          - "fireworks:accounts/fireworks/models/glm-5"
-          - "fireworks:accounts/fireworks/models/glm-5p1"
           - "fireworks:accounts/fireworks/models/glm-5p2"
           - "fireworks:accounts/fireworks/models/minimax-m2p5"
           - "fireworks:accounts/fireworks/models/minimax-m2p7"
           - "fireworks:accounts/fireworks/models/minimax-m3"
-          - "fireworks:accounts/fireworks/models/nvidia-nemotron-3-super-120b-a\
-            12b-fp8"
           - "fireworks:accounts/fireworks/models/qwen3-vl-235b-a22b-thinking"
           - "google_genai:gemini-2.5-flash"
           - "google_genai:gemini-2.5-pro"
@@ -97,13 +90,9 @@ on:
           - "groq:openai/gpt-oss-120b"
           - "groq:qwen/qwen3-32b"
           - "groq:moonshotai/kimi-k2-instruct"
-          - "nvidia:nvidia/nemotron-3-super-120b-a12b"
-          - "ollama:glm-5:cloud"
-          - "ollama:glm-5.1:cloud"
           - "ollama:minimax-m2.5:cloud"
           - "ollama:minimax-m2.7:cloud"
           - "ollama:qwen3.5:cloud"
-          - "ollama:nemotron-3-super:cloud"
           - "openai:gpt-4.1"
           - "openai:gpt-5.1-codex"
           - "openai:gpt-5.2-codex"
@@ -113,11 +102,8 @@ on:
           - "openai:gpt-5.5"
           - "openai:gpt-5.5-pro"
           - "openrouter:minimax/minimax-m2.7"
-          - "openrouter:moonshotai/kimi-k2.5"
           - "openrouter:moonshotai/kimi-k2.6"
-          - "openrouter:z-ai/glm-5.1"
           - "openrouter:z-ai/glm-5.2"
-          - "openrouter:nvidia/nemotron-3-super-120b-a12b"
           - "openrouter:deepseek/deepseek-v4-pro"
           - "xai:grok-4"
           - "xai:grok-3-mini-fast"
@@ -279,7 +265,7 @@ jobs:
       other_has_models: ${{ steps.set-matrix.outputs.other_has_models }}
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "📝 Log dispatch inputs"
         continue-on-error: true
@@ -497,7 +483,7 @@ jobs:
         # like `siliconflow/fp8`) so it uses the looser provider CSV pattern
         # that also permits `/` and `.`; `repl` is single-valued so it stays
         # on SLUG. Models are validated downstream by
-        # `_SAFE_SPEC_RE` in `.github/scripts/models.py`.
+        # `_SAFE_SPEC_RE` in `.github/scripts/evals/models.py`.
         # Keep in parity with the equivalent block in `evals_trials.yml`.
         env:
           EVAL_CATEGORIES: ${{ inputs.eval_categories }}
@@ -532,7 +518,7 @@ jobs:
 
       - name: "🐍 Compute eval matrix"
         id: set-matrix
-        run: python .github/scripts/models.py eval
+        run: python .github/scripts/evals/models.py eval
         env:
           EVAL_MODELS: ${{ inputs.models_override || inputs.models || 'all' }}
 
@@ -572,7 +558,7 @@ jobs:
   # (avoids rate-limit failures). Different providers run in parallel.
   # GHA has no built-in "queue per matrix value", so the partition is encoded
   # as separate jobs whose matrices come from `prep`'s per-provider outputs;
-  # see _EVAL_PROVIDER_OUTPUTS in .github/scripts/models.py for the source set.
+  # see _EVAL_PROVIDER_OUTPUTS in .github/scripts/evals/models.py for the source set.
   #
   # Each per-provider `name:` below is intentionally a static string. GHA does
   # not evaluate `name:` expressions for jobs skipped via `if:`, so any
@@ -847,6 +833,11 @@ jobs:
   aggregate:
     name: "📋 Aggregate evals"
     runs-on: ubuntu-latest
+    # This job shares eval-assets with unified_evals.yml. Use the same group so
+    # publishers in either workflow cannot race on the branch tip.
+    concurrency:
+      group: eval-assets-publication
+      cancel-in-progress: false
     needs:
       - eval-anthropic
       - eval-baseten
@@ -862,7 +853,7 @@ jobs:
     if: always()
     steps:
       - name: "📋 Checkout Code"
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: "📥 Download eval artifacts"
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -877,7 +868,7 @@ jobs:
           working-directory: libs/evals
 
       - name: "🧾 Write summary"
-        run: uv run --with tabulate python .github/scripts/aggregate_evals.py
+        run: uv run --with tabulate python .github/scripts/evals/aggregate_evals.py
 
       - name: "📦 Install evals package"
         id: install-evals
@@ -948,6 +939,11 @@ jobs:
       - name: "🖼️ Publish charts to eval-assets branch"
         id: publish-charts
         if: hashFiles('charts/radar.png') != ''
+        # Best-effort, like the radar step above: the real results are already
+        # uploaded, so a transient git/push failure must not fail an otherwise-
+        # successful aggregate. The "Append charts" step gates on this
+        # outcome == 'success'.
+        continue-on-error: true
         env:
           RUN_ID: ${{ github.run_id }}
           REPO: ${{ github.repository }}
@@ -973,7 +969,10 @@ jobs:
             git add README.md
           fi
 
-          # Copy charts into run-specific directory (light + dark variants).
+          # Replace the run's prior attempt completely. A workflow rerun keeps
+          # RUN_ID, so copying over the old tree would nest individual assets and
+          # leave stale files behind.
+          rm -rf "${asset_dir}"
           mkdir -p "${asset_dir}"
           cp "$GITHUB_WORKSPACE/charts/radar.png" "${asset_dir}/radar.png"
           if [ -f "$GITHUB_WORKSPACE/charts/radar-dark.png" ]; then

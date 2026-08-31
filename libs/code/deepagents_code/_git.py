@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import re
 from pathlib import Path
 from typing import NamedTuple
@@ -157,6 +158,248 @@ def find_git_root(path: str | Path) -> Path | None:
             return None
 
     return None
+
+
+def _read_single_git_metadata_line(path: Path) -> str | None:
+    """Read one non-empty line from a regular Git metadata file.
+
+    Args:
+        path: Metadata file to read.
+
+    Returns:
+        The stripped line, or `None` when the file is unsafe or malformed.
+    """
+    if path.is_symlink() or not path.is_file():
+        return None
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        logger.debug("Failed to read Git metadata from %s", path, exc_info=True)
+        return None
+
+    lines = raw.splitlines()
+    if len(lines) != 1:
+        return None
+    value = lines[0].strip()
+    if not value or "\x00" in value:
+        return None
+    return value
+
+
+def _resolve_git_metadata_path(path: Path, *, relative_to: Path) -> Path | None:
+    """Resolve a path stored in a single-line Git metadata file.
+
+    Args:
+        path: Metadata file containing the path.
+        relative_to: Base directory for a relative stored path.
+
+    Returns:
+        The strictly resolved path, or `None` when it cannot be trusted.
+    """
+    value = _read_single_git_metadata_line(path)
+    if value is None:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = relative_to / candidate
+    try:
+        return candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("Failed to resolve Git metadata path from %s", path, exc_info=True)
+        return None
+
+
+def _normalize_git_metadata_path(path: Path, *, relative_to: Path) -> Path | None:
+    """Normalize a stored path without following its target.
+
+    Args:
+        path: Metadata file containing the path.
+        relative_to: Base directory for a relative stored path.
+
+    Returns:
+        The absolute lexical path, or `None` when the metadata is malformed.
+    """
+    value = _read_single_git_metadata_line(path)
+    if value is None:
+        return None
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = relative_to / candidate
+    try:
+        return Path(os.path.abspath(candidate))  # noqa: PTH100  # do not follow links
+    except (OSError, RuntimeError, ValueError):
+        logger.debug(
+            "Failed to normalize Git metadata path from %s", path, exc_info=True
+        )
+        return None
+
+
+def _parse_trusted_git_dir_pointer(git_entry: Path) -> Path | None:
+    """Resolve a strict worktree `.git` pointer for a trust decision.
+
+    Args:
+        git_entry: Regular `.git` file to parse.
+
+    Returns:
+        The canonical administration directory, or `None` for an invalid pointer.
+    """
+    value = _read_single_git_metadata_line(git_entry)
+    if value is None or not value.startswith(_GIT_DIR_POINTER_PREFIX):
+        return None
+    pointer = value.removeprefix(_GIT_DIR_POINTER_PREFIX).strip()
+    if not pointer:
+        return None
+    candidate = Path(pointer)
+    if not candidate.is_absolute():
+        candidate = git_entry.parent / candidate
+    try:
+        git_dir = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        logger.debug(
+            "Failed to resolve trusted gitdir pointer %s", git_entry, exc_info=True
+        )
+        return None
+    return git_dir if git_dir.is_dir() else None
+
+
+def _is_valid_git_common_dir(path: Path) -> bool:
+    """Return whether `path` has the required shared-repository metadata."""
+    return (
+        path.is_dir()
+        and (path / "HEAD").is_file()
+        and (path / "config").is_file()
+        and (path / "objects").is_dir()
+        and (path / "refs").is_dir()
+    )
+
+
+def find_git_common_dir(path: str | Path) -> Path | None:
+    """Resolve a validated identity shared by one repository's Git worktrees.
+
+    A normal checkout uses its in-tree `.git` directory. A linked worktree is
+    accepted only when its administration directory lives directly under the
+    common repository's `worktrees` directory and its `gitdir` file points back
+    to the current worktree's `.git` file, and both the shared common directory
+    and the worktree's own administration directory carry valid repository
+    metadata (`_is_valid_git_common_dir` plus the worktree's own `HEAD`). These
+    checks prevent a forged pointer or directory link from borrowing another
+    repository's identity.
+
+    Args:
+        path: Exact working-tree root or persisted common-directory path.
+
+    Returns:
+        The canonical Git common directory, or `None` when the metadata cannot
+        be validated confidently.
+    """
+    try:
+        root = _normalize_lookup_path(path)
+        if not root.is_dir():
+            return None
+        if _is_valid_git_common_dir(root):
+            return root
+        root = root.resolve(strict=True)
+        git_entry = root / ".git"
+        if git_entry.is_symlink():
+            return None
+
+        if git_entry.is_dir():
+            common_dir = git_entry.resolve(strict=True)
+            if common_dir != git_entry or not _is_valid_git_common_dir(common_dir):
+                return None
+            return common_dir
+        if not git_entry.is_file():
+            return None
+
+        git_dir = _parse_trusted_git_dir_pointer(git_entry)
+        if git_dir is None:
+            return None
+
+        common_dir = _resolve_git_metadata_path(
+            git_dir / "commondir", relative_to=git_dir
+        )
+        if common_dir is None or git_dir.parent != common_dir / "worktrees":
+            return None
+        if not _is_valid_git_common_dir(common_dir):
+            return None
+        if not (git_dir / "HEAD").is_file():
+            return None
+
+        backlink = _normalize_git_metadata_path(git_dir / "gitdir", relative_to=git_dir)
+        if backlink is None or backlink != git_entry:
+            return None
+    except (OSError, RuntimeError, ValueError):
+        logger.debug(
+            "Failed to validate Git common directory for %s", path, exc_info=True
+        )
+        return None
+    return common_dir
+
+
+def _read_git_config_value(raw: str, section: str, key: str) -> str | None:
+    """Read one value from a Git config section.
+
+    Returns:
+        The configured value, or `None` when it is absent.
+    """
+    in_section = False
+    expected = section.replace(" ", "").lower()
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_section = stripped.replace(" ", "").lower() == expected
+            continue
+        name, separator, value = stripped.partition("=")
+        if in_section and separator and name.strip().lower() == key:
+            return value.strip() or None
+    return None
+
+
+def _submodule_git_dir(root: Path, parent_config_dir: Path) -> Path | None:
+    """Resolve a validated submodule administration directory.
+
+    Returns:
+        The administration directory, or `None` when validation fails.
+    """
+    git_entry = root / ".git"
+    if git_entry.is_symlink() or not git_entry.is_file():
+        return None
+    git_dir = _parse_trusted_git_dir_pointer(git_entry)
+    if git_dir is None or not _is_valid_git_common_dir(git_dir):
+        return None
+    try:
+        git_dir.relative_to(parent_config_dir / "modules")
+        raw = (git_dir / "config").read_text(encoding="utf-8")
+        worktree = _read_git_config_value(raw, "[core]", "worktree")
+        if worktree is None:
+            return None
+        candidate = Path(worktree)
+        if not candidate.is_absolute():
+            candidate = git_dir / candidate
+        return git_dir if candidate.resolve(strict=True) == root else None
+    except (OSError, RuntimeError, ValueError):
+        logger.debug("Failed to validate submodule Git metadata")
+        return None
+
+
+def _find_git_config_dir(path: str | Path) -> Path | None:
+    """Locate a validated repository config directory.
+
+    Returns:
+        The config directory, or `None` when validation fails.
+    """
+    root = find_git_root(path)
+    if root is None:
+        return None
+    common_dir = find_git_common_dir(root)
+    if common_dir is not None:
+        return common_dir
+    parent_config_dir = _find_git_config_dir(root.parent)
+    return (
+        _submodule_git_dir(root, parent_config_dir)
+        if parent_config_dir is not None
+        else None
+    )
 
 
 def read_git_branch_from_filesystem(path: str | Path) -> str | None:
@@ -379,32 +622,19 @@ def read_git_remote_url_from_filesystem(path: str | Path) -> str | None:
         The `origin` remote URL, an empty string when `path` is not inside a
         git repository, or `None` when no `origin` URL is configured.
     """
-    git_dir = find_git_dir(path)
-    if git_dir is None:
+    config_dir = _find_git_config_dir(path)
+    if config_dir is None:
         return ""
 
     try:
-        raw = (git_dir / "config").read_text(encoding="utf-8")
+        raw = (config_dir / "config").read_text(encoding="utf-8")
     except FileNotFoundError:
         return None
     except OSError:
-        logger.debug("Failed to read git config in %s", git_dir, exc_info=True)
+        logger.debug("Failed to read Git config")
         return None
 
-    in_origin = False
-    for line in raw.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("[") and stripped.endswith("]"):
-            # Section header, e.g. [remote "origin"]. Match case-insensitively
-            # on the remote name to mirror git's own behavior.
-            in_origin = stripped.replace(" ", "").lower() == '[remote"origin"]'
-            continue
-        if in_origin and stripped.lower().startswith("url"):
-            _, _, value = stripped.partition("=")
-            url = value.strip()
-            if url:
-                return url
-    return None
+    return _read_git_config_value(raw, '[remote "origin"]', "url")
 
 
 def read_git_remote_url_via_subprocess(path: str | Path) -> str:

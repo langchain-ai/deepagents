@@ -5,6 +5,7 @@ New to the package? Start with [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a high
 ## Contents
 
 - [Quickstart](#quickstart) — get a local checkout running and run the checks CI enforces
+- [LangSmith tracing projects](#langsmith-tracing-projects) — route dev traces away from the shared GA project
 - [Local dev installs](#local-dev-installs) — keep an editable `dcode-dev` separate from a released install
 - [Debugging](#debugging) — diagnose startup crashes and client-side issues
 - [Live CSS development with Textual devtools](#live-css-development-with-textual-devtools) — UI/CSS hot-reload
@@ -68,6 +69,26 @@ make lint
 
 Run `make help` to see every available target.
 
+## LangSmith tracing projects
+
+When LangSmith tracing is enabled and a `LANGSMITH_API_KEY` is available, `deepagents-code` traces its own agent runs to LangSmith. A key alone is not enough for environment-supplied keys — set `LANGSMITH_TRACING=true`. Keys stored via `/auth` auto- enable tracing unless you explicitly opt out (for example `DEEPAGENTS_CODE_LANGSMITH_TRACING=false`).
+
+By default those runs land in the `deepagents-code` project, but the team routes shared runs to a GA project (`shared-deepagents-code`) that is monitored by LangSmith Engine, which raises high-priority Slack alerts on suspected issues.
+
+**Do not point local development at the GA project.** Active development produces failures, half-finished branches, and experiments that Engine flags as issues — noise that buries the alerts that matter for the production project and costs the team triage time. Keep dev and prod runs in separate projects so Engine alerting on the GA project stays high-signal (this also mirrors LangSmith best practice of splitting dev and prod environments into distinct projects).
+
+Route your local runs to a dev-scoped project via `DEEPAGENTS_CODE_LANGSMITH_PROJECT` (this overrides only the agent's own traces, leaving your shell's `LANGSMITH_PROJECT` for user code untouched):
+
+```bash
+# A shared dev bucket, or your own personal project — anything but the GA project
+export DEEPAGENTS_CODE_LANGSMITH_PROJECT=shared-deepagents-code-dev
+uv run deepagents-code
+```
+
+Set the same override for [local dev installs](#local-dev-installs) (`dcode-dev`), not only ad-hoc `uv run` sessions. You can also set it persistently under `[tracing]` in the config file (`tracing.langsmith_project`) or from the `/auth` screen. The startup splash and `/trace` show the project a run is writing to — confirm it is not the GA project before doing noisy work.
+
+When onboarding a new tracing project to Engine, capture the nature of that project first: a production/GA app warrants high-priority alerts, while a staging or active-dev project should use looser thresholds (or stay off Engine) so it does not generate false positives.
+
 ## Debugging
 
 Deep Agents Code runs as two processes: the **Textual TUI** you interact with, and a **`langgraph dev` subprocess** that hosts the agent graph. Each writes its own log, and a single switch turns both on:
@@ -81,20 +102,21 @@ uv run deepagents-code
 | Variable | Effect |
 | --- | --- |
 | `DEEPAGENTS_CODE_DEBUG` | Master switch. Preserves the server subprocess log on exit (printing its path to stderr) and attaches the client `DEBUG` file handler. Truthy: `1`/`true`/`yes`/`on` (case-insensitive). Falsy: `0`/`false`/`no`/`off`/empty/unset. |
-| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Overrides the client log path (default `/tmp/deepagents_debug.log`). **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy**; does **not** affect the server subprocess log. |
+| `DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>` | Overrides the client log directory (default `/tmp/deepagents_debug`). Each thread writes to `<thread-id>.log`. **Only takes effect when `DEEPAGENTS_CODE_DEBUG` is truthy**; does **not** affect the server subprocess log. |
+| `DEEPAGENTS_CODE_DEBUG_FILE=<path>` | Deprecated compatibility override. When `DEEPAGENTS_CODE_DEBUG_DIRECTORY` and `[debug].directory` are unset, per-thread logs use this path's parent directory. Existing `[debug].file` config works the same way. |
 
 Then pick the log you need by symptom:
 
 | Symptom | Log you want | Default location |
 | --- | --- | --- |
 | App crashes on launch (one-line failure banner) | **Server subprocess log** — the real traceback | `$TMPDIR/deepagents_server_log_*.txt` |
-| App starts, then misbehaves (UI, model calls, slash commands) | **Client app log** — `deepagents_code` at `DEBUG` | `/tmp/deepagents_debug.log` |
+| App starts, then misbehaves (UI, model calls, slash commands) | **Client app log** — `deepagents_code` at `DEBUG` | `/tmp/deepagents_debug/<thread-id>.log` |
 
 ### Startup crash -> server subprocess log
 
 The TUI only surfaces a one-line banner; the actual exception lives in the subprocess's combined stdout/stderr. To get it:
 
-1. **Re-run with debugging on** (see above). On exit, the log is preserved and its path is printed to stderr as `Server log preserved at: ...`. Textual's fullscreen mode can hide that line, but the file is still on disk.
+1. **Re-run with debugging on** (see above). After the app exits and the terminal is restored, the log is preserved and its path is printed to stderr as `Server log preserved at: ...`.
 2. **Open the newest log.** On macOS, `tempfile` resolves to `$TMPDIR` (a path under `/var/folders/.../T/`):
 
    ```bash
@@ -112,10 +134,20 @@ The TUI only surfaces a one-line banner; the actual exception lives in the subpr
 For problems that appear after the app is up, tail the client log in another terminal while reproducing:
 
 ```bash
-tail -f /tmp/deepagents_debug.log
+tail -f /tmp/deepagents_debug/<thread-id>.log
 ```
 
-To send it elsewhere, also `export DEEPAGENTS_CODE_DEBUG_FILE=<path>`. The handler appends across runs, so a single file accumulates every session.
+To send logs elsewhere, also `export DEEPAGENTS_CODE_DEBUG_DIRECTORY=<path>`. Each thread gets its own append-only file, and changing threads in the app switches the active log file.
+
+The directory is created or tightened to owner-only access, and each file is created or tightened to user-only access. Symlinks are refused. If either cannot be secured, no file handler is attached and a warning goes to stderr. Use the in-app Debug Console in that case.
+
+Stdio MCP server stderr is captured here at `DEBUG`. This keeps server-side failures visible when the TUI cannot show process stderr. Each record is one line, capped at 4096 characters. Characters in the Unicode `C` categories are removed, which includes control and format characters. The ESC byte of an ANSI sequence is removed but the rest stays as literal text, so the log is not free of escape-sequence residue. The text comes from the server. It can contain credentials or other sensitive values. Enable `DEBUG` logging only if you accept that risk, and do not share the log file.
+
+### In-app Debug Console (`Ctrl+\`)
+
+Press `Ctrl+\` (or run the hidden `/debug` command) inside a session to toggle a read-only Debug Console overlay. It shows a point-in-time session/runtime snapshot (version, model, thread, cwd, auto-approve, sandbox, MCP servers, token usage, debug-log path) plus a live tail of recent `deepagents_code.*` log records.
+
+The tail is fed by an always-on in-memory ring buffer (`_debug_buffer.install_log_buffer`, installed on the package logger in `__init__.py`), so it works **without** `DEEPAGENTS_CODE_DEBUG` — though enabling that switch raises the captured level to `DEBUG` and adds the file handler above. In the console, `Ctrl+L` clears the on-screen view (the buffer keeps accruing) and `c` copies the visible lines.
 
 ## Local dev installs
 
@@ -141,7 +173,7 @@ uv pip install --python ~/.local/share/dcode-dev/bin/python -e <repo>/libs/code
 ln -sf ~/.local/share/dcode-dev/bin/dcode ~/.local/bin/dcode-dev
 ```
 
-The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.11`) works; omit the flag to let `uv` pick.
+The `--python 3.13` is illustrative — any interpreter satisfying the package's `requires-python` (currently `>=3.12`) works; omit the flag to let `uv` pick.
 
 > **Why `uv venv` + `uv pip install -e` rather than `uv sync` or `uv tool install --editable`?** This builds an isolated venv *outside* the workspace's locked environment, so the dev binary can be re-resolved on demand without disturbing the released tool or the repo's `uv.lock`. (`uv pip` and `uv venv` are first-class `uv` subcommands here, not bare `pip`.)
 

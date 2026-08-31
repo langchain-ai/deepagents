@@ -28,7 +28,6 @@ on:
           set)"
         options:
           - deepagents
-          - deepagents-cli
           - deepagents-acp
           - deepagents-code
           - deepagents-talon
@@ -67,7 +66,7 @@ on:
         default: false
         description:
           "Release from a non-main branch (danger!) - Only use for backports
-          and hotfixes"
+          or hotfixes not on main"
       dangerous-skip-sdk-pin-check:
         required: false
         type: boolean
@@ -75,9 +74,16 @@ on:
         description:
           "(deepagents-code only) Skip SDK pin validation
           (danger!) - Only use when intentionally pinning an older SDK"
+      dangerous-skip-ripgrep-check:
+        required: false
+        type: boolean
+        default: false
+        description:
+          "Tolerate a ripgrep install failure in pre-release checks
+          (danger!) - the rg-gated artifact tests will skip. Passed automatically
+          when the merged release PR carries the bypass-ripgrep-check label"
 
 env:
-  PYTHON_VERSION: "3.11"
   UV_NO_SYNC: "true"
   UV_FROZEN: "true"
 
@@ -89,9 +95,14 @@ jobs:
   setup:
     name: 🧭 Resolve release target
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
     outputs:
       package: ${{ steps.parse.outputs.package }}
       working-dir: ${{ steps.parse.outputs.working-dir }}
+      python-version: ${{ steps.python-matrix.outputs.python-version }}
+      python-versions: ${{ steps.python-matrix.outputs.python-versions }}
       release-sha: ${{ steps.resolve-sha.outputs.sha }}
     steps:
       - name: Parse package input
@@ -112,9 +123,6 @@ jobs:
           case "$PACKAGE" in
             deepagents)
               echo "working-dir=libs/deepagents" >> $GITHUB_OUTPUT
-              ;;
-            deepagents-cli)
-              echo "working-dir=libs/cli" >> $GITHUB_OUTPUT
               ;;
             deepagents-acp)
               echo "working-dir=libs/acp" >> $GITHUB_OUTPUT
@@ -145,7 +153,7 @@ jobs:
               ;;
             *)
               echo "Error: Unknown package '$PACKAGE'"
-              echo "Valid packages are: deepagents, deepagents-cli, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
+              echo "Valid packages are: deepagents, deepagents-acp, deepagents-code, deepagents-talon, deepagents-evals, langchain-daytona, langchain-modal, langchain-quickjs, langchain-runloop, langchain-vercel-sandbox"
               exit 1
               ;;
           esac
@@ -154,13 +162,70 @@ jobs:
       # SHA (resolve-sha validates that ${WORKING_DIR}/pyproject.toml at the
       # input SHA declares the version being released). All downstream jobs
       # check out the resolved SHA so wheel bytes and tag tree agree.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+
+      - name: "📝 Log dispatch inputs"
+        continue-on-error: true
+        env:
+          PACKAGE_RESOLVED: ${{ steps.parse.outputs.package }}
+          PACKAGE_OVERRIDE: ${{ inputs.package-override }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_SHA: ${{ inputs.release-sha }}
+          IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
+          SKIP_SDK_PIN_CHECK: ${{ inputs.dangerous-skip-sdk-pin-check }}
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
+        run: |
+          set -euo pipefail
+
+          escape_cell() {
+            local value="$1"
+            # Backticks can't be escaped inside the single-backtick code spans
+            # below (there's no backslash-escape inside a GFM code span), so
+            # strip them outright rather than risk a malformed table row.
+            value="${value//\`/}"
+            value="${value//|/\\|}"
+            value="${value//$'\r\n'/<br>}"
+            value="${value//$'\n'/<br>}"
+            printf '%s' "$value"
+          }
+
+          {
+            echo "### 🌳 Source tree"
+            echo ""
+            echo "Run fired from [\`${GITHUB_SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_SHA}) on [\`${GITHUB_REF_NAME}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME})."
+            echo ""
+            echo "### 🚀 Release dispatch inputs"
+            echo ""
+            echo "| Input | Value |"
+            echo "|---|---|"
+            echo "| \`package\` | \`$(escape_cell "${PACKAGE_RESOLVED}")\` |"
+            if [ -n "${PACKAGE_OVERRIDE}" ]; then
+              echo "| \`package-override\` | \`$(escape_cell "${PACKAGE_OVERRIDE}")\` |"
+            fi
+            echo "| \`version\` | \`$(escape_cell "${INPUT_VERSION}")\` |"
+            if [ -n "${INPUT_SHA}" ]; then
+              echo "| \`release-sha\` | \`$(escape_cell "${INPUT_SHA}")\` |"
+            else
+              echo "| \`release-sha\` | (not provided — resolved to the workflow SHA only when \`dangerous-nonmain-release\` is enabled; otherwise invalid) |"
+            fi
+            if [ "${IS_DANGEROUS}" = "true" ]; then
+              echo "| \`dangerous-nonmain-release\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_SDK_PIN_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-sdk-pin-check\` | ⚠️ enabled |"
+            fi
+            if [ "${SKIP_RIPGREP_CHECK}" = "true" ]; then
+              echo "| \`dangerous-skip-ripgrep-check\` | ⚠️ enabled |"
+            fi
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write dispatch-inputs summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
 
       - name: Resolve and validate release SHA
         id: resolve-sha
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_SHA: ${{ inputs.release-sha }}
           INPUT_VERSION: ${{ inputs.version }}
           IS_DANGEROUS: ${{ inputs.dangerous-nonmain-release }}
@@ -197,10 +262,12 @@ jobs:
             SHA="$INPUT_SHA"
           fi
 
-          if ! err=$(git cat-file -e "${SHA}^{commit}" 2>&1); then
-            echo "::error::release-sha $SHA does not resolve to a commit in this repository: $err"
+          REQUESTED_SHA="$SHA"
+          if ! RESOLVED_SHA=$(git rev-parse -q --verify "${REQUESTED_SHA}^{commit}"); then
+            echo "::error::release-sha $REQUESTED_SHA does not resolve to a commit in this repository"
             exit 1
           fi
+          SHA="$RESOLVED_SHA"
 
           # Validate that pyproject.toml at this SHA declares the requested version.
           # This is what we actually care about: the wheel built from this SHA must
@@ -236,6 +303,53 @@ jobs:
 
           echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
+          if [ -n "$INPUT_SHA" ]; then
+            RELEASE_SHA_SOURCE="explicit release-sha input"
+          else
+            RELEASE_SHA_SOURCE="workflow SHA fallback because dangerous-nonmain-release is enabled"
+          fi
+
+          RELEASE_PR_NUMBER=""
+          if PULLS=$(gh api \
+            -H "Accept: application/vnd.github+json" \
+            "/repos/${GITHUB_REPOSITORY}/commits/${SHA}/pulls" 2>&1); then
+            # sort_by(.number) makes the pick deterministic when a commit is
+            # associated with more than one merged PR (e.g. a merge to main plus a
+            # later backport that cherry-picked it): the lowest number is the
+            # original merge, since backports are opened afterwards.
+            if ! RELEASE_PR_NUMBER=$(printf '%s' "$PULLS" | jq -r \
+              'map(select(.merged_at != null)) | sort_by(.number) | .[0].number // empty'); then
+              echo "::warning::Could not parse the pull request associated with release SHA $SHA: $PULLS"
+              RELEASE_PR_NUMBER=""
+            fi
+          else
+            echo "::warning::Could not look up the pull request associated with release SHA $SHA: $PULLS"
+          fi
+
+          {
+            echo "### Resolved release target"
+            echo ""
+            echo "| Target | Value |"
+            echo "|---|---|"
+            echo "| Release SHA | [\`${SHA:0:7}\`](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/commit/${SHA}) |"
+            if [ -n "$RELEASE_PR_NUMBER" ]; then
+              echo "| Associated PR | [#${RELEASE_PR_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${RELEASE_PR_NUMBER}) |"
+            fi
+            echo "| Resolution | ${RELEASE_SHA_SOURCE} |"
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write resolved release target to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+
+      - name: Resolve Python matrix
+        id: python-matrix
+        env:
+          RELEASE_SHA: ${{ steps.resolve-sha.outputs.sha }}
+          WORKING_DIR: ${{ steps.parse.outputs.working-dir }}
+        run: |
+          set -euo pipefail
+          git show "${RELEASE_SHA}:${WORKING_DIR}/pyproject.toml" \
+            | python .github/scripts/release/resolve_python_matrix.py \
+            >> "$GITHUB_OUTPUT"
+
   # Build the distribution package and extract version info
   # Runs in isolated environment with minimal permissions for security
   build:
@@ -257,14 +371,14 @@ jobs:
       # Build from the validated release commit (not dispatch HEAD) so the wheel
       # bytes match the GitHub release tag's tree. See RELEASING.md > Hotfix
       # Protocol for the integrity invariant this enforces.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       # We want to keep this build stage *separate* from the release stage,
@@ -358,8 +472,15 @@ jobs:
             exit 1
           fi
 
-  # Generate release notes from CHANGELOG.md (with git log fallback)
-  # and collect contributor shoutouts from merged PRs
+  # Generate release notes from CHANGELOG.md, append the package commit history,
+  # and collect contributor shoutouts.
+  #
+  # Intentionally fail-open: `publish` does not depend on this job, and
+  # `mark-release` deliberately omits it from its `if:` condition, so a failure
+  # here still tags and publishes the release — with an empty body. Do not add
+  # `needs.release-notes.result == 'success'` to `mark-release`; that would
+  # trade a cosmetic failure for a blocked release. Recovery is documented in
+  # RELEASING.md > Release Notes Job Failed or GitHub Release Body Is Empty.
   release-notes:
     name: 📝 Generate release notes
     needs:
@@ -372,10 +493,10 @@ jobs:
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     outputs:
-      release-body: ${{ steps.generate-release-body.outputs.release-body }}
+      release-body: ${{ steps.finalize-release-body.outputs.release-body }}
       tag: ${{ steps.check-tags.outputs.tag }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
           fetch-depth: 0
@@ -392,382 +513,61 @@ jobs:
           TAG="${PKG_NAME}==${VERSION}"
           echo tag="$TAG" >> $GITHUB_OUTPUT
 
-      - name: Resolve previous tag and release commit
-        id: resolve-refs
-        env:
-          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          VERSION: ${{ needs.build.outputs.version }}
-        run: |
-          # Detect PEP 440 pre-release versions:
-          #   - Dash separator: 1.0.0-rc.1
-          #   - PEP 440 suffixes: 1.0.0a1, 1.0.0b1, 1.0.0rc1, 1.0.0.dev1
-          IS_PRERELEASE=false
-          if [[ "$VERSION" == *"-"* ]] || [[ "$VERSION" =~ [0-9](a|b|rc)[0-9] ]] || [[ "$VERSION" =~ [.]dev[0-9] ]]; then
-            IS_PRERELEASE=true
-          fi
-          echo "is-prerelease=$IS_PRERELEASE" >> "$GITHUB_OUTPUT"
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ needs.setup.outputs.python-version }}
 
-          # Determine previous tag
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            # Strip pre-release suffix to get base version (e.g. 0.5.2a1 -> 0.5.2)
-            # Strip suffixes inside-out: dash first, then .dev, then a/b/rc
-            BASE_VERSION=$(echo "$VERSION" | sed 's/-.*$//' | sed -E 's/\.dev[0-9]+$//' | sed -E 's/(a|b|rc)[0-9]+$//')
-            echo "Pre-release detected: base version is $BASE_VERSION"
+      # The release target checkout (above) uses the release SHA, which may
+      # predate the notes script. Check out the workflow's own revision into
+      # a separate path so the helper is always available.
+      - name: Check out release-notes script
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          path: _workflow
+          sparse-checkout: |
+            .github/scripts/release/build_release_notes.py
+          sparse-checkout-cone-mode: false
 
-            if [[ ! "$BASE_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-              echo "::warning::BASE_VERSION '$BASE_VERSION' is not a clean X.Y.Z after stripping pre-release suffixes from '$VERSION'"
-            fi
-
-            # Try exact base version tag first (e.g. deepagents==0.5.2)
-            PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==${BASE_VERSION}$" || true) | head -1)
-            if [ -z "$PREV_TAG" ]; then
-              # Fall back to latest stable release tag
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
-            fi
-          else
-            PREV_TAG="$PKG_NAME==${VERSION%.*}.$(( ${VERSION##*.} - 1 ))"
-            [[ "${VERSION##*.}" -eq 0 ]] && PREV_TAG=""
-            if [ -z "$PREV_TAG" ]; then
-              PREV_TAG=$(git tag --sort=-creatordate | (grep -E "^${PKG_NAME}==[0-9]+\.[0-9]+\.[0-9]+$" || true) | head -1)
-            fi
-          fi
-
-          # Validate prev tag exists
-          if [ -n "$PREV_TAG" ] && [ "$PREV_TAG" != "$PKG_NAME==0.0.0" ]; then
-            GIT_TAG_RESULT=$(git tag -l "$PREV_TAG")
-            [ -z "$GIT_TAG_RESULT" ] && PREV_TAG=""
-          else
-            PREV_TAG=""
-          fi
-
-          echo "Previous tag: $PREV_TAG"
-          echo "prev-tag=$PREV_TAG" >> "$GITHUB_OUTPUT"
-
-          # Resolve the actual release commit.
-          # For stable releases: release-please updates CHANGELOG.md in the release
-          # commit, so we use the last CHANGELOG.md touch. On workflow_dispatch
-          # (manual/recovery), HEAD may be ahead — this avoids attributing
-          # post-release commits to this release's contributor list.
-          # For pre-releases: CHANGELOG.md is not updated, so use HEAD directly.
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            RELEASE_COMMIT=$(git rev-parse HEAD)
-            echo "Pre-release: using HEAD as release commit"
-          else
-            RELEASE_COMMIT=$(git log -1 --format=%H -- "$WORKING_DIR/CHANGELOG.md")
-            if [ -z "$RELEASE_COMMIT" ]; then
-              echo "Warning: no CHANGELOG.md history found, falling back to HEAD"
-              RELEASE_COMMIT=$(git rev-parse HEAD)
-            fi
-          fi
-          echo "Release commit: $RELEASE_COMMIT"
-          echo "release-commit=$RELEASE_COMMIT" >> "$GITHUB_OUTPUT"
-
-      # Resolve the human who shipped this release so release notes can credit
-      # them. Primary source is whoever merged the release PR (the release commit
-      # is that PR's squash-merge); when the release commit has no associated
-      # merged PR (initial release, or a direct push / manual recovery), fall back
-      # to the actor who triggered the workflow. Bot accounts are dropped — there's
-      # no human to credit (e.g. the auto path's dispatcher is github-actions[bot]).
-      - name: Resolve releaser
-        id: resolve-releaser
+      # Build the release body with the shared script. This replaces the
+      # previous inline bash steps so the same logic can be reused locally for
+      # post-publish recovery (see RELEASING.md > Release Notes Job Failed or
+      # GitHub Release Body Is Empty).
+      #
+      # WORKING_DIR and IS_PRERELEASE are passed explicitly rather than
+      # re-derived by the script: the workflow already resolved both, and
+      # IS_PRERELEASE is the same value that drives the GitHub release's
+      # `prerelease:` flag below, so the banner and the flag cannot disagree.
+      #
+      # --repo-root is passed explicitly rather than relying on the script's
+      # cwd default, so adding a `working-directory:` to this step (as most
+      # other steps in this file have) cannot break predecessor resolution.
+      - name: Build release notes
+        id: finalize-release-body
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
           ACTOR: ${{ github.actor }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -uo pipefail
-
-          RELEASER=""
-
-          # Primary: the user who merged the release PR. Distinguish "commit has no
-          # associated merged PR" (initial release, direct push, manual recovery, or
-          # eventual-consistency on a fresh squash-merge) from a real API failure.
-          # The latter must warn rather than silently fall through to the actor —
-          # on a manual release that would credit the dispatcher instead of the
-          # merger, with no breadcrumb. Mirrors the lookup pattern used below for
-          # release-label resolution.
-          if [ -n "$RELEASE_COMMIT" ]; then
-            if PULLS=$(gh api "/repos/$REPOSITORY/commits/$RELEASE_COMMIT/pulls" 2>&1); then
-              PR_NUM=$(printf '%s' "$PULLS" | jq -r '.[0].number // empty')
-            else
-              echo "::warning::releaser lookup: commit-pulls API failed: $PULLS — falling back to actor"
-              PR_NUM=""
-            fi
-            if [ -n "$PR_NUM" ]; then
-              if MERGED_BY=$(gh pr view "$PR_NUM" --repo "$REPOSITORY" \
-                --json mergedBy --jq '.mergedBy.login // empty' 2>&1); then
-                RELEASER="$MERGED_BY"
-              else
-                echo "::warning::releaser lookup: gh pr view #$PR_NUM failed: $MERGED_BY — falling back to actor"
-              fi
-            fi
-          fi
-
-          # Fallback: the actor who dispatched the workflow (manual releases).
-          if [ -z "$RELEASER" ]; then
-            RELEASER="$ACTOR"
-          fi
-
-          # Drop bot accounts. Quoted patterns are literal, so "[bot]" matches as a
-          # literal suffix, not a glob char class — "*[bot]" matches any login ending
-          # in "[bot]". The bare "github-actions" arm covers github.actor surfacing
-          # without the "[bot]" suffix, which "*[bot]" would not catch.
-          case "$RELEASER" in
-            ""|*"[bot]"|github-actions) RELEASER="" ;;
-          esac
-
-          echo "Resolved releaser: ${RELEASER:-<none>}"
-          echo "releaser=$RELEASER" >> "$GITHUB_OUTPUT"
-
-      - name: Generate release body
-        id: generate-release-body
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
-          VERSION: ${{ needs.build.outputs.version }}
-          PREV_TAG: ${{ steps.resolve-refs.outputs.prev-tag }}
-          RELEASE_COMMIT: ${{ steps.resolve-refs.outputs.release-commit }}
-          RELEASER: ${{ steps.resolve-releaser.outputs.releaser }}
-          IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
           BASE_BRANCH: ${{ github.ref_name }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
           REPOSITORY: ${{ github.repository }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is-prerelease }}
         run: |
-          if [ -z "$RELEASE_COMMIT" ]; then
-            echo "::error::RELEASE_COMMIT is empty — resolve-refs step may have failed"
-            exit 1
-          fi
-
-          CHANGELOG_PATH="$WORKING_DIR/CHANGELOG.md"
-          RELEASE_BODY=""
-
-          # Try to extract current version's section from CHANGELOG.md
-          # (Pre-releases won't have a CHANGELOG entry and the git log fallback is
-          # also skipped for them — they get the banner + contributors only)
-          if [ -f "$CHANGELOG_PATH" ]; then
-            echo "Found CHANGELOG.md, extracting version $VERSION section..."
-
-            # Extract section between current version header and next version header (or EOF)
-            # Matches headers like: ## [0.0.16] or ## 0.0.16
-            RELEASE_BODY=$(awk -v ver="$VERSION" '
-              BEGIN { found=0; printing=0 }
-              /^## \[?[0-9]+\.[0-9]+\.[0-9]+/ {
-                if (printing) { exit }
-                if (index($0, ver)) { found=1; printing=1; next }
-              }
-              printing { print }
-            ' "$CHANGELOG_PATH")
-
-            if [ -n "$RELEASE_BODY" ]; then
-              echo "Successfully extracted changelog for version $VERSION"
-            else
-              echo "Could not find version $VERSION in CHANGELOG.md"
-            fi
-          else
-            echo "No CHANGELOG.md found at $CHANGELOG_PATH"
-          fi
-
-          # Fallback to git log if CHANGELOG extraction failed
-          # (Skip for pre-releases — they get the banner + contributors only)
-          if [ -z "$RELEASE_BODY" ] && [ "$IS_PRERELEASE" != "true" ]; then
-            echo "Falling back to git log for release notes..."
-
-            FALLBACK_PREV="$PREV_TAG"
-            if [ -z "$FALLBACK_PREV" ]; then
-              PREAMBLE="Initial release"
-              FALLBACK_PREV=$(git rev-list --max-parents=0 "$RELEASE_COMMIT")
-            else
-              PREAMBLE="Changes since $FALLBACK_PREV"
-            fi
-
-            GIT_LOG=$(git log --format="%s" "$FALLBACK_PREV".."$RELEASE_COMMIT" -- "$WORKING_DIR")
-            RELEASE_BODY=$(printf "%s\n%s" "$PREAMBLE" "$GIT_LOG")
-          fi
-
-          # ── Collect contributors from merged PRs ──
-
-          # Get commits between previous tag and release commit for this package
-          if [ -z "$PREV_TAG" ]; then
-            COMMITS=$(git rev-list "$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
-          else
-            COMMITS=$(git rev-list "$PREV_TAG".."$RELEASE_COMMIT" -- "$WORKING_DIR" | head -100)
-          fi
-
-          # Find PRs and collect contributors (GitHub username + optional Twitter/LinkedIn)
-          declare -A TWITTER_HANDLES  # Map: github_username -> twitter_handle (or empty)
-          declare -A LINKEDIN_URLS    # Map: github_username -> linkedin_url (or empty)
-          declare -A INTERNAL_USERS   # Map: github_username -> 1 (for dedup)
-          SEEN_PRS=""
-
-          for sha in $COMMITS; do
-            # Get PR number for this commit (if merged via PR)
-            PR_NUM=$(gh api "/repos/${{ github.repository }}/commits/$sha/pulls" \
-              --jq '.[0].number // empty' 2>/dev/null || true)
-
-            if [ -n "$PR_NUM" ] && [[ ! "$SEEN_PRS" =~ ":$PR_NUM:" ]]; then
-              SEEN_PRS="$SEEN_PRS:$PR_NUM:"
-
-              # Get PR author, body, and labels
-              PR_DATA=$(gh pr view "$PR_NUM" --json author,body,labels 2>/dev/null || true)
-              if [ -n "$PR_DATA" ]; then
-                GH_USER=$(echo "$PR_DATA" | jq -r '.author.login // empty')
-                PR_BODY=$(echo "$PR_DATA" | jq -r '.body // empty')
-
-                # Skip bots and automated accounts
-                IS_BOT=$(echo "$PR_DATA" | jq -r '.author.is_bot // false')
-                if [ "$IS_BOT" = "true" ]; then
-                  echo "Skipping bot account: $GH_USER (PR #$PR_NUM)"
-                  continue
-                fi
-
-                # Separate internal contributors (PRs labeled "internal" by pr_labeler workflow)
-                IS_INTERNAL=$(echo "$PR_DATA" | jq -r '.labels[].name // empty' | grep -qx "internal" && echo "true" || echo "false")
-                if [ "$IS_INTERNAL" = "true" ]; then
-                  if [ -n "$GH_USER" ]; then
-                    INTERNAL_USERS[$GH_USER]=1
-                    echo "Collected internal contributor: $GH_USER (PR #$PR_NUM)"
-                  else
-                    echo "::warning::Internal PR #$PR_NUM has no author login — contributor will not appear in release notes"
-                  fi
-                  continue
-                fi
-
-                if [ -n "$GH_USER" ]; then
-                  # Extract Twitter handle if present (matches "Twitter: @handle" or "Twitter: handle")
-                  TWITTER=$(echo "$PR_BODY" | grep -iE '^\s*Twitter:\s' | sed -nE 's/.*:[[:space:]]*@?[[:space:]]*([a-zA-Z0-9_]+).*/\1/p' | head -1 || true)
-
-                  # Extract LinkedIn URL if present (matches "LinkedIn: https://linkedin.com/in/username" or similar)
-                  LINKEDIN=$(echo "$PR_BODY" | grep -iE '^\s*LinkedIn:\s' | grep -oE '(https?://)?(www\.)?linkedin\.com/in/[a-zA-Z0-9_-]+/?' | head -1 || true)
-
-                  # Add user if not seen, or update socials if newly provided
-                  if [ -z "${TWITTER_HANDLES[$GH_USER]+x}" ]; then
-                    TWITTER_HANDLES[$GH_USER]="$TWITTER"
-                    LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
-                  else
-                    [ -n "$TWITTER" ] && [ -z "${TWITTER_HANDLES[$GH_USER]}" ] && TWITTER_HANDLES[$GH_USER]="$TWITTER"
-                    [ -n "$LINKEDIN" ] && [ -z "${LINKEDIN_URLS[$GH_USER]}" ] && LINKEDIN_URLS[$GH_USER]="$LINKEDIN"
-                  fi
-                fi
-              fi
-            fi
-          done
-
-          # Dedup: if a user has both internal and community PRs, keep them
-          # in internal only (they are an org member regardless of PR labels)
-          for GH_USER in "${!INTERNAL_USERS[@]}"; do
-            unset "TWITTER_HANDLES[$GH_USER]"
-            unset "LINKEDIN_URLS[$GH_USER]"
-          done
-
-          # Build contributor list: @ghuser ([Twitter](url), [LinkedIn](url)) or just @ghuser
-          CONTRIBUTOR_LIST=""
-          for GH_USER in "${!TWITTER_HANDLES[@]}"; do
-            TWITTER="${TWITTER_HANDLES[$GH_USER]}"
-            LINKEDIN="${LINKEDIN_URLS[$GH_USER]}"
-
-            # Build social links
-            SOCIALS=""
-            if [ -n "$TWITTER" ]; then
-              SOCIALS="[Twitter](https://x.com/$TWITTER)"
-            fi
-            if [ -n "$LINKEDIN" ]; then
-              # Ensure LinkedIn URL has https:// prefix
-              if [[ ! "$LINKEDIN" =~ ^https?:// ]]; then
-                LINKEDIN="https://$LINKEDIN"
-              fi
-              if [ -n "$SOCIALS" ]; then
-                SOCIALS="$SOCIALS, [LinkedIn]($LINKEDIN)"
-              else
-                SOCIALS="[LinkedIn]($LINKEDIN)"
-              fi
-            fi
-
-            if [ -n "$SOCIALS" ]; then
-              ENTRY="@$GH_USER ($SOCIALS)"
-            else
-              ENTRY="@$GH_USER"
-            fi
-
-            if [ -z "$CONTRIBUTOR_LIST" ]; then
-              CONTRIBUTOR_LIST="$ENTRY"
-            else
-              CONTRIBUTOR_LIST="$CONTRIBUTOR_LIST, $ENTRY"
-            fi
-          done
-
-          if [ -n "$CONTRIBUTOR_LIST" ]; then
-            echo "Found community contributors: $CONTRIBUTOR_LIST"
-          fi
-
-          # Build internal maintainers list: @ghuser, @ghuser, ...
-          INTERNAL_LIST=""
-          for GH_USER in "${!INTERNAL_USERS[@]}"; do
-            if [ -z "$INTERNAL_LIST" ]; then
-              INTERNAL_LIST="@$GH_USER"
-            else
-              INTERNAL_LIST="$INTERNAL_LIST, @$GH_USER"
-            fi
-          done
-
-          if [ -n "$INTERNAL_LIST" ]; then
-            echo "Found internal maintainers: $INTERNAL_LIST"
-          fi
-
-          if [ -n "$RELEASER" ]; then
-            echo "Found releaser: @$RELEASER"
-          fi
-
-          # Prepend pre-release banner
-          if [ "$IS_PRERELEASE" = "true" ]; then
-            RELEASE_BODY=$(printf "> [!WARNING]\n> This is a pre-release version. Install with: \`pip install %s==%s\`\n\n%s" "$PKG_NAME" "$VERSION" "$RELEASE_BODY")
-          fi
-
-          # Annotate releases cut from a non-default branch (a vX.Y version line
-          # or an alpha/* throwaway branch) with the originating branch and the
-          # immutable release commit. Skipped for normal default-branch releases,
-          # where the branch carries no signal. The branch is rendered as plain
-          # text and the link targets the commit SHA, never tree/<branch>: alpha
-          # branches are deleted after release, so a branch link would 404, and
-          # the commit is the exact code that shipped even when release-sha points
-          # somewhere other than the branch tip.
-          DEFAULT_BRANCH="${DEFAULT_BRANCH:-main}"
-          if [ -n "$BASE_BRANCH" ] && [ "$BASE_BRANCH" != "$DEFAULT_BRANCH" ]; then
-            RELEASE_BODY=$(printf "%s\n\nReleased from \`%s\` at commit [\`%s\`](https://github.com/%s/commit/%s)" "$RELEASE_BODY" "$BASE_BRANCH" "${RELEASE_COMMIT:0:7}" "$REPOSITORY" "$RELEASE_COMMIT")
-          fi
-
-          # Append contributor shoutouts
-          SEPARATOR_ADDED=false
-          if [ -n "$CONTRIBUTOR_LIST" ]; then
-            RELEASE_BODY=$(printf "%s\n\n---\n\nThanks to our community contributors: %s" "$RELEASE_BODY" "$CONTRIBUTOR_LIST")
-            SEPARATOR_ADDED=true
-          fi
-
-          if [ -n "$INTERNAL_LIST" ]; then
-            if [ "$SEPARATOR_ADDED" = "false" ]; then
-              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
-              SEPARATOR_ADDED=true
-            fi
-            RELEASE_BODY=$(printf "%s\n\nInternal maintainers: %s" "$RELEASE_BODY" "$INTERNAL_LIST")
-          fi
-
-          # Credit whoever shipped the release. This is a distinct role from
-          # contributing release changes, so show it even when the same user also
-          # appears as a community contributor or internal maintainer.
-          if [ -n "$RELEASER" ]; then
-            if [ "$SEPARATOR_ADDED" = "false" ]; then
-              RELEASE_BODY=$(printf "%s\n\n---" "$RELEASE_BODY")
-              SEPARATOR_ADDED=true
-            fi
-            RELEASE_BODY=$(printf "%s\n\nReleased by: @%s" "$RELEASE_BODY" "$RELEASER")
-          fi
-
-          # Output release body using heredoc for proper multiline handling
-          {
-            echo 'release-body<<EOF'
-            echo "$RELEASE_BODY"
-            echo EOF
-          } >> "$GITHUB_OUTPUT"
+          python _workflow/.github/scripts/release/build_release_notes.py \
+            --package "$PKG_NAME" \
+            --version "$VERSION" \
+            --sha "$RELEASE_SHA" \
+            --repo "$REPOSITORY" \
+            --actor "$ACTOR" \
+            --base-branch "$BASE_BRANCH" \
+            --default-branch "$DEFAULT_BRANCH" \
+            --working-dir "$WORKING_DIR" \
+            --is-prerelease "$IS_PRERELEASE" \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --github-output
 
   test-pypi-publish:
     name: 🧪 Publish to TestPyPI
@@ -787,7 +587,7 @@ jobs:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -797,7 +597,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish to test PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -811,7 +611,7 @@ jobs:
           attestations: false
 
   pre-release-checks:
-    name: ✅ Pre-release checks
+    name: ✅ Pre-release checks (Python ${{ matrix.python-version }})
     needs:
       - setup
       - build
@@ -820,10 +620,14 @@ jobs:
     permissions:
       contents: read
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ${{ fromJSON(needs.setup.outputs.python-versions) }}
     env:
       WORKING_DIR: ${{ needs.setup.outputs.working-dir }}
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
@@ -844,8 +648,14 @@ jobs:
         uses: "./.github/actions/uv_setup"
         id: setup-python
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.python-version }}
           enable-cache: "false"
+
+      - name: Set up Node for Talon
+        if: needs.build.outputs.pkg-name == 'deepagents-talon'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
@@ -866,7 +676,7 @@ jobs:
 
           pkg_name = os.environ["PKG_NAME"]
           root = Path.cwd()
-          script = root / ".github" / "scripts" / "check_sdk_pin.py"
+          script = root / ".github" / "scripts" / "release" / "check_sdk_pin.py"
           spec = importlib.util.spec_from_file_location("check_sdk_pin", script)
           if spec is None or spec.loader is None:
               print(f"::error::Could not load {script}")
@@ -880,7 +690,7 @@ jobs:
               comparison = module.compare_versions(pkg_pin, sdk_version)
           except ValueError as e:
               print(
-                  "::error file=.github/scripts/check_sdk_pin.py::"
+                  "::error file=.github/scripts/release/check_sdk_pin.py::"
                   f"Could not determine {pkg_name} SDK pin status: {e}"
               )
               raise SystemExit(1) from None
@@ -909,7 +719,14 @@ jobs:
         # Install directly from the locally-built wheel (no index resolution needed)
         run: |
           uv venv
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the `.venv` above.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
 
           # Replace all dashes in the package name with underscores,
           # since that's how Python imports packages with dashes in the name.
@@ -934,37 +751,91 @@ jobs:
           PKG_NAME: ${{ needs.build.outputs.pkg-name }}
           VERSION: ${{ needs.build.outputs.version }}
         run: |
-          VIRTUAL_ENV=.venv uv pip install dist/*.whl
+          INSTALL_ARGS=(dist/*.whl)
+          # Talon transitively requires a prerelease deepagents pin via deepagents-code.
+          if [ "$PKG_NAME" = "deepagents-talon" ]; then
+            INSTALL_ARGS=(--prerelease allow "${INSTALL_ARGS[@]}")
+          fi
+          # setup-uv exports UV_PYTHON, which overrides VIRTUAL_ENV for
+          # `uv pip`; unset it so the install targets the existing `.venv`.
+          env -u UV_PYTHON VIRTUAL_ENV=.venv uv pip install "${INSTALL_ARGS[@]}"
+
+      # The install itself has no timeout: release artifacts must be validated
+      # with the real ripgrep path exercised. `DEEPAGENTS_RIPGREP_EXPECTED=1`
+      # makes the rg-gated tests fail rather than skip if `rg` goes missing
+      # anyway. A dispatch carrying `dangerous-skip-ripgrep-check=true` (set
+      # from the `bypass-ripgrep-check` label on the merged release PR)
+      # tolerates an apt failure instead: the install still runs, but a failure
+      # neither fails the job nor promises ripgrep, so the gated tests skip
+      # rather than error.
+      #
+      # The failure path mirrors `_test.yml`'s strict step: unwind dpkg, then
+      # probe for a usable `rg`. Without the probe a publish run would discard
+      # ripgrep coverage that is actually available whenever apt reports
+      # failure but the binary landed (or was already on the image) -- and this
+      # is the run where losing the symlink containment check matters most.
+      - name: Install ripgrep
+        env:
+          SKIP_RIPGREP_CHECK: ${{ inputs.dangerous-skip-ripgrep-check }}
+        run: |
+          set +e
+          sudo apt-get update && sudo apt-get install -y ripgrep
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          if [ "$SKIP_RIPGREP_CHECK" != "true" ]; then
+            echo "::error::ripgrep install failed (apt exit $status) and dangerous-skip-ripgrep-check is not set."
+            exit "$status"
+          fi
+          # A killed or half-applied apt transaction can leave dpkg holding the
+          # lock, which would surface as an unrelated failure in a later step.
+          # A failed recovery is tolerated; the `rg` probe is what decides.
+          sudo timeout --signal=TERM --kill-after=10s 60s \
+            dpkg --configure -a || true
+          if rg --version >/dev/null 2>&1; then
+            echo "DEEPAGENTS_RIPGREP_EXPECTED=1" >> "$GITHUB_ENV"
+            echo "::notice::ripgrep install reported failure (apt exit $status) but a usable rg is present; continuing with ripgrep"
+            exit 0
+          fi
+          echo "::warning::ripgrep install failed (apt exit $status); dangerous-skip-ripgrep-check set — the rg-gated artifact tests will skip"
+          # A step annotation alone is not a record: the dispatch-inputs summary
+          # says only that the *input* was set, which cannot distinguish "apt
+          # succeeded, full coverage" from "apt failed, tests skipped". Write
+          # the degraded outcome where an operator reviewing the release sees it.
+          {
+            echo "### ⚠️ Published without ripgrep coverage"
+            echo ""
+            echo "\`apt-get\` failed (exit $status) and \`dangerous-skip-ripgrep-check\` was set, so the job continued."
+            echo "The real-binary grep tests did **not** run against this artifact, including the symlink containment check."
+          } >> "$GITHUB_STEP_SUMMARY" || echo "::warning::Failed to write ripgrep-bypass summary to GITHUB_STEP_SUMMARY (non-fatal, continuing)"
+          exit 0
 
       - name: Run unit tests
-        run: make test COV_ARGS= PYTEST_EXTRA="--no-cov -v"
+        run: make test COV_ARGS= PYTEST_EXTRA="-v"
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Run integration tests
         if: false # Disabled: integration tests are not run during releases
         env:
-          # deepagents SDK: subagent middleware tests
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          # deepagents SDK: LangSmith sandbox tests
-          LANGSMITH_API_KEY: ${{ secrets.LANGSMITH_API_KEY }}
-          # langchain-daytona, CLI test_sandbox_operations.py
-          DAYTONA_API_KEY: ${{ secrets.DAYTONA_API_KEY }}
-          # langchain-modal
-          MODAL_TOKEN_ID: ${{ secrets.MODAL_TOKEN_ID }}
-          MODAL_TOKEN_SECRET: ${{ secrets.MODAL_TOKEN_SECRET }}
-          # langchain-runloop
-          RUNLOOP_API_KEY: ${{ secrets.RUNLOOP_API_KEY }}
-          # langchain-vercel-sandbox
-          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          # The Code sandbox files are ignored below and its remaining integration
+          # tests use a fake model, so Code receives no provider credentials here.
+          ANTHROPIC_API_KEY: ${{ (needs.setup.outputs.package == 'deepagents' || needs.setup.outputs.package == 'langchain-quickjs') && secrets.ANTHROPIC_API_KEY || '' }}
+          DAYTONA_API_KEY: ${{ needs.setup.outputs.package == 'langchain-daytona' && secrets.DAYTONA_API_KEY || '' }}
+          LANGSMITH_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.LANGSMITH_API_KEY || '' }}
+          MODAL_TOKEN_ID: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_ID || '' }}
+          MODAL_TOKEN_SECRET: ${{ needs.setup.outputs.package == 'langchain-modal' && secrets.MODAL_TOKEN_SECRET || '' }}
+          OPENAI_API_KEY: ${{ needs.setup.outputs.package == 'deepagents' && secrets.OPENAI_API_KEY || '' }}
+          RUNLOOP_API_KEY: ${{ needs.setup.outputs.package == 'langchain-runloop' && secrets.RUNLOOP_API_KEY || '' }}
+          VERCEL_TOKEN: ${{ needs.setup.outputs.package == 'langchain-vercel-sandbox' && secrets.VERCEL_TOKEN || '' }}
 
-        # We skip test_sandbox_factory.py and test_sandbox_operations.py in CLI
-        # releases — overlap with partner-level SandboxIntegrationTests.
-        # TODO: upstream unique batch/binary tests to langchain-tests, then
-        # remove files.
+        # The deepagents-code sandbox coverage overlaps with the partner-level
+        # SandboxIntegrationTests, so keep those files out of release checks.
         run: |
           if [ -f Makefile ] && grep -q "integration_test" Makefile; then
-            if [ "${{ needs.setup.outputs.package }}" = "deepagents-cli" ]; then
+            if [ "${{ needs.setup.outputs.package }}" = "deepagents-code" ]; then
               export PYTEST_ADDOPTS="${PYTEST_ADDOPTS:-} --ignore=tests/integration_tests/test_sandbox_factory.py --ignore=tests/integration_tests/test_sandbox_operations.py"
             fi
             make integration_test
@@ -997,14 +868,14 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1013,7 +884,7 @@ jobs:
           path: ${{ env.WORKING_DIR }}/dist/
 
       - name: Publish package distributions to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # release/v1
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1
         with:
           packages-dir: ${{ env.WORKING_DIR }}/dist/
           verbose: true
@@ -1021,7 +892,13 @@ jobs:
           # Temp workaround since attestations are on by default as of gh-action-pypi-publish v1.11.0
           attestations: false
 
-  # Create GitHub release after checks pass
+  # Create GitHub release after checks pass.
+  #
+  # The `if:` below gates on pre-release-checks and publish only. `release-notes`
+  # is listed in `needs` purely to consume its output — its result is
+  # deliberately not a condition, so a failed notes job publishes an empty body
+  # rather than blocking an already-published PyPI release. See the fail-open
+  # note on the `release-notes` job.
   mark-release:
     name: 🏷️ Tag GitHub release
     needs:
@@ -1048,14 +925,14 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.setup.outputs.release-sha }}
 
       - name: Set up Python + uv
         uses: "./.github/actions/uv_setup"
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ needs.setup.outputs.python-version }}
           enable-cache: "false"
 
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -1076,6 +953,52 @@ jobs:
           makeLatest: ${{ needs.build.outputs.pkg-name == 'deepagents' &&
             needs.build.outputs.is-prerelease != 'true' }}
           draft: false
+
+      # `release-notes` is fail-open: a failed notes job still reaches this
+      # point and publishes an empty body. Emit an ::error:: here so the
+      # green `mark-release` job — the one the maintainer actually sees on the
+      # workflow summary — names the symptom instead of leaving the empty
+      # release page as the only evidence. Runs for failure, cancelled, and
+      # skipped alike: all three produce an empty body.
+      - name: Surface failed release notes
+        if: needs.release-notes.result != 'success'
+        env:
+          PKG_NAME: ${{ needs.build.outputs.pkg-name }}
+          VERSION: ${{ needs.build.outputs.version }}
+          RELEASE_SHA: ${{ needs.setup.outputs.release-sha }}
+          ACTOR: ${{ github.actor }}
+          BASE_BRANCH: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch || 'main' }}
+          REPOSITORY: ${{ github.repository }}
+          NOTES_RESULT: ${{ needs.release-notes.result }}
+        run: |
+          echo "::error title=Release notes job ${NOTES_RESULT}::\
+          GitHub release ${PKG_NAME}==${VERSION} was published with an empty body. \
+          See the job summary for the recovery command."
+          {
+            echo ""
+            echo "### ❌ Release notes job ${NOTES_RESULT}"
+            echo ""
+            echo "\`${PKG_NAME}==${VERSION}\` was published with an **empty body**. \
+          Rebuild and apply the notes (see RELEASING.md > Release Notes Job \
+          Failed or GitHub Release Body Is Empty):"
+            echo ""
+            echo '```bash'
+            echo "python .github/scripts/release/build_release_notes.py \\"
+            echo "  --package \"${PKG_NAME}\" --version \"${VERSION}\" \\"
+            echo "  --sha \"${RELEASE_SHA}\" --repo \"${REPOSITORY}\" \\"
+            echo "  --actor \"${ACTOR}\" --base-branch \"${BASE_BRANCH}\" \\"
+            if [ "${BASE_BRANCH}" != "${DEFAULT_BRANCH:-main}" ] \
+              && [ "${DEFAULT_BRANCH:-main}" != "main" ]; then
+              echo "  --default-branch \"${DEFAULT_BRANCH}\" \\"
+            fi
+            echo "  --out /tmp/release-body.md"
+            echo ""
+            echo "gh release edit \"${PKG_NAME}==${VERSION}\" --repo \"${REPOSITORY}\" \\"
+            echo "  --notes-file /tmp/release-body.md"
+            echo '```'
+            echo ""
+          } >> "$GITHUB_STEP_SUMMARY"
 
       # Mark the release PR as tagged so release-please knows it's been released
       # This is required because skip-github-release is true in release-please config
@@ -1207,3 +1130,69 @@ jobs:
               fi
             fi
           fi
+
+  # Kick the Code SDK pin auto-bump once the SDK is live on PyPI. Only the
+  # `deepagents` package release triggers this: the pin-bump workflow itself
+  # compares the workspace SDK version to the Code pin and exits cleanly
+  # when there is nothing to do, so redundant dispatches (e.g. a re-run of
+  # this job) are harmless. The pin-bump workflow opens a `chore(deps):` PR
+  # against `main` via the Org Membership App token, so its required checks
+  # run normally.
+  bump-code-sdk-pin:
+    name: 🔗 Trigger Code SDK pin bump
+    needs:
+      - setup
+      - build
+      - publish
+    if: always() && needs.publish.result == 'success' &&
+      needs.build.outputs.pkg-name == 'deepagents'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      SDK_VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-actions: write
+
+      # Post-publish convenience only: the SDK is already live and the GitHub
+      # release is already tagged by the time this runs, and the pin-bump PR
+      # can always be opened by dispatching bump_code_sdk_pin.yml manually.
+      # Never let a dispatch hiccup mark the release run failed.
+      - name: Dispatch bump_code_sdk_pin.yml
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          # `-R` is required: this job skips checkout (it only needs the API),
+          # and without a repo flag `gh` shells out to `git` to discover the
+          # repository, which fails with "fatal: not a git repository".
+          # The dispatch time is recorded first so the poll below can ignore
+          # any earlier workflow_dispatch runs of this workflow.
+          DISPATCHED_AT="$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+          gh workflow run bump_code_sdk_pin.yml --repo "${GITHUB_REPOSITORY}" --ref main
+          # `gh workflow run` returns before the run exists and prints no run
+          # ID, so poll for the newest workflow_dispatch run to build its URL.
+          # Without the `--created >=` bound, a previous dispatch of this
+          # workflow would match immediately while the new run is still
+          # propagating. Fall back to the workflow page (newest run listed at
+          # top) if the API hasn't caught up after ~30s.
+          RUN_URL=""
+          for _ in 1 2 3 4 5 6; do
+            sleep 5
+            RUN_URL="$(gh run list --repo "${GITHUB_REPOSITORY}" --workflow bump_code_sdk_pin.yml --event workflow_dispatch --created ">=${DISPATCHED_AT}" --limit 1 --json url --jq '.[0].url // ""' || true)"
+            if [ -n "$RUN_URL" ]; then
+              break
+            fi
+          done
+          if [ -z "$RUN_URL" ]; then
+            RUN_URL="https://github.com/${GITHUB_REPOSITORY}/actions/workflows/bump_code_sdk_pin.yml"
+          fi
+          echo "::notice::Dispatched bump_code_sdk_pin.yml after publishing deepagents==${SDK_VERSION}: ${RUN_URL}"

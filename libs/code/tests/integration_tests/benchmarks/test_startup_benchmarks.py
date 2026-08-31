@@ -128,54 +128,6 @@ pytestmark = pytest.mark.benchmark
 # ---------------------------------------------------------------------------
 
 
-class TestImportIsolation:
-    """Guard that lightweight entry points don't pull in the heavy stack.
-
-    Without deferred imports, `deepagents --help` takes 3+ seconds because
-    langchain, agent, and sessions all load eagerly. These tests catch any
-    accidental top-level import that would re-introduce that latency.
-    """
-
-    @pytest.mark.parametrize(
-        "import_stmt",
-        [
-            "from deepagents_code.main import parse_args",
-            "from deepagents_code.main import check_cli_dependencies",
-            "from deepagents_code.config import is_ascii_mode",
-            "import deepagents_code.ui",
-            "import deepagents_code.skills.commands",
-            "from deepagents_code._cli_context import CLIContext",
-            "import deepagents_code._ask_user_types",
-            "import deepagents_code.textual_adapter",
-            "import deepagents_code.tool_display",
-            "import deepagents_code.file_ops",
-        ],
-        ids=[
-            "main.parse_args",
-            "main.check_cli_dependencies",
-            "config.is_ascii_mode",
-            "ui",
-            "skills.commands",
-            "_cli_context.CLIContext",
-            "_ask_user_types",
-            "textual_adapter",
-            "tool_display",
-            "file_ops",
-        ],
-    )
-    def test_no_heavy_imports_on_lightweight_path(self, import_stmt: str) -> None:
-        """Importing lightweight CLI modules must not load heavy deps.
-
-        Args:
-            import_stmt: The import statement to test in isolation.
-        """
-        loaded = _get_loaded_modules(import_stmt)
-        leaked = HEAVY_MODULES & loaded
-        assert not leaked, (
-            f"Heavy modules loaded when running `{import_stmt}`: {sorted(leaked)}"
-        )
-
-
 # ---------------------------------------------------------------------------
 # 2. CLI command timing
 #

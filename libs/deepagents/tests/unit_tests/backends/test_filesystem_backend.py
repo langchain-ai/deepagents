@@ -1,20 +1,50 @@
+import base64
+import io
+import json
 import logging
+import os
 import shutil
 import subprocess
+import sys
+import threading
 import warnings
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Self
 
 import pytest
-from langchain.tools import ToolRuntime
 from langchain_core.messages import ToolMessage
 
-from deepagents._api.deprecation import LangChainDeprecationWarning
 from deepagents.backends import filesystem as fs_module
 from deepagents.backends.filesystem import FilesystemBackend
-from deepagents.backends.protocol import DeleteResult, EditResult, ReadResult, WriteResult
-from deepagents.middleware.filesystem import FilesystemMiddleware
+from deepagents.backends.protocol import DeleteResult, EditResult, GrepMatch, ReadResult, WriteResult
+from deepagents.backends.utils import format_grep_matches
+from deepagents.middleware.filesystem import GLOB_TIMEOUT, FilesystemMiddleware
+
+
+def require_ripgrep() -> None:
+    """Skip when ripgrep is absent, or fail when the runner promised it.
+
+    CI installs ripgrep and exports `DEEPAGENTS_RIPGREP_EXPECTED=1` on every
+    runner where the install is required to have succeeded. On those runners a
+    missing `rg` means the install silently regressed, so the tests below must
+    fail rather than skip: they are the only coverage of the *real binary*
+    contract (the rest of the ripgrep tests patch `subprocess.Popen`), and one
+    of them guards symlink containment. A skip would let a containment
+    regression merge with a green build.
+
+    Locally, and on runners where the install was allowed to fail, a missing
+    `rg` is expected and still skips. CI allows the failure in two cases: the
+    bounded install on an ordinary PR hit its two-minute timeout, or the
+    unbounded strict install on a release PR failed and was bypassed under the
+    `bypass-ripgrep-check` label.
+    """
+    if shutil.which("rg") is not None:
+        return
+    if os.environ.get("DEEPAGENTS_RIPGREP_EXPECTED") == "1":
+        msg = "CI installed ripgrep on this runner but `rg` is not on PATH"
+        pytest.fail(msg)
+    pytest.skip("ripgrep not installed")
 
 
 def write_file(p: Path, content: str):
@@ -83,6 +113,37 @@ def test_filesystem_backend_glob_default_matches_backend_root(tmp_path: Path) ->
     assert str(outside_root) not in omitted_paths
 
 
+def test_filesystem_backend_glob_hidden_paths_require_explicit_dot_patterns(tmp_path: Path) -> None:
+    """Leading-dot names are not matched by bare `*` (shared grep include contract).
+
+    Hidden files remain reachable with explicit dot patterns (`.*`, `.github/**`).
+    This mirrors `compile_grep_include_glob` / bash without `dotglob`, not
+    pathlib `rglob` which does surface dotfiles under `*`.
+    """
+    root = tmp_path
+    write_file(root / ".env", "TOKEN=value")
+    write_file(root / ".hidden.py", "print('hidden')")
+    write_file(root / "visible.py", "print('visible')")
+    write_file(root / ".github" / "workflows" / "ci.yml", "name: ci")
+
+    be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
+
+    bare_root = {info["path"] for info in be.glob("*", path="/").matches or []}
+    bare_py = {info["path"] for info in be.glob("*.py", path="/").matches or []}
+    bare_yml = {info["path"] for info in be.glob("**/*.yml", path="/").matches or []}
+    assert "/.env" not in bare_root
+    assert "/.hidden.py" not in bare_py
+    assert "/visible.py" in bare_py
+    assert "/.github/workflows/ci.yml" not in bare_yml
+
+    explicit_dot = {info["path"] for info in be.glob(".*", path="/").matches or []}
+    explicit_py = {info["path"] for info in be.glob(".*.py", path="/").matches or []}
+    explicit_yml = {info["path"] for info in be.glob(".github/**/*.yml", path="/").matches or []}
+    assert "/.env" in explicit_dot
+    assert "/.hidden.py" in explicit_py
+    assert "/.github/workflows/ci.yml" in explicit_yml
+
+
 def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     root = tmp_path
     f1 = root / "a.txt"
@@ -90,7 +151,7 @@ def test_filesystem_backend_virtual_mode(tmp_path: Path, monkeypatch: pytest.Mon
     write_file(f1, "hello virtual")
     write_file(f2, "content")
 
-    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
 
@@ -257,23 +318,170 @@ def test_filesystem_backend_read_non_utf8_file(tmp_path: Path):
     assert "chinese.txt" in result.error
 
 
+def test_filesystem_backend_read_populates_pagination_metadata(tmp_path: Path) -> None:
+    """`FilesystemBackend.read` reports source-line range and next offset for text reads."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    partial = be.read(str(target), offset=1, limit=2)
+    assert partial.error is None
+    assert partial.total_lines == 5
+    assert partial.start_line == 2
+    assert partial.end_line == 3
+    assert partial.next_offset == 3
+
+    final = be.read(str(target), offset=3, limit=10)
+    assert final.error is None
+    assert final.total_lines == 5
+    assert final.start_line == 4
+    assert final.end_line == 5
+    assert final.next_offset is None
+
+
+def test_filesystem_backend_read_offset_beyond_eof_errors_with_total(tmp_path: Path) -> None:
+    """An offset past EOF reports the file's line count and leaves metadata unset."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\nfour\nfive")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=99, limit=10)
+
+    assert result.error == "Line offset 99 exceeds file length (5 lines)"
+    assert result.file_data is None
+    assert result.total_lines is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_empty_file_leaves_pagination_unset(tmp_path: Path) -> None:
+    """An empty file returns the empty-content warning with no pagination metadata."""
+    target = tmp_path / "empty.txt"
+    target.write_text("")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=10)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+@pytest.mark.parametrize("limit", [0, -3])
+def test_filesystem_backend_read_non_positive_limit_returns_empty_read(tmp_path: Path, limit: int) -> None:
+    """A degenerate `limit` returns an empty read, not a line-range error."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=limit)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == ""
+    assert result.total_lines is None
+    assert result.start_line is None
+    assert result.end_line is None
+    assert result.next_offset is None
+
+
+def test_filesystem_backend_read_negative_offset_starts_at_first_line(tmp_path: Path) -> None:
+    """A negative offset is clamped to the start of the file instead of erroring."""
+    target = tmp_path / "notes.txt"
+    target.write_text("one\ntwo\nthree\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=-1, limit=2)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["content"] == "one\ntwo\n"
+    assert result.start_line == 1
+    assert result.end_line == 2
+    assert result.next_offset == 2
+
+
+def test_filesystem_backend_read_zero_limit_on_empty_file_reports_empty_file(tmp_path: Path) -> None:
+    """The empty-file check precedes the slice, so the reminder wins over the limit."""
+    target = tmp_path / "blank.txt"
+    target.write_text("")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert "empty contents" in result.file_data["content"]
+
+
+def test_filesystem_backend_read_zero_limit_on_binary_returns_full_payload(tmp_path: Path) -> None:
+    """`limit` does not apply to binary reads, so a zero limit is not an empty read."""
+    target = tmp_path / "clip.png"
+    target.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 32)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.read(str(target), offset=0, limit=0)
+
+    assert result.error is None
+    assert result.file_data is not None
+    assert result.file_data["encoding"] == "base64"
+    assert result.file_data["content"] != ""
+
+
+def test_filesystem_backend_reads_mkv_as_binary(tmp_path: Path) -> None:
+    """Local `.mkv` reads must be routed as binary before UTF-8 decoding."""
+    target = tmp_path / "clip.mkv"
+    raw = b"\x80\x81mkv bytes"
+    target.write_bytes(raw)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error is None
+    assert result.file_data == {
+        "content": base64.standard_b64encode(raw).decode("ascii"),
+        "encoding": "base64",
+    }
+
+
+def test_filesystem_backend_rejects_oversized_video_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local video reads fail before loading oversized files into memory."""
+    target = tmp_path / "clip.mp4"
+    target.write_bytes(b"abcd")
+    monkeypatch.setattr(fs_module, "MAX_VIDEO_INPUT_BYTES", 3)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error == "Video file exceeds maximum input size of 3 bytes"
+
+
+def test_filesystem_backend_rejects_oversized_mkv_before_read(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Local `.mkv` reads use the video size guard before loading bytes."""
+    target = tmp_path / "clip.mkv"
+    target.write_bytes(b"abcd")
+    monkeypatch.setattr(fs_module, "MAX_VIDEO_INPUT_BYTES", 3)
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    result = be.read(str(target))
+
+    assert isinstance(result, ReadResult)
+    assert result.error == "Video file exceeds maximum input size of 3 bytes"
+
+
 def test_filesystem_backend_intercept_large_tool_result(tmp_path: Path):
     """Test that FilesystemBackend properly handles large tool result interception."""
     root = tmp_path
-    rt = ToolRuntime(
-        state={"messages": [], "files": {}},
-        context=None,
-        tool_call_id="test_fs",
-        store=None,
-        stream_writer=lambda _: None,
-        config={},
-    )
-
     middleware = FilesystemMiddleware(backend=FilesystemBackend(root_dir=str(root), virtual_mode=True), tool_token_limit_before_evict=1000)
 
     large_content = "f" * 5000
     tool_message = ToolMessage(content=large_content, tool_call_id="test_fs_123")
-    result = middleware._intercept_large_tool_result(tool_message, rt)
+    result = middleware._intercept_large_tool_result(tool_message)
 
     assert isinstance(result, ToolMessage)
     assert "Tool result too large" in result.content
@@ -592,8 +800,7 @@ def test_grep_ripgrep_glob_with_directory_component(tmp_path: Path, monkeypatch:
     ripgrep `--glob` patterns with a directory component (e.g. `docs/*.md`)
     must still match when the process cwd differs from the search root.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     root = tmp_path / "project"
     (root / "docs").mkdir(parents=True)
@@ -619,8 +826,7 @@ def test_grep_ripgrep_glob_virtual_mode(tmp_path: Path, monkeypatch: pytest.Monk
     Exercises the relative-path re-anchoring through `_to_virtual_path` so a
     regression in path handling can't silently drop results.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     root = tmp_path / "project"
     (root / "docs").mkdir(parents=True)
@@ -646,8 +852,7 @@ def test_grep_on_single_file_path(tmp_path: Path) -> None:
     Before #2732's fix, ripgrep was given the file path directly. Naively
     threading `cwd=base_full` would raise NotADirectoryError for file paths.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     target = tmp_path / "single.txt"
     target.write_text("hello single\n")
@@ -667,8 +872,7 @@ def test_grep_preserves_symlink_path_in_results(tmp_path: Path, monkeypatch: pyt
     `.resolve()` was applied — so users saw the symlinked path they searched
     under. The fix must preserve that behavior.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     real = tmp_path / "real"
     real.mkdir()
@@ -702,8 +906,7 @@ def test_grep_containment_check_blocks_escaping_symlink(tmp_path: Path, monkeypa
     access to files beyond the intended search boundary. The containment check
     must drop those results so they never surface to callers.
     """
-    if shutil.which("rg") is None:
-        pytest.skip("ripgrep not installed")
+    require_ripgrep()
 
     outside = tmp_path / "outside"
     outside.mkdir()
@@ -736,11 +939,65 @@ def _isolate_rg_cache() -> Iterator[None]:
     fs_module._resolve_ripgrep_path.cache_clear()
 
 
-class _FakeProc:
-    def __init__(self, stdout: str = "", stderr: str = "", returncode: int = 0) -> None:
-        self.stdout = stdout
-        self.stderr = stderr
+class _BlockingStdout:
+    """Text stream that yields queued lines then blocks until the proc is killed.
+
+    Mirrors how ripgrep's stdout behaves under `subprocess.Popen(text=True)`:
+    iterating yields one JSON frame per line, and once ripgrep is terminated the
+    pipe closes so iteration ends. The `killed` event stands in for that close,
+    letting the timeout watchdog end the loop without real timing races.
+    """
+
+    def __init__(self, lines: list[str], killed: threading.Event) -> None:
+        self._lines = iter(lines)
+        self._killed = killed
+
+    def __iter__(self) -> "_BlockingStdout":
+        return self
+
+    def __next__(self) -> str:
+        if self._killed.is_set():
+            raise StopIteration
+        try:
+            return next(self._lines)
+        except StopIteration:
+            # No more queued frames: emulate a stream that stays open until the
+            # process is killed (e.g. by the timeout watchdog).
+            self._killed.wait()
+            raise
+
+    def close(self) -> None:
+        pass
+
+
+class _FakePopen:
+    """Minimal `subprocess.Popen` stand-in for the streaming ripgrep path."""
+
+    def __init__(self, stdout_lines: list[str] | None = None, stderr: str = "", returncode: int = 0, *, block: bool = False) -> None:
+        self._killed = threading.Event()
         self.returncode = returncode
+        self.terminated = False
+        self.killed = False
+        lines = stdout_lines or []
+        if block:
+            self.stdout: object = _BlockingStdout(lines, self._killed)
+        else:
+            self.stdout = io.StringIO("".join(lines))
+            self._killed.set()  # non-blocking: nothing to wait on
+        self.stderr = io.StringIO(stderr)
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self._killed.set()
+
+    def kill(self) -> None:
+        self.killed = True
+        # A real kill yields a negative (signal) return code.
+        self.returncode = -9
+        self._killed.set()
+
+    def wait(self, timeout: float | None = None) -> int:
+        return self.returncode
 
 
 @pytest.mark.usefixtures("_isolate_rg_cache")
@@ -771,11 +1028,11 @@ def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch:
 
     captured: dict[str, list[str]] = {}
 
-    def fake_run(cmd: list[str], **_kwargs: object) -> _FakeProc:
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _FakePopen:
         captured["cmd"] = cmd
-        return _FakeProc()
+        return _FakePopen()
 
-    monkeypatch.setattr(fs_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -790,13 +1047,16 @@ def test_resolve_ripgrep_uses_resolved_path_in_argv(tmp_path: Path, monkeypatch:
 
 @pytest.mark.usefixtures("_isolate_rg_cache")
 def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture) -> None:
-    """A `TimeoutExpired` from `subprocess.run` should emit a `WARNING`."""
+    """When the streaming watchdog kills ripgrep with no output, we warn and fall back."""
     monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    # Tiny budget so the watchdog timer fires almost immediately; the fake
+    # stdout blocks until that kill closes the stream (no timing race).
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 0.05)
 
-    def timeout_run(cmd: list[str], **_kwargs: object) -> object:
-        raise subprocess.TimeoutExpired(cmd, timeout=30)
+    def timeout_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[], block=True)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", timeout_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", timeout_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -807,6 +1067,112 @@ def test_ripgrep_timeout_logs_warning(tmp_path: Path, monkeypatch: pytest.Monkey
     assert any("timed out" in r.getMessage() for r in caplog.records), [r.getMessage() for r in caplog.records]
     # Python fallback still ran, so the actual match should come through.
     assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
+    # No partial ripgrep output was captured, so this is a clean fallback, not a truncation.
+    assert result.truncated is False
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_timeout_returns_partial_results_when_output_captured(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When ripgrep is killed after streaming matches, those partial matches are returned flagged as truncated."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 0.05)
+    (tmp_path / "a.txt").write_text("hello\n")
+    frame = json.dumps({"type": "match", "data": {"path": {"text": "a.txt"}, "lines": {"text": "hello\n"}, "line_number": 1}})
+
+    def timeout_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        # One frame streams through, then the stream blocks until the watchdog
+        # kills the process (mirroring a search that outran its time budget).
+        return _FakePopen(stdout_lines=[frame + "\n"], block=True)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", timeout_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path))
+
+    assert result.truncated is True
+    assert result.error is None
+    assert result.matches and any(m["path"].endswith("a.txt") and m["text"] == "hello" for m in result.matches)
+
+
+def test_glob_times_out_and_flags_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """`glob` returns whatever it gathered with `truncated=True` once its wall-clock budget elapses."""
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "b.py").write_text("y")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    # A negative budget puts the deadline in the past so the first iteration trips it.
+    monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", -1)
+
+    result = be.glob("*.py")
+
+    assert result.truncated is True
+    assert result.error is None
+
+
+def test_glob_zero_match_still_honors_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A pattern that matches nothing still checks the deadline while walking (not only on matches)."""
+    (tmp_path / "dir").mkdir()
+    (tmp_path / "dir" / "a.txt").write_text("x")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    # A negative budget puts the deadline in the past so the walk trips it even
+    # though the pattern never matches anything.
+    monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", -1)
+
+    result = be.glob("__missing__")
+
+    assert result.truncated is True
+    assert result.error is None
+    assert result.matches == []
+
+
+def test_glob_returns_matches_gathered_before_deadline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When the deadline trips mid-walk, `glob` returns the matches found so far, not an empty list."""
+    for name in ("a.py", "b.py", "c.py"):
+        (tmp_path / name).write_text("x")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    monkeypatch.setattr(fs_module, "_DEFAULT_GLOB_TIMEOUT", 2)
+    # First reading sets the deadline (0 + 2 = 2); the walk then processes two
+    # entries (ticks 1, 2) before the third (tick 3) trips the deadline.
+    ticks = iter([0, 1, 2, 3, 4, 5, 6])
+    monkeypatch.setattr(fs_module.time, "monotonic", lambda: next(ticks))
+
+    result = be.glob("*.py")
+
+    assert result.truncated is True
+    assert result.error is None
+    # Partial, non-empty payload: some matches landed before the deadline.
+    assert result.matches is not None
+    assert 0 < len(result.matches) < 3
+
+
+def test_glob_mid_iteration_oserror_is_error_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A mid-walk failure surfaces as an error, distinct from a benign timeout truncation."""
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "b.py").write_text("y")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+    _install_flaky_rglob(monkeypatch, OSError("simulated mid-walk failure"))
+
+    result = be.glob("*")
+
+    assert result.error is not None
+    assert "aborted partway" in result.error
+    assert result.truncated is False
+
+
+def test_glob_backend_budget_below_middleware_deadline() -> None:
+    """The backend glob budget must stay below the middleware's outer deadline so partial results win first."""
+    assert fs_module._DEFAULT_GLOB_TIMEOUT < GLOB_TIMEOUT
+
+
+def test_glob_supports_brace_expansion(tmp_path: Path) -> None:
+    """Glob enables brace expansion via `wcmatch`, diverging from stdlib `rglob` (which is literal)."""
+    (tmp_path / "a.py").write_text("x")
+    (tmp_path / "b.md").write_text("y")
+    (tmp_path / "c.txt").write_text("z")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+
+    matches = {info["path"] for info in be.glob("*.{py,md}", path="/").matches or []}
+
+    assert matches == {"/a.py", "/b.md"}
 
 
 @pytest.mark.usefixtures("_isolate_rg_cache")
@@ -820,10 +1186,10 @@ def test_ripgrep_exec_race_logs_warning_and_clears_cache(tmp_path: Path, monkeyp
 
     monkeypatch.setattr(fs_module.shutil, "which", counting_which)
 
-    def missing_run(cmd: list[str], **_kwargs: object) -> object:
+    def missing_popen(cmd: list[str], **_kwargs: object) -> object:
         raise FileNotFoundError(2, "No such file or directory", cmd[0])
 
-    monkeypatch.setattr(fs_module.subprocess, "run", missing_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", missing_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -852,10 +1218,10 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     """
     monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
 
-    def erroring_run(_cmd: list[str], **_kwargs: object) -> _FakeProc:
-        return _FakeProc(stdout="", stderr="rg: error parsing glob 'docs/[': unclosed character class", returncode=2)
+    def erroring_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[], stderr="rg: error parsing glob 'docs/[': unclosed character class", returncode=2)
 
-    monkeypatch.setattr(fs_module.subprocess, "run", erroring_run)
+    monkeypatch.setattr(fs_module.subprocess, "Popen", erroring_popen)
 
     (tmp_path / "a.txt").write_text("hello\n")
     be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
@@ -868,6 +1234,213 @@ def test_ripgrep_nonzero_returncode_falls_back_with_warning(
     assert "error parsing glob" in msgs[0]
     # Python fallback ran and still returned the real match.
     assert result.matches and any(m["path"].endswith("a.txt") for m in result.matches)
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_nonzero_returncode_discards_partial_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A hard ripgrep error after a match reruns the complete Python search."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    frame = _rg_match_frame("a.txt", 1, "hello\n")
+
+    def erroring_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=[frame], stderr="rg: unreadable directory", returncode=2)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", erroring_popen)
+    (tmp_path / "a.txt").write_text("hello\nhello\n")
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    with caplog.at_level(logging.WARNING, logger=fs_module.logger.name):
+        result = be.grep("hello", path=str(tmp_path))
+
+    assert any("ripgrep exited 2" in record.getMessage() for record in caplog.records)
+    assert result.error is None
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_drains_stderr_while_streaming_stdout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Large stderr output cannot block ripgrep before it emits a match."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    monkeypatch.setattr(fs_module, "DEFAULT_GREP_TIMEOUT", 1)
+    frame = _rg_match_frame("a.txt", 1, "hello\n")
+    child_code = f"import sys\nsys.stderr.write('x' * 1_000_000)\nsys.stderr.flush()\nsys.stdout.write({frame!r})\nsys.stdout.flush()\n"
+    real_popen = subprocess.Popen
+
+    def noisy_popen(
+        _cmd: list[str],
+        *,
+        stdout: int,
+        stderr: int,
+        text: bool,
+        cwd: str | None,
+    ) -> subprocess.Popen[str]:
+        assert text
+        return real_popen(
+            [sys.executable, "-c", child_code],
+            stdout=stdout,
+            stderr=stderr,
+            text=True,
+            cwd=cwd,
+        )
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", noisy_popen)
+    # The fallback cannot manufacture the synthetic ripgrep match.
+    (tmp_path / "a.txt").write_text("different text\n")
+    backend = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = backend.grep("hello", path=str(tmp_path))
+
+    assert result.truncated is False
+    assert result.matches == [{"path": str(tmp_path / "a.txt"), "line": 1, "text": "hello"}]
+
+
+def _rg_match_frame(path: str, line_number: int, text: str) -> str:
+    """Build a ripgrep `--json` match frame line for the streaming fake."""
+    return json.dumps({"type": "match", "data": {"path": {"text": path}, "lines": {"text": text}, "line_number": line_number}}) + "\n"
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_caps_total_and_terminates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The streaming ripgrep path stops at `max_count` total matches and kills the process early."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    for name in ("a.txt", "b.txt"):
+        (tmp_path / name).write_text("hello\nhello\nhello\n")
+
+    # More frames than the cap, spread across files, so the cap must apply
+    # across files rather than per file.
+    frames = [
+        _rg_match_frame("a.txt", 1, "hello\n"),
+        _rg_match_frame("a.txt", 2, "hello\n"),
+        _rg_match_frame("b.txt", 1, "hello\n"),
+        _rg_match_frame("b.txt", 2, "hello\n"),
+    ]
+    created: dict[str, _FakePopen] = {}
+
+    def fake_popen(cmd: list[str], **_kwargs: object) -> _FakePopen:
+        # `-m <cap + 1>` is passed to ripgrep as a secondary per-file guard; the
+        # `+ 1` lets a single file emit one match past the cap so truncation is
+        # detectable.
+        assert "-m" in cmd
+        assert cmd[cmd.index("-m") + 1] == "3"
+        proc = _FakePopen(stdout_lines=frames)
+        created["proc"] = proc
+        return proc
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 2
+    # The process was terminated once the cap was reached instead of draining.
+    assert created["proc"].terminated is True
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_below_cap_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """When fewer matches than `max_count` are emitted, the result completes untruncated."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "a.txt").write_text("hello\n")
+    frames = [_rg_match_frame("a.txt", 1, "hello\n")]
+
+    def fake_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=frames)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=100)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 1
+
+
+@pytest.mark.usefixtures("_isolate_rg_cache")
+def test_ripgrep_streaming_exact_cap_not_truncated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Exactly `max_count` matches with none dropped is reported complete."""
+    monkeypatch.setattr(fs_module.shutil, "which", lambda _name: "/usr/bin/rg")
+    (tmp_path / "a.txt").write_text("hello\nhello\n")
+    # Exactly `max_count` frames and no more: ripgrep (`-m cap + 1`) would have
+    # emitted a third if one existed, so the stream ending at the cap proves the
+    # result is complete.
+    frames = [_rg_match_frame("a.txt", 1, "hello\n"), _rg_match_frame("a.txt", 2, "hello\n")]
+
+    def fake_popen(_cmd: list[str], **_kwargs: object) -> _FakePopen:
+        return _FakePopen(stdout_lines=frames)
+
+    monkeypatch.setattr(fs_module.subprocess, "Popen", fake_popen)
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("hello", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_python_fallback_caps_total_matches_across_files(tmp_path: Path) -> None:
+    """The Python fallback caps total matches across files and flags truncation.
+
+    ripgrep is absent in this environment, so `grep` uses `_python_search`.
+    """
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=3)
+
+    assert result.truncated is True
+    assert result.matches is not None
+    assert len(result.matches) == 3
+
+
+def test_python_fallback_no_cap_returns_all_matches(tmp_path: Path) -> None:
+    """With `max_count=None` the Python fallback returns every match, untruncated."""
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (tmp_path / name).write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path))
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 6
+
+
+def test_python_fallback_below_cap_not_truncated(tmp_path: Path) -> None:
+    """A cap larger than the number of matches leaves the result untruncated."""
+    (tmp_path / "a.txt").write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=100)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
+
+
+def test_python_fallback_exact_cap_not_truncated(tmp_path: Path) -> None:
+    """The Python fallback reports exactly `max_count` matches as complete."""
+    (tmp_path / "a.txt").write_text("needle\nneedle\n")
+
+    be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
+
+    result = be.grep("needle", path=str(tmp_path), max_count=2)
+
+    assert result.truncated is False
+    assert result.matches is not None
+    assert len(result.matches) == 2
 
 
 def _install_flaky_rglob(monkeypatch: pytest.MonkeyPatch, exc: Exception, after_yields: int = 1) -> None:
@@ -898,7 +1471,7 @@ def test_grep_python_fallback_survives_mid_iteration_failure(tmp_path: Path, mon
     (root / "second.txt").write_text("hello world\n")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=virtual_mode)
-    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: (None, False))
     _install_flaky_rglob(monkeypatch, FileNotFoundError("simulated mid-walk unlink"))
 
     grep_path = "/" if virtual_mode else str(root)
@@ -929,7 +1502,7 @@ def test_grep_python_fallback_survives_runtime_error_mid_walk(tmp_path: Path, mo
     (root / "b.txt").write_text("hello\n")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=False)
-    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: (None, False))
     _install_flaky_rglob(monkeypatch, RuntimeError("symlink loop"))
 
     result = be.grep("hello", path=str(root))
@@ -947,7 +1520,7 @@ def test_grep_virtual_mode_sanitizes_runtime_error_details(tmp_path: Path, monke
     (root / "b.txt").write_text("hello\n")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
-    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: (None, False))
     _install_flaky_rglob(monkeypatch, RuntimeError(f"symlink loop under {root}"))
 
     result = be.grep("hello", path="/")
@@ -973,7 +1546,7 @@ def test_grep_virtual_mode_sanitizes_oserror_path(tmp_path: Path, monkeypatch: p
     (root / "b.txt").write_text("hello\n")
 
     be = FilesystemBackend(root_dir=str(root), virtual_mode=True)
-    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: None)
+    monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: (None, False))
     gone = str(root / "gone.txt")
     _install_flaky_rglob(monkeypatch, FileNotFoundError(2, "No such file or directory", gone))
 
@@ -1135,21 +1708,19 @@ class TestGrepPythonFallbackTimeout:
     """Tests for the wall-clock timeout on the Python grep fallback."""
 
     def test_python_search_times_out_with_zero_timeout(self, tmp_path: Path) -> None:
-        """`_python_search` returns a `timed out` partial error when the deadline is exceeded."""
+        """`_python_search` flags `truncated` (not an error) when the deadline is exceeded."""
         (tmp_path / "file.txt").write_text("hello")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        _results, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
-        assert partial_error is not None
-        assert "timed out" in partial_error
-        # The real `root_dir` must not leak; the virtual root (`/.`) is shown.
-        assert str(tmp_path) not in partial_error
-        assert "Grep of '/.'" in partial_error
+        _results, truncated, partial_error = be._python_search("hello", tmp_path, None, timeout=0)
+        assert truncated is True
+        # A timeout is not a hard error; matches are valid but incomplete.
+        assert partial_error is None
 
     def test_python_search_matches_literal_substrings(self, tmp_path: Path) -> None:
         """The Python fallback does literal substring matching (no regex)."""
         (tmp_path / "code.py").write_text("def __init__(self):\n    return [a-z]\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("[a-z]", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("[a-z]", tmp_path, None)
         assert partial_error is None
         all_lines = [text for items in results.values() for _, text in items]
         assert any("[a-z]" in line for line in all_lines)
@@ -1185,12 +1756,10 @@ class TestGrepPythonFallbackTimeout:
             return t
 
         monkeypatch.setattr(fs_module.time, "monotonic", fake_monotonic)
-        results, partial_error = be._python_search("needle", tmp_path, None, timeout=1.5)
+        results, truncated, partial_error = be._python_search("needle", tmp_path, None, timeout=1.5)
 
-        assert partial_error is not None
-        assert "timed out" in partial_error
-        assert str(tmp_path) not in partial_error  # virtual mode must not leak the real root
-        assert "Grep of '/.'" in partial_error  # the virtual root is shown instead
+        assert truncated is True
+        assert partial_error is None
         collected = results.get("/big.txt", [])
         assert (1, "needle") in collected
         assert all(line_num != 2500 for line_num, _ in collected)
@@ -1204,11 +1773,11 @@ class TestGrepPythonFallbackTimeout:
         (tmp_path / "code.py").write_text("axb\nab\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
 
-        no_dot, err_dot = be._python_search("a.b", tmp_path, None)  # regex would match "axb"
+        no_dot, _td, err_dot = be._python_search("a.b", tmp_path, None)  # regex would match "axb"
         assert err_dot is None
         assert no_dot == {}
 
-        no_star, err_star = be._python_search("a*b", tmp_path, None)  # regex would match "ab"
+        no_star, _ts, err_star = be._python_search("a*b", tmp_path, None)  # regex would match "ab"
         assert err_star is None
         assert no_star == {}
 
@@ -1216,7 +1785,7 @@ class TestGrepPythonFallbackTimeout:
         """CRLF files yield clean match text via universal-newline translation on read."""
         (tmp_path / "crlf.txt").write_bytes(b"hit me\r\nother\r\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("hit", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("hit", tmp_path, None)
         assert partial_error is None
         matches = results.get("/crlf.txt", [])
         assert matches == [(1, "hit me")]
@@ -1230,7 +1799,7 @@ class TestGrepPythonFallbackTimeout:
         (tmp_path / "good.txt").write_text("needle here\n")
         (tmp_path / "bad.bin").write_bytes(b"\xff\xfe needle \x00\x80")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
         assert partial_error is None
         assert results.get("/good.txt") == [(1, "needle here")]
         assert "/bad.bin" not in results
@@ -1245,7 +1814,7 @@ class TestGrepPythonFallbackTimeout:
         bad.write_text("")
         monkeypatch.setattr(Path, "open", _fake_open_for(bad, _FailingHandle()))
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
 
         assert results == {"/bad.txt": [(1, "needle before failure")]}
         assert partial_error is not None
@@ -1274,7 +1843,7 @@ class TestGrepPythonFallbackTimeout:
 
         monkeypatch.setattr(Path, "open", fake_open)
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
 
         assert results == {}
         assert partial_error is not None
@@ -1292,7 +1861,7 @@ class TestGrepPythonFallbackTimeout:
         bad.write_text("")
         monkeypatch.setattr(Path, "open", _fake_open_for(bad, _FailingHandle()))
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
 
         assert results.get("/good.txt") == [(1, "needle good")]
         assert partial_error is not None
@@ -1304,7 +1873,7 @@ class TestGrepPythonFallbackTimeout:
         (tmp_path / "match.py").write_text("needle in py\n")
         (tmp_path / "skip.txt").write_text("needle in txt\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, "*.py")
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, "*.py")
         assert partial_error is None
         assert results.get("/match.py") == [(1, "needle in py")]
         assert "/skip.txt" not in results
@@ -1316,7 +1885,7 @@ class TestGrepPythonFallbackTimeout:
         (tmp_path / "src").mkdir()
         (tmp_path / "src" / "b.md").write_text("needle src\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, "docs/*.md")
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, "docs/*.md")
         assert partial_error is None
         assert results.get("/docs/a.md") == [(1, "needle doc")]
         assert "/src/b.md" not in results
@@ -1326,7 +1895,7 @@ class TestGrepPythonFallbackTimeout:
         (tmp_path / "big.txt").write_text("needle\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
         be.max_file_size_bytes = 3  # smaller than the file; forces the size-skip branch
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
         assert partial_error is None
         assert results == {}
 
@@ -1335,7 +1904,7 @@ class TestGrepPythonFallbackTimeout:
         target = tmp_path / "f.txt"
         target.write_text("needle\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=False)
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
         assert partial_error is None
         assert results == {str(target): [(1, "needle")]}
 
@@ -1343,7 +1912,7 @@ class TestGrepPythonFallbackTimeout:
         """All matching lines are collected in order with 1-based line numbers."""
         (tmp_path / "f.txt").write_text("needle\nno\nneedle\nno\nneedle\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("needle", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("needle", tmp_path, None)
         assert partial_error is None
         assert results == {"/f.txt": [(1, "needle"), (3, "needle"), (5, "needle")]}
 
@@ -1351,9 +1920,32 @@ class TestGrepPythonFallbackTimeout:
         """Classic-Mac CR line endings are normalized by universal-newline translation."""
         (tmp_path / "cr.txt").write_bytes(b"hit me\rother\r")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        results, partial_error = be._python_search("hit", tmp_path, None)
+        results, _truncated, partial_error = be._python_search("hit", tmp_path, None)
         assert partial_error is None
         assert results.get("/cr.txt") == [(1, "hit me")]
+
+    def test_grep_returns_error_for_refused_include_glob(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `..` include glob becomes `GrepResult.error`, never a raise.
+
+        The shared matcher raises `InvalidGlobPatternError` on traversal and the
+        Python fallback compiles the glob outside any error handling, so `grep`
+        validates the glob before choosing a search path. The check holds with
+        and without ripgrep.
+        """
+        (tmp_path / "f.txt").write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+        for forced_fallback in (True, False):
+            if not forced_fallback:
+                monkeypatch.undo()
+            result = be.grep("needle", path="/", glob="../*.py")
+            assert result.matches == []
+            assert result.error is not None
+            assert "Path traversal" in result.error
 
     def test_grep_fallback_treats_pattern_literally(
         self,
@@ -1367,29 +1959,411 @@ class TestGrepPythonFallbackTimeout:
         """
         (tmp_path / "f.txt").write_text("a.b\naxb\n")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
         matches = be.grep("a.b", path="/").matches
         assert matches is not None
         texts = [m["text"] for m in matches]
         assert "a.b" in texts
         assert "axb" not in texts
 
-    def test_grep_surfaces_timeout_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-        """`grep` surfaces the timeout as a partial error while still returning matches found so far."""
+    def test_grep_flags_timeout_as_truncated_with_partial_results(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        """`grep` flags a fallback timeout as `truncated` while still returning matches found so far."""
         (tmp_path / "file.txt").write_text("hello")
         be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
-        monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_a, **_kw: None)
+        monkeypatch.setattr(FilesystemBackend, "_ripgrep_search", lambda *_a, **_kw: (None, False))
         monkeypatch.setattr(
             be,
             "_python_search",
-            lambda *_a, **_kw: ({"/file.txt": [(1, "hello")]}, "Grep of '/' timed out after 0s with 1 matching file(s)"),
+            lambda *_a, **_kw: ({"/file.txt": [(1, "hello")]}, True, None),
         )
         result = be.grep("hello", path="/")
-        assert result.error is not None
-        assert "timed out" in result.error
+        assert result.truncated is True
+        assert result.error is None
         # Partial matches collected before the timeout are preserved.
         assert result.matches
         assert result.matches[0]["path"] == "/file.txt"
+
+
+class TestFilesystemGrepContext:
+    def test_default_and_zero_preserve_existing_matches(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        def fail_if_called(*_args: object) -> None:
+            pytest.fail("context collection should not run when context_lines is disabled")
+
+        monkeypatch.setattr(backend, "_add_grep_context", fail_if_called)
+        expected = [{"path": "/sample.txt", "line": 2, "text": "needle"}]
+
+        assert backend.grep("needle", path="/").matches == expected
+        assert backend.grep("needle", path="/", context_lines=0).matches == expected
+
+    def test_negative_context_lines_rejected(self, tmp_path: Path) -> None:
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        with pytest.raises(ValueError, match="context_lines must be non-negative"):
+            backend.grep("needle", path="/", context_lines=-1)
+
+    def test_context_respects_file_boundaries_and_merges_overlap(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("needle start\ntwo\nmiddle\nfour\nneedle end")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=2)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 1,
+                "text": "needle start",
+                "context_before": [],
+                "context_after": [{"line": 2, "text": "two"}, {"line": 3, "text": "middle"}],
+            },
+            {
+                "path": "/sample.txt",
+                "line": 5,
+                "text": "needle end",
+                "context_before": [{"line": 3, "text": "middle"}, {"line": 4, "text": "four"}],
+                "context_after": [],
+            },
+        ]
+        assert format_grep_matches(result.matches, "content") == (
+            "/sample.txt:\n  1: needle start\n  2- two\n  3- middle\n  4- four\n  5: needle end"
+        )
+
+    def test_neighboring_matches_are_excluded_from_context(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle one\nneedle two\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle one",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [],
+            },
+            {
+                "path": "/sample.txt",
+                "line": 3,
+                "text": "needle two",
+                "context_before": [],
+                "context_after": [{"line": 4, "text": "after"}],
+            },
+        ]
+
+    def test_ripgrep_context_strips_crlf_terminators(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_bytes(b"before\r\nneedle\r\nafter\r\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(
+            backend,
+            "_ripgrep_search",
+            lambda *_args: ({"/sample.txt": [(2, "needle")]}, False),
+        )
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [{"line": 3, "text": "after"}],
+            }
+        ]
+
+    def test_ripgrep_context_treats_bare_carriage_returns_as_text(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_bytes(b"before\rneedle\rafter\r")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(
+            backend,
+            "_ripgrep_search",
+            lambda *_args: ({"/sample.txt": [(1, "before\rneedle\rafter\r")]}, False),
+        )
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 1,
+                "text": "before\rneedle\rafter\r",
+                "context_before": [],
+                "context_after": [],
+            }
+        ]
+
+    def test_omitted_match_is_not_returned_as_truncated_context(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle returned\nneedle omitted\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(
+            backend,
+            "_ripgrep_search",
+            lambda *_args: ({"/sample.txt": [(2, "needle returned")]}, True),
+        )
+
+        result = backend.grep("needle", path="/", context_lines=2)
+
+        assert result.truncated is True
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 2,
+                "text": "needle returned",
+                "context_before": [{"line": 1, "text": "before"}],
+                "context_after": [{"line": 4, "text": "after"}],
+            }
+        ]
+
+    def test_context_lines_larger_than_file_iterate_only_existing_lines(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("needle")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=10**9)
+
+        assert result.matches == [
+            {
+                "path": "/sample.txt",
+                "line": 1,
+                "text": "needle",
+                "context_before": [],
+                "context_after": [],
+            }
+        ]
+
+    def test_context_formatting_uses_constant_number_of_passes(self) -> None:
+        # Guards against an O(n^2) regression where formatting re-scans the whole
+        # match list once per match. Asserting a *constant* number of full passes
+        # (independent of input size) rather than an exact count keeps the test
+        # from breaking on a still-linear refactor that adds a pass.
+        class CountingMatches(list[GrepMatch]):
+            iterations = 0
+
+            def __iter__(self) -> Iterator[GrepMatch]:
+                self.iterations += 1
+                return super().__iter__()
+
+        matches = CountingMatches(
+            {
+                "path": f"/file-{index}.txt",
+                "line": 1,
+                "text": "needle",
+                "context_before": [],
+                "context_after": [],
+            }
+            for index in range(100)
+        )
+
+        output = format_grep_matches(matches, "content")
+
+        assert matches.iterations < len(matches)
+        assert output.count(":\n  1: needle") == 100
+
+    def test_context_merges_overlapping_windows_and_separates_groups(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("one\ntwo\nneedle three\nfour\nneedle five\nsix\nseven\neight\nnine\nneedle ten\neleven")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        matches = backend.grep("needle", path="/", context_lines=1).matches
+
+        assert matches is not None
+        assert format_grep_matches(matches, "content") == (
+            "/sample.txt:\n  2- two\n  3: needle three\n  4- four\n  5: needle five\n  6- six\n  --\n  9- nine\n  10: needle ten\n  11- eleven"
+        )
+
+    def test_context_does_not_change_file_or_count_modes(self, tmp_path: Path) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("needle\ncontext\nneedle\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        without_context = backend.grep("needle", path="/").matches
+        with_context = backend.grep("needle", path="/", context_lines=1).matches
+
+        assert without_context is not None
+        assert with_context is not None
+        for output_mode in ("files_with_matches", "count"):
+            assert format_grep_matches(with_context, output_mode) == format_grep_matches(without_context, output_mode)
+        assert format_grep_matches(with_context, "files_with_matches") == "/sample.txt"
+        assert format_grep_matches(with_context, "count") == "/sample.txt: 2"
+
+    def test_context_is_scoped_per_file(self, tmp_path: Path) -> None:
+        (tmp_path / "a.txt").write_text("alpha\nneedle a\nbravo\n")
+        (tmp_path / "b.txt").write_text("charlie\nneedle b\ndelta\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.error is None
+        by_path = {match["path"]: match for match in result.matches or []}
+        # Each match carries context only from its own file — no cross-file bleed.
+        assert by_path["/a.txt"]["context_before"] == [{"line": 1, "text": "alpha"}]
+        assert by_path["/a.txt"]["context_after"] == [{"line": 3, "text": "bravo"}]
+        assert by_path["/b.txt"]["context_before"] == [{"line": 1, "text": "charlie"}]
+        assert by_path["/b.txt"]["context_after"] == [{"line": 3, "text": "delta"}]
+        assert format_grep_matches(result.matches or [], "content") == (
+            "/a.txt:\n  1- alpha\n  2: needle a\n  3- bravo\n/b.txt:\n  1- charlie\n  2: needle b\n  3- delta"
+        )
+
+    def test_context_read_failure_keeps_matches_and_surfaces_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        # Simulate a matched file that cannot be re-read for context.
+        monkeypatch.setattr(backend, "_read_grep_context", lambda *_args, **_kwargs: ({}, False))
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        # The match survives with empty context, and the failure is not silent.
+        assert result.matches == [{"path": "/sample.txt", "line": 2, "text": "needle", "context_before": [], "context_after": []}]
+        assert result.error is not None
+        assert "/sample.txt" in result.error
+        assert "context" in result.error.lower()
+
+    def test_context_resolver_runtime_error_keeps_matches_and_surfaces_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        resolve_path = backend._resolve_path
+
+        def resolve_with_context_failure(path: str) -> Path:
+            if path == "/sample.txt":
+                msg = "symlink loop"
+                raise RuntimeError(msg)
+            return resolve_path(path)
+
+        # Python 3.11 and 3.12 raise RuntimeError when Path.resolve() encounters
+        # a symlink loop after the initial search but before the context read.
+        monkeypatch.setattr(backend, "_resolve_path", resolve_with_context_failure)
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.matches == [{"path": "/sample.txt", "line": 2, "text": "needle", "context_before": [], "context_after": []}]
+        assert result.error is not None
+        assert "/sample.txt" in result.error
+        assert "context" in result.error.lower()
+
+    def test_read_grep_context_reports_unreadable_file(self, tmp_path: Path) -> None:
+        # A file ripgrep can match but that is not valid strict UTF-8.
+        target = tmp_path / "latin1.txt"
+        target.write_bytes(b"needle\n\xff\xfe not utf-8\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+
+        context, ok = backend._read_grep_context("/latin1.txt", [(1, 2)])
+
+        assert ok is False
+        assert context == {}
+
+    def test_context_error_is_appended_to_existing_partial_error(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # A pre-existing search error (e.g. ripgrep partial failure) must survive
+        # alongside the context-read failure rather than being overwritten.
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        matches: list[GrepMatch] = [{"path": "/a.txt", "line": 1, "text": "needle"}]
+        monkeypatch.setattr(backend, "_add_grep_context", lambda *_args, **_kwargs: ["/a.txt"])
+
+        combined = backend._apply_grep_context(
+            matches,
+            1,
+            "Error: ripgrep partial failure",
+            "needle",
+            newline="\n",
+        )
+
+        assert combined is not None
+        assert combined.startswith("Error: ripgrep partial failure\n")
+        assert "could not read context" in combined
+        assert "/a.txt" in combined
+
+    def test_context_uses_python_fallback_when_ripgrep_unavailable(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Force the Python fallback so context collection is exercised
+        # deterministically regardless of whether ripgrep is installed.
+        target = tmp_path / "sample.txt"
+        target.write_text("before\nneedle\nafter\n")
+        backend = FilesystemBackend(root_dir=tmp_path, virtual_mode=True)
+        monkeypatch.setattr(backend, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+
+        result = backend.grep("needle", path="/", context_lines=1)
+
+        assert result.error is None
+        assert format_grep_matches(result.matches or [], "content") == "/sample.txt:\n  1- before\n  2: needle\n  3- after"
+
+    def test_content_format_sorts_files_regardless_of_input_order(self) -> None:
+        # `_format_grep_with_context` must sort by path itself; the ordering here
+        # is not guaranteed by the caller when matches are hand-built.
+        matches: list[GrepMatch] = [
+            {"path": "/z.txt", "line": 1, "text": "zeta", "context_before": [], "context_after": []},
+            {"path": "/a.txt", "line": 1, "text": "alpha", "context_before": [], "context_after": []},
+        ]
+
+        output = format_grep_matches(matches, "content")
+
+        assert output == "/a.txt:\n  1: alpha\n/z.txt:\n  1: zeta"
+
+
+class TestGrepPythonFallbackIncludeGlob:
+    """The Python grep fallback shares ripgrep-like include-glob semantics.
+
+    Stubbing `_ripgrep_search` to `None` forces the Python fallback regardless
+    of whether ripgrep is installed, so these lock the shared contract:
+
+    - A slashless pattern (`*.py`) matches the basename at any depth.
+    - A path-containing pattern (`src/**/*.py`) matches relative to the root.
+    """
+
+    def _setup(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FilesystemBackend:
+        (tmp_path / "src" / "app").mkdir(parents=True)
+        (tmp_path / "src" / "app" / "main.py").write_text("import os\n")
+        (tmp_path / "top.py").write_text("import sys\n")
+        (tmp_path / "README.md").write_text("import note\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_a, **_k: (None, False))
+        return be
+
+    def _paths(self, be: FilesystemBackend, glob: str, path: str = "/") -> list[str]:
+        result = be.grep("import", path=path, glob=glob)
+        assert result.matches is not None
+        return sorted(m["path"] for m in result.matches)
+
+    def test_directory_glob_matches_nested(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "src/**/*.py") == ["/src/app/main.py"]
+
+    def test_recursive_glob_matches_all_python(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "**/*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_slashless_glob_matches_at_any_depth(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "*.py") == ["/src/app/main.py", "/top.py"]
+
+    def test_negative_glob(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "*.md") == ["/README.md"]
+
+    def test_glob_relative_to_search_root(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        be = self._setup(tmp_path, monkeypatch)
+        assert self._paths(be, "app/*.py", path="/src") == ["/src/app/main.py"]
 
 
 class TestEditCrlfNormalization:
@@ -1549,20 +2523,17 @@ def test_file_operations_return_errors_for_symlink_loop_paths(tmp_path: Path) ->
     assert be.download_files(["loop"])[0].error == "invalid_path"
 
 
-class TestVirtualModeDefaultDeprecation:
-    """`virtual_mode=None` (omitted) emits a deprecation; explicit values do not."""
+class TestVirtualModeDefault:
+    """`virtual_mode` defaults to `True` and never emits a deprecation."""
 
-    def test_omitted_virtual_mode_warns(self, tmp_path: Path) -> None:
+    def test_omitted_virtual_mode_defaults_true(self, tmp_path: Path) -> None:
         with warnings.catch_warnings(record=True) as captured:
             warnings.simplefilter("always")
             be = FilesystemBackend(root_dir=str(tmp_path))
 
-        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning)]
-        assert len(deprecations) == 1
-        assert deprecations[0].category is LangChainDeprecationWarning
-        assert "virtual_mode" in str(deprecations[0].message)
-        # Default falls back to `False` for backwards compatibility.
-        assert be.virtual_mode is False
+        deprecations = [w for w in captured if issubclass(w.category, DeprecationWarning) and "virtual_mode" in str(w.message)]
+        assert deprecations == []
+        assert be.virtual_mode is True
 
     def test_explicit_virtual_mode_does_not_warn(self, tmp_path: Path) -> None:
         with warnings.catch_warnings(record=True) as captured:

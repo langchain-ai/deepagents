@@ -2,8 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import logging
 import os
+import signal
 import socket
+import subprocess
 import threading
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Self
@@ -11,14 +16,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from deepagents_code.server import (
+from deepagents_code.client.launch import server as server_module
+from deepagents_code.client.launch.server import (
     ServerProcess,
-    _find_free_port,
-    _port_in_use,
+    _server_process_group,
+    _terminate_server_process,
+    _wait_for_process_group_exit,
+    emit_preserved_log_notices,
     wait_for_server_healthy,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
 
 
@@ -77,46 +86,6 @@ class _FakeAsyncClient:
         return self.response
 
 
-class TestPortInUse:
-    def test_free_port(self) -> None:
-        fake_socket = _FakeSocket()
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            assert not _port_in_use("127.0.0.1", 2024)
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr == ("127.0.0.1", 2024)
-
-    def test_occupied_port(self) -> None:
-        fake_socket = _FakeSocket(bind_error=OSError("port already in use"))
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            assert _port_in_use("127.0.0.1", 2024)
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr is None
-
-
-class TestFindFreePort:
-    def test_returns_valid_port(self) -> None:
-        fake_socket = _FakeSocket(sockname=("127.0.0.1", 43210))
-
-        with patch("socket.socket", return_value=fake_socket) as socket_cls:
-            port = _find_free_port("127.0.0.1")
-
-        socket_cls.assert_called_once_with(socket.AF_INET, socket.SOCK_STREAM)
-        assert fake_socket.bound_addr == ("127.0.0.1", 0)
-        assert 1 <= port <= 65535
-
-    def test_returns_port_reported_by_socket(self) -> None:
-        fake_socket = _FakeSocket(sockname=("127.0.0.1", 53123))
-
-        with patch("socket.socket", return_value=fake_socket):
-            port = _find_free_port("127.0.0.1")
-
-        assert port == 53123
-
-
 class TestServerPortSelection:
     """Port resolution in `ServerProcess.start()`."""
 
@@ -142,15 +111,22 @@ class TestServerPortSelection:
         process.poll.return_value = None
         with (
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=self._mock_log_file(tmp_path),
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
             patch(
-                "deepagents_code.server._find_free_port", return_value=43210
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
             ) as find_free,
-            patch("deepagents_code.server._port_in_use") as in_use,
+            patch("deepagents_code.client.launch.server._port_in_use") as in_use,
         ):
             await server.start()
 
@@ -166,13 +142,21 @@ class TestServerPortSelection:
         process.poll.return_value = None
         with (
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=self._mock_log_file(tmp_path),
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
-            patch("deepagents_code.server._port_in_use", return_value=False) as in_use,
-            patch("deepagents_code.server._find_free_port") as find_free,
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ) as in_use,
+            patch("deepagents_code.client.launch.server._find_free_port") as find_free,
         ):
             await server.start()
 
@@ -188,14 +172,23 @@ class TestServerPortSelection:
         process.poll.return_value = None
         with (
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=self._mock_log_file(tmp_path),
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch("deepagents_code.server.wait_for_server_healthy", new=AsyncMock()),
-            patch("deepagents_code.server._port_in_use", return_value=True) as in_use,
             patch(
-                "deepagents_code.server._find_free_port", return_value=43210
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=True
+            ) as in_use,
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
             ) as find_free,
         ):
             await server.start()
@@ -207,47 +200,6 @@ class TestServerPortSelection:
 
 class TestWaitForServerHealthy:
     """Tests for the health-check polling loop."""
-
-    async def test_returns_on_200(self) -> None:
-        """Happy path: server responds 200 immediately."""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("httpx.AsyncClient", return_value=mock_client):
-            await wait_for_server_healthy("http://localhost:2024", timeout=5)
-
-        mock_client.get.assert_awaited_once()
-
-    async def test_raises_on_early_process_exit(self) -> None:
-        """Process dies before health check succeeds -> fail fast."""
-        process = MagicMock()
-        process.poll.return_value = 1
-        process.returncode = 1
-
-        with pytest.raises(RuntimeError, match="exited with code 1"):
-            await wait_for_server_healthy(
-                "http://localhost:2024",
-                timeout=5,
-                process=process,
-            )
-
-    async def test_early_exit_includes_log_output(self) -> None:
-        """read_log output is included in the error message."""
-        process = MagicMock()
-        process.poll.return_value = 1
-        process.returncode = 1
-
-        with pytest.raises(RuntimeError, match="some log output"):
-            await wait_for_server_healthy(
-                "http://localhost:2024",
-                timeout=5,
-                process=process,
-                read_log=lambda: "some log output",
-            )
 
     async def test_early_exit_promotes_marked_startup_error(self) -> None:
         """Marked server startup errors should survive app error trimming."""
@@ -282,42 +234,43 @@ class TestWaitForServerHealthy:
             "DEEPAGENTS_CODE_RUNLOOP_API_KEY."
         )
 
-    async def test_raises_on_timeout(self) -> None:
-        """Timeout exhaustion raises RuntimeError."""
-        import httpx
-
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(side_effect=httpx.ConnectError("refused"))
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_LOCAL", 0),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_REMOTE", 0),
-            pytest.raises(RuntimeError, match="did not become healthy"),
-        ):
-            await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
-
-    async def test_timeout_reports_last_status(self) -> None:
-        """Timeout error includes the last HTTP status code."""
-        mock_response = MagicMock()
-        mock_response.status_code = 503
-        mock_client = AsyncMock()
-        mock_client.get = AsyncMock(return_value=mock_response)
-        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-        mock_client.__aexit__ = AsyncMock(return_value=None)
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_client),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_LOCAL", 0),
-            patch("deepagents_code.server._HEALTH_POLL_INTERVAL_REMOTE", 0),
-            pytest.raises(RuntimeError, match="last status: 503"),
-        ):
-            await wait_for_server_healthy("http://localhost:2024", timeout=0.01)
-
 
 class TestServerProcess:
+    @pytest.fixture(autouse=True)
+    def _no_real_process_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Force the process-only shutdown fallback for placeholder-pid mocks.
+
+        `_stop_process` now tears down the server's whole process group via
+        `os.getpgid`/`os.killpg`. These tests drive `MagicMock` subprocesses
+        with fake pids, so let `_server_process_group` return `None` (by making
+        `os.getpgid` raise) to keep teardown deterministic and guarantee no
+        unrelated real pid is ever signaled. Group-teardown behavior is covered
+        explicitly in `TestTerminateServerProcess`.
+        """
+
+        def _raise(_pid: int) -> int:
+            raise ProcessLookupError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
+
+    async def test_start_is_noop_when_already_running(self) -> None:
+        """`start()` on an already-running server spawns no second process.
+
+        The old `if self.running: return` guard now lives inside
+        `_spawn_process` (under `_state_lock`); a regression would double-spawn
+        the subprocess and leak the port.
+        """
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        running_proc = MagicMock()
+        running_proc.poll.return_value = None  # still alive
+        server._process = running_proc
+
+        with patch("deepagents_code.client.launch.server.subprocess.Popen") as popen:
+            await server.start()
+
+        popen.assert_not_called()
+        assert server._process is running_proc
+
     async def test_wait_for_graph_ready_resolves_graph_endpoint(self) -> None:
         """Graph readiness should force LangGraph to resolve graph factories."""
         client = _FakeAsyncClient(SimpleNamespace(status_code=200))
@@ -383,10 +336,85 @@ class TestServerProcess:
         ):
             await server.wait_for_graph_ready("agent")
 
-    async def test_start_cleans_up_partial_state_on_health_failure(
-        self, tmp_path: Path
+    async def test_start_cleans_up_partial_state_on_cancellation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Failed startup should stop the process and remove owned resources."""
+        """A cancelled startup must reap the subprocess it already spawned.
+
+        `asyncio.CancelledError` is a `BaseException`, not an `Exception`, so
+        `start()` must clean up in a `finally` — otherwise the `langgraph dev`
+        subprocess spawned before the health check is orphaned when the caller
+        is cancelled mid-startup (e.g. Ctrl+D). Regression: PR #4629.
+        """
+        # See sibling health-failure test: pin debug off so the log file is
+        # unlinked and the `not log_path.exists()` assertion can't flake.
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        log_path = tmp_path / "server.log"
+        log_path.write_text("booting")
+
+        process = MagicMock()
+        process.pid = 1234
+        process.poll.return_value = None
+        loop_thread_id = threading.get_ident()
+        cleanup_thread_id: int | None = None
+
+        def record_cleanup_thread(*, timeout: float) -> None:  # noqa: ARG001
+            nonlocal cleanup_thread_id
+            cleanup_thread_id = threading.get_ident()
+
+        process.wait.side_effect = record_cleanup_thread
+
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await server.start()
+
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+        process.wait.assert_called_once()
+        assert cleanup_thread_id is not None
+        assert cleanup_thread_id != loop_thread_id
+        log_file.close.assert_called_once()
+        assert server._process is None
+        assert server._log_file is None
+        assert not config_dir.exists()
+        assert not log_path.exists()
+
+    async def test_start_cleanup_error_does_not_mask_startup_error(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failing `stop()` during cleanup must not mask the startup error.
+
+        `start()`'s `finally` guards `stop()` so that if reaping the subprocess
+        itself raises, the in-flight startup exception still propagates
+        unchanged (rather than being replaced by the cleanup error) and the
+        failure is logged at `error` level.
+        """
         config_dir = tmp_path / "runtime"
         config_dir.mkdir()
         (config_dir / "langgraph.json").write_text("{}")
@@ -404,27 +432,33 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
-                new=AsyncMock(side_effect=RuntimeError("boom")),
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
             ),
-            pytest.raises(RuntimeError, match="boom"),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=RuntimeError("startup boom")),
+            ),
+            patch.object(
+                server, "stop", side_effect=RuntimeError("cleanup boom")
+            ) as mock_stop,
+            caplog.at_level(logging.ERROR),
+            # The original startup error propagates, not the cleanup error.
+            pytest.raises(RuntimeError, match="startup boom"),
         ):
             await server.start()
 
-        process.send_signal.assert_called_once()
-        process.wait.assert_called_once()
-        log_file.close.assert_called_once()
-        assert server._process is None
-        assert server._log_file is None
-        assert not config_dir.exists()
-        assert not log_path.exists()
+        mock_stop.assert_called_once()
+        assert "Error stopping server during startup cleanup" in caplog.text
 
     async def test_start_rescaffolds_when_config_missing(self, tmp_path: Path) -> None:
         """A missing langgraph.json should be rebuilt via the scaffold hook."""
@@ -446,14 +480,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -533,14 +573,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -570,14 +616,20 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -614,15 +666,23 @@ class TestServerProcess:
         server = ServerProcess(config_dir=config_dir, scaffold=scaffold_mock)
 
         with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
-            patch("deepagents_code.server._port_in_use", return_value=False),
             patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
                 return_value=log_file,
             ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
             patch(
-                "deepagents_code.server.wait_for_server_healthy",
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
                 new=AsyncMock(),
             ),
         ):
@@ -638,89 +698,239 @@ class TestServerProcess:
         scaffold_mock.assert_called_once_with(config_dir)
         assert config_path.exists()
 
-    async def test_update_env_and_restart(self, tmp_path: Path) -> None:
-        """update_env stages overrides that restart() applies."""
-        config_dir = tmp_path / "runtime"
-        config_dir.mkdir()
-        (config_dir / "langgraph.json").write_text("{}")
-
-        log_path = tmp_path / "server.log"
-        log_path.write_text("")
-
-        process = MagicMock()
-        process.pid = 1234
-        process.poll.return_value = None
-
-        log_file = MagicMock()
-        log_file.name = str(log_path)
-
-        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
-
-        with (
-            patch("deepagents_code.server._find_free_port", return_value=12345),
-            patch("deepagents_code.server._port_in_use", return_value=False),
-            patch(
-                "deepagents_code.server.tempfile.NamedTemporaryFile",
-                return_value=log_file,
-            ),
-            patch("deepagents_code.server.subprocess.Popen", return_value=process),
-            patch(
-                "deepagents_code.server.wait_for_server_healthy",
-                new=AsyncMock(),
-            ),
-        ):
-            await server.start()
-            assert server.running
-
-            server.update_env(DEEPAGENTS_CODE_SERVER_MODEL="anthropic:claude-opus-4-6")
-
-            # Restart: should stop the old process and start a new one
-            await server.restart()
-
-        # Env override was applied
-        env_key = "DEEPAGENTS_CODE_SERVER_MODEL"
-        assert os.environ.get(env_key) == "anthropic:claude-opus-4-6"
-        # Overrides cleared after successful restart
-        assert server._env_overrides == {}
-
-    async def test_restart_runs_blocking_stop_off_event_loop(
+    async def test_restart_cancellation_awaits_stop_cleanup(
         self, tmp_path: Path
     ) -> None:
-        """restart() must run the blocking subprocess stop off the event loop.
+        """Cancelling restart() lets the offloaded stop finish before re-raising.
 
-        `_stop_process` blocks up to `_SHUTDOWN_TIMEOUT` (plus a SIGKILL grace
-        wait) on `process.wait`; running it directly on the loop freezes the
-        Textual reactor so `/restart` wedges the TUI input. `restart()` must
-        offload it to a worker thread, so the stop executes on a thread other
-        than the one running the event loop.
+        The shield around the `_stop_process` thread must keep it running to
+        completion even when the restart task is cancelled mid-cleanup, so the
+        subprocess is never left half-torn-down; `_start` must not run, so no
+        replacement is spawned.
         """
         config_dir = tmp_path / "runtime"
         config_dir.mkdir()
         (config_dir / "langgraph.json").write_text("{}")
 
         server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
-        server._process = MagicMock()
+        stop_entered = threading.Event()
+        release_stop = threading.Event()
+        stop_completed = threading.Event()
 
-        loop_thread_id = threading.get_ident()
-        stop_thread_id: int | None = None
+        def controlled_stop_process() -> None:
+            stop_entered.set()
+            release_stop.wait(timeout=2.0)
+            stop_completed.set()
 
-        def recording_stop() -> None:
-            nonlocal stop_thread_id
-            stop_thread_id = threading.get_ident()
-            server._process = None
-
-        # Patch only `start` (avoid spawning a real server) and `_stop_process`
-        # (record its executing thread). The real `restart()` and real
-        # `asyncio.to_thread` run, so a regression to a direct call would run
-        # `_stop_process` on the loop thread and fail the off-loop assertion.
+        start_mock = AsyncMock()
         with (
-            patch.object(server, "start", new=AsyncMock()),
-            patch.object(server, "_stop_process", new=recording_stop),
+            patch.object(server, "_stop_process", new=controlled_stop_process),
+            patch.object(server, "_start", new=start_mock),
         ):
+            restart = asyncio.create_task(server.restart())
+            assert await asyncio.to_thread(stop_entered.wait, 2.0)
+
+            # Cancel while the shielded stop thread is mid-flight. A bare await
+            # (no shield) or dropping the `await stop_task` on cancel would let
+            # cleanup be abandoned here — this asserts it still completes.
+            restart.cancel()
+            await asyncio.sleep(0)
+            assert not stop_completed.is_set()
+            release_stop.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(restart, timeout=2.0)
+
+        assert stop_completed.is_set()
+        start_mock.assert_not_awaited()
+
+    async def test_restart_lifecycle_is_serialized_with_stop(
+        self, tmp_path: Path
+    ) -> None:
+        """Terminal stop during restart cleanup prevents a replacement spawn."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        restart_stop_entered = threading.Event()
+        release_restart_stop = threading.Event()
+
+        def controlled_stop_process() -> None:
+            restart_stop_entered.set()
+            release_restart_stop.wait(timeout=2.0)
+
+        with patch.object(server, "_stop_process", new=controlled_stop_process):
+            restart = asyncio.create_task(server.restart())
+            assert await asyncio.to_thread(restart_stop_entered.wait, 2.0)
+
+            # This synchronous fallback runs on another thread while restart is
+            # suspended. It must win permanently rather than allowing restart
+            # to re-arm `_stopped` and spawn after shutdown.
+            await asyncio.to_thread(server.stop)
+            release_restart_stop.set()
+
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(restart, timeout=2.0)
+
+        assert server.running is False
+
+    async def test_concurrent_restarts_are_serialized_by_task(
+        self, tmp_path: Path
+    ) -> None:
+        """A second asyncio task cannot enter while the first restart awaits."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        first_start_entered = asyncio.Event()
+        release_first_start = asyncio.Event()
+        stop_calls = 0
+        start_calls = 0
+
+        def controlled_stop_process() -> None:
+            nonlocal stop_calls
+            stop_calls += 1
+
+        async def controlled_start(**_: object) -> None:
+            nonlocal start_calls
+            start_calls += 1
+            if start_calls == 1:
+                first_start_entered.set()
+                await release_first_start.wait()
+
+        with (
+            patch.object(server, "_stop_process", new=controlled_stop_process),
+            patch.object(server, "_start", new=controlled_start),
+        ):
+            first = asyncio.create_task(server.restart())
+            await first_start_entered.wait()
+            second = asyncio.create_task(server.restart())
+            await asyncio.sleep(0)
+
+            assert stop_calls == 1
+            assert start_calls == 1
+            assert not second.done()
+
+            release_first_start.set()
+            await asyncio.gather(first, second)
+
+        assert stop_calls == 2
+        assert start_calls == 2
+
+    async def test_persistent_env_applies_to_later_restarts(
+        self, tmp_path: Path
+    ) -> None:
+        """Persistent env overrides should apply without restaging."""
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        first_process = MagicMock()
+        first_process.pid = 1234
+        first_process.poll.return_value = None
+        second_process = MagicMock()
+        second_process.pid = 5678
+        second_process.poll.return_value = None
+
+        first_log_file = MagicMock()
+        first_log_file.name = str(tmp_path / "server-1.log")
+        second_log_file = MagicMock()
+        second_log_file.name = str(tmp_path / "server-2.log")
+
+        env_key = "DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS"
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server.persist_env(**{env_key: "12"})
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                side_effect=[first_log_file, second_log_file],
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=[first_process, second_process],
+            ) as popen,
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+            assert server._env_overrides == {}
+
             await server.restart()
 
-        assert stop_thread_id is not None
-        assert stop_thread_id != loop_thread_id
+        first_env = popen.call_args_list[0].kwargs["env"]
+        second_env = popen.call_args_list[1].kwargs["env"]
+        assert first_env[env_key] == "12"
+        assert second_env[env_key] == "12"
+        assert server._env_overrides == {}
+
+    async def test_one_shot_override_wins_over_persisted(self, tmp_path: Path) -> None:
+        """A one-shot `update_env` must override a persisted default on restart.
+
+        Regression: persisting a value (via `persist_env`) and then staging a
+        different value (via `update_env`) before a restart must launch the
+        subprocess with the freshly staged value, not the stale persisted one.
+        """
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        first_process = MagicMock()
+        first_process.pid = 1234
+        first_process.poll.return_value = None
+        second_process = MagicMock()
+        second_process.pid = 5678
+        second_process.poll.return_value = None
+        first_log_file = MagicMock()
+        first_log_file.name = str(tmp_path / "server-1.log")
+        second_log_file = MagicMock()
+        second_log_file.name = str(tmp_path / "server-2.log")
+
+        env_key = "DEEPAGENTS_CODE_SERVER_RUBRIC_MAX_ITERATIONS"
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server.persist_env(**{env_key: "10"})
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server._port_in_use", return_value=False
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                side_effect=[first_log_file, second_log_file],
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                side_effect=[first_process, second_process],
+            ) as popen,
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+        ):
+            await server.start()
+            # Stage a different value for the next restart only.
+            server.update_env(**{env_key: "12"})
+            await server.restart()
+
+        # The restart that applies the staged override must use it, not the
+        # persisted default it temporarily supersedes.
+        second_env = popen.call_args_list[1].kwargs["env"]
+        assert second_env[env_key] == "12"
 
     async def test_restart_rollback_on_failure(self, tmp_path: Path) -> None:
         """Env overrides are rolled back when restart fails."""
@@ -737,11 +947,12 @@ class TestServerProcess:
 
         old_value = os.environ.get("DEEPAGENTS_CODE_SERVER_MODEL")
 
-        async def failing_start(*, timeout: float = 60) -> None:  # noqa: ARG001, ASYNC109, RUF029
+        async def failing_start(**_: object) -> None:
+            await asyncio.sleep(0)
             msg = "restart failed"
             raise RuntimeError(msg)
 
-        server.start = failing_start  # ty: ignore
+        server._start = failing_start  # ty: ignore
         server.update_env(DEEPAGENTS_CODE_SERVER_MODEL="should-be-rolled-back")
 
         with pytest.raises(RuntimeError, match="restart failed"):
@@ -751,3 +962,860 @@ class TestServerProcess:
         assert os.environ.get("DEEPAGENTS_CODE_SERVER_MODEL") == old_value
         # Overrides NOT cleared (available for retry)
         assert "DEEPAGENTS_CODE_SERVER_MODEL" in server._env_overrides
+
+
+class TestServerProcessStopIdempotency:
+    """`stop()` must be idempotent and safe against concurrent callers.
+
+    The interactive shutdown path may invoke `stop()` from two places — the
+    coordinated teardown task (offloaded to a worker thread) and the outer
+    `finally` fallback in `run_textual_app` — so process teardown and resource
+    cleanup must run exactly once and never interleave.
+    """
+
+    def test_stop_is_idempotent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Repeated `stop()` calls tear the process down only once."""
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        calls: list[int] = []
+        monkeypatch.setattr(server, "_stop_process_locked", lambda: calls.append(1))
+
+        server.stop()
+        server.stop()
+        server.stop()
+
+        assert calls == [1]
+
+    def test_concurrent_stop_runs_teardown_once(self) -> None:
+        """Two threads calling `stop()` at once run teardown exactly once.
+
+        The first caller holds the lock across `_stop_process`; the second
+        blocks on it and then short-circuits on the `_stopped` flag instead of
+        re-running teardown, so there is no double cleanup and no interleave.
+        """
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        entered = threading.Event()
+        release = threading.Event()
+        calls: list[int] = []
+
+        def slow_stop_process() -> None:
+            calls.append(1)
+            entered.set()
+            release.wait(timeout=2.0)
+
+        server._stop_process_locked = slow_stop_process  # ty: ignore[invalid-assignment]
+
+        first = threading.Thread(target=server.stop)
+        second = threading.Thread(target=server.stop)
+        first.start()
+        # Wait until the first caller is inside the locked teardown, then start
+        # the second so it is guaranteed to contend for the lock.
+        assert entered.wait(timeout=2.0)
+        second.start()
+        release.set()
+        first.join(timeout=2.0)
+        second.join(timeout=2.0)
+
+        assert calls == [1]
+        assert server._stopped is True
+
+    async def test_start_rearms_stop_guard(self) -> None:
+        """A fresh `start()` clears the idempotency guard set by `stop()`."""
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server.stop()
+        assert server._stopped is True
+
+        # `start()` re-arms the guard before doing any real work; the missing
+        # langgraph.json then aborts startup, which is fine for this assertion.
+        with contextlib.suppress(RuntimeError):
+            await server.start()
+
+        try:
+            assert server._stopped is False
+        finally:
+            # The failed `start()` allocated the workspace `TemporaryDirectory`
+            # before raising, and did so outside `_start`'s cleanup `finally` —
+            # so without an explicit `stop()` its finalizer would warn about
+            # implicit cleanup at GC time.
+            server.stop()
+
+
+class TestPreservedLogNotice:
+    """The `Server log preserved at:` notice must survive TUI teardown.
+
+    `stop()` can run while Textual still owns the alternate screen (the
+    coordinated teardown stops the server before `super().exit()` restores the
+    terminal), so a stderr print inside teardown is discarded. `stop()` queues
+    the preserved path onto a process-global list and
+    `emit_preserved_log_notices()` prints every queued path later, once the
+    terminal is restored. Regression: PR #4831.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_pending_logs(self) -> Iterator[None]:
+        """Isolate the process-global queue from other tests in both directions."""
+        server_module._PENDING_PRESERVED_LOGS.clear()
+        yield
+        server_module._PENDING_PRESERVED_LOGS.clear()
+
+    @staticmethod
+    def _make_stopped_server(log_path: Path) -> ServerProcess:
+        """Build a server wired to an already-exited process and real log file."""
+        log_path.write_text("booting", encoding="utf-8")
+        log_file = MagicMock()
+        log_file.name = str(log_path)
+
+        process = MagicMock()
+        process.poll.return_value = 0  # already exited: skip termination
+
+        server = ServerProcess(host="127.0.0.1", port=2024)
+        server._process = process
+        server._log_file = log_file
+        return server
+
+    def test_stop_queues_path_without_printing_when_debug_on(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With debug on, `stop()` preserves the log and defers the notice."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+
+        server.stop()
+
+        assert list(server_module._PENDING_PRESERVED_LOGS) == [log_path]
+        assert log_path.exists()
+        assert server._log_file is None
+        assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_emit_prints_queued_path_once(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """`emit_preserved_log_notices()` prints the path once, then drains it."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+        server.stop()
+
+        emit_preserved_log_notices()
+
+        first = capsys.readouterr().err
+        assert f"Server log preserved at: {log_path}" in first
+        assert server_module._PENDING_PRESERVED_LOGS == []
+
+        # A second call is a no-op: nothing is printed and no error is raised.
+        emit_preserved_log_notices()
+        assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_no_notice_when_debug_off(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """With debug off, the log is unlinked and no path is queued."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+
+        server.stop()
+
+        assert server_module._PENDING_PRESERVED_LOGS == []
+        assert not log_path.exists()
+
+        emit_preserved_log_notices()
+        assert "Server log preserved at:" not in capsys.readouterr().err
+
+    def test_stop_then_emit_surfaces_path(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """The terminal stop-then-emit sequence surfaces the preserved path.
+
+        Guards the #4831 ordering: stopping the server (during teardown, when a
+        print would be swallowed) then emitting after the terminal is restored
+        yields exactly one visible line.
+        """
+        monkeypatch.setenv("DEEPAGENTS_CODE_DEBUG", "1")
+        log_path = tmp_path / "server.log"
+        server = self._make_stopped_server(log_path)
+
+        server.stop()
+        assert "Server log preserved at:" not in capsys.readouterr().err
+        emit_preserved_log_notices()
+
+        assert f"Server log preserved at: {log_path}" in capsys.readouterr().err
+
+
+class TestServerSessionIsolation:
+    """Tests that `start()` detaches the server from dcode's terminal."""
+
+    @staticmethod
+    def _make_server(tmp_path: Path) -> ServerProcess:
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        return ServerProcess(config_dir=config_dir)
+
+    @staticmethod
+    def _mock_log_file(tmp_path: Path) -> MagicMock:
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+        return log_file
+
+    async def _spawn_and_capture(
+        self, tmp_path: Path, platform: str, monkeypatch: pytest.MonkeyPatch
+    ) -> MagicMock:
+        """Run `start()` on a patched platform and return the `Popen` mock."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", platform
+        )
+        server = self._make_server(tmp_path)
+        process = MagicMock(pid=4321)
+        process.poll.return_value = None
+        popen = MagicMock(return_value=process)
+        with (
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=self._mock_log_file(tmp_path),
+            ),
+            patch("deepagents_code.client.launch.server.subprocess.Popen", popen),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(),
+            ),
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=43210,
+            ),
+            patch("deepagents_code.client.launch.server._port_in_use"),
+        ):
+            await server.start()
+        return popen
+
+    async def test_posix_spawn_starts_new_session(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On POSIX the server is spawned in its own session/process group."""
+        popen = await self._spawn_and_capture(tmp_path, "linux", monkeypatch)
+        assert popen.call_args.kwargs["start_new_session"] is True
+        assert popen.call_args.kwargs["creationflags"] == 0
+
+    async def test_windows_spawn_starts_new_process_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows a console group enables targeted Ctrl+Break shutdown."""
+        popen = await self._spawn_and_capture(tmp_path, "win32", monkeypatch)
+        assert popen.call_args.kwargs["start_new_session"] is False
+        assert (
+            popen.call_args.kwargs["creationflags"]
+            == server_module._WINDOWS_CREATE_NEW_PROCESS_GROUP
+        )
+
+
+class TestServerProcessGroup:
+    """Tests for `_server_process_group` targeting logic."""
+
+    def test_returns_none_on_windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Windows uses console groups instead of POSIX process groups."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        assert _server_process_group(4321) is None
+
+    def test_returns_none_when_process_gone(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A vanished process yields no group to signal."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+
+        def _raise(_pid: int) -> int:
+            raise ProcessLookupError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
+        assert _server_process_group(4321) is None
+
+    def test_returns_none_when_not_group_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A process that does not lead its own group is not group-signaled."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        # pgid (5000) != pid (4321): the server shares another group.
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda pid: 5000 if pid == 4321 else 999,
+        )
+        assert _server_process_group(4321) is None
+
+    def test_returns_none_when_group_is_dcodes_own(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The server's group is never signaled when it equals dcode's own."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        # Both the server and dcode (pid 0) resolve to the same group.
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda _pid: 4321,
+        )
+        assert _server_process_group(4321) is None
+
+    def test_returns_dedicated_group(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A dedicated leader group distinct from dcode's is returned."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda pid: 4321 if pid == 4321 else 999,
+        )
+        assert _server_process_group(4321) == 4321
+
+    def test_unexpected_getpgid_error_warns_and_falls_back(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A non-`ProcessLookupError` failure falls back to root but is logged."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+
+        def _raise(_pid: int) -> int:
+            raise PermissionError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.getpgid", _raise)
+
+        with caplog.at_level(logging.WARNING):
+            assert _server_process_group(4321) is None
+
+        assert "falling back to root-only signaling" in caplog.text
+
+
+class TestTerminateServerProcess:
+    """Tests for detached process-group teardown."""
+
+    @staticmethod
+    def _own_group_process() -> MagicMock:
+        process = MagicMock()
+        process.pid = 4321
+        process.poll.return_value = None
+        return process
+
+    @staticmethod
+    def _patch_own_group(monkeypatch: pytest.MonkeyPatch) -> None:
+        """Make pid 4321 a dedicated group leader distinct from dcode's."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda pid: 4321 if pid == 4321 else 999,
+        )
+
+    @staticmethod
+    def _gone_after_signal(_pgid: int, sig: int) -> None:
+        """Model a group that disappears after receiving its real signal."""
+        if sig == 0:
+            raise ProcessLookupError
+
+    def test_graceful_group_shutdown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """SIGTERM is sent to the whole group and the process exits gracefully."""
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock(side_effect=self._gone_after_signal)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+        ]
+        process.wait.assert_called_once()
+        process.send_signal.assert_not_called()
+        process.kill.assert_not_called()
+
+    def test_timeout_escalates_to_group_sigkill(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A hung group is escalated to a group SIGKILL after the timeout."""
+        self._patch_own_group(monkeypatch)
+        group_killed = False
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            nonlocal group_killed
+            if sig == signal.SIGKILL:
+                group_killed = True
+            elif sig == 0 and group_killed:
+                raise ProcessLookupError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+            ((4321, 0),),
+        ]
+        process.wait.assert_called_once_with()
+        process.kill.assert_not_called()
+
+    def test_group_wait_ignores_exited_leader(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A group remains live while a descendant survives its leader."""
+        probes = iter([None, ProcessLookupError()])
+
+        def _probe(_pgid: int, sig: int) -> None:
+            assert sig == 0
+            result = next(probes)
+            if isinstance(result, BaseException):
+                raise result
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", _probe)
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.time.sleep", lambda _: None
+        )
+        process = self._own_group_process()
+        process.poll.return_value = 0
+
+        assert _wait_for_process_group_exit(process, 4321, 1) is True
+
+        # Reaping the leader does not end the group-level wait while a
+        # descendant keeps the first probe alive.
+        assert process.poll.call_count == 2
+        process.wait.assert_called_once_with()
+
+    def test_group_wait_reaps_leader_before_first_probe(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A zombie leader cannot make an otherwise empty group look alive."""
+        leader_reaped = False
+
+        def _poll() -> int:
+            nonlocal leader_reaped
+            leader_reaped = True
+            return 0
+
+        def _probe(_pgid: int, sig: int) -> None:
+            assert sig == 0
+            if leader_reaped:
+                raise ProcessLookupError
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", _probe)
+        process = self._own_group_process()
+        process.poll.side_effect = _poll
+
+        assert _wait_for_process_group_exit(process, 4321, 0) is True
+
+        process.poll.assert_called_once_with()
+        process.wait.assert_called_once_with()
+
+    def test_group_wait_permission_error_probe_keeps_waiting(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An EPERM probe means "still alive", so the wait must not stop early."""
+        probes = iter([PermissionError(), ProcessLookupError()])
+
+        def _probe(_pgid: int, sig: int) -> None:
+            assert sig == 0
+            raise next(probes)
+
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", _probe)
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.time.sleep", lambda _: None
+        )
+        process = self._own_group_process()
+
+        # First probe raises EPERM (unsignalable but live); only the second,
+        # which proves the group is gone, ends the wait successfully.
+        assert _wait_for_process_group_exit(process, 4321, 1) is True
+        process.wait.assert_called_once_with()
+
+    def test_never_signals_dcodes_process_group(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """When the server shares dcode's group, only the root proc is signaled."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "linux"
+        )
+        # Server pid and dcode (pid 0) resolve to the same group id.
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.os.getpgid",
+            lambda _pid: 4321,
+        )
+        killpg = MagicMock()
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        killpg.assert_not_called()
+        process.send_signal.assert_called_once_with(signal.SIGTERM)
+
+    def test_windows_ctrl_break_timeout_escalates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """On Windows Ctrl+Break permits graceful shutdown before escalation."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            None,
+        ]
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.kill.assert_called_once_with()
+
+    def test_windows_logs_the_group_scope_for_the_graceful_signal(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Ctrl+Break reaches the console group even with no POSIX pgid.
+
+        The word in the log line is the only observable effect of the win32
+        clause in `signal_scope`, so nothing else can catch its removal.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = ProcessLookupError
+
+        with caplog.at_level(logging.DEBUG, logger=server_module.__name__):
+            _terminate_server_process(process)
+
+        assert "process group" in caplog.text
+
+    def test_windows_escalation_reports_root_only_kill(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The hard kill reaches the root handle, and says so.
+
+        Ctrl+Break is group-wide but `TerminateProcess` is not, so reusing the
+        graceful signal's scope here would claim a group kill that never
+        happened and hide the orphaned descendants.
+        """
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            0,
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        assert "killing process" in caplog.text
+        assert "killing process group" not in caplog.text
+        assert "left orphaned" in caplog.text
+
+    def test_windows_ctrl_break_shutdown_is_graceful(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A responsive Windows server exits through Uvicorn's SIGBREAK path."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.wait.assert_called_once_with(timeout=server_module._SHUTDOWN_TIMEOUT)
+        process.kill.assert_not_called()
+
+    def test_initial_sigterm_process_lookup_is_benign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A group that vanishes before SIGTERM is not escalated to SIGKILL."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, _sig: int) -> None:
+            raise ProcessLookupError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        process.kill.assert_not_called()
+
+    def test_initial_sigterm_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """An undeliverable SIGTERM leaves the group running and is reported."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, _sig: int) -> None:
+            raise PermissionError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        process = self._own_group_process()
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        killpg.assert_called_once_with(4321, signal.SIGTERM)
+        process.kill.assert_not_called()
+        assert "may be orphaned" in caplog.text
+
+    def test_sigkill_process_lookup_is_benign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A group that exits just before the escalation SIGKILL is benign."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise ProcessLookupError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+        ]
+
+    def test_sigkill_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A failed escalation SIGKILL surfaces the orphan risk."""
+        self._patch_own_group(monkeypatch)
+
+        def _killpg(_pgid: int, sig: int) -> None:
+            if sig == signal.SIGKILL:
+                raise PermissionError
+
+        killpg = MagicMock(side_effect=_killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        assert "may be orphaned" in caplog.text
+
+    def test_sigkill_group_probe_timeout_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A group that outlives SIGKILL is reported, not silently dropped."""
+        self._patch_own_group(monkeypatch)
+        # The group never disappears: every liveness probe reports it alive.
+        killpg = MagicMock(return_value=None)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SHUTDOWN_TIMEOUT", 0)
+        monkeypatch.setattr("deepagents_code.client.launch.server._SIGKILL_TIMEOUT", 0)
+        process = self._own_group_process()
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+            ((4321, signal.SIGKILL),),
+            ((4321, 0),),
+        ]
+        assert "did not exit after the hard kill" in caplog.text
+
+    def test_windows_sigkill_timeout_warns(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """On Windows a process that ignores SIGKILL is reported after the wait."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = [
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=3),
+            subprocess.TimeoutExpired(cmd="langgraph", timeout=2),
+        ]
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        process.kill.assert_called_once_with()
+        assert "did not exit after the hard kill" in caplog.text
+
+    async def test_startup_failure_terminates_group(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A failed startup tears down the detached server group, not just root."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_DEBUG", raising=False)
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock(side_effect=self._gone_after_signal)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+        log_file = MagicMock()
+        log_file.name = str(tmp_path / "server.log")
+
+        process = self._own_group_process()
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=True)
+
+        with (
+            patch(
+                "deepagents_code.client.launch.server._find_free_port",
+                return_value=12345,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.tempfile.NamedTemporaryFile",
+                return_value=log_file,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.subprocess.Popen",
+                return_value=process,
+            ),
+            patch(
+                "deepagents_code.client.launch.server.wait_for_server_healthy",
+                new=AsyncMock(side_effect=RuntimeError("boom")),
+            ),
+            pytest.raises(RuntimeError, match="boom"),
+        ):
+            await server.start()
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+        ]
+        assert server._process is None
+
+    async def test_restart_terminates_group_and_restarts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Restart tears down the old server group before starting a new one."""
+        self._patch_own_group(monkeypatch)
+        killpg = MagicMock(side_effect=self._gone_after_signal)
+        monkeypatch.setattr("deepagents_code.client.launch.server.os.killpg", killpg)
+
+        config_dir = tmp_path / "runtime"
+        config_dir.mkdir()
+        (config_dir / "langgraph.json").write_text("{}")
+
+        server = ServerProcess(config_dir=config_dir, owns_config_dir=False)
+        server._process = self._own_group_process()
+
+        start_mock = AsyncMock()
+        with patch.object(server, "_start", start_mock):
+            await server.restart()
+
+        assert killpg.call_args_list == [
+            ((4321, signal.SIGTERM),),
+            ((4321, 0),),
+        ]
+        start_mock.assert_awaited_once()
+        assert server._process is None
+
+    def test_windows_ctrl_break_process_lookup_is_benign(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A Windows process that vanishes before Ctrl+Break needs no SIGKILL."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = ProcessLookupError
+
+        _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.kill.assert_not_called()
+
+    def test_windows_ctrl_break_oserror_falls_back_to_terminate(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A headless Windows child is terminated when Ctrl+Break is unavailable."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.send_signal.side_effect = OSError("no console")
+
+        with caplog.at_level(logging.WARNING):
+            _terminate_server_process(process)
+
+        process.send_signal.assert_called_once_with(
+            server_module._WINDOWS_CTRL_BREAK_EVENT
+        )
+        process.terminate.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=server_module._SHUTDOWN_TIMEOUT)
+        process.kill.assert_not_called()
+        assert "falling back to terminate" in caplog.text
+
+    def test_windows_sigkill_oserror_reports_orphan(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """On Windows a failed escalation SIGKILL reports the orphan risk."""
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server.sys.platform", "win32"
+        )
+        process = self._own_group_process()
+        process.wait.side_effect = subprocess.TimeoutExpired(cmd="langgraph", timeout=3)
+        process.kill.side_effect = PermissionError
+
+        with caplog.at_level(logging.ERROR):
+            _terminate_server_process(process)
+
+        process.kill.assert_called_once_with()
+        assert "may be orphaned" in caplog.text
+
+    def test_stop_process_warns_when_teardown_leaves_process_alive(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A process still alive after teardown surfaces the orphan risk."""
+        server = ServerProcess()
+        process = MagicMock()
+        process.pid = 4321
+        # `poll()` never reports exit, modeling teardown that could not kill it.
+        process.poll.return_value = None
+        server._process = process
+        monkeypatch.setattr(
+            "deepagents_code.client.launch.server._terminate_server_process",
+            MagicMock(),
+        )
+
+        with caplog.at_level(logging.WARNING):
+            server._stop_process()
+
+        assert "Dropping handle to server pid=4321 that is still running" in caplog.text
+        assert server._process is None

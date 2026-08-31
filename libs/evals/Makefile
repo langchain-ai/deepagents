@@ -1,4 +1,4 @@
-.PHONY: lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: dataset dataset-check lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
 
 .DEFAULT_GOAL := help
 
@@ -42,24 +42,26 @@ test_watch: ## Run tests in watch mode
 # -n = concurrent trials (parallel sandbox slots), NOT task count
 # -l = max tasks to run (omit for all)
 HARBOR_AGENT_IMPL ?= dcode
-HARBOR_AGENT_GRAPH = $(if $(filter bare,$(HARBOR_AGENT_IMPL)),bare_deepagent,deepagent)
+HARBOR_AGENT_GRAPH = $(HARBOR_AGENT_IMPL)
 HARBOR_LANGGRAPH_PROJECT = deepagents_harbor/langgraph_project
 HARBOR_LOCAL_DEPS_DIR = $(HARBOR_LANGGRAPH_PROJECT)/.local_deps
 HARBOR_AGENT_ARGS = --agent langgraph --agent-kwarg project_path=$(HARBOR_LANGGRAPH_PROJECT) --agent-kwarg config=langgraph.json --agent-kwarg graph=$(HARBOR_AGENT_GRAPH)
-HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}'
+HARBOR_AGENT_ENV_ARGS ?= --agent-env 'LANGSMITH_API_KEY=$${LANGSMITH_API_KEY}' --agent-env 'LANGSMITH_TRACING=true' --agent-env 'ANTHROPIC_API_KEY=$${ANTHROPIC_API_KEY}' --agent-env 'FIREWORKS_API_KEY=$${FIREWORKS_API_KEY}' --agent-env 'UV_PRERELEASE=allow'
 HARBOR_HELLO_WORLD_JOBS_DIR ?= harbor-jobs/hello-world
 HARBOR_TERMINAL_BENCH_JOBS_DIR ?= harbor-jobs/terminal-bench
 HARBOR_TERMINAL_BENCH_DATASET ?= terminal-bench/terminal-bench-2
 HARBOR_LANGSMITH_EXPERIMENT ?= deepagents-harbor-local
 
 stage-harbor-local-deps: ## Stage checked-out packages for Harbor LangGraph sandboxes
-	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)
+	@mkdir -p $(HARBOR_LOCAL_DEPS_DIR)/partners
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../deepagents/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents/
 	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../code/ $(HARBOR_LOCAL_DEPS_DIR)/deepagents-code/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../acp/ $(HARBOR_LOCAL_DEPS_DIR)/acp/
+	rsync -a --delete --exclude '.venv' --exclude '__pycache__' --exclude '.pytest_cache' --exclude 'build' --exclude 'dist' --exclude '*.egg-info' ../partners/quickjs/ $(HARBOR_LOCAL_DEPS_DIR)/partners/quickjs/
 
-run-hello-world: stage-harbor-local-deps ## Run hello-world job
+run-hello-world: stage-harbor-local-deps ## Run hello-world job (override model with MODEL=<id>)
 	@mkdir -p $(HARBOR_HELLO_WORLD_JOBS_DIR)
-	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --dataset hello-world --task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
+	uv run harbor run $(HARBOR_AGENT_ARGS) $(HARBOR_AGENT_ENV_ARGS) --model $(or $(MODEL),fireworks:accounts/fireworks/models/glm-5p2) --dataset hello-world --include-task-name hello-world -n 1 --jobs-dir $(HARBOR_HELLO_WORLD_JOBS_DIR) --env docker
 
 run-terminal-bench-modal: stage-harbor-local-deps ## Run terminal-bench on Modal (4 concurrent)
 	@mkdir -p $(HARBOR_TERMINAL_BENCH_JOBS_DIR)
@@ -108,6 +110,32 @@ model-groups: ## Regenerate MODEL_GROUPS.md from the canonical registry
 
 eval-catalog: ## Regenerate EVAL_CATALOG.md from eval test files
 	uv run python scripts/generate_eval_catalog.py
+
+######################
+# DRBENCH DATASET
+######################
+
+# datasets/drbench-evals commits no task directories. All 100 are generated from
+# upstream's configs at the commit pinned as `UPSTREAM_SHA` in
+# harbor_adapters/drbench/adapter.py, fetched with a sparse checkout that skips the
+# ~69 MiB document corpus (app mode's per-task image serves the documents instead).
+
+dataset: ## Build the DRBench task dataset from the pinned upstream commit
+	uv run python -m harbor_adapters.drbench.main --populate datasets/drbench-evals
+
+dataset-check: ## Verify DRBench pins match upstream and generation is deterministic
+	uv run python -m harbor_adapters.drbench.main --check-labels
+	uv run python -m harbor_adapters.drbench.main --check-subsets
+	@set -eu; \
+	first=$$(mktemp -d); second=$$(mktemp -d); \
+	trap 'rm -rf "$$first" "$$second"' EXIT; \
+	uv run python -m harbor_adapters.drbench.main --populate "$$first" >/dev/null; \
+	uv run python -m harbor_adapters.drbench.main --populate "$$second" >/dev/null; \
+	if diff -r "$$first" "$$second"; then \
+		echo "DRBench generation is deterministic ($$(find "$$first" -type f | wc -l | tr -d ' ') files)"; \
+	else \
+		echo "DRBench generation is NOT deterministic; see the diff above" >&2; exit 1; \
+	fi
 
 ######################
 # LINTING AND FORMATTING

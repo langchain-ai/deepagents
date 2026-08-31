@@ -18,7 +18,6 @@ from deepagents.backends.state import StateBackend
 from deepagents.middleware.subagents import (
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
-    TASK_SYSTEM_PROMPT,
     SubAgentMiddleware,
     _build_task_tool,
     create_sub_agent,
@@ -94,7 +93,8 @@ class TestSubagentMiddlewareInit:
             ],
         )
         assert middleware is not None
-        assert "Available subagent types:" in middleware.system_prompt
+        # Lean default: no usage prose. Agents reach the model via the task tool.
+        assert middleware.system_prompt is None
         assert len(middleware.tools) == 1
         assert middleware.tools[0].name == "task"
 
@@ -245,9 +245,10 @@ class TestSubagentMiddlewareInit:
             ],
         )
         assert middleware is not None
-        # System prompt includes TASK_SYSTEM_PROMPT plus available subagent types
-        assert middleware.system_prompt.startswith(TASK_SYSTEM_PROMPT)
-        assert "weather" in middleware.system_prompt
+        # Lean default: no usage prose; the subagent surfaces via the task tool.
+        assert middleware.system_prompt is None
+        task_tool = next(t for t in middleware.tools if t.name == "task")
+        assert "weather" in (task_tool.description or "")
 
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""

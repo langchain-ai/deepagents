@@ -31,7 +31,8 @@ _REPL_SYSTEM_PROMPT_TEMPLATE = (
     "{side_effects_line}\n"
     "- Timeout: {timeout}s per call. Memory: {memory_limit_mb} MB total.\n"
     "- `console.log` output is captured and returned alongside the result.\n"
-    "- `display(value)` explicitly forwards native content blocks to the model; "
+    "- `display(value)` explicitly forwards native text or multimodal content "
+    "blocks to the model; "
     "ordinary objects remain JavaScript data."
 )
 _SUBAGENT_SYSTEM_PROMPT_TEMPLATE = """
@@ -413,8 +414,15 @@ def render_node_compat_prompt(  # noqa: C901  # simple map of adapter tools to p
         sections.extend(
             [
                 "",
-                "Use `display(value)` to forward native content blocks to the model; "
-                "keep ordinary tool results as JS data.",
+                "### Native content blocks",
+                "",
+                "Host tools may return text or multimodal content blocks. Keep them "
+                "as JS data unless the model needs to inspect them; then call "
+                "`display(value)` to forward the native content.",
+                "```javascript",
+                "var value = await tools.readFile({ file_path: inputPath });",
+                "display(value);",
+                "```",
             ]
         )
     if "execute" in names:

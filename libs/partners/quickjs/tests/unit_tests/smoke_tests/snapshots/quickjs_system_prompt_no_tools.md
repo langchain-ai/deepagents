@@ -9,7 +9,7 @@ An `eval` tool is available. It runs JavaScript in a persistent REPL.
 - The REPL has no access to host tools, files, or the network: it is pure computation. Return values to communicate results.
 - Timeout: 5.0s per call. Memory: 64 MB total.
 - `console.log` output is captured and returned alongside the result.
-- `display(value)` explicitly forwards native content blocks to the model; ordinary objects remain JavaScript data.
+- `display(value)` explicitly forwards native text or multimodal content blocks to the model; ordinary objects remain JavaScript data.
 
 ### Dispatching Subagents with `task`
 

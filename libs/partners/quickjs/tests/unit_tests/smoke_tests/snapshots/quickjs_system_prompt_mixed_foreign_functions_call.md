@@ -9,7 +9,7 @@ An `eval` tool is available. It runs JavaScript in a fresh sandboxed REPL for ea
 - External side effects from inside the REPL are only reachable via the `tools.*` namespace documented in the API reference below.
 - Timeout: 5.0s per call. Memory: 64 MB total.
 - `console.log` output is captured and returned alongside the result.
-- `display(value)` explicitly forwards native content blocks to the model; ordinary objects remain JavaScript data.
+- `display(value)` explicitly forwards native text or multimodal content blocks to the model; ordinary objects remain JavaScript data.
 
 ### Dispatching Subagents with `task`
 

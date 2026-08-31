@@ -453,10 +453,10 @@ def _describe_subagent_for_tool(name: str, description: str, *, forked: bool) ->
 
 DEFAULT_GENERAL_PURPOSE_DESCRIPTION = "General-purpose agent for researching complex questions, searching for files and content, and executing multi-step tasks. When you are searching for a keyword or file and are not confident that you will find the right match in the first few tries use this agent to perform the search for you. This agent has access to all tools as the main agent."  # noqa: E501
 
-GENERAL_PURPOSE_SUBAGENT: SubAgent = {
+GENERAL_PURPOSE_SUBAGENT: ForkedSubAgent = {
     "name": "general-purpose",
     "description": DEFAULT_GENERAL_PURPOSE_DESCRIPTION,
-    "system_prompt": DEFAULT_SUBAGENT_PROMPT,
+    "mode": "fork",
 }
 """Base spec for general-purpose subagent (caller adds model, tools, middleware)."""
 

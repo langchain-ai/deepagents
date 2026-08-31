@@ -2243,14 +2243,8 @@ class TestSubagentSystemPromptWiring:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_general_purpose_subagent_inherits_profile_suffix(self) -> None:
-        """The auto-added GP subagent receives the main profile's suffix.
-
-        Built-ins like the Codex / Claude Opus 4.7 profiles register a suffix;
-        this asserts the GP subagent picks it up alongside the main agent.
-        """
-        from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT  # noqa: PLC0415
-
+    def test_general_purpose_subagent_forks_with_profile_suffix(self) -> None:
+        """The default GP subagent forks, inheriting the parent's profiled prompt."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -2261,18 +2255,14 @@ class TestSubagentSystemPromptWiring:
             with patch("deepagents.graph.resolve_model", return_value=parent):
                 specs = self._capture_subagents(model="gpsuffix:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
-            expected = GENERAL_PURPOSE_SUBAGENT["system_prompt"] + "\n\nGP suffix."
-            assert gp["system_prompt"] == expected
+            assert gp["mode"] == "fork"
+            assert "system_prompt" not in gp
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_general_purpose_subagent_with_gp_override_and_profile_suffix(self) -> None:
-        """`general_purpose_subagent.system_prompt` is the GP base; the profile suffix layers on top.
-
-        This locks in the layering order: GP-level system_prompt overrides the
-        default GP base, then the profile suffix is appended.
-        """
+    def test_forked_general_purpose_subagent_ignores_gp_prompt_override(self) -> None:
+        """A forked GPA inherits the parent prompt rather than a GPA-only override."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -2288,23 +2278,14 @@ class TestSubagentSystemPromptWiring:
             with patch("deepagents.graph.resolve_model", return_value=parent):
                 specs = self._capture_subagents(model="gpcombined:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
-            assert gp["system_prompt"] == "GP override.\n\nTrailer."
+            assert gp["mode"] == "fork"
+            assert "system_prompt" not in gp
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_general_purpose_subagent_override_beats_profile_base(self) -> None:
-        """GP-level `system_prompt` wins over the profile-level `base_system_prompt`.
-
-        Both fields can carry a base-prompt replacement, but
-        `general_purpose_subagent.system_prompt` is GP-specific configuration
-        while `base_system_prompt` is a global override that primarily targets
-        the main agent. For the GP subagent, the more-specific intent wins —
-        otherwise a user setting both fields would silently see their GP
-        override dropped, which is surprising and hard to debug.
-
-        The profile suffix still layers on top of the GP override.
-        """
+    def test_forked_general_purpose_subagent_ignores_gp_prompt_over_profile_base(self) -> None:
+        """A forked GPA always uses the parent prompt, even with both overrides."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -2321,22 +2302,14 @@ class TestSubagentSystemPromptWiring:
             with patch("deepagents.graph.resolve_model", return_value=parent):
                 specs = self._capture_subagents(model="gpprec:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
-            assert gp["system_prompt"] == "GP override.\n\nTrailer."
-            # Lock in the more-specific-wins semantic: profile.base_system_prompt
-            # MUST NOT appear in the GP prompt when a GP-level override is set.
-            assert "Profile base." not in gp["system_prompt"]
+            assert gp["mode"] == "fork"
+            assert "system_prompt" not in gp
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_general_purpose_subagent_falls_back_to_profile_base_without_override(self) -> None:
-        """Without a GP-level override, `profile.base_system_prompt` does apply to the GP subagent.
-
-        Symmetric to the precedence test above: when the user hasn't set a
-        GP-level prompt, the profile-level base override is still the right
-        fallback (it just shouldn't *override* the GP-specific intent when both
-        are set).
-        """
+    def test_general_purpose_subagent_forks_without_prompt_override(self) -> None:
+        """Without a GPA-only prompt, the generated GPA remains a fork."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -2350,7 +2323,8 @@ class TestSubagentSystemPromptWiring:
             with patch("deepagents.graph.resolve_model", return_value=parent):
                 specs = self._capture_subagents(model="gpfallback:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
-            assert gp["system_prompt"] == "Profile base.\n\nTrailer."
+            assert gp["mode"] == "fork"
+            assert "system_prompt" not in gp
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

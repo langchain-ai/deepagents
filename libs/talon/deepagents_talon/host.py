@@ -13,6 +13,7 @@ import signal
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
@@ -60,6 +61,11 @@ _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
 _APPROVAL_LOG_RAW_IDS_ENV = "DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS"
 _TYPING_REFRESH_SECONDS = 4.0
+_CANCEL_TIMEOUT_SECONDS = 30.0
+_CANCEL_TIMEOUT_MESSAGE = (
+    "Could not stop the current run within 30 seconds. Your new message was not started. "
+    "Restart Talon to recover."
+)
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -70,6 +76,22 @@ _EMOJI_SKIN_TONES = frozenset(
         "\U0001f3ff",
     }
 )
+
+
+class _CancelOutcome(StrEnum):
+    NONE = "none"
+    SUCCESS = "success"
+    TIMEOUT = "timeout"
+    DEGRADED = "degraded"
+
+
+@dataclass(frozen=True, slots=True)
+class _Turn:
+    conversation_root: str
+    conversation_id: str
+    provider: str | None
+    generation: int
+    recovery_degraded: bool
 
 
 @dataclass(slots=True)
@@ -119,6 +141,8 @@ class TalonHost:
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
+        self._generations: defaultdict[str, int] = defaultdict(int)
+        self._blocked: set[str] = set()
         self._conversation_resets: dict[str, int] = {}
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._stopped = asyncio.Event()
@@ -201,34 +225,39 @@ class TalonHost:
             provider or type(channel).__name__,
             channel_conversation_id,
         )
-        agent_conversation_id = self._agent_conversation_id(conversation_root)
+        async with self._locks[conversation_root]:
+            agent_conversation_id = self._agent_conversation_id(conversation_root)
 
-        if command == _NEW_COMMAND:
-            await self._start_new_conversation(
-                channel,
-                channel_conversation_id,
-                conversation_root=conversation_root,
-            )
-            return
+            if command == _NEW_COMMAND:
+                await self._start_new_conversation(
+                    channel,
+                    channel_conversation_id,
+                    conversation_root=conversation_root,
+                )
+                return
 
-        if command == _STOP_COMMAND:
-            await self._cancel_conversation(
+            if command == _STOP_COMMAND:
+                await self._cancel_conversation(
+                    channel,
+                    agent_conversation_id,
+                    reply_conversation_id=channel_conversation_id,
+                )
+                return
+
+            pending = self._pending_tool_approvals.get(agent_conversation_id)
+            if pending is not None:
+                authorized = pending.sender_id is None or message.sender_id == pending.sender_id
+                if not authorized or _parse_tool_approval_reply(message.text) is not None:
+                    await self._handle_tool_approval_reply(channel, message, pending)
+                    return
+
+            await self._replace_agent_turn(
                 channel,
+                message,
+                conversation_root,
                 agent_conversation_id,
-                reply_conversation_id=channel_conversation_id,
+                provider,
             )
-            return
-
-        pending = self._pending_tool_approvals.get(agent_conversation_id)
-        if pending is not None:
-            await self._handle_tool_approval_reply(channel, message, pending)
-            return
-
-        task = asyncio.create_task(
-            self._run_agent_turn(channel, message, agent_conversation_id, provider),
-            name=f"talon:{agent_conversation_id}",
-        )
-        self._track_conversation_task(agent_conversation_id, task)
 
     async def receive_reaction(self, channel: ChannelAdapter, reaction: ChannelReaction) -> None:
         """Handle one inbound channel reaction.
@@ -261,21 +290,65 @@ class TalonHost:
             env=self.config.env,
         )
 
+    async def _replace_agent_turn(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        conversation_root: str,
+        conversation_id: str,
+        provider: str | None,
+    ) -> None:
+        if conversation_id in self._blocked:
+            await send_with_retry(
+                lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+            )
+            return
+        active = self._tasks.get(conversation_id)
+        recovery_degraded = False
+        if active is not None and not active.done():
+            outcome = await self._cancel_active(conversation_id, active, recover=True)
+            if outcome is _CancelOutcome.TIMEOUT:
+                await send_with_retry(
+                    lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+                )
+                return
+            recovery_degraded = outcome is _CancelOutcome.DEGRADED
+        generation = self._generations[conversation_id] + 1
+        self._generations[conversation_id] = generation
+        task = asyncio.create_task(
+            self._run_agent_turn(
+                channel,
+                message,
+                _Turn(
+                    conversation_root,
+                    conversation_id,
+                    provider,
+                    generation,
+                    recovery_degraded,
+                ),
+            ),
+            name=f"talon:{conversation_id}",
+        )
+        self._tasks[conversation_id] = task
+        self._track_conversation_task(conversation_id, task)
+
     async def _run_agent_turn(
         self,
         channel: ChannelAdapter,
         message: ChannelMessage,
-        agent_conversation_id: str,
-        provider: str | None,
+        turn: _Turn,
     ) -> None:
+        agent_conversation_id = turn.conversation_id
         message = await transcribe_voice_message(self.voice_transcriber, message)
         message = _prepare_inbound_message(message)
         metadata: dict[str, object] = {
-            "channel": provider,
+            "channel": turn.provider,
             "sender_id": message.sender_id,
             "message_id": message.message_id,
             **message.metadata,
         }
+        if turn.recovery_degraded:
+            metadata["interruption_recovery"] = "failed"
         origin_conversation_id = _origin_conversation_id(message)
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
@@ -294,7 +367,7 @@ class TalonHost:
                 approval_handler=lambda approval: self._request_tool_approval(
                     channel,
                     approval,
-                    provider=_channel_key(channel, provider),
+                    provider=_channel_key(channel, turn.provider),
                     reply_conversation_id=message.conversation_id,
                     sender_id=message.sender_id,
                 ),
@@ -303,7 +376,12 @@ class TalonHost:
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
-        await self._deliver_agent_result(channel, message.conversation_id, result)
+        async with self._locks[turn.conversation_root]:
+            if (
+                self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
+                and self._generations[agent_conversation_id] == turn.generation
+            ):
+                await self._deliver_agent_result(channel, message.conversation_id, result)
 
     async def run_scheduled_job(self, job: CronJob) -> str:
         """Invoke the agent for one scheduled job.
@@ -318,20 +396,25 @@ class TalonHost:
             job.origin.channel or "cron",
             job.origin.conversation_id,
         )
-        conversation_id = self._agent_conversation_id(conversation_root)
-        result = await self._invoke_agent(
-            conversation_id=conversation_id,
-            text=job.prompt,
-            metadata={
-                "channel": job.origin.channel,
-                "cron_job_id": job.id,
-                "cron_job_name": job.name,
-                "origin_conversation_id": job.origin.conversation_id,
-                "cron_origin_message_id": job.origin.message_id,
-                "trigger": "cron",
-            },
-        )
-        return result.text
+        async with self._locks[conversation_root]:
+            conversation_id = self._agent_conversation_id(conversation_root)
+            active = self._tasks.get(conversation_id)
+            if active is not None and not active.done():
+                with contextlib.suppress(asyncio.CancelledError):
+                    await asyncio.shield(active)
+            result = await self._invoke_agent(
+                conversation_id=conversation_id,
+                text=job.prompt,
+                metadata={
+                    "channel": job.origin.channel,
+                    "cron_job_id": job.id,
+                    "cron_job_name": job.name,
+                    "origin_conversation_id": job.origin.conversation_id,
+                    "cron_origin_message_id": job.origin.message_id,
+                    "trigger": "cron",
+                },
+            )
+            return result.text
 
     async def deliver_scheduled_result(
         self,
@@ -357,38 +440,29 @@ class TalonHost:
         approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
         | None = None,
     ) -> AgentResult:
-        lock = self._locks[conversation_id]
-        async with lock:
-            task = asyncio.current_task()
-            if task is not None:
-                self._tasks[conversation_id] = task
-
-            try:
-                with langsmith_trace_context(
-                    self.config.env,
-                    assistant_id=self.config.assistant_id,
-                    conversation_id=conversation_id,
-                    metadata=metadata,
-                ):
-                    return await self.agent.invoke(
-                        AgentRequest(
-                            conversation_id=conversation_id,
-                            text=text,
-                            metadata=metadata,
-                            approval_handler=approval_handler,
-                        ),
-                    )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception(
-                    "Unhandled agent error in conversation %s",
-                    conversation_id,
+        try:
+            with langsmith_trace_context(
+                self.config.env,
+                assistant_id=self.config.assistant_id,
+                conversation_id=conversation_id,
+                metadata=metadata,
+            ):
+                return await self.agent.invoke(
+                    AgentRequest(
+                        conversation_id=conversation_id,
+                        text=text,
+                        metadata=metadata,
+                        approval_handler=approval_handler,
+                    ),
                 )
-                raise
-            finally:
-                if self._tasks.get(conversation_id) is task:
-                    del self._tasks[conversation_id]
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception(
+                "Unhandled agent error in conversation %s",
+                conversation_id,
+            )
+            raise
 
     async def _start_new_conversation(
         self,
@@ -398,7 +472,12 @@ class TalonHost:
         conversation_root: str,
     ) -> None:
         current_conversation_id = self._agent_conversation_id(conversation_root)
-        await self._cancel_conversation_tasks(current_conversation_id)
+        outcome = await self._cancel_conversation_tasks(current_conversation_id)
+        if outcome is _CancelOutcome.TIMEOUT:
+            await send_with_retry(
+                lambda: channel.send_message(conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+            )
+            return
         next_reset = self._conversation_resets.get(conversation_root, 0) + 1
         self._conversation_resets[conversation_root] = next_reset
         await send_with_retry(
@@ -413,33 +492,75 @@ class TalonHost:
         reply_conversation_id: str | None = None,
     ) -> None:
         target_conversation_id = reply_conversation_id or conversation_id
-        cancelled = await self._cancel_conversation_tasks(conversation_id)
-        if not cancelled:
-            await send_with_retry(
-                lambda: channel.send_message(target_conversation_id, "No in-flight run to stop.")
+        outcome = await self._cancel_conversation_tasks(conversation_id)
+        if outcome is _CancelOutcome.NONE:
+            message = "No in-flight run to stop."
+        elif outcome is _CancelOutcome.TIMEOUT:
+            message = _CANCEL_TIMEOUT_MESSAGE
+        elif outcome is _CancelOutcome.DEGRADED:
+            message = "Stopped current run."
+        else:
+            message = "Stopped current run."
+        await send_with_retry(lambda: channel.send_message(target_conversation_id, message))
+
+    async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
+        task = self._tasks.get(conversation_id)
+        if task is None or task.done():
+            return _CancelOutcome.NONE
+        return await self._cancel_active(conversation_id, task, recover=True)
+
+    async def _cancel_active(
+        self,
+        conversation_id: str,
+        task: asyncio.Task[None],
+        *,
+        recover: bool,
+    ) -> _CancelOutcome:
+        self._generations[conversation_id] += 1
+        task.cancel()
+        deadline = asyncio.get_running_loop().time() + _CANCEL_TIMEOUT_SECONDS
+        try:
+            done, _ = await asyncio.wait({task}, timeout=_CANCEL_TIMEOUT_SECONDS)
+            if not done:
+                return self._mark_cancellation_timeout(conversation_id, task)
+            with contextlib.suppress(asyncio.CancelledError):
+                task.result()
+            if recover:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return self._mark_cancellation_timeout(conversation_id, task)
+                await asyncio.wait_for(
+                    self.agent.recover_interrupted(conversation_id),
+                    timeout=remaining,
+                )
+        except TimeoutError:
+            return self._mark_cancellation_timeout(conversation_id, task)
+        except Exception:
+            logger.exception(
+                "Failed to recover interrupted conversation %s",
+                stable_log_ref(conversation_id),
             )
-            return
-
-        await send_with_retry(
-            lambda: channel.send_message(target_conversation_id, "Stopped current run.")
+            return _CancelOutcome.DEGRADED
+        log_event(
+            logger,
+            "agent.interrupted",
+            conversation_ref=stable_log_ref(conversation_id),
         )
+        return _CancelOutcome.SUCCESS
 
-    async def _cancel_conversation_tasks(self, conversation_id: str) -> bool:
-        tasks = {
-            task
-            for task in {
-                *self._conversation_tasks.get(conversation_id, set()),
-                self._tasks.get(conversation_id),
-            }
-            if task is not None and not task.done()
-        }
-        if not tasks:
-            return False
-
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
-        return True
+    def _mark_cancellation_timeout(
+        self,
+        conversation_id: str,
+        task: asyncio.Task[None],
+    ) -> _CancelOutcome:
+        self._blocked.add(conversation_id)
+        task.add_done_callback(lambda _done: self._blocked.discard(conversation_id))
+        log_event(
+            logger,
+            "agent.interrupt_timeout",
+            conversation_ref=stable_log_ref(conversation_id),
+        )
+        return _CancelOutcome.TIMEOUT
 
     def _agent_conversation_id(self, conversation_id: str) -> str:
         reset = self._conversation_resets.get(conversation_id, 0)

@@ -24,6 +24,7 @@ from deepagents.middleware.summarization import (
 )
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.chat_models import init_chat_model
+from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -161,6 +162,7 @@ _CRON_AUTO_DENY_MESSAGE = (
 _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
+_INTERRUPTED_MESSAGE = "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
 _LOCAL_SUBAGENT_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
@@ -177,6 +179,9 @@ class EchoAgentRuntime:
 
     async def stop(self) -> None:
         """Release placeholder runtime resources."""
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        """Leave placeholder conversation state unchanged."""
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         """Return the request text as a trivial agent response.
@@ -316,6 +321,24 @@ class DeepAgentRuntime:
             result = cleanup()
             if isinstance(result, Awaitable):
                 await result
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        """Append an interruption marker after the latest committed checkpoint."""
+        if self._graph is None:
+            msg = "DeepAgentRuntime must be started before recovery"
+            raise RuntimeError(msg)
+        config = {"configurable": {"thread_id": conversation_id}}
+        get_state = getattr(self._graph, "aget_state", None)
+        update_state = getattr(self._graph, "aupdate_state", None)
+        if not callable(get_state) or not callable(update_state):
+            msg = "Deep Agents graph does not expose async state recovery"
+            raise TypeError(msg)
+        snapshot = await get_state(config)
+        checkpoint_config = getattr(snapshot, "config", None) or config
+        await update_state(
+            checkpoint_config,
+            {"messages": [HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+        )
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         """Invoke the Deep Agents graph for one Talon request.

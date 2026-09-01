@@ -40,6 +40,7 @@ class BlockingAgent:
         self.started = False
         self.stopped = False
         self.requests: list[AgentRequest] = []
+        self.recoveries: list[str] = []
         self.released = asyncio.Event()
 
     async def start(self) -> None:
@@ -48,10 +49,32 @@ class BlockingAgent:
     async def stop(self) -> None:
         self.stopped = True
 
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        self.recoveries.append(conversation_id)
+
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
         if request.text == "block":
             await self.released.wait()
+        return AgentResult(text=f"reply:{request.text}")
+
+
+class FailingRecoveryAgent(BlockingAgent):
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        self.recoveries.append(conversation_id)
+        message = "persistence failed"
+        raise RuntimeError(message)
+
+
+class CancellationResistantAgent(BlockingAgent):
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        if request.text == "block":
+            try:
+                await self.released.wait()
+            except asyncio.CancelledError:
+                asyncio.current_task().uncancel()
+                await self.released.wait()
         return AgentResult(text=f"reply:{request.text}")
 
 
@@ -65,6 +88,9 @@ class HistoryAgent:
 
     async def stop(self) -> None:
         pass
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        self.history.setdefault(conversation_id, []).append("[recovered]")
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -137,7 +163,7 @@ async def test_host_starts_and_stops_components(tmp_path: Path) -> None:
     assert channel.handler is not None
 
 
-async def test_host_serializes_messages_per_conversation(tmp_path: Path) -> None:
+async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
@@ -146,17 +172,13 @@ async def test_host_serializes_messages_per_conversation(tmp_path: Path) -> None
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await asyncio.sleep(0)
-
-    assert [request.text for request in agent.requests] == ["block"]
-
-    agent.released.set()
     await _wait_for_request(agent, "second")
-    await _wait_for_sent_count(channel, 2)
+    await _wait_for_sent_count(channel, 1)
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["block", "second"]
-    assert channel.sent == [("chat", "reply:block"), ("chat", "reply:second")]
+    assert agent.recoveries == ["chat"]
+    assert channel.sent == [("chat", "reply:second")]
 
 
 async def test_typing_indicator_refreshes_during_long_agent_turn(
@@ -194,6 +216,22 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
     await host.stop()
 
     assert channel.sent == [("chat", "Stopped current run.")]
+
+
+async def test_stop_keeps_ack_when_recovery_fails(tmp_path: Path, caplog) -> None:
+    channel = RecordingChannel()
+    agent = FailingRecoveryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/stop"))
+    await host.stop()
+
+    assert agent.recoveries == ["chat"]
+    assert channel.sent == [("chat", "Stopped current run.")]
+    assert "Failed to recover interrupted conversation" in caplog.text
 
 
 async def test_new_command_starts_fresh_conversation_thread(tmp_path: Path) -> None:
@@ -257,6 +295,64 @@ async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> Non
         ("chat", "Started a fresh conversation."),
         ("chat", "reply:second"),
     ]
+
+
+async def test_new_recovers_old_thread_before_reset(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_request(agent, "second")
+    await host.stop()
+
+    assert agent.recoveries == ["chat"]
+    assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
+
+
+async def test_recovery_failure_starts_replacement_with_metadata(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = FailingRecoveryAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await _wait_for_request(agent, "second")
+    await host.stop()
+
+    assert agent.requests[1].metadata["interruption_recovery"] == "failed"
+
+
+async def test_cancellation_timeout_blocks_until_task_exits(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.host._CANCEL_TIMEOUT_SECONDS", 0.01)
+    channel = RecordingChannel()
+    agent = CancellationResistantAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="third"))
+    assert [request.text for request in agent.requests] == ["block"]
+    assert len(channel.sent) == 2
+
+    agent.released.set()
+    for _ in range(100):
+        if "chat" not in host._blocked:
+            break
+        await asyncio.sleep(0)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="fourth"))
+    await _wait_for_request(agent, "fourth")
+    await host.stop()
 
 
 async def test_host_sends_markdown_media_refs_as_channel_media(tmp_path: Path) -> None:
@@ -462,15 +558,13 @@ async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path
     await _wait_for_sent_count(channel, 4)
     await host.stop()
 
-    assert len(agent.requests) == 1
+    assert [request.text for request in agent.requests] == ["run", "maybe"]
+    assert agent.recoveries == ["chat"]
     assert channel.sent[1] == (
         "chat",
         "Only the operator who started this run can approve or deny it.",
     )
-    assert channel.sent[2] == (
-        "chat",
-        "Reply `approve` to run the tool call or `deny` to skip it.",
-    )
+    assert "Tool approval required." in channel.sent[2][1]
     assert channel.sent[3] == ("chat", "decision:reject")
 
 

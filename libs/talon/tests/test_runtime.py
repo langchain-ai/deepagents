@@ -53,6 +53,19 @@ class RecordingGraph:
         return {"messages": list(messages)}
 
 
+class RecoverableGraph:
+    def __init__(self) -> None:
+        self.config = {"configurable": {"thread_id": "chat", "checkpoint_id": "latest"}}
+        self.update: tuple[dict[str, Any], dict[str, Any]] | None = None
+
+    async def aget_state(self, config: dict[str, Any]) -> SimpleNamespace:
+        assert config == {"configurable": {"thread_id": "chat"}}
+        return SimpleNamespace(config=self.config)
+
+    async def aupdate_state(self, config: dict[str, Any], values: dict[str, Any]) -> None:
+        self.update = (config, values)
+
+
 class CronCallingGraph:
     def __init__(self, create_job: InvokableTool) -> None:
         self.create_job = create_job
@@ -868,6 +881,29 @@ async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
             memory=(),
             env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "0"},
         )
+
+
+async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint() -> None:
+    graph = RecoverableGraph()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    await runtime.recover_interrupted("chat")
+
+    assert graph.update is not None
+    config, values = graph.update
+    assert config is graph.config
+    messages = values["messages"]
+    assert len(messages) == 1
+    assert messages[0].type == "human"
+    assert messages[0].content == (
+        "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+    )
 
 
 async def test_runtime_preserves_conversation_thread_across_turns(

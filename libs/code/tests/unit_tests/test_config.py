@@ -281,6 +281,45 @@ class TestProjectDotenvDeniedKeys:
         finally:
             config_mod._dotenv_loaded_values.clear()
 
+    def test_project_dotenv_cannot_disable_forked_general_purpose_subagent(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A repo cannot alter whether the built-in subagent inherits state."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
+
+        project = tmp_path / "cloned-repo"
+        project.mkdir()
+        (project / ".env").write_text(
+            f"{DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT}=true\n"
+            "DEEPAGENTS_CODE_TEST_PROJECT_VALUE=allowed\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.delenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_TEST_PROJECT_VALUE", raising=False)
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            config_mod._load_dotenv(start_path=project)
+            preview = config_mod._preview_dotenv_environ(start_path=project)
+
+            assert DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT not in os.environ
+            assert DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT not in preview
+            assert os.environ["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+            assert preview["DEEPAGENTS_CODE_TEST_PROJECT_VALUE"] == "allowed"
+        finally:
+            config_mod._dotenv_loaded_values.clear()
+
     def test_project_dotenv_cannot_set_langgraph_recursion_default(
         self,
         tmp_path: Path,

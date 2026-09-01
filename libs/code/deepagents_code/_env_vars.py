@@ -251,6 +251,17 @@ setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's
 shell, launch env, or global `~/.deepagents/.env` can.
 """
 
+DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT = (
+    "DEEPAGENTS_CODE_DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT"
+)
+"""Run dcode's built-in `general-purpose` subagent in handoff mode.
+
+Fork mode is the default. When truthy, the subagent receives only the delegated task
+instead of inheriting the parent agent's conversation and state. Parsed by
+`is_env_truthy`; set this only through the launching shell or global
+`~/.deepagents/.env`, never a project `.env`.
+"""
+
 EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Opt into experimental, unstable dcode behavior.
 

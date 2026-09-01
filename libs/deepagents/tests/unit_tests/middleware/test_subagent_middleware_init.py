@@ -151,16 +151,39 @@ class TestSubagentMiddlewareInit:
         with pytest.raises(ValueError, match="invalid mode 'dynamic'"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
 
-    def test_rejects_system_prompt_on_forked_subagent(self) -> None:
-        invalid_spec: Any = {
-            "name": "worker",
-            "description": "Does work.",
-            "mode": "fork",
-            "system_prompt": "You are a SQL expert.",
-        }
+    def test_forked_subagent_appends_its_own_system_prompt(self) -> None:
+        """A fork's `system_prompt` is appended to the inherited one, not a replacement."""
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {"name": "task", "args": {"description": "continue", "subagent_type": "worker"}, "id": "call_worker", "type": "tool_call"}
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues with context.",
+                    "model": worker_model,
+                    "mode": "fork",
+                    "system_prompt": "FORK_EXTRA",
+                }
+            ],
+        )
 
-        with pytest.raises(ValueError, match="cannot set system_prompt"):
-            SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+        agent.invoke({"messages": [HumanMessage(content="start")]}, {"recursion_limit": 25})
+
+        assert worker_model.call_history[0]["messages"][0].text == "PARENT_PROMPT\n\nFORK_EXTRA"
 
     def test_rejects_skills_on_forked_subagent(self) -> None:
         invalid_spec: Any = {

@@ -1165,6 +1165,22 @@ def test_composite_grep_multiple_matches_per_file(tmp_path: Path) -> None:
     assert line_numbers == [1, 2]
 
 
+def test_composite_root_grep_rewrites_route_qualified_glob() -> None:
+    """Root grep should apply the route prefix to the child backend's glob filter."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    comp.write("/memories/readme.md", "needle")
+
+    for pattern in ("/memories/*.md", "memories/*.md"):
+        result = comp.grep("needle", path="/", glob=pattern)
+
+        assert result.error is None
+        assert [match["path"] for match in result.matches or []] == ["/memories/readme.md"]
+
+
 @pytest.mark.xfail(
     reason="StoreBackend instances share the same underlying store when using the same runtime, "
     "causing files written to one route to appear in all routes that use the same backend instance. "

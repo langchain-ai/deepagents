@@ -482,7 +482,10 @@ class CompositeBackend(BackendProtocol):
                     # Cap already met by earlier routes; skip the rest.
                     truncated = True
                     break
-                grep_result = self._grep_backend(backend, pattern, "/", glob, remaining)
+                routed_glob = (
+                    _strip_route_from_pattern(glob, route_prefix) if glob is not None else None
+                )
+                grep_result = self._grep_backend(backend, pattern, "/", routed_glob, remaining)
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))
@@ -544,7 +547,10 @@ class CompositeBackend(BackendProtocol):
                     # Cap already met by earlier routes; skip the rest.
                     truncated = True
                     break
-                grep_result = await self._agrep_backend(backend, pattern, "/", glob, remaining)
+                routed_glob = (
+                    _strip_route_from_pattern(glob, route_prefix) if glob is not None else None
+                )
+                grep_result = await self._agrep_backend(backend, pattern, "/", routed_glob, remaining)
                 if grep_result.error:
                     return grep_result
                 all_matches.extend(_remap_grep_path(m, route_prefix) for m in (grep_result.matches or []))

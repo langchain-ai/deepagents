@@ -3275,11 +3275,11 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 f"Expected shell middleware on subagent {name!r}"
             )
 
-    def test_forked_general_purpose_subagent_is_opt_in(
+    def test_forked_general_purpose_subagent_is_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Only the explicit environment opt-in makes the fallback fork."""
-        from deepagents_code._env_vars import ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
+        """The environment flag opts the fallback out of fork mode."""
+        from deepagents_code._env_vars import DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3300,7 +3300,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=fake_model,
             ),
         ):
-            monkeypatch.delenv(ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, raising=False)
+            monkeypatch.delenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, raising=False)
             create_cli_agent(
                 model="fake-model",
                 assistant_id="test",
@@ -3314,9 +3314,9 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 for subagent in default_kwargs["subagents"]
                 if subagent["name"] == "general-purpose"
             )
-            assert default_general_purpose.get("mode") is None
+            assert default_general_purpose["mode"] == "fork"
 
-            monkeypatch.setenv(ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, "true")
+            monkeypatch.setenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, "true")
             create_cli_agent(
                 model="fake-model",
                 assistant_id="test",
@@ -3324,22 +3324,22 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 enable_skills=False,
                 enable_shell=True,
             )
-            _, forked_kwargs = mock_create.call_args
-            forked_general_purpose = next(
+            _, handoff_kwargs = mock_create.call_args
+            handoff_general_purpose = next(
                 subagent
-                for subagent in forked_kwargs["subagents"]
+                for subagent in handoff_kwargs["subagents"]
                 if subagent["name"] == "general-purpose"
             )
-            assert forked_general_purpose["mode"] == "fork"
+            assert handoff_general_purpose.get("mode") is None
 
     def test_no_duplicate_general_purpose_when_user_defined(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """User-defined general-purpose subagent is not duplicated or rewritten."""
-        from deepagents_code._env_vars import ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
+        from deepagents_code._env_vars import DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
         from deepagents_code.agent import ShellAllowListMiddleware
 
-        monkeypatch.setenv(ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, "true")
+        monkeypatch.delenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, raising=False)
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent

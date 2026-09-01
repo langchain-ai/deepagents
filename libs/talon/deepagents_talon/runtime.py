@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -48,7 +49,7 @@ if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
     from deepagents.middleware.async_subagents import AsyncSubAgent
     from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
-    from langchain.agents.middleware import InterruptOnConfig
+    from langchain.agents.middleware import AgentState, InterruptOnConfig
     from langchain.agents.middleware.types import AgentMiddleware
     from langchain_core.language_models import BaseChatModel
     from langchain_core.tools import BaseTool
@@ -335,9 +336,12 @@ class DeepAgentRuntime:
             raise TypeError(msg)
         snapshot = await get_state(config)
         checkpoint_config = getattr(snapshot, "config", None) or config
+        values = cast("AgentState[Any]", getattr(snapshot, "values", {}))
+        repair = PatchToolCallsMiddleware().before_agent(values, cast("Any", None))
+        messages = [] if repair is None else repair.get("messages", [])
         await update_state(
             checkpoint_config,
-            {"messages": [HumanMessage(content=_INTERRUPTED_MESSAGE)]},
+            {"messages": [*messages, HumanMessage(content=_INTERRUPTED_MESSAGE)]},
         )
 
     async def invoke(self, request: AgentRequest) -> AgentResult:

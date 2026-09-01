@@ -59,6 +59,7 @@ _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
+_CRON_THREAD_SUFFIX = ":talon-cron"
 _APPROVAL_LOG_RAW_IDS_ENV = "DEEPAGENTS_TALON_APPROVAL_LOG_RAW_IDS"
 _TYPING_REFRESH_SECONDS = 4.0
 _CANCEL_TIMEOUT_SECONDS = 30.0
@@ -92,6 +93,12 @@ class _Turn:
     provider: str | None
     generation: int
     recovery_degraded: bool
+
+
+@dataclass(slots=True)
+class _CronControl:
+    lock: asyncio.Lock
+    users: int = 0
 
 
 @dataclass(slots=True)
@@ -139,6 +146,7 @@ class TalonHost:
         self.scheduler = scheduler
         self.voice_transcriber = voice_transcriber
         self._locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+        self._cron_controls: dict[str, _CronControl] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._generations: defaultdict[str, int] = defaultdict(int)
@@ -392,29 +400,28 @@ class TalonHost:
         Returns:
             Agent text output for scheduler delivery handling.
         """
-        conversation_root = self._conversation_root(
-            job.origin.channel or "cron",
-            job.origin.conversation_id,
-        )
-        async with self._locks[conversation_root]:
-            conversation_id = self._agent_conversation_id(conversation_root)
-            active = self._tasks.get(conversation_id)
-            if active is not None and not active.done():
-                with contextlib.suppress(asyncio.CancelledError):
-                    await asyncio.shield(active)
-            result = await self._invoke_agent(
-                conversation_id=conversation_id,
-                text=job.prompt,
-                metadata={
-                    "channel": job.origin.channel,
-                    "cron_job_id": job.id,
-                    "cron_job_name": job.name,
-                    "origin_conversation_id": job.origin.conversation_id,
-                    "cron_origin_message_id": job.origin.message_id,
-                    "trigger": "cron",
-                },
-            )
-            return result.text
+        conversation_id = f"{job.id}{_CRON_THREAD_SUFFIX}"
+        control = self._cron_controls.setdefault(job.id, _CronControl(asyncio.Lock()))
+        control.users += 1
+        try:
+            async with control.lock:
+                result = await self._invoke_agent(
+                    conversation_id=conversation_id,
+                    text=job.prompt,
+                    metadata={
+                        "channel": job.origin.channel,
+                        "cron_job_id": job.id,
+                        "cron_job_name": job.name,
+                        "origin_conversation_id": job.origin.conversation_id,
+                        "cron_origin_message_id": job.origin.message_id,
+                        "trigger": "cron",
+                    },
+                )
+                return result.text
+        finally:
+            control.users -= 1
+            if control.users == 0 and self._cron_controls.get(job.id) is control:
+                del self._cron_controls[job.id]
 
     async def deliver_scheduled_result(
         self,
@@ -522,19 +529,19 @@ class TalonHost:
         try:
             done, _ = await asyncio.wait({task}, timeout=_CANCEL_TIMEOUT_SECONDS)
             if not done:
-                return self._mark_cancellation_timeout(conversation_id, task)
+                return self._mark_cancellation_timeout(conversation_id)
             with contextlib.suppress(asyncio.CancelledError):
                 task.result()
             if recover:
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
-                    return self._mark_cancellation_timeout(conversation_id, task)
+                    return self._mark_cancellation_timeout(conversation_id)
                 await asyncio.wait_for(
                     self.agent.recover_interrupted(conversation_id),
                     timeout=remaining,
                 )
         except TimeoutError:
-            return self._mark_cancellation_timeout(conversation_id, task)
+            return self._mark_cancellation_timeout(conversation_id)
         except Exception:
             logger.exception(
                 "Failed to recover interrupted conversation %s",
@@ -551,10 +558,8 @@ class TalonHost:
     def _mark_cancellation_timeout(
         self,
         conversation_id: str,
-        task: asyncio.Task[None],
     ) -> _CancelOutcome:
         self._blocked.add(conversation_id)
-        task.add_done_callback(lambda _done: self._blocked.discard(conversation_id))
         log_event(
             logger,
             "agent.interrupt_timeout",

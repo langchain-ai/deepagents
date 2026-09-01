@@ -73,7 +73,9 @@ class CancellationResistantAgent(BlockingAgent):
             try:
                 await self.released.wait()
             except asyncio.CancelledError:
-                asyncio.current_task().uncancel()
+                task = asyncio.current_task()
+                assert task is not None
+                task.uncancel()
                 await self.released.wait()
         return AgentResult(text=f"reply:{request.text}")
 
@@ -329,7 +331,7 @@ async def test_recovery_failure_starts_replacement_with_metadata(tmp_path: Path)
     assert agent.requests[1].metadata["interruption_recovery"] == "failed"
 
 
-async def test_cancellation_timeout_blocks_until_task_exits(
+async def test_cancellation_timeout_blocks_until_host_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("deepagents_talon.host._CANCEL_TIMEOUT_SECONDS", 0.01)
@@ -346,12 +348,11 @@ async def test_cancellation_timeout_blocks_until_task_exits(
     assert len(channel.sent) == 2
 
     agent.released.set()
-    for _ in range(100):
-        if "chat" not in host._blocked:
-            break
-        await asyncio.sleep(0)
+    await asyncio.sleep(0)
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="fourth"))
-    await _wait_for_request(agent, "fourth")
+    assert [request.text for request in agent.requests] == ["block"]
+    assert len(channel.sent) == 3
+    assert "chat" in host._blocked
     await host.stop()
 
 
@@ -913,6 +914,32 @@ async def test_host_runs_scheduled_job_and_delivers_result(tmp_path: Path) -> No
     assert [request.text for request in agent.requests] == ["scheduled prompt"]
     assert agent.requests[0].metadata["trigger"] == "cron"
     assert channel.sent == [("chat", "reply:scheduled prompt")]
+
+
+async def test_scheduled_job_runs_while_interactive_turn_remains_active(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    store = CronJobStore(assistant_id="test", cron_dir=tmp_path / "test" / "cron")
+    job = store.create_job(
+        prompt="scheduled prompt",
+        schedule=CronSchedule.parse("in 5m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    text = await asyncio.wait_for(host.run_scheduled_job(job), timeout=1)
+
+    assert text == "reply:scheduled prompt"
+    assert [request.text for request in agent.requests] == ["block", "scheduled prompt"]
+    assert agent.recoveries == []
+    assert agent.requests[0].conversation_id == "chat"
+    assert agent.requests[1].conversation_id == f"{job.id}:talon-cron"
+    assert not host._tasks["chat"].done()
+    agent.released.set()
+    await host.stop()
 
 
 async def test_host_transcribes_voice_before_agent(tmp_path: Path) -> None:

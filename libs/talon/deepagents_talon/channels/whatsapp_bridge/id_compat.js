@@ -22,6 +22,19 @@ function widString(value) {
   return null;
 }
 
+function contactIdentityIds(primary, mappings = []) {
+  const aliases = mappings.flatMap((mapping) => [mapping && mapping.lid, mapping && mapping.pn]);
+  return [...new Set([primary, ...aliases].map(widString).filter(Boolean))];
+}
+
+function isSelfChat(fromSelf, chatId, ownIds) {
+  if (fromSelf !== true) {
+    return false;
+  }
+  const serializedChatId = widString(chatId);
+  return Boolean(serializedChatId && ownIds.some((value) => widString(value) === serializedChatId));
+}
+
 function serializedId(value) {
   const serialized = widString(value);
   if (serialized || !value || typeof value !== "object") {
@@ -237,9 +250,11 @@ class SentBodyReservations {
 module.exports = {
   AckTracker,
   SentBodyReservations,
+  contactIdentityIds,
   createCompatibleClientClass,
   installMessageKeyCompatibility,
   installPageCompatibility,
+  isSelfChat,
   normalizeId,
   normalizeMessage,
   serializedId,

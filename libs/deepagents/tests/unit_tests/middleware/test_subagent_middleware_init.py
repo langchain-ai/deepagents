@@ -26,12 +26,11 @@ from deepagents.middleware.skills import SkillsMiddleware
 from deepagents.middleware.subagents import (
     _FORK_RECURSION_REFUSAL,
     _FORK_TASK_PREAMBLE,
-    _PARENT_SYSTEM_MESSAGE_KEY,
+    _FORKED_CONTEXT_KEY,
     GENERAL_PURPOSE_SUBAGENT,
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
     _build_task_tool,
-    _ParentSystemMessageMiddleware,
     create_sub_agent,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -174,7 +173,7 @@ class TestSubagentMiddlewareInit:
         with pytest.raises(ValueError, match="cannot set skills"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
 
-    def test_forked_subagent_inherits_prompt_and_skips_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_forked_subagent_mirrors_parent_memory_middleware(self, monkeypatch: pytest.MonkeyPatch) -> None:
         captured: list[dict[str, Any]] = []
         runnable = self._make_echo_graph()
 
@@ -217,44 +216,10 @@ class TestSubagentMiddlewareInit:
         forked = next(spec for spec in captured if spec["name"] == "forked-worker")
         isolated = next(spec for spec in captured if spec["name"] == "isolated-worker")
         assert forked["system_prompt"] == "PARENT_PROMPT"
-        # No mirrored MemoryMiddleware for the fork: the captured parent
-        # message already carries the parent's own memory content, so a
-        # second instance would only reload files to build a prompt
-        # fragment that _ForkSystemMessageMiddleware immediately discards.
-        assert not any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
+        # A fork mirrors the parent's MemoryMiddleware so its own stack rebuilds
+        # the parent's memory block; an isolated subagent starts without one.
+        assert any(isinstance(middleware, MemoryMiddleware) for middleware in forked["middleware"])
         assert not any(isinstance(middleware, MemoryMiddleware) for middleware in isolated["middleware"])
-
-    @pytest.mark.parametrize(
-        ("subagents", "expected"),
-        [
-            (None, False),
-            ([{"name": "w", "description": "Starts fresh.", "system_prompt": "S"}], False),
-            ([{"name": "w", "description": "Continues with context.", "mode": "fork"}], True),
-        ],
-        ids=["no-subagents", "isolated", "declarative-fork"],
-    )
-    def test_parent_system_message_middleware_only_installed_for_declarative_forks(
-        self,
-        subagents: list[dict[str, Any]] | None,
-        expected: bool,  # noqa: FBT001
-    ) -> None:
-        """Capturing the parent's system message costs a state write per model call."""
-        captured: dict[str, Any] = {}
-
-        def fake_create_agent(model: object, **kwargs: Any) -> object:
-            del model
-            captured.update(kwargs)
-            return MagicMock()
-
-        with patch("deepagents.graph.create_agent", fake_create_agent):
-            create_deep_agent(
-                model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
-                system_prompt="PARENT_PROMPT",
-                subagents=subagents,
-            )
-
-        installed = any(isinstance(middleware, _ParentSystemMessageMiddleware) for middleware in captured["middleware"])
-        assert installed is expected
 
     @pytest.mark.parametrize(("mode", "expected"), [(None, 0), ("fork", 1)], ids=["isolated", "fork"])
     def test_forked_subagent_warns_beta(self, mode: str | None, expected: int) -> None:
@@ -271,6 +236,41 @@ class TestSubagentMiddlewareInit:
         assert len(beta_warnings) == expected
         if expected:
             assert "`ForkedSubAgent` is in beta" in str(beta_warnings[0].message)
+
+    def test_forked_subagent_history_has_no_dangling_task_call(self) -> None:
+        """The spawning `task` call is dropped, so nothing patches a bogus result over it."""
+        parent_model = GenericFakeChatModel(
+            messages=iter(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "task",
+                                "args": {"description": "continue", "subagent_type": "worker"},
+                                "id": "call_worker",
+                                "type": "tool_call",
+                            },
+                            {"name": "ls", "args": {"path": "/"}, "id": "call_ls", "type": "tool_call"},
+                        ],
+                    ),
+                    AIMessage(content="parent done"),
+                ]
+            )
+        )
+        worker_model = GenericFakeChatModel(messages=iter([AIMessage(content="worker done")]))
+        agent = create_deep_agent(
+            model=parent_model,
+            system_prompt="PARENT_PROMPT",
+            subagents=[{"name": "worker", "description": "Continues with context.", "model": worker_model, "mode": "fork"}],
+        )
+
+        agent.invoke({"messages": [HumanMessage(content="start")]}, {"recursion_limit": 25})
+
+        inherited = worker_model.call_history[0]["messages"]
+        assert not any(isinstance(m, AIMessage) and any(c["name"] == "task" for c in m.tool_calls) for m in inherited)
+        assert not any(isinstance(m, ToolMessage) and "was cancelled" in str(m.content) for m in inherited)
+        assert inherited[-1].text.startswith(_FORK_TASK_PREAMBLE)
 
     def test_forked_subagent_tool_order_matches_parent(self) -> None:
         """A fork's tools block must serialize identically to the parent's to reuse its cache."""
@@ -415,11 +415,12 @@ class TestSubagentMiddlewareInit:
             ],
         )
 
-        result = agent.invoke({"messages": [HumanMessage(content="start")]})
+        agent.invoke({"messages": [HumanMessage(content="start")]})
 
+        # The parent's prompt middleware is inherited, so the fork rebuilds the
+        # same composed message rather than seeing only the configured prompt.
         worker_system_message = worker_model.call_history[0]["messages"][0]
         assert worker_system_message.text == "PARENT_PROMPT\n\nDYNAMIC_PROMPT"
-        assert _PARENT_SYSTEM_MESSAGE_KEY not in result
 
     def test_forked_subagent_replaces_repeated_prompt_updates(self) -> None:
         class _AppendPromptMiddleware(AgentMiddleware):
@@ -674,6 +675,44 @@ class TestSubagentMiddlewareInit:
         task_tool = next(t for t in middleware.tools if t.name == "task")
         assert "weather" in (task_tool.description or "")
 
+    def test_task_tool_explains_forked_context_to_the_parent_agent(self) -> None:
+        """The task tool must distinguish a fork from an isolated worker."""
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues the current task.",
+                    "model": GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+                    "tools": [],
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        task_description = middleware.tools[0].description or ""
+
+        assert "Each invocation is stateless by default" in task_description
+        assert "inherits your full conversation and system prompt" in task_description
+        assert "no need to restate context here" in task_description
+
+    def test_task_tool_marks_compiled_forks_as_context_aware(self) -> None:
+        middleware = SubAgentMiddleware(
+            backend=StateBackend(),
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "Continues the current task.",
+                    "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
+                    "mode": "fork",
+                }
+            ],
+        )
+
+        task_description = middleware.tools[0].description or ""
+
+        assert "inherits your full conversation and system prompt" in task_description
+
     def test_subagent_middleware_custom_system_prompt(self) -> None:
         """Test SubAgentMiddleware with a custom system prompt."""
         middleware = SubAgentMiddleware(
@@ -755,7 +794,7 @@ class TestSubagentMiddlewareInit:
             store=None,
         )
 
-    def test_forked_compiled_subagent_receives_effective_parent_history(self) -> None:
+    def test_forked_compiled_subagent_receives_parent_state(self) -> None:
         captured: dict[str, object] = {}
 
         class _Runnable:
@@ -819,14 +858,19 @@ class TestSubagentMiddlewareInit:
 
         task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
 
+        # `in_flight` holds the unresolved `task` call that spawned this fork, and
+        # the summary replaces everything before the parent's cutoff.
         assert captured["messages"] == [
             summary,
             after_cutoff,
             HumanMessage(content=_FORK_TASK_PREAMBLE + "new task"),
         ]
         assert "_summarization_event" not in captured
+        assert captured[_FORKED_CONTEXT_KEY] is True
 
-    def test_compiled_fork_does_not_receive_parent_prompt_state(self) -> None:
+    @pytest.mark.parametrize("declarative", [True, False], ids=["declarative", "compiled"])
+    def test_fork_state_inheritance_depends_on_spec_kind(self, declarative: bool) -> None:  # noqa: FBT001
+        """Only a declarative fork inherits private channels; both drop summarization state."""
         captured: dict[str, object] = {}
 
         class _Runnable:
@@ -837,24 +881,31 @@ class TestSubagentMiddlewareInit:
             def invoke(self, state: dict[str, object], config: object = None) -> dict[str, object]:
                 del config
                 captured.update(state)
-                return {"messages": [AIMessage(content="done")]}
+                return {**state, "messages": [AIMessage(content="done")]}
 
-        middleware = SubAgentMiddleware(
-            backend=StateBackend(),
-            subagents=[
-                {
-                    "name": "worker",
-                    "description": "Continues with context.",
-                    "runnable": _Runnable(),
-                    "mode": "fork",
-                }
-            ],
-        )
+        def fake_create_sub_agent(spec: dict[str, Any], **kwargs: Any) -> object:
+            del spec, kwargs
+            return _Runnable()
+
+        spec: dict[str, Any] = {"name": "worker", "description": "Continues with context.", "mode": "fork"}
+        if declarative:
+            spec |= {"model": GenericFakeChatModel(messages=iter([AIMessage(content="x")])), "tools": []}
+        else:
+            spec["runnable"] = _Runnable()
+
+        with patch("deepagents.middleware.subagents.create_sub_agent", fake_create_sub_agent):
+            middleware = SubAgentMiddleware(
+                backend=StateBackend(),
+                subagents=[spec],
+                private_state_keys=frozenset({"memory_contents", "_summarization_event", "_summarization_session_id"}),
+            )
         task_tool = middleware.tools[0]
         runtime = ToolRuntime(
             state={
                 "messages": [HumanMessage(content="parent history")],
-                _PARENT_SYSTEM_MESSAGE_KEY: SystemMessage(content="SESSION_PROMPT"),
+                "memory_contents": {"/m.md": "PARENT MEMORY"},
+                "structured_response": {"answer": "stale"},
+                "_summarization_session_id": "session_parent",
             },
             context={},
             config={"configurable": {}},
@@ -863,10 +914,15 @@ class TestSubagentMiddlewareInit:
             tool_call_id="call_worker",
             store=None,
         )
+        result = task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
 
-        task_tool.func(description="new task", subagent_type="worker", runtime=runtime)
-
-        assert _PARENT_SYSTEM_MESSAGE_KEY not in captured
+        # Reusing the parent's session id would append the fork's evicted
+        # history into the parent's offload file. A stale parent structured
+        # response must likewise not be available to override this fork's result.
+        assert "_summarization_session_id" not in captured
+        assert "structured_response" not in captured
+        assert ("memory_contents" in captured) is declarative
+        assert result.update["messages"][0].content == "done"
 
     def test_rejects_duplicate_subagent_names(self) -> None:
         class _Runnable:

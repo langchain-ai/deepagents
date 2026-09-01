@@ -57,8 +57,8 @@ from deepagents.middleware.subagents import (
     ForkedSubAgent,
     SubAgent,
     SubAgentMiddleware,
+    _is_compiled_subagent,
     _is_forked_subagent,
-    _ParentSystemMessageMiddleware,
 )
 from deepagents.middleware.summarization import create_summarization_middleware
 from deepagents.profiles.harness.harness_profiles import (
@@ -667,12 +667,12 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Then spec is an AsyncSubAgent
             async_subagents.append(cast("AsyncSubAgent", spec))
             continue
-        if "runnable" in spec:
+        if _is_compiled_subagent(spec):
             # CompiledSubAgent - use as-is
             inline_subagents.append(spec)
         else:
             # Declarative subagent - fill in defaults and prepend base middleware
-            is_forked = spec.get("mode") == "fork"
+            is_forked = _is_forked_subagent(spec)
             raw_subagent_model = spec.get("model", model)
             subagent_model = resolve_model(raw_subagent_model)
 
@@ -682,8 +682,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # Resolve permissions: subagent's own rules take priority, else inherit parent's
             subagent_permissions = spec.get("permissions", permissions)
 
-            # Build middleware: base stack + skills (if specified) + user's middleware
-            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = [
+            # Build middleware: base stack + skills (if specified) + user's middleware.
+            # A fork also mirrors the parent's prompt-producing middleware, in the
+            # parent's order, so its own stack rebuilds the parent's system message
+            # from the inherited state.
+            subagent_middleware: list[AgentMiddleware[Any, Any, Any]] = []
+            if is_forked and skills is not None:
+                subagent_middleware.append(SkillsMiddleware(backend=backend, sources=skills))
+            subagent_middleware += [
                 FilesystemMiddleware(
                     backend=backend,
                     custom_tool_descriptions=_subagent_profile.tool_description_overrides,
@@ -692,8 +698,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 create_summarization_middleware(subagent_model, backend),
                 PatchToolCallsMiddleware(),
             ]
-            # A fork's system message always gets overwritten by the parent's
-            # captured one, so building Memory/Skills prompt content here is wasted.
             subagent_skills = spec.get("skills")
             if subagent_skills and not is_forked:
                 subagent_middleware.append(SkillsMiddleware(backend=backend, sources=subagent_skills))
@@ -703,6 +707,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             subagent_middleware.extend(_subagent_profile.materialize_extra_middleware())
 
             append_prompt_caching_middleware(subagent_middleware)
+            if is_forked and memory is not None:
+                subagent_middleware.append(MemoryMiddleware(backend=backend, sources=memory, add_cache_control=True))
 
             _subagent_matched_classes: set[type[AgentMiddleware[Any, Any, Any]]] = set()
             _subagent_matched_names: set[str] = set()
@@ -717,9 +723,14 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
                 matched_classes=_subagent_matched_classes,
                 matched_names=_subagent_matched_names,
             )
+            subagent_custom_middleware = list(spec.get("middleware", []))
+            if is_forked and middleware:
+                # `create_agent` rejects two middleware sharing a name, so a spec
+                # entry replaces the inherited one in place rather than adding to it.
+                subagent_custom_middleware = list({m.name: m for m in [*middleware, *subagent_custom_middleware]}.values())
             subagent_middleware = _apply_custom_middleware(
                 subagent_middleware,
-                spec.get("middleware", []),
+                subagent_custom_middleware,
                 core_names=_subagent_core_names,
             )
             subagent_middleware = _apply_excluded_middleware(
@@ -917,10 +928,6 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     # stripped last and cannot be restored by a custom wrap_model_call.
     if _profile.excluded_tools:
         deepagent_middleware.append(_ToolExclusionMiddleware(excluded=_profile.excluded_tools))
-    # Only a declarative fork consumes the captured message; compiled forks keep their own prompt.
-    _fork_names = frozenset(spec["name"] for spec in inline_subagents if _is_forked_subagent(spec) and "runnable" not in spec)
-    if sub_agent_middleware is not None and _fork_names:
-        deepagent_middleware.append(_ParentSystemMessageMiddleware(_fork_names))
     state_schemas = [state_schema] if state_schema is not None else []
     state_schemas.extend(mw.state_schema for mw in deepagent_middleware if getattr(mw, "state_schema", None) is not None)
     private_state_keys = private_state_field_names(*state_schemas)

@@ -1885,6 +1885,61 @@ class TestSubAgents:
         assert saw_parent_model_update, "Should have seen the parent final model update in the stream"
         assert seen_agent_names == {"supervisor", "worker"}
 
+    def test_subagent_checkpoint_history_is_readable(self) -> None:
+        """A task subagent's transcript is recoverable from the parent's checkpointer.
+
+        Read through the checkpointer rather than `agent.get_state_history`, which
+        resolves a `checkpoint_ns` by walking registered subgraphs: `task` invokes
+        subagents directly rather than as graph nodes, so the namespace has no
+        subgraph to resolve to.
+        """
+        subagent_content = "SUBAGENT_RESPONSE"
+        parent_model = _ScriptedChatModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {"description": "Do task", "subagent_type": "worker"},
+                            "id": "call_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Done."),
+            ]
+        )
+        subagent_model = _ScriptedChatModel(responses=[AIMessage(content=subagent_content)])
+        checkpointer = InMemorySaver()
+        agent = create_deep_agent(
+            model=parent_model,
+            checkpointer=checkpointer,
+            subagents=[
+                CompiledSubAgent(
+                    name="worker",
+                    description="Does work.",
+                    runnable=create_agent(model=subagent_model, name="worker"),
+                )
+            ],
+        )
+        config = {"configurable": {"thread_id": "subagent-history"}}
+
+        agent.invoke({"messages": [HumanMessage(content="Do something")]}, config)
+
+        subagent_namespace = next(
+            checkpoint.config["configurable"]["checkpoint_ns"]
+            for checkpoint in checkpointer.list(config)
+            if checkpoint.config["configurable"]["checkpoint_ns"].startswith("tools:")
+        )
+        history = [checkpoint for checkpoint in checkpointer.list(config) if checkpoint.config["configurable"]["checkpoint_ns"] == subagent_namespace]
+
+        assert history
+        assert any(
+            any(message.content == subagent_content for message in checkpoint.checkpoint["channel_values"].get("messages", []))
+            for checkpoint in history
+        )
+
     def test_compiled_subagent_lc_agent_name_in_stream_metadata(self) -> None:
         """lc_agent_name in streamed chunks must reflect the CompiledSubAgent's declared name.
 

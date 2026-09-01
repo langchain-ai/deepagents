@@ -11,7 +11,6 @@ from deepagents.middleware.memory import MemoryMiddleware
 from deepagents.middleware.rubric import RubricMiddleware
 from deepagents.middleware.subagents import (
     CompiledSubAgent,
-    ForkedSubAgent,
     SubAgent,
     SubAgentMiddleware,
 )
@@ -33,7 +32,6 @@ __all__ = [
     "DeepAgentState",
     "FilesystemMiddleware",
     "FilesystemPermission",
-    "ForkedSubAgent",
     "FsToolName",
     "GeneralPurposeSubagentProfile",
     "HarnessProfile",

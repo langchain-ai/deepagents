@@ -29,6 +29,10 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
+## Local Agent Activity Logs
+
+Set `DEEPAGENTS_TALON_AGENT_ACTIVITY_LOGGING=true` to emit agent run, model activity, and tool call events to the local process logs at `INFO`. Tool inputs and outputs are redacted and truncated to 1,000 characters, but may still contain sensitive application data; enable these logs only where local log access is appropriately restricted. “Thinking” events report model-call lifecycle activity and do not expose hidden chain-of-thought.
+
 ## Tool Approval Overrides
 
 Set `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` to a comma-separated list of tool names that should always require Talon's channel approval flow. This local override is additive with agent-provided HITL configuration and applies to MCP or local runtime tools.

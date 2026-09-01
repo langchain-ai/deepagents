@@ -36,7 +36,12 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
-from deepagents_talon.observability import log_event, stable_log_ref
+from deepagents_talon.observability import (
+    AgentActivityCallback,
+    agent_activity_logging_enabled,
+    log_event,
+    stable_log_ref,
+)
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -328,12 +333,26 @@ class DeepAgentRuntime:
             msg = "DeepAgentRuntime must be started before invoke"
             raise RuntimeError(msg)
 
+        activity = self._activity_callback(request)
+        if activity is not None:
+            activity.run_started(request.metadata.get("trigger"))
         token = _CRON_ORIGIN.set(_cron_origin_from_request(request))
         try:
-            text = await self._invoke_until_text(request)
+            text = await self._invoke_until_text(request, activity)
+        except BaseException as error:
+            if activity is not None:
+                activity.run_failed(error)
+            raise
         finally:
             _CRON_ORIGIN.reset(token)
+        if activity is not None:
+            activity.run_completed(text)
         return AgentResult(text=text)
+
+    def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
+        if not agent_activity_logging_enabled(self.env):
+            return None
+        return AgentActivityCallback(logger, request.conversation_id)
 
     def _build_tools(self) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = []
@@ -345,10 +364,15 @@ class DeepAgentRuntime:
         tools.extend(self.tools)
         return tools
 
-    async def _invoke_until_text(self, request: AgentRequest) -> str:
+    async def _invoke_until_text(
+        self,
+        request: AgentRequest,
+        activity: AgentActivityCallback | None,
+    ) -> str:
         state = await self._invoke_until_unblocked(
             _request_model_content(request),
             request,
+            activity,
         )
         text = _last_text(state)
         if text:
@@ -361,35 +385,47 @@ class DeepAgentRuntime:
                 attempt + 1,
                 self.max_continuations,
             )
-            state = await self._invoke_until_unblocked(
-                _CONTINUATION_NUDGE,
-                request,
-            )
+            state = await self._invoke_until_unblocked(_CONTINUATION_NUDGE, request, activity)
             text = _last_text(state)
             if text:
                 return text
 
-        state = await self._invoke_until_unblocked(
-            _FORCE_SUMMARY_PROMPT,
-            request,
-        )
+        state = await self._invoke_until_unblocked(_FORCE_SUMMARY_PROMPT, request, activity)
         return _last_text(state)
 
-    async def _invoke_with_retries(self, content: ModelContent, conversation_id: str) -> object:
+    async def _invoke_with_retries(
+        self,
+        content: ModelContent,
+        conversation_id: str,
+        activity: AgentActivityCallback | None,
+    ) -> object:
         return await self._invoke_payload_with_retries(
             {"messages": [{"role": "user", "content": content}]},
             conversation_id,
+            activity,
         )
 
-    async def _resume_with_retries(self, command: Command, conversation_id: str) -> object:
-        return await self._invoke_payload_with_retries(command, conversation_id)
+    async def _resume_with_retries(
+        self,
+        command: Command,
+        conversation_id: str,
+        activity: AgentActivityCallback | None,
+    ) -> object:
+        return await self._invoke_payload_with_retries(command, conversation_id, activity)
 
-    async def _invoke_payload_with_retries(self, payload: object, conversation_id: str) -> object:
+    async def _invoke_payload_with_retries(
+        self,
+        payload: object,
+        conversation_id: str,
+        activity: AgentActivityCallback | None,
+    ) -> object:
         invoke = self._graph_invoke()
-        config = {
+        config: dict[str, object] = {
             "recursion_limit": self.recursion_limit,
             "configurable": {"thread_id": conversation_id},
         }
+        if activity is not None:
+            config["callbacks"] = [activity]
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
             try:
@@ -424,14 +460,15 @@ class DeepAgentRuntime:
         self,
         content: ModelContent,
         request: AgentRequest,
+        activity: AgentActivityCallback | None,
     ) -> object:
-        state = await self._invoke_with_retries(content, request.conversation_id)
+        state = await self._invoke_with_retries(content, request.conversation_id, activity)
         for _ in range(DEFAULT_MAX_APPROVAL_ROUNDS):
             interrupts = _interrupts_from_state(state)
             if not interrupts:
                 return state
             resume = await self._build_approval_resume(request, interrupts)
-            state = await self._resume_with_retries(resume, request.conversation_id)
+            state = await self._resume_with_retries(resume, request.conversation_id, activity)
         msg = "agent hit tool approval interrupt limit"
         raise RuntimeError(msg)
 

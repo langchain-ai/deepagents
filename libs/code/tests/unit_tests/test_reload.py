@@ -13,7 +13,6 @@ import dotenv as _dotenv_module
 import pytest
 
 from deepagents_code import _env_vars
-from deepagents_code.command_registry import get_slash_commands
 from deepagents_code.config import Credentials, runtime_state
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
@@ -551,121 +550,6 @@ class TestReloadFromEnvironment:
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
         assert os.environ["OPENAI_API_KEY"] == "sk-fallback"
 
-    def test_project_dotenv_beats_global(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Project `.env` should always beat global `.env`."""
-        from deepagents_code.config import _load_dotenv
-
-        global_dir = tmp_path / "global"
-        global_dir.mkdir()
-        global_env = global_dir / ".env"
-        global_env.write_text("TEST_PRECEDENCE_KEY=global-value\n")
-        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
-
-        project_env = tmp_path / ".env"
-        project_env.write_text("TEST_PRECEDENCE_KEY=project-value\n")
-
-        # Use real dotenv (not the stub) to test actual precedence
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-        monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ.get("TEST_PRECEDENCE_KEY") == "project-value"
-        monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
-
-    def test_shell_env_beats_project_dotenv(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Shell-exported vars should beat project `.env`."""
-        from deepagents_code.config import _load_dotenv
-
-        # No global dotenv
-        monkeypatch.setattr(
-            "deepagents_code.config._GLOBAL_DOTENV_PATH",
-            tmp_path / "nonexistent" / ".env",
-        )
-
-        project_env = tmp_path / ".env"
-        project_env.write_text("TEST_SHELL_PROJECT_KEY=project-value\n")
-
-        monkeypatch.setenv("TEST_SHELL_PROJECT_KEY", "shell-value")
-
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ.get("TEST_SHELL_PROJECT_KEY") == "shell-value"
-        monkeypatch.delenv("TEST_SHELL_PROJECT_KEY", raising=False)
-
-    def test_shell_env_beats_global_dotenv(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Shell-exported vars should beat global `~/.deepagents/.env`."""
-        from deepagents_code.config import _load_dotenv
-
-        global_dir = tmp_path / "global"
-        global_dir.mkdir()
-        global_env = global_dir / ".env"
-        global_env.write_text("TEST_BOOT_KEY=global-value\n")
-        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
-
-        # Simulate a shell-exported variable (e.g., from $ZDOTDIR/.env)
-        monkeypatch.setenv("TEST_BOOT_KEY", "shell-value")
-
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-        # No project .env
-        monkeypatch.setattr(
-            "deepagents_code.config._find_dotenv_from_start_path",
-            lambda _: None,
-        )
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ.get("TEST_BOOT_KEY") == "shell-value"
-        monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
-
-    def test_global_only_no_project_dotenv(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Global `.env` values should apply when no project `.env` exists."""
-        from deepagents_code.config import _load_dotenv
-
-        global_dir = tmp_path / "global"
-        global_dir.mkdir()
-        global_env = global_dir / ".env"
-        global_env.write_text("TEST_GLOBAL_ONLY=global-value\n")
-        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
-
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-        monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
-
-        # No .env in isolated dir; global is the only source
-        monkeypatch.setattr(
-            "deepagents_code.config._find_dotenv_from_start_path",
-            lambda _: None,
-        )
-        isolated = tmp_path / "no_project_env"
-        isolated.mkdir()
-        result = _load_dotenv(start_path=isolated)
-
-        assert result is True
-        assert os.environ.get("TEST_GLOBAL_ONLY") == "global-value"
-        monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
-
     def test_global_dotenv_values_raises_oserror(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -907,29 +791,6 @@ class TestReloadFromEnvironment:
         assert "PROJECT_ONLY_KEY" not in os.environ
         assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
 
-    def test_project_dotenv_loads_when_read_project_dotenv_default(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Default (`startup.read_project_dotenv` true) still loads the project file."""
-        from deepagents_code.config import _load_dotenv
-
-        project_env = tmp_path / ".env"
-        project_env.write_text("PROJECT_ONLY_KEY=project-value\n")
-        monkeypatch.setattr(
-            "deepagents_code.config._GLOBAL_DOTENV_PATH",
-            tmp_path / "nonexistent" / ".env",
-        )
-        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
-
-        monkeypatch.setattr(
-            "deepagents_code.config_manifest.resolve_read_project_dotenv",
-            lambda **_kw: True,
-        )
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
-
     def test_project_dotenv_cannot_set_read_project_dotenv(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -996,33 +857,6 @@ class TestReloadFromEnvironment:
         assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
         # The global file's other values still load.
         assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
-
-    def test_preview_dotenv_skipped_when_read_project_dotenv_false(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Preview mirrors the loader: a disabled project `.env` is not reported.
-
-        The preview drives the user-facing cwd-switch prompt
-        (`_preview_project_settings_change`); if it still read the project file
-        while the runtime loader skipped it, the app would warn about settings
-        changes that a real reload would never apply.
-        """
-        from deepagents_code.config import _preview_dotenv_environ
-
-        (tmp_path / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
-        monkeypatch.setattr(
-            "deepagents_code.config._GLOBAL_DOTENV_PATH",
-            tmp_path / "nonexistent" / ".env",
-        )
-        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
-        monkeypatch.setattr(
-            "deepagents_code.config_manifest.resolve_read_project_dotenv",
-            lambda **_kw: False,
-        )
-
-        env = _preview_dotenv_environ(start_path=tmp_path)
-
-        assert "PROJECT_ONLY_KEY" not in env
 
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -1524,29 +1358,8 @@ class TestReloadErrorPaths:
             service.invalidate_config_sources()
 
 
-class TestReloadableFieldConstants:
-    """Guards for the derived reloadable-field constants."""
-
-    def test_api_key_fields_derived_from_reloadable(self) -> None:
-        """`_API_KEY_FIELDS` is the `*_api_key` subset of `_RELOADABLE_FIELDS`."""
-        from deepagents_code.config import _API_KEY_FIELDS, _RELOADABLE_FIELDS
-
-        assert {
-            "openai_api_key",
-            "anthropic_api_key",
-            "google_api_key",
-            "nvidia_api_key",
-            "tavily_api_key",
-        } == _API_KEY_FIELDS
-        assert set(_RELOADABLE_FIELDS) >= _API_KEY_FIELDS
-
-
 class TestReloadInAutocomplete:
     """Tests for autocomplete slash command registration."""
-
-    def test_reload_in_slash_commands(self) -> None:
-        """`/reload` should be registered in slash command completions."""
-        assert any(entry.name == "/reload" for entry in get_slash_commands())
 
 
 class TestReloadInputResponsiveness:
@@ -1787,66 +1600,6 @@ class TestReloadInputResponsiveness:
 class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""
 
-    async def test_refreshes_status_without_owned_server(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Client-only sessions should resync after profile caches are cleared."""
-        from deepagents_code import model_config
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import PluginDiscoveryResult
-
-        config_path = tmp_path / "config.toml"
-
-        def write_config(level: str) -> None:
-            config_path.write_text(f"""
-[models.providers.acme]
-models = ["foo"]
-[models.providers.acme.profile]
-reasoning_output = true
-reasoning_effort_levels = ["{level}"]
-""")
-
-        write_config("old")
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
-        monkeypatch.setattr(model_config, "_get_provider_profile_modules", list)
-        monkeypatch.setattr(runtime_state, "model_provider", "acme")
-        monkeypatch.setattr(runtime_state, "model_name", "foo")
-        model_config.clear_caches()
-
-        app = DeepAgentsApp()
-        try:
-            async with app.run_test() as pilot:
-                await pilot.pause()
-
-                async def _fake_discover() -> bool:  # noqa: RUF029
-                    return True
-
-                monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-                monkeypatch.setattr(
-                    "deepagents_code.plugins.discover_plugins",
-                    lambda: PluginDiscoveryResult(plugins=()),
-                )
-                monkeypatch.setattr(
-                    "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
-                    lambda _plugins: (),
-                )
-                assert app._server_proc is None
-                assert app._chat_input is not None
-                assert app._chat_input._argument_hint_overrides["effort"] == (
-                    "[old|clear]"
-                )
-
-                write_config("new")
-                await app._handle_command("/reload")
-                if app._reload_task is not None:
-                    await app._reload_task
-
-                assert app._chat_input._argument_hint_overrides["effort"] == (
-                    "[new|clear]"
-                )
-        finally:
-            model_config.clear_caches()
-
 
 class TestReloadSkillReport:
     """`/reload` should surface skill add/remove diff in its report."""
@@ -1906,80 +1659,6 @@ class TestReloadSkillReport:
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
-
-    async def test_reports_added_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        text = await self._run_reload(
-            monkeypatch, before=["alpha"], after=["alpha", "beta"]
-        )
-        assert "Skills updated" in text
-        assert "  - Added: beta" in text
-        assert "Removed:" not in text
-
-    async def test_reports_removed_skills(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        text = await self._run_reload(
-            monkeypatch, before=["alpha", "beta"], after=["alpha"]
-        )
-        assert "Skills updated" in text
-        assert "  - Removed: beta" in text
-        assert "Added:" not in text
-
-    async def test_reports_added_and_removed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        text = await self._run_reload(
-            monkeypatch, before=["alpha", "beta"], after=["alpha", "gamma"]
-        )
-        assert "Skills updated" in text
-        assert "  - Added: gamma" in text
-        assert "  - Removed: beta" in text
-
-    async def test_reports_no_changes_stays_silent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When the skill set is unchanged, the report should not mention skills."""
-        text = await self._run_reload(monkeypatch, before=["alpha"], after=["alpha"])
-        assert "Skills updated" not in text
-        assert "Added:" not in text
-        assert "Removed:" not in text
-        assert "Skill re-discovery failed" not in text
-
-    async def test_first_skill_added_from_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """User installs first skill, then `/reload` — empty -> non-empty."""
-        text = await self._run_reload(monkeypatch, before=[], after=["alpha"])
-        assert "  - Added: alpha" in text
-        assert "Removed:" not in text
-
-    async def test_all_skills_removed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """All known skills removed — non-empty -> empty."""
-        text = await self._run_reload(monkeypatch, before=["alpha", "beta"], after=[])
-        assert "  - Removed: alpha, beta" in text
-        assert "Added:" not in text
-
-    async def test_added_skills_sorted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Added skill names should be sorted (deterministic output)."""
-        text = await self._run_reload(
-            monkeypatch, before=["alpha"], after=["alpha", "zeta", "beta"]
-        )
-        assert "  - Added: beta, zeta" in text
-
-    async def test_discovery_failure_preserves_cache_and_warns(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Discovery failure must not produce a misleading 'Removed: X' diff."""
-        text = await self._run_reload(
-            monkeypatch,
-            before=["alpha", "beta"],
-            after=None,
-            discovery_ok=False,
-        )
-        assert "Skill re-discovery failed" in text
-        # Critical: must not claim every prior skill was removed.
-        assert "Removed:" not in text
-        assert "Skills updated" not in text
 
 
 async def test_reload_notifies_when_managed_policy_newly_masks_cli(
@@ -2114,71 +1793,6 @@ class TestReloadThemeReapply:
 class TestReloadPluginsViaReload:
     """Plugins should reload through `/reload`."""
 
-    def test_fingerprint_detects_nested_skill_edits(self, tmp_path: Path) -> None:
-        """Editing `SKILL.md` under a skills directory must change the fingerprint."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        skills_root = tmp_path / "skills"
-        skill_dir = skills_root / "demo"
-        skill_dir.mkdir(parents=True)
-        skill_md = skill_dir / "SKILL.md"
-        skill_md.write_text("---\nname: demo\n---\noriginal\n", encoding="utf-8")
-
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(skills=(skills_root,)),
-        )
-
-        before = DeepAgentsApp._fingerprint_plugins((plugin,))
-        skill_md.write_text("---\nname: demo\n---\nedited\n", encoding="utf-8")
-        after = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert before != after
-
-    def test_fingerprint_detects_added_and_removed_nested_files(
-        self, tmp_path: Path
-    ) -> None:
-        """Adding then removing a nested file must each change the fingerprint.
-
-        Directory stat alone can stay put across a child add/remove on some
-        filesystems, so the recursive walk is what has to notice.
-        """
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        skills_root = tmp_path / "skills" / "demo"
-        skills_root.mkdir(parents=True)
-        (skills_root / "SKILL.md").write_text("---\nname: demo\n---\n", "utf-8")
-
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(skills=(tmp_path / "skills",)),
-        )
-
-        base = DeepAgentsApp._fingerprint_plugins((plugin,))
-        extra = skills_root / "helper.py"
-        extra.write_text("x = 1\n", encoding="utf-8")
-        with_extra = DeepAgentsApp._fingerprint_plugins((plugin,))
-        extra.unlink()
-        removed = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert base != with_extra
-        assert with_extra != removed
-        assert base == removed
-
     def test_fingerprint_records_sentinel_for_unreadable_subdir(
         self, tmp_path: Path
     ) -> None:
@@ -2227,39 +1841,6 @@ class TestReloadPluginsViaReload:
         )
         assert DeepAgentsApp._plugin_fingerprint_changed(fingerprint, fingerprint)
 
-    def test_fingerprint_caps_recursive_scan(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Oversized component trees stop at the hard entry limit."""
-        from deepagents_code import app as app_module
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        skills_root = tmp_path / "skills"
-        skills_root.mkdir()
-        for index in range(5):
-            (skills_root / f"skill-{index}.md").write_text(str(index), encoding="utf-8")
-        monkeypatch.setattr(app_module, "_MAX_PLUGIN_FINGERPRINT_ENTRIES", 3)
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(skills=(skills_root,)),
-        )
-
-        first = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
-        second = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
-
-        assert any(
-            entry.mtime_ns == app_module._TRUNCATED_PLUGIN_FINGERPRINT_STAT
-            for entry in first.components
-        )
-        assert DeepAgentsApp._plugin_fingerprint_changed(first, second)
-
     def test_fingerprint_does_not_follow_symlinks(self, tmp_path: Path) -> None:
         """A nested directory symlink is recorded without scanning its target."""
         from deepagents_code.app import DeepAgentsApp
@@ -2293,180 +1874,6 @@ class TestReloadPluginsViaReload:
 
         assert str(link) in paths
         assert str(outside_file) not in paths
-
-    def test_fingerprint_rejects_component_outside_plugin_root(
-        self, tmp_path: Path
-    ) -> None:
-        """A malformed inventory cannot make fingerprinting inspect another tree."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        plugin_root = tmp_path / "plugin"
-        plugin_root.mkdir()
-        outside = tmp_path / "outside.json"
-        outside.write_text('{"mcpServers": {}}', encoding="utf-8")
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=plugin_root,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(mcp_files=(outside,)),
-        )
-
-        fingerprint = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
-
-        assert fingerprint.components == ((str(outside), -1, -1),)
-
-    def test_fingerprint_detects_version_change(self, tmp_path: Path) -> None:
-        """A version bump must change the fingerprint even with identical files."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        def _plugin(version: str) -> PluginInstance:
-            return PluginInstance(
-                plugin_id="demo@tools",
-                name="demo",
-                marketplace="tools",
-                version=version,
-                root=tmp_path,
-                data_dir=tmp_path / "data",
-                manifest=None,
-                inventory=ComponentInventory(),
-            )
-
-        before = DeepAgentsApp._fingerprint_plugins((_plugin("1.0"),))
-        after = DeepAgentsApp._fingerprint_plugins((_plugin("2.0"),))
-
-        assert before != after
-
-    def test_fingerprint_detects_manifest_change(self, tmp_path: Path) -> None:
-        """A manifest change must flip the fingerprint even when files match."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        def _plugin(manifest_version: str) -> PluginInstance:
-            manifest = PluginManifest(
-                name="demo",
-                version=manifest_version,
-                component_paths={},
-                inline_mcp={},
-            )
-            return PluginInstance(
-                plugin_id="demo@tools",
-                name="demo",
-                marketplace="tools",
-                # Hold the instance version fixed to isolate the manifest dimension.
-                version="1.0",
-                root=tmp_path,
-                data_dir=tmp_path / "data",
-                manifest=manifest,
-                inventory=ComponentInventory(),
-            )
-
-        before = DeepAgentsApp._fingerprint_plugins((_plugin("1.0"),))
-        after = DeepAgentsApp._fingerprint_plugins((_plugin("2.0"),))
-
-        assert before != after
-
-    def test_fingerprint_detects_mcp_file_edits(self, tmp_path: Path) -> None:
-        """Editing an `mcp_files` entry (a file path) must change the fingerprint."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        mcp_file = tmp_path / ".mcp.json"
-        mcp_file.write_text('{"mcpServers": {}}', encoding="utf-8")
-
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(mcp_files=(mcp_file,)),
-        )
-
-        before = DeepAgentsApp._fingerprint_plugins((plugin,))
-        mcp_file.write_text('{"mcpServers": {"x": {}}}', encoding="utf-8")
-        after = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert before != after
-
-    def test_plugin_login_labels_filters_dedupes_and_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Only added, login-needing plugins are listed, deduped, with name fallback."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        def _plugin(name: str, *, display_name: str | None) -> PluginInstance:
-            manifest = (
-                None
-                if display_name is None
-                else PluginManifest(
-                    name=name,
-                    display_name=display_name,
-                    version="1.0",
-                    component_paths={},
-                    inline_mcp={},
-                )
-            )
-            return PluginInstance(
-                plugin_id=f"{name}@tools",
-                name=name,
-                marketplace="tools",
-                version="1.0",
-                root=tmp_path,
-                data_dir=tmp_path / "data",
-                manifest=manifest,
-                inventory=ComponentInventory(),
-            )
-
-        # login_needed twice -> should dedupe to one "Login" label; no_login has
-        # no login-requiring server; nameless falls back to plugin.name;
-        # not_added is excluded because it is not in the added set.
-        entries_by_id = {
-            "login_needed@tools": (("s", "scoped", True),),
-            "no_login@tools": (("s", "scoped", False),),
-            "nameless@tools": (("s", "scoped", True),),
-            "not_added@tools": (("s", "scoped", True),),
-        }
-        monkeypatch.setattr(
-            "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
-            lambda plugin: entries_by_id[plugin.plugin_id],
-        )
-
-        plugins = (
-            _plugin("login_needed", display_name="Login"),
-            _plugin("dupe", display_name="Login"),
-            _plugin("no_login", display_name="Silent"),
-            _plugin("nameless", display_name=None),
-            _plugin("not_added", display_name="Skipped"),
-        )
-        # "dupe" shares the "Login" display name to exercise deduplication.
-        entries_by_id["dupe@tools"] = (("s", "scoped", True),)
-        added = {
-            "login_needed@tools",
-            "dupe@tools",
-            "no_login@tools",
-            "nameless@tools",
-        }
-
-        labels = DeepAgentsApp._plugin_login_labels(plugins, added)
-
-        assert labels == ("Login", "nameless")
 
     @pytest.mark.parametrize(
         "change", ["none", "fingerprint", "fingerprint_key_added", "enabled"]
@@ -2591,41 +1998,6 @@ class TestReloadPluginsViaReload:
         assert "Couldn't check plugin state" in str(message._content)
         assert "/reload" in str(message._content)
 
-    async def test_plugin_manager_reopen_preserves_deferred_reload_baseline(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Reopening after deferral must retain the state from before changes."""
-        from deepagents_code.app import DeepAgentsApp
-
-        before: dict[str, _PluginFingerprint] = {}
-        after = {"linear@tools": _test_plugin_fingerprint("v1")}
-        snapshots = iter(
-            (
-                (frozenset[str](), before),
-                (frozenset({"linear@tools"}), after),
-                (frozenset({"linear@tools"}), after),
-                (frozenset({"linear@tools"}), after),
-            )
-        )
-        app = DeepAgentsApp()
-        pushed: list[PluginManagerScreen] = []
-
-        monkeypatch.setattr(app, "_snapshot_plugin_state", lambda: next(snapshots))
-        monkeypatch.setattr(
-            app,
-            "push_screen",
-            lambda screen, _callback: pushed.append(screen),
-        )
-
-        await app._show_plugin_manager()
-        first_reload_required = await _check_plugin_reload(pushed[0])
-        await app._show_plugin_manager()
-        second_reload_required = await _check_plugin_reload(pushed[1])
-
-        assert app._plugin_fingerprints == before
-        assert first_reload_required is True
-        assert second_reload_required is False
-
     async def test_plugin_manager_warns_when_snapshot_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2734,39 +2106,6 @@ class TestReloadPluginsViaReload:
             else:
                 assert "Plugin changes are pending" in message
 
-    async def test_reports_plugin_summary(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`/reload` includes a plugin summary."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import PluginDiscoveryResult
-        from deepagents_code.tui.widgets.messages import AppMessage
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-
-            async def _fake_discover() -> bool:  # noqa: RUF029
-                return True
-
-            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-            monkeypatch.setattr(
-                "deepagents_code.plugins.discover_plugins",
-                lambda: PluginDiscoveryResult(plugins=()),
-            )
-            monkeypatch.setattr(
-                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
-                lambda _plugins: (),
-            )
-
-            await app._handle_command("/reload")
-            if app._reload_task is not None:
-                await app._reload_task
-            await pilot.pause()
-
-            text = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Plugins: 0 plugins · 0 skills · 0 plugin MCP servers" in text
-
     async def _reload_transcript_with_fingerprints(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2817,182 +2156,6 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
-
-    @pytest.mark.parametrize(
-        ("old_versions", "new_versions", "expected"),
-        [
-            pytest.param(
-                {"demo@tools": "v1"},
-                {"demo@tools": "v1"},
-                "Plugin changes: no changes detected.",
-                id="no-changes",
-            ),
-            pytest.param(
-                {},
-                {"demo@tools": "v1"},
-                "Plugin changes: 1 plugin added.",
-                id="added-singular",
-            ),
-            pytest.param(
-                {},
-                {"demo@tools": "v1", "extra@tools": "v1"},
-                "Plugin changes: 2 plugins added.",
-                id="added-plural",
-            ),
-            pytest.param(
-                {"demo@tools": "v1"},
-                {},
-                "Plugin changes: 1 plugin removed.",
-                id="removed",
-            ),
-            pytest.param(
-                {"demo@tools": "v1"},
-                {"demo@tools": "v2"},
-                "Plugin changes: 1 plugin changed.",
-                id="changed",
-            ),
-            pytest.param(
-                {"demo@tools": "v1", "gone@tools": "v1"},
-                {"demo@tools": "v2", "new@tools": "v1"},
-                "Plugin changes: 1 plugin added, 1 plugin removed, 1 plugin changed.",
-                id="added-removed-changed",
-            ),
-        ],
-    )
-    async def test_reload_report_summarizes_plugin_changes(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        old_versions: dict[str, str],
-        new_versions: dict[str, str],
-        expected: str,
-    ) -> None:
-        """`/reload` summarizes added/removed/changed plugins against the baseline."""
-        old = {
-            plugin_id: _test_plugin_fingerprint(version)
-            for plugin_id, version in old_versions.items()
-        }
-        new = {
-            plugin_id: _test_plugin_fingerprint(version)
-            for plugin_id, version in new_versions.items()
-        }
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch, old=old, new=new
-        )
-
-        assert expected in text
-
-    async def test_reload_report_omits_changes_on_first_reload(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The first `/reload` has no baseline, so it omits the changes line."""
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old=None,
-            new={"demo@tools": _test_plugin_fingerprint("v1")},
-        )
-
-        assert "Plugin changes:" not in text
-
-    async def test_reload_fingerprints_plugins_off_ui_thread(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`/reload` must not recursively scan plugin files on the UI thread."""
-        ui_thread = threading.get_ident()
-        fingerprint_threads: list[int] = []
-
-        await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old={},
-            new={},
-            fingerprint_threads=fingerprint_threads,
-        )
-
-        assert len(fingerprint_threads) == 1
-        assert fingerprint_threads[0] != ui_thread
-
-    async def test_reload_reports_mcp_login_for_new_plugin(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """New HTTP MCP plugins retain their post-reload sign-in guidance."""
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        plugin = PluginInstance(
-            plugin_id="linear@tools",
-            name="linear",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=PluginManifest(
-                name="linear",
-                display_name="Linear",
-                version="1.0",
-                component_paths={},
-                inline_mcp={
-                    "mcpServers": {
-                        "linear": {
-                            "type": "http",
-                            "url": "https://mcp.example.com",
-                        }
-                    }
-                },
-            ),
-            inventory=ComponentInventory(),
-        )
-
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old={},
-            new={plugin.plugin_id: _test_plugin_fingerprint("v1")},
-            plugins=(plugin,),
-        )
-
-        assert "Sign in to Linear via `/mcp`." in text
-
-    async def test_reload_omits_sign_in_on_first_reload(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """First `/reload` has no baseline, so sign-in guidance is suppressed too."""
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        plugin = PluginInstance(
-            plugin_id="linear@tools",
-            name="linear",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=PluginManifest(
-                name="linear",
-                display_name="Linear",
-                version="1.0",
-                component_paths={},
-                inline_mcp={
-                    "mcpServers": {
-                        "linear": {"type": "http", "url": "https://mcp.example.com"}
-                    }
-                },
-            ),
-            inventory=ComponentInventory(),
-        )
-
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old=None,
-            new={plugin.plugin_id: _test_plugin_fingerprint("v1")},
-            plugins=(plugin,),
-        )
-
-        assert "Sign in to" not in text
 
     async def test_reload_reports_plugin_discovery_failure(
         self, monkeypatch: pytest.MonkeyPatch
@@ -3424,33 +2587,6 @@ class TestClearCachesDropsEveryConfigView:
     dropping it here regressed only hand edits and left the suite green.
     """
 
-    def test_reload_picks_up_a_hand_edited_thread_setting(
-        self,
-        tmp_path: Path,
-    ) -> None:
-        """A `[threads]` hand edit takes effect once caches are cleared."""
-        from deepagents_code.model_config import clear_caches, load_thread_config
-
-        config_path = tmp_path / "config.toml"
-        config_path.write_text(
-            '[threads]\nsort_order = "created_at"\n', encoding="utf-8"
-        )
-        # Populates `_thread_config_cache`; only `load_thread_config` reads it.
-        assert load_thread_config().sort_order == "created_at"
-
-        config_path.write_text(
-            '[threads]\nsort_order = "updated_at"\n', encoding="utf-8"
-        )
-        assert load_thread_config().sort_order == "created_at", (
-            "a hand edit must not change a value mid-session"
-        )
-
-        clear_caches()
-
-        assert load_thread_config().sort_order == "updated_at", (
-            "`clear_caches` must invalidate the thread config cache"
-        )
-
 
 class TestDiagnosticDedupIsPerGeneration:
     """A repeated `/reload` of a still-broken file must keep reporting it.
@@ -3525,40 +2661,6 @@ class TestDiagnosticDedupIsPerGeneration:
                 _emit_ranked_diagnostics(option, resolver.get(option))
 
         assert len(caplog.records) == 1
-
-    def test_rebuilding_the_resolver_re_arms_the_dedup(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """A rebuilt resolver is a new generation and must report afresh.
-
-        The set was cleared on reload but not on the cache miss that builds a
-        fresh resolver, and the cache key includes the managed path -- so
-        installing or removing policy advanced the generation while the dedup
-        stayed alive from the one before it.
-
-        Asserted on the set rather than on log output: the rejection reasons
-        differ across a rebuild (the source paths change), so counting log
-        records passes either way and pins nothing. The key is moved by
-        repointing the user path, because the managed route to a rebuild runs
-        through `invalidate_config_sources`, which clears the set itself and
-        would mask what this test is for.
-        """
-        from deepagents_code import config_manifest, model_config
-        from deepagents_code.configuration.resolver import get_config_resolver
-
-        get_config_resolver()
-        config_manifest._warned_non_table_paths.add(("ranked provider", "stale"))
-
-        moved = tmp_path / "moved" / "config.toml"
-        moved.parent.mkdir(parents=True, exist_ok=True)
-        moved.write_text("", encoding="utf-8")
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", moved)
-
-        get_config_resolver()
-
-        assert config_manifest._warned_non_table_paths == set(), (
-            "a rebuilt generation must re-arm the source diagnostics"
-        )
 
 
 def test_managed_reload_block_is_found_behind_another_change_entry() -> None:

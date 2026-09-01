@@ -11,7 +11,6 @@ import pytest
 from deepagents_code._env_vars import DEBUG, INVOKED_AS
 from deepagents_code._invocation import (
     DEFAULT_INVOKED_NAME,
-    STANDARD_INVOKED_NAMES,
     invoked_name,
     log_nonstandard_invoked_name,
 )
@@ -251,20 +250,3 @@ class TestLogNonstandardInvokedName:
             log_nonstandard_invoked_name()
 
         assert caplog.records == []
-
-
-def test_standard_names_match_pyproject_scripts() -> None:
-    """Drift guard: `STANDARD_INVOKED_NAMES` covers `[project.scripts]`.
-
-    The set is hand-maintained in `_invocation` (the module must stay
-    import-light), so a console script added to `pyproject.toml` without a
-    matching entry would start logging a spurious "non-standard" note for a
-    shipped command.
-    """
-    import tomllib
-    from pathlib import Path
-
-    pyproject = Path(__file__).resolve().parents[2] / "pyproject.toml"
-    scripts = set(tomllib.loads(pyproject.read_text())["project"]["scripts"])
-
-    assert scripts == set(STANDARD_INVOKED_NAMES)

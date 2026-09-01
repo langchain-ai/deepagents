@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 import pytest
 from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
+from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
@@ -51,6 +52,20 @@ class RecordingGraph:
         response = SimpleNamespace(content=f"seen:{len(messages)}")
         messages.append(response)
         return {"messages": list(messages)}
+
+
+class RecoverableGraph:
+    def __init__(self, messages: list[object] | None = None) -> None:
+        self.config = {"configurable": {"thread_id": "chat", "checkpoint_id": "latest"}}
+        self.values = {"messages": messages or []}
+        self.update: tuple[dict[str, Any], dict[str, Any]] | None = None
+
+    async def aget_state(self, config: dict[str, Any]) -> SimpleNamespace:
+        assert config == {"configurable": {"thread_id": "chat"}}
+        return SimpleNamespace(config=self.config, values=self.values)
+
+    async def aupdate_state(self, config: dict[str, Any], values: dict[str, Any]) -> None:
+        self.update = (config, values)
 
 
 class CronCallingGraph:
@@ -868,6 +883,53 @@ async def test_runtime_rejects_invalid_recursion_limit_env() -> None:
             memory=(),
             env={"DEEPAGENTS_TALON_RECURSION_LIMIT": "0"},
         )
+
+
+async def test_runtime_recovers_with_exact_human_message_after_latest_checkpoint() -> None:
+    graph = RecoverableGraph()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    await runtime.recover_interrupted("chat")
+
+    assert graph.update is not None
+    config, values = graph.update
+    assert config is graph.config
+    messages = values["messages"]
+    assert len(messages) == 1
+    assert messages[0].type == "human"
+    assert messages[0].content == (
+        "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+    )
+
+
+async def test_runtime_repairs_dangling_tool_call_before_interruption_marker() -> None:
+    tool_call = {"name": "search", "args": {"query": "test"}, "id": "call-1"}
+    graph = RecoverableGraph([AIMessage(content="", tool_calls=[tool_call])])
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    await runtime.recover_interrupted("chat")
+
+    assert graph.update is not None
+    messages = graph.update[1]["messages"]
+    assert isinstance(messages[0], RemoveMessage)
+    assert isinstance(messages[-2], ToolMessage)
+    assert messages[-2].tool_call_id == "call-1"
+    assert messages[-1].type == "human"
+    assert messages[-1].content == (
+        "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+    )
 
 
 async def test_runtime_preserves_conversation_thread_across_turns(

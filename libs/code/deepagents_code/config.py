@@ -33,6 +33,7 @@ from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_TIMEOUT,
     DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS,
     DISABLED_PROJECT_MCP_SERVERS,
+    ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT,
     HIDE_SPLASH_VERSION,
     READ_PROJECT_DOTENV,
     UI_CHARSET_MODE,
@@ -306,6 +307,7 @@ _PROJECT_DOTENV_DENIED_ENV_KEYS = frozenset(
         DISABLED_PROJECT_MCP_SERVERS,
         AUTO_CLASSIFIER_MODEL,
         AUTO_CLASSIFIER_TIMEOUT,
+        ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT,
         _LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV,
         "TERM_PROGRAM",
     }
@@ -330,6 +332,11 @@ a repo-supplied downgrade of a user-level security decision, not a project build
 setting. Choosing a classifier stays available through the trusted surfaces:
 shell exports, the global `~/.deepagents/.env`, `[models].auto_classifier` in
 `~/.deepagents/config.toml`, `--auto-classifier-model`, and `/auto model`.
+
+`ENABLE_FORKED_GENERAL_PURPOSE_SUBAGENT` opts dcode's built-in
+`general-purpose` subagent into fork mode, which inherits the parent
+conversation and private state. A cloned repository must not enable that
+behavior, so only the shell or global `.env` may set it.
 
 `LANGGRAPH_DEFAULT_RECURSION_LIMIT` controls the graph step budget whenever no
 Deep Agents override is configured. A project value would bypass the bounded

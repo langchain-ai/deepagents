@@ -545,6 +545,9 @@ class WhatsAppChannel:
                             "whatsapp.inbound.message.dispatching",
                             has_media=bool(checked.metadata.get("has_media")),
                             media_type=checked.metadata.get("media_type"),
+                            quoted_participant_present=(
+                                checked.metadata.get("quoted_participant") is not None
+                            ),
                             text_chars=len(checked.text),
                         )
                         await dispatch_message(self._handler, checked, provider="WhatsApp")
@@ -775,6 +778,9 @@ def _parse_message(payload: object) -> ChannelMessage:
             "chat_type": values.get("chat_type") or values.get("chatType"),
             "chat_id_from": values.get("chat_id_from") or values.get("chatIdFrom"),
             "user_name": values.get("user_name") or values.get("senderName"),
+            "quoted_participant": optional_str(
+                values.get("quoted_participant") or values.get("quotedParticipant"),
+            ),
             "raw_message": values.get("raw_message") or {},
             "from_self": values.get("from_self") is True or values.get("fromSelf") is True,
             "self_chat": values.get("self_chat") is True or values.get("selfChat") is True,

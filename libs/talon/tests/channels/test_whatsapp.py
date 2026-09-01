@@ -264,7 +264,11 @@ def test_config_accepts_open_exposure_with_acknowledgement(tmp_path: Path) -> No
     assert whatsapp.exposure.mode == ExposureMode.OPEN
 
 
-async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> None:
+async def test_channel_polls_and_dispatches_allowed_messages(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    quoted_participant = "quoted-user@s.whatsapp.net"
     transport = RecordingTransport(
         messages=[
             {
@@ -273,6 +277,7 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
                 "user_id": "operator",
                 "message_id": "message-1",
                 "message_type": "chat",
+                "quotedParticipant": quoted_participant,
             },
             {
                 "text": "blocked",
@@ -299,12 +304,16 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
 
     channel.set_message_handler(record)
 
-    await channel.start()
-    await asyncio.sleep(0)
-    await channel.stop()
+    with caplog.at_level(logging.DEBUG, logger="deepagents_talon.channels.whatsapp"):
+        await channel.start()
+        await asyncio.sleep(0)
+        await channel.stop()
 
     assert [message.text for message in received] == ["allowed"]
     assert received[0].metadata["provider"] == "whatsapp"
+    assert received[0].metadata["quoted_participant"] == quoted_participant
+    assert '"quoted_participant_present": true' in caplog.text
+    assert quoted_participant not in caplog.text
 
 
 async def test_channel_rejects_truthy_non_boolean_self_markers(tmp_path: Path) -> None:

@@ -66,7 +66,7 @@ from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._env_vars import (
-    DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT,
+    FORKED_SUBAGENTS,
     is_env_truthy,
 )
 from deepagents_code._glm_5p2_profile import (
@@ -2838,7 +2838,7 @@ def create_cli_agent(
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
             "middleware": _subagent_cli_middleware(has_explicit_model=False),
         }
-        if not is_env_truthy(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT):
+        if is_env_truthy(FORKED_SUBAGENTS, default=True):
             general_purpose_subagent["mode"] = "fork"
         if resolved_interrupt_on is not None:
             general_purpose_subagent["interrupt_on"] = {}

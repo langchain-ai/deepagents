@@ -3278,8 +3278,8 @@ class TestCreateCliAgentShellMiddlewareWiring:
     def test_forked_general_purpose_subagent_is_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The environment flag opts the fallback out of fork mode."""
-        from deepagents_code._env_vars import DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
+        """The environment flag defaults on and accepts a false opt-out."""
+        from deepagents_code._env_vars import FORKED_SUBAGENTS
 
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
@@ -3300,7 +3300,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
                 return_value=fake_model,
             ),
         ):
-            monkeypatch.delenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, raising=False)
+            monkeypatch.delenv(FORKED_SUBAGENTS, raising=False)
             create_cli_agent(
                 model="fake-model",
                 assistant_id="test",
@@ -3316,7 +3316,7 @@ class TestCreateCliAgentShellMiddlewareWiring:
             )
             assert default_general_purpose["mode"] == "fork"
 
-            monkeypatch.setenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, "true")
+            monkeypatch.setenv(FORKED_SUBAGENTS, "false")
             create_cli_agent(
                 model="fake-model",
                 assistant_id="test",
@@ -3336,10 +3336,10 @@ class TestCreateCliAgentShellMiddlewareWiring:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """User-defined general-purpose subagent is not duplicated or rewritten."""
-        from deepagents_code._env_vars import DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT
+        from deepagents_code._env_vars import FORKED_SUBAGENTS
         from deepagents_code.agent import ShellAllowListMiddleware
 
-        monkeypatch.delenv(DISABLE_FORKED_GENERAL_PURPOSE_SUBAGENT, raising=False)
+        monkeypatch.delenv(FORKED_SUBAGENTS, raising=False)
         mock_settings = self._build_mock_settings(tmp_path)
         mock_agent = Mock()
         mock_agent.with_config.return_value = mock_agent

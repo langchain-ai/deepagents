@@ -20,6 +20,8 @@ from tests.conftest import RecordingChannel
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
 
 class RecordingScheduler:
     def __init__(self) -> None:
@@ -155,6 +157,28 @@ async def test_host_serializes_messages_per_conversation(tmp_path: Path) -> None
 
     assert [request.text for request in agent.requests] == ["block", "second"]
     assert channel.sent == [("chat", "reply:block"), ("chat", "reply:second")]
+
+
+async def test_typing_indicator_refreshes_during_long_agent_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_talon.host._TYPING_REFRESH_SECONDS", 0.01)
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
+    await _wait_for_request(agent, "block")
+    await _wait_for_typing_count(channel, 3)
+
+    agent.released.set()
+    await _wait_for_sent_count(channel, 1)
+    await host.stop()
+
+    assert len(channel.typing_calls) >= 3
+    assert set(channel.typing_calls) == {"chat"}
 
 
 async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
@@ -838,6 +862,15 @@ async def _wait_for_sent_count(channel: RecordingChannel, count: int) -> None:
             return
         await asyncio.sleep(0)
     msg = f"channel sent {len(channel.sent)} message(s), expected {count}"
+    raise AssertionError(msg)
+
+
+async def _wait_for_typing_count(channel: RecordingChannel, count: int) -> None:
+    for _ in range(200):
+        if len(channel.typing_calls) >= count:
+            return
+        await asyncio.sleep(0.01)
+    msg = f"channel received {len(channel.typing_calls)} typing call(s), expected {count}"
     raise AssertionError(msg)
 
 

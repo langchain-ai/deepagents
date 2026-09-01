@@ -352,6 +352,7 @@ async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -
                 "messageId": "message-1",
                 "messageType": "chat",
                 "fromSelf": True,
+                "selfChat": True,
             },
             {
                 "body": "other",
@@ -385,6 +386,50 @@ async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -
     assert received[0].metadata["from_self"] is True
 
 
+async def test_channel_never_dispatches_outbound_messages_to_other_chats(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "outbound direct message",
+                "chatId": "other-user",
+                "senderId": "operator",
+                "messageId": "message-1",
+                "messageType": "chat",
+                "fromSelf": True,
+                "selfChat": False,
+            },
+            {
+                "body": "inbound direct message",
+                "chatId": "other-user",
+                "senderId": "other-user",
+                "messageId": "message-2",
+                "messageType": "chat",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(mode=ExposureMode.OPEN),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [message.text for message in received] == ["inbound direct message"]
+
+
 async def test_channel_parses_inbound_media_payload(tmp_path: Path) -> None:
     media = tmp_path / "voice.ogg"
     media.write_bytes(b"voice")
@@ -401,6 +446,7 @@ async def test_channel_parses_inbound_media_payload(tmp_path: Path) -> None:
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["audio/ogg"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -445,6 +491,7 @@ async def test_channel_filters_oversized_inbound_media_payload(tmp_path: Path) -
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["audio/ogg"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -486,6 +533,7 @@ async def test_channel_normalizes_ptt_payload_as_voice(tmp_path: Path) -> None:
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["application/octet-stream"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -525,6 +573,7 @@ async def test_channel_normalizes_audio_mime_payload_as_voice(tmp_path: Path) ->
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["audio/ogg; codecs=opus"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )

@@ -8,7 +8,9 @@ const qrcode = require("qrcode-terminal");
 const {
   AckTracker,
   SentBodyReservations,
+  contactIdentityIds,
   createCompatibleClientClass,
+  isSelfChat,
   normalizeMessage,
   serializedId,
   widString,
@@ -29,6 +31,8 @@ const MAX_CACHED_SENT_MESSAGES = 200;
 
 let status = "disconnected";
 let botId = null;
+let botIds = [];
+let bridgeMediaSends = 0;
 const queue = [];
 const sentMessageIds = new Set();
 const sentMessages = new Map();
@@ -119,6 +123,12 @@ client.on("message", (message) => {
   void enqueueMessage(message, false);
 });
 
+client.on("media_uploaded", (message) => {
+  if (bridgeMediaSends === 0) {
+    void enqueueMessage(message, true);
+  }
+});
+
 client.on("message_ack", (message, ack) => {
   recordMessageAck(message, ack);
 });
@@ -130,14 +140,29 @@ async function onClientReady() {
       throw new Error("WhatsApp message key compatibility is not active");
     }
     const webVersion = safeVersion(await client.getWWebVersion());
-    botId = widString(client.info && client.info.wid);
+    botIds = await resolveBotIds();
+    botId = botIds[0] || null;
     status = "connected";
     console.log(
-      `[bridge] WhatsApp connected; webVersion=${webVersion} idCompatibilityInstalled=${compatibility.installed === true} botIdAvailable=${Boolean(botId)}`,
+      `[bridge] WhatsApp connected; webVersion=${webVersion} idCompatibilityInstalled=${compatibility.installed === true} botIdAvailable=${Boolean(botId)} botIdAliasAvailable=${botIds.length > 1}`,
     );
   } catch (error) {
     status = "compatibility_error";
     console.error(`[bridge] WhatsApp compatibility setup failed: ${error.message || error}`);
+  }
+}
+
+async function resolveBotIds() {
+  const initialIds = contactIdentityIds(client.info && client.info.wid);
+  if (initialIds.length === 0 || typeof client.getContactLidAndPhone !== "function") {
+    return initialIds;
+  }
+  try {
+    const mappings = await client.getContactLidAndPhone(initialIds);
+    return contactIdentityIds(initialIds[0], mappings);
+  } catch (_error) {
+    console.log("[bridge] Paired-account ID aliases unavailable; using primary ID only");
+    return initialIds;
   }
 }
 
@@ -158,6 +183,11 @@ async function enqueueMessage(message, fromSelf) {
   const chatId = (fromSelf ? messageTo : messageFrom) || remoteId;
   if (!messageId || !chatId) {
     console.error("Skipping WhatsApp message without a message id or chat id");
+    return;
+  }
+  const selfChat = isSelfChat(fromSelf, chatId, botIds);
+  if (fromSelf && !selfChat) {
+    console.log("[bridge] Ignoring paired-account message outside the self-chat");
     return;
   }
 
@@ -215,8 +245,10 @@ async function enqueueMessage(message, fromSelf) {
     media_file_names: media.map((item) => item.fileName),
     from_self: fromSelf,
     fromSelf,
+    self_chat: selfChat,
+    selfChat,
     mentionedIds: normalizeIds(message.mentionedIds || []),
-    botIds: botId ? [botId] : [],
+    botIds,
     quotedParticipant: await quotedParticipant(message),
     raw_message: {
       from: messageFrom,
@@ -481,6 +513,15 @@ async function withSentBodyReservation(body, operation) {
   }
 }
 
+async function withBridgeMediaSend(operation) {
+  bridgeMediaSends += 1;
+  try {
+    return await operation();
+  } finally {
+    bridgeMediaSends -= 1;
+  }
+}
+
 function readJson(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
@@ -591,13 +632,15 @@ async function handle(req, res) {
         media.filename = body.fileName || body.file_name;
       }
       const caption = body.caption || undefined;
-      const messageId = await withSentBodyReservation(caption, async () => {
-        const sent = await client.sendMessage(chatId, media, {
-          caption,
-          sendMediaAsDocument: body.mediaType === "document",
-        });
-        return rememberSentMessage(sent);
-      });
+      const messageId = await withBridgeMediaSend(() =>
+        withSentBodyReservation(caption, async () => {
+          const sent = await client.sendMessage(chatId, media, {
+            caption,
+            sendMediaAsDocument: body.mediaType === "document",
+          });
+          return rememberSentMessage(sent);
+        }),
+      );
       if (!messageId) {
         sendJson(res, 502, { success: false, error: "WhatsApp send returned no message id" });
         return;

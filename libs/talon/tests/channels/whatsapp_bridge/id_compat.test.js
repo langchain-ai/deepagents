@@ -7,8 +7,10 @@ const test = require("node:test");
 const {
   AckTracker,
   SentBodyReservations,
+  contactIdentityIds,
   createCompatibleClientClass,
   installMessageKeyCompatibility,
+  isSelfChat,
   normalizeId,
   normalizeMessage,
   serializedId,
@@ -23,6 +25,25 @@ test("reads legacy, renamed, and component WhatsApp IDs", () => {
     serializedId({ fromMe: true, remote: { user: "123", server: "lid" }, id: "ABC" }),
     "true_123@lid_ABC",
   );
+});
+
+test("collects the paired account phone and LID aliases", () => {
+  assert.deepEqual(
+    contactIdentityIds({ _serialized: "123@c.us" }, [
+      { pn: "123@c.us", lid: "456@lid" },
+    ]),
+    ["123@c.us", "456@lid"],
+  );
+});
+
+test("recognizes only outbound messages addressed to the paired account as self-chat", () => {
+  const ownIds = [{ _serialized: "123@c.us" }, { _serialized: "456@lid" }];
+
+  assert.equal(isSelfChat(true, "123@c.us", ownIds), true);
+  assert.equal(isSelfChat(true, "456@lid", ownIds), true);
+  assert.equal(isSelfChat(true, "789@c.us", ownIds), false);
+  assert.equal(isSelfChat(false, "123@c.us", ownIds), false);
+  assert.equal(isSelfChat(true, "123@c.us", []), false);
 });
 
 test("reconstructs self state only from boolean true", () => {

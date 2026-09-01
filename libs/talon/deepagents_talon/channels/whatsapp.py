@@ -534,7 +534,7 @@ class WhatsAppChannel:
                     )
                 accepted = 0
                 for message in messages:
-                    if self.config.exposure.allows(message):
+                    if _allows_whatsapp_message(self.config.exposure, message):
                         accepted += 1
                         checked = _enforce_inbound_media_cap(
                             message,
@@ -734,6 +734,12 @@ def _parse_messages(payload: object) -> list[ChannelMessage]:
     return [_parse_message(item) for item in payload]
 
 
+def _allows_whatsapp_message(exposure: ChannelExposure, message: ChannelMessage) -> bool:
+    if message.metadata.get("from_self") is True:
+        return message.metadata.get("self_chat") is True and exposure.allows(message)
+    return exposure.allows(message)
+
+
 def _parse_message(payload: object) -> ChannelMessage:
     if not isinstance(payload, dict):
         msg = "WhatsApp bridge message must be an object"
@@ -771,6 +777,7 @@ def _parse_message(payload: object) -> ChannelMessage:
             "user_name": values.get("user_name") or values.get("senderName"),
             "raw_message": values.get("raw_message") or {},
             "from_self": values.get("from_self") is True or values.get("fromSelf") is True,
+            "self_chat": values.get("self_chat") is True or values.get("selfChat") is True,
         },
     )
     return message_with_media_paths(

@@ -386,20 +386,15 @@ class TestServerGraph:
             bb = BlockBuster()
             bb.activate()
             try:
-                with patch.object(
-                    module,
-                    "_build_tools",
-                    new=AsyncMock(return_value=([], None, [])),
-                ):
-                    try:
-                        result = await module.make_graph()
-                    except SystemExit as exc:
-                        captured = capsys.readouterr()
-                        pytest.fail(
-                            "sandbox creation tripped the blockbuster "
-                            f"blocking-I/O guard: SystemExit({exc.code}) -- "
-                            f"startup error: {captured.err}"
-                        )
+                try:
+                    result = await module.make_graph()
+                except SystemExit as exc:
+                    captured = capsys.readouterr()
+                    pytest.fail(
+                        "sandbox creation tripped the blockbuster "
+                        f"blocking-I/O guard: SystemExit({exc.code}) -- "
+                        f"startup error: {captured.err}"
+                    )
             finally:
                 # Explicit activate/deactivate rather than `blockbuster_ctx`:
                 # blockbuster <1.5.27 lacks the try/finally in that helper, so

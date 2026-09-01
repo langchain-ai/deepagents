@@ -904,6 +904,22 @@ async def test_composite_agrep_multiple_matches_per_file_async(tmp_path: Path) -
     assert line_numbers == [1, 2]
 
 
+async def test_composite_root_agrep_rewrites_route_qualified_glob() -> None:
+    """Root agrep should apply the route prefix to the child backend's glob filter."""
+    mem_store = InMemoryStore()
+    default = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
+    routed = StoreBackend(store=mem_store, namespace=lambda _rt: ("routed",))
+    comp = CompositeBackend(default=default, routes={"/memories/": routed})
+
+    await comp.awrite("/memories/readme.md", "needle")
+
+    for pattern in ("/memories/*.md", "memories/*.md"):
+        result = await comp.agrep("needle", path="/", glob=pattern)
+
+        assert result.error is None
+        assert [match["path"] for match in result.matches or []] == ["/memories/readme.md"]
+
+
 @pytest.mark.xfail(
     reason="StoreBackend instances share the same underlying store when using the same runtime, "
     "causing files written to one route to appear in all routes that use the same backend instance. "

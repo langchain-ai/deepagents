@@ -866,7 +866,7 @@ class TestSubagentMiddlewareInit:
             HumanMessage(content=_FORK_TASK_PREAMBLE + "new task"),
         ]
         assert "_summarization_event" not in captured
-        assert captured[_FORKED_CONTEXT_KEY] is True
+        assert _FORKED_CONTEXT_KEY not in captured
 
     @pytest.mark.parametrize("declarative", [True, False], ids=["declarative", "compiled"])
     def test_fork_state_inheritance_depends_on_spec_kind(self, declarative: bool) -> None:  # noqa: FBT001
@@ -922,6 +922,7 @@ class TestSubagentMiddlewareInit:
         assert "_summarization_session_id" not in captured
         assert "structured_response" not in captured
         assert ("memory_contents" in captured) is declarative
+        assert (_FORKED_CONTEXT_KEY in captured) is declarative
         assert result.update["messages"][0].content == "done"
 
     def test_rejects_duplicate_subagent_names(self) -> None:

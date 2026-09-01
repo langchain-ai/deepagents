@@ -770,13 +770,13 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 # private channels carry over and its own middleware can rebuild
                 # what the parent built from them.
                 inherited = {key: value for key, value in runtime.state.items() if key not in _FORK_EXCLUDED_STATE_KEYS}
+                inherited[_FORKED_CONTEXT_KEY] = True
             else:
                 # A compiled runnable is opaque -- it may not declare these
                 # channels, and internal state isn't ours to hand it.
                 inherited = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
             subagent_state = {
                 **inherited,
-                _FORKED_CONTEXT_KEY: True,
                 "messages": _fork_messages(
                     runtime.state.get("messages", []),
                     runtime.state.get(SUMMARIZATION_EVENT_KEY),

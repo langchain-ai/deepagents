@@ -63,8 +63,16 @@ _FORK_RECURSION_REFUSAL = (
 )
 
 
-class _SubAgentBase(TypedDict):
-    """Fields shared by declarative subagent specifications.
+class SubAgent(TypedDict):
+    """Specification for a declarative subagent.
+
+    By default the subagent is isolated: it receives only the delegated task
+    description. Setting `mode="fork"` makes it continue the parent's
+    conversation instead.
+
+    !!! warning "Experimental"
+
+        `mode="fork"` is experimental and may change in a future release.
 
     When using `create_deep_agent`, subagents automatically receive
     a default middleware stack before any custom `middleware` specified in
@@ -79,6 +87,11 @@ class _SubAgentBase(TypedDict):
             Be specific and action-oriented. The main agent uses this
             to decide when to delegate.
     Optional fields:
+        system_prompt: Instructions for the subagent.
+
+            Appended to the inherited prompt under `mode="fork"`.
+        mode: `handoff` (default) for an isolated subagent, or `fork` to
+            continue the parent's conversation.
         tools: Tools the subagent can use.
 
             If not specified, inherits tools from the main agent
@@ -184,19 +197,6 @@ class _SubAgentBase(TypedDict):
             "response_format": Findings,
         }
         ```
-    """
-
-
-class SubAgent(_SubAgentBase):
-    """Specification for a declarative subagent.
-
-    By default the subagent is isolated: it receives only the delegated task
-    description. Setting `mode="fork"` makes it continue the parent's
-    conversation instead.
-
-    !!! warning "Experimental"
-
-        `mode="fork"` is experimental and may change in a future release.
     """
 
     system_prompt: NotRequired[str]

@@ -2,6 +2,16 @@
 
 # Deep Agents Changelog
 
+## [0.7.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.11...deepagents==0.7.12) (2026-09-01)
+
+### Features
+
+- Added subagent conversation forking in the SDK ([#5714](https://github.com/langchain-ai/deepagents/issues/5714)).
+
+### Bug Fixes
+
+- Fixed glob sorting to tolerate missing `modified_at` values in the SDK ([#4376](https://github.com/langchain-ai/deepagents/issues/4376)).
+
 ## [0.7.11](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.10...deepagents==0.7.11) (2026-08-28)
 
 ### Features

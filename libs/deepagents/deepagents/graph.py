@@ -841,6 +841,8 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
         }
         if gp_profile.description is not None:
             general_purpose_spec["description"] = gp_profile.description
+        if gp_profile.system_prompt is not None:
+            general_purpose_spec["system_prompt"] = gp_profile.system_prompt
         gp_interrupt_on = _merge_fs_interrupt_on(
             _build_interrupt_on_from_permissions(permissions or []),
             interrupt_on,

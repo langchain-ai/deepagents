@@ -2261,8 +2261,8 @@ class TestSubagentSystemPromptWiring:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_forked_general_purpose_subagent_ignores_gp_prompt_override(self) -> None:
-        """A forked GPA inherits the parent prompt rather than a GPA-only override."""
+    def test_forked_general_purpose_subagent_appends_gp_prompt_override(self) -> None:
+        """A forked GPA retains its addendum after the inherited parent prompt."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -2279,13 +2279,13 @@ class TestSubagentSystemPromptWiring:
                 specs = self._capture_subagents(model="gpcombined:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
             assert gp["mode"] == "fork"
-            assert "system_prompt" not in gp
+            assert gp["system_prompt"] == "GP override."
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)
 
-    def test_forked_general_purpose_subagent_ignores_gp_prompt_over_profile_base(self) -> None:
-        """A forked GPA always uses the parent prompt, even with both overrides."""
+    def test_forked_general_purpose_subagent_keeps_gp_prompt_over_profile_base(self) -> None:
+        """A forked GPA keeps its addendum when the parent has a profile base."""
         original = dict(_HARNESS_PROFILES)
         try:
             register_harness_profile(
@@ -2303,7 +2303,7 @@ class TestSubagentSystemPromptWiring:
                 specs = self._capture_subagents(model="gpprec:main")
             gp = next(s for s in specs if s["name"] == "general-purpose")
             assert gp["mode"] == "fork"
-            assert "system_prompt" not in gp
+            assert gp["system_prompt"] == "GP override."
         finally:
             _HARNESS_PROFILES.clear()
             _HARNESS_PROFILES.update(original)

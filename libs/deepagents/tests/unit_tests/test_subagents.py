@@ -1885,6 +1885,98 @@ class TestSubAgents:
         assert saw_parent_model_update, "Should have seen the parent final model update in the stream"
         assert seen_agent_names == {"supervisor", "worker"}
 
+    def test_forked_subagent_messages_are_hidden_unless_subgraphs_requested(self) -> None:
+        """A fork receives history once without replaying it into either output stream."""
+        history_one = "HISTORY_MESSAGE_ONE"
+        history_two = "HISTORY_MESSAGE_TWO"
+
+        def input_messages() -> list[HumanMessage | AIMessage]:
+            return [
+                HumanMessage(content="The ticket is T-123"),
+                AIMessage(content=history_one),
+                AIMessage(content=history_two),
+            ]
+
+        def build_agent() -> tuple[object, GenericFakeChatModel]:
+            parent = GenericFakeChatModel(
+                messages=iter(
+                    [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "name": "task",
+                                    "args": {"description": "Continue with ticket T-123", "subagent_type": "worker"},
+                                    "id": "call_worker",
+                                    "type": "tool_call",
+                                }
+                            ],
+                        ),
+                        AIMessage(content="PARENT_FINAL"),
+                    ]
+                ),
+                stream_delimiter="_",
+            )
+            worker = GenericFakeChatModel(
+                messages=iter([AIMessage(content="FORK_PRIVATE_RESULT")]),
+                stream_delimiter="_",
+            )
+            return (
+                create_deep_agent(
+                    model=parent,
+                    subagents=[
+                        {
+                            "name": "worker",
+                            "description": "Continues the current conversation.",
+                            "model": worker,
+                            "mode": "fork",
+                        }
+                    ],
+                ),
+                worker,
+            )
+
+        root_agent, worker = build_agent()
+        root_ai_chunks: list[str] = []
+        root_tool_messages: list[str] = []
+        for chunk, _metadata in root_agent.stream(
+            {"messages": input_messages()},
+            stream_mode="messages",
+        ):
+            if chunk.type == "tool":
+                root_tool_messages.append(str(chunk.content))
+            else:
+                root_ai_chunks.append(str(chunk.content))
+
+        inherited_messages = worker.call_history[0]["messages"]
+        assert sum(message.content == history_one for message in inherited_messages) == 1
+        assert sum(message.content == history_two for message in inherited_messages) == 1
+
+        # The final result is deliberately returned as a root ToolMessage, but
+        # neither the fork's intermediate output nor replayed conversation history
+        # may appear as parent model output.
+        assert not any("FORK" in chunk or "PRIVATE" in chunk for chunk in root_ai_chunks)
+        assert not any(history in chunk for history in (history_one, history_two) for chunk in root_ai_chunks)
+        assert any("PARENT" in chunk for chunk in root_ai_chunks)
+        assert any("FORKPRIVATE" in message for message in root_tool_messages)
+
+        subgraph_agent, _worker = build_agent()
+        fork_chunks: list[str] = []
+        for namespace, mode, data in subgraph_agent.stream(
+            {"messages": input_messages()},
+            stream_mode=["messages", "updates"],
+            subgraphs=True,
+        ):
+            if mode != "messages" or not namespace:
+                continue
+            chunk, metadata = data
+            if metadata.get("lc_agent_name") == "worker":
+                fork_chunks.append(str(chunk.content))
+                assert namespace[-1].startswith("tools:")
+
+        assert any("FORK" in chunk or "PRIVATE" in chunk for chunk in fork_chunks)
+        assert not any(history in chunk for history in (history_one, history_two) for chunk in fork_chunks)
+
     def test_subagent_checkpoint_history_is_readable(self) -> None:
         """A task subagent's transcript is recoverable from the parent's checkpointer.
 

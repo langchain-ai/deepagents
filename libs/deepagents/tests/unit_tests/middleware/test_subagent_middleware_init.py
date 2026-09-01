@@ -258,7 +258,7 @@ class TestSubagentMiddlewareInit:
         beta_warnings = [w for w in caught if isinstance(w.message, LangChainBetaWarning)]
         assert len(beta_warnings) == expected
         if expected:
-            assert "`ForkedSubAgent` is in beta" in str(beta_warnings[0].message)
+            assert "`forked subagents` is in beta" in str(beta_warnings[0].message)
 
     def test_forked_subagent_history_has_no_dangling_task_call(self) -> None:
         """The spawning `task` call is dropped, so nothing patches a bogus result over it."""

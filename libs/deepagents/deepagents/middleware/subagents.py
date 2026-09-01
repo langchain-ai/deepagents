@@ -134,8 +134,7 @@ class _SubAgentBase(TypedDict):
     """Configure human-in-the-loop for specific tools."""
 
     skills: NotRequired[list[str]]
-    """Skill source paths for `SkillsMiddleware`. Forbidden on
-    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent]."""
+    """Skill source paths for `SkillsMiddleware`. Forbidden under `mode="fork"`."""
 
     permissions: NotRequired[list[FilesystemPermission]]
     """List of `FilesystemPermission` rules for this subagent.
@@ -189,46 +188,33 @@ class _SubAgentBase(TypedDict):
 
 
 class SubAgent(_SubAgentBase):
-    """Specification for an isolated declarative subagent.
+    """Specification for a declarative subagent.
 
-    The subagent receives only the delegated task description. Use
-    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent] to inherit
-    the parent's conversation and system prompt.
-    """
-
-    system_prompt: NotRequired[str]
-    """Instructions for the subagent. Uses an empty prompt when omitted."""
-
-    mode: NotRequired[Literal["handoff"]]
-    """Context mode. Declarative `SubAgent` instances are always isolated."""
-
-
-class ForkedSubAgent(_SubAgentBase):
-    """Specification for a subagent that inherits its parent's context.
+    By default the subagent is isolated: it receives only the delegated task
+    description. Setting `mode="fork"` makes it continue the parent's
+    conversation instead.
 
     !!! warning "Experimental"
 
-        Forked subagents are experimental and may change in a future release.
-
-    A forked subagent receives the parent's effective conversation history and
-    mirrors the parent's prompt-producing middleware, so it rebuilds the same
-    system prompt. Its own `system_prompt` is appended to that rather than
-    replacing it. It cannot define `skills`, which would diverge from the
-    parent's.
-
-    `tools` isn't restricted the same way -- a forked subagent's own tools
-    work normally. The tradeoff is cache misses.
-
-    Full state inheritance is specific to this declarative form. A
-    [`CompiledSubAgent`][deepagents.middleware.subagents.CompiledSubAgent] with
-    `mode="fork"` inherits the conversation only.
+        `mode="fork"` is experimental and may change in a future release.
     """
 
-    mode: Literal["fork"]
-    """Required discriminator that enables conversation forking."""
-
     system_prompt: NotRequired[str]
-    """Extra instructions appended to the inherited prompt."""
+    """Instructions for the subagent. Uses an empty prompt when omitted.
+
+    Under `mode="fork"` this is appended to the inherited prompt rather than
+    replacing it.
+    """
+
+    mode: NotRequired[Literal["handoff", "fork"]]
+    """Context mode. Defaults to `handoff`, an isolated subagent.
+
+    Under `fork`, the subagent receives the parent's effective conversation
+    history and state, and mirrors the parent's prompt-producing middleware so
+    it rebuilds the same system prompt. It cannot define `skills`, which would
+    diverge from the parent's. `tools` isn't restricted the same way -- a fork's
+    own tools work normally; the tradeoff is cache misses.
+    """
 
 
 class CompiledSubAgent(TypedDict):
@@ -313,12 +299,12 @@ class CompiledSubAgent(TypedDict):
     mode: NotRequired[Literal["handoff", "fork"]]
     """Use `fork` to inherit the parent's conversation without changing the runnable prompt.
 
-    [`ForkedSubAgent`][deepagents.middleware.subagents.ForkedSubAgent] inherits the
-    full state, including private keys.
+    A declarative [`SubAgent`][deepagents.middleware.subagents.SubAgent] fork
+    inherits the full state, including private keys.
     """
 
 
-_SubAgentSpec = SubAgent | ForkedSubAgent | CompiledSubAgent
+_SubAgentSpec = SubAgent | CompiledSubAgent
 
 
 def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
@@ -328,7 +314,7 @@ def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
         msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'handoff' or 'fork'"
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):
-        msg = f"ForkedSubAgent '{spec['name']}' cannot set skills; the parent's system message would discard it."
+        msg = f"SubAgent '{spec['name']}' cannot set skills under mode='fork'; the parent's skills are inherited instead."
         raise ValueError(msg)
 
 
@@ -348,16 +334,7 @@ def _validate_unique_subagent_names(subagents: Sequence[_SubAgentSpec]) -> None:
         seen.add(name)
 
 
-def _is_subagent(spec: _SubAgentSpec) -> TypeIs[SubAgent]:
-    """Return whether a spec is an isolated declarative subagent.
-
-    Compiled specs provide a `runnable`; forked declarative specs use
-    `mode="fork"`. All remaining specs are regular `SubAgent` definitions.
-    """
-    return "runnable" not in spec and spec.get("mode") != "fork"
-
-
-def _is_forked_subagent(spec: _SubAgentSpec) -> TypeIs[ForkedSubAgent]:
+def _is_forked_subagent(spec: _SubAgentSpec) -> TypeIs[SubAgent]:
     """Return whether a declarative subagent inherits its parent's state."""
     return "runnable" not in spec and spec.get("mode") == "fork"
 
@@ -638,7 +615,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
     else:
         description = task_description
 
-    def _resolved_declarative_spec(spec: SubAgent | ForkedSubAgent) -> SubAgent:
+    def _resolved_declarative_spec(spec: SubAgent) -> SubAgent:
         """Resolve the inherited prompt for a declarative fork."""
         if not _is_forked_subagent(spec):
             return spec
@@ -926,7 +903,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self,
         *,
         backend: BackendProtocol,
-        subagents: Sequence[SubAgent | ForkedSubAgent | CompiledSubAgent],
+        subagents: Sequence[SubAgent | CompiledSubAgent],
         system_prompt: str | None = None,
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
@@ -944,7 +921,7 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._task_description = task_description
         self._state_schema = state_schema
         if any(_is_forked_subagent(spec) or _is_forked_compiled_subagent(spec) for spec in subagents):
-            warn_beta(name="ForkedSubAgent", obj_type="subagent spec")
+            warn_beta(name="forked subagents", obj_type="feature")
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
         """Declared subagent names. Public so streamers can discover them
         without introspecting the `task` tool's closure."""

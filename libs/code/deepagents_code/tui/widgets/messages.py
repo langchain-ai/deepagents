@@ -311,16 +311,14 @@ _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
 
 
-_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?:  |\t)(.*)$")
-"""Match a `read_file` gutter row into (marker, source).
+_READ_FILE_GUTTER_RE = re.compile(r"^ *(\d+(?:\.\d+)?)(?:(?:  |\t)(.*)|\|(.*))$")
+"""Match a `read_file` gutter row into its marker and source.
 
 The marker is a bare `N` or `N.M` (the latter a wrapped-line continuation) —
-both sides of the dot required, so a stray `.5` head is not a gutter. The
-separator is exactly two spaces (current format) or a single tab (legacy
-`cat -n`). Only the separator is consumed and leading padding is spaces-only, so
-source indentation — including leading tabs — after the gutter stays put. Kept in
-sync with the separator emitted by deepagents' `format_content_with_line_numbers`
-(the authoritative producer). See `ToolCallMessage._compact_line_gutter`.
+both sides of the dot required, so a stray `.5` head is not a gutter. The current
+format uses a pipe with no surrounding whitespace; two spaces and a `cat -n` tab
+are accepted for legacy transcripts. Source indentation after the separator stays
+untouched. Kept in sync with deepagents' `format_content_with_line_numbers`.
 """
 
 
@@ -3259,17 +3257,13 @@ class ToolCallMessage(Vertical):
 
     @staticmethod
     def _compact_line_gutter(output: str) -> str:
-        r"""Tighten `read_file`'s line-number gutter for display.
+        r"""Normalize `read_file` line-number gutters for display.
 
-        `read_file` prefixes each row with a right-justified line marker — `N`,
-        or `N.M` for a wrapped-line continuation — then two spaces, then the
-        original source content. (Output from deepagents versions predating the
-        gutter disambiguation in #4561 used the older `cat -n` gutter — a wide
-        right-justified number and a tab — which may still surface from cached or
-        persisted transcripts.) The model needs the raw gutter for edits, but the
-        TUI re-justifies markers to the widest marker actually present, then two
-        spaces, mirroring how grep/glob results sit flush left. Source
-        indentation after the gutter is preserved untouched.
+        `read_file` prefixes each row with a line marker — `N`, or `N.M` for a
+        wrapped-line continuation — followed directly by `|` and the original
+        source content. Older transcripts can use two spaces or a `cat -n` tab
+        instead. The TUI normalizes all recognized gutters to the compact current
+        format while preserving source indentation after the separator untouched.
 
         The gutter shape is `_READ_FILE_GUTTER_RE`. Lines that don't match a
         gutter shape (e.g. test fixtures or non-numbered output) are passed
@@ -3279,19 +3273,25 @@ class ToolCallMessage(Vertical):
             The output with compacted gutters, or the original string if no
                 line-numbered content was found.
         """
+        if output.startswith("@@ lines "):
+            return output
+
         lines = output.split("\n")
         parsed: list[tuple[str, str] | None] = []
-        width = 0
+        found_gutter = False
         for line in lines:
             match = _READ_FILE_GUTTER_RE.match(line)
             if match:
-                marker, source = match.groups()
+                marker = match.group(1)
+                source = (
+                    match.group(2) if match.group(2) is not None else match.group(3)
+                )
                 parsed.append((marker, source))
-                width = max(width, len(marker))
+                found_gutter = True
             else:
                 parsed.append(None)
 
-        if width == 0:
+        if not found_gutter:
             return output
 
         compacted: list[str] = []
@@ -3300,7 +3300,7 @@ class ToolCallMessage(Vertical):
                 compacted.append(line)
             else:
                 marker, source = row
-                compacted.append(f"{marker:>{width}}  {source}")
+                compacted.append(f"{marker}|{source}")
         return "\n".join(compacted)
 
     def _format_edit_file_output(

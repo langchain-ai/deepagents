@@ -209,11 +209,11 @@ def format_content_with_line_numbers(
     content: str | list[str],
     start_line: int = 1,
 ) -> str:
-    """Format file content with line numbers.
+    """Format file content with compact line-number gutters.
 
     Chunks lines longer than `MAX_LINE_LENGTH` with continuation markers
-    (e.g., `5.1`, `5.2`). Line markers are separated from source content
-    with two spaces so source tabs cannot be confused with a gutter separator.
+    (e.g., `5.1`, `5.2`). A pipe separates each line marker from source
+    content without adding whitespace to the gutter.
 
     Args:
         content: File content as string or list of lines
@@ -230,7 +230,6 @@ def format_content_with_line_numbers(
         lines = content
 
     rows: list[tuple[str, str]] = []
-    marker_width = 0
     for i, line in enumerate(lines):
         line_num = i + start_line
         # One slice per MAX_LINE_LENGTH chunk; short lines yield a single chunk.
@@ -241,21 +240,36 @@ def format_content_with_line_numbers(
         for chunk_idx, chunk in enumerate(chunks):
             marker = str(line_num) if chunk_idx == 0 else f"{line_num}.{chunk_idx}"
             rows.append((marker, chunk))
-            marker_width = max(marker_width, len(marker))
 
-    # The two-space marker/source separator is a load-bearing contract shared by
-    # two downstream parsers that must stay in sync with the separator emitted
-    # here:
-    #   - `ReadFileContinuationNoticeMiddleware._is_numbered_read_file_row`
-    #     (profiles/harness/_nvidia_nemotron_3_ultra.py) counts source rows to
-    #     decide whether to append the continuation notice.
-    #   - `ToolCallMessage._compact_line_gutter` (the deepagents-code TUI, in a
-    #     separate package: libs/code/.../tui/widgets/messages.py) re-justifies
-    #     the gutter for display.
-    # Both also tolerate the legacy `cat -n` tab. Shrinking this separator below
-    # two spaces (or otherwise diverging) would silently break them; the
-    # producer->consumer round-trip tests in both packages guard against that.
-    return "\n".join(f"{marker:>{marker_width}}  {line}" for marker, line in rows)
+    return "\n".join(f"{marker}|{line}" for marker, line in rows)
+
+
+def format_content_with_line_range(
+    content: str | list[str],
+    start_line: int = 1,
+) -> str:
+    """Format file content as raw source enclosed by a source-line range.
+
+    Args:
+        content: File content as a string or list of lines.
+        start_line: Source line number of the first line.
+
+    Returns:
+        Source content enclosed in `@@ lines start-end @@` markers.
+    """
+    if isinstance(content, str):
+        lines = content.split("\n")
+        if lines and lines[-1] == "":
+            lines = lines[:-1]
+    else:
+        lines = content
+
+    if not lines:
+        return ""
+
+    end_line = start_line + len(lines) - 1
+    marker = f"{start_line}-{end_line}"
+    return f"@@ lines {marker} @@\n" + "\n".join(lines) + f"\n@@ end lines {marker} @@"
 
 
 def check_empty_content(content: str) -> str | None:

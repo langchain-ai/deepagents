@@ -34,6 +34,7 @@ from deepagents.backends.utils import (
     TRUNCATION_GUIDANCE,
     create_file_data,
     format_content_with_line_numbers,
+    format_content_with_line_range,
     sanitize_tool_call_id,
     slice_read_response,
     truncate_if_too_long,
@@ -1367,61 +1368,58 @@ class TestFilesystemMiddleware:
 
         assert updated_file_data["created_at"] == initial_file_data["created_at"]
 
+    def test_format_content_with_line_range_encloses_raw_source(self):
+        content = ["    def foo():", "        return 1"]
+
+        assert format_content_with_line_range(content, start_line=100) == (
+            "@@ lines 100-101 @@\n    def foo():\n        return 1\n@@ end lines 100-101 @@"
+        )
+
     def test_format_content_with_line_numbers_short_lines(self):
         """Test that short lines (<=5000 chars) are displayed normally."""
         content = ["short line 1", "short line 2", "short line 3"]
         result = format_content_with_line_numbers(content, start_line=1)
 
         assert result.split("\n") == [
-            "1  short line 1",
-            "2  short line 2",
-            "3  short line 3",
+            "1|short line 1",
+            "2|short line 2",
+            "3|short line 3",
         ]
 
     def test_format_content_with_line_numbers_empty_and_single(self):
-        """Empty content yields an empty string; a single line needs no padding."""
+        """Empty content yields an empty string; a single line has a compact gutter."""
         assert format_content_with_line_numbers("") == ""
         assert format_content_with_line_numbers([]) == ""
-        assert format_content_with_line_numbers(["only"]) == "1  only"
+        assert format_content_with_line_numbers(["only"]) == "1|only"
 
     def test_format_content_with_line_numbers_blank_line_in_middle(self):
-        """A blank source line keeps its own gutter row, ending at the separator.
-
-        The row is `marker + "  "` with empty content — trailing whitespace that
-        a careless refactor could strip or drop entirely. Exact equality guards
-        the row's presence and shape.
-        """
+        """A blank source line keeps its own gutter row."""
         result = format_content_with_line_numbers(["code", "", "more"], start_line=1)
 
-        assert result.split("\n") == ["1  code", "2  ", "3  more"]
+        assert result.split("\n") == ["1|code", "2|", "3|more"]
 
     def test_format_content_with_line_numbers_aligns_across_magnitude(self):
-        """Markers right-justify to a shared width when line counts cross 9->10.
-
-        The gutter is exactly `marker_width + 2` spaces, so an over-wide gutter
-        (a `marker_width` bug) is caught here that substring checks would miss.
-        """
+        """Markers remain compact when line counts cross 9->10."""
         content = [f"line{i}" for i in range(12)]
         result = format_content_with_line_numbers(content, start_line=1)
 
         lines = result.split("\n")
-        # Widest marker is "12" (width 2), so single-digit markers get one pad.
-        assert lines[0] == " 1  line0"
-        assert lines[8] == " 9  line8"
-        assert lines[9] == "10  line9"
-        assert lines[11] == "12  line11"
+        assert lines[0] == "1|line0"
+        assert lines[8] == "9|line8"
+        assert lines[9] == "10|line9"
+        assert lines[11] == "12|line11"
 
     def test_format_content_with_line_numbers_offset_crosses_magnitude(self):
-        """A `start_line` offset that pushes numbers past 9 widens the gutter."""
+        """A `start_line` offset keeps the gutter compact across 9->10."""
         content = ["a", "b", "c", "d", "e"]
         result = format_content_with_line_numbers(content, start_line=8)
 
         assert result.split("\n") == [
-            " 8  a",
-            " 9  b",
-            "10  c",
-            "11  d",
-            "12  e",
+            "8|a",
+            "9|b",
+            "10|c",
+            "11|d",
+            "12|e",
         ]
 
     def test_format_content_with_line_numbers_preserves_source_tabs(self):
@@ -1429,19 +1427,14 @@ class TestFilesystemMiddleware:
         content = ["\tif config:", "\t\tbilling_cfg = {}"]
         result = format_content_with_line_numbers(content, start_line=1)
 
-        assert result.split("\n") == ["1  \tif config:", "2  \t\tbilling_cfg = {}"]
+        assert result.split("\n") == ["1|\tif config:", "2|\t\tbilling_cfg = {}"]
 
     def test_format_content_with_line_numbers_preserves_source_spaces(self):
-        """Leading source spaces survive intact after the two-space gutter.
-
-        The gutter itself is spaces, so this documents that space-indented
-        source is preserved byte-for-byte even though the boundary is not
-        marked by a distinct separator character.
-        """
+        """Leading source spaces survive intact after the pipe gutter."""
         content = ["    def foo():", "        return 1"]
         result = format_content_with_line_numbers(content, start_line=1)
 
-        assert result.split("\n") == ["1      def foo():", "2          return 1"]
+        assert result.split("\n") == ["1|    def foo():", "2|        return 1"]
 
     def test_format_content_with_line_numbers_long_line_with_continuation(self):
         """Test that long lines (>5000 chars) are split with continuation markers."""
@@ -1451,18 +1444,18 @@ class TestFilesystemMiddleware:
 
         lines = result.split("\n")
         assert len(lines) == 7  # 1 short + 5 continuation (2, 2.1, 2.2, 2.3, 2.4) + 1 short
-        assert lines[0] == "  1  short line"
-        assert lines[1].startswith("  2  ")
+        assert lines[0] == "1|short line"
+        assert lines[1].startswith("2|")
         assert lines[1].count("a") == 5000
-        assert lines[2].startswith("2.1  ")
+        assert lines[2].startswith("2.1|")
         assert lines[2].count("a") == 5000
-        assert lines[3].startswith("2.2  ")
+        assert lines[3].startswith("2.2|")
         assert lines[3].count("a") == 5000
-        assert lines[4].startswith("2.3  ")
+        assert lines[4].startswith("2.3|")
         assert lines[4].count("a") == 5000
-        assert lines[5].startswith("2.4  ")
+        assert lines[5].startswith("2.4|")
         assert lines[5].count("a") == 5000
-        assert lines[6] == "  3  another short line"
+        assert lines[6] == "3|another short line"
 
     def test_format_content_with_line_numbers_multiple_long_lines(self):
         """Test multiple long lines in sequence with proper line numbering."""
@@ -1472,18 +1465,18 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(content, start_line=5)
         lines = result.split("\n")
         assert len(lines) == 7  # 3 (line 5, 5.1, 5.2) + 1 middle + 3 (line 7, 7.1, 7.2)
-        assert lines[0].startswith("  5  ")
+        assert lines[0].startswith("5|")
         assert lines[0].count("x") == 5000
-        assert lines[1].startswith("5.1  ")
+        assert lines[1].startswith("5.1|")
         assert lines[1].count("x") == 5000
-        assert lines[2].startswith("5.2  ")
+        assert lines[2].startswith("5.2|")
         assert lines[2].count("x") == 5000
-        assert lines[3] == "  6  middle"
-        assert lines[4].startswith("  7  ")
+        assert lines[3] == "6|middle"
+        assert lines[4].startswith("7|")
         assert lines[4].count("y") == 5000
-        assert lines[5].startswith("7.1  ")
+        assert lines[5].startswith("7.1|")
         assert lines[5].count("y") == 5000
-        assert lines[6].startswith("7.2  ")
+        assert lines[6].startswith("7.2|")
         assert lines[6].count("y") == 5000
 
     def test_format_content_with_line_numbers_exact_limit(self):
@@ -1494,7 +1487,7 @@ class TestFilesystemMiddleware:
 
         lines = result.split("\n")
         assert len(lines) == 1
-        assert lines[0].startswith("1  b")
+        assert lines[0].startswith("1|b")
         assert lines[0].count("b") == 5000
 
     def test_read_file_with_long_lines_shows_continuation_markers(self):
@@ -1507,14 +1500,14 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(sliced.file_data["content"], start_line=1)
         lines = result.split("\n")
         assert len(lines) == 5  # 1 first + 3 continuation (2, 2.1, 2.2) + 1 third
-        assert lines[0] == "  1  first line"
-        assert lines[1].startswith("  2  ")
+        assert lines[0] == "1|first line"
+        assert lines[1].startswith("2|")
         assert lines[1].count("z") == 5000
-        assert lines[2].startswith("2.1  ")
+        assert lines[2].startswith("2.1|")
         assert lines[2].count("z") == 5000
-        assert lines[3].startswith("2.2  ")
+        assert lines[3].startswith("2.2|")
         assert lines[3].count("z") == 5000
-        assert lines[4] == "  3  third line"
+        assert lines[4] == "3|third line"
 
     def test_read_file_with_offset_and_long_lines(self):
         """Test that read_file with offset handles long lines correctly."""
@@ -1526,13 +1519,13 @@ class TestFilesystemMiddleware:
         result = format_content_with_line_numbers(sliced.file_data["content"], start_line=3)
         lines = result.split("\n")
         assert len(lines) == 4  # 3 continuation (3, 3.1, 3.2) + 1 line4
-        assert lines[0].startswith("  3  ")
+        assert lines[0].startswith("3|")
         assert lines[0].count("m") == 5000
-        assert lines[1].startswith("3.1  ")
+        assert lines[1].startswith("3.1|")
         assert lines[1].count("m") == 5000
-        assert lines[2].startswith("3.2  ")
+        assert lines[2].startswith("3.2|")
         assert lines[2].count("m") == 2000
-        assert lines[3] == "  4  line4"
+        assert lines[3] == "4|line4"
 
     def test_read_file_partial_window_includes_remaining_lines_notice(self):
         files = {
@@ -1548,7 +1541,9 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n2  two\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]")
+        assert result.content == (
+            "@@ lines 1-2 @@\none\ntwo\n@@ end lines 1-2 @@\n\n[Read 2 lines (lines 1-2 of 5 total). 3 lines remaining from offset 2.]"
+        )
 
     def test_read_file_full_window_omits_remaining_lines_notice(self):
         files = {
@@ -1564,7 +1559,7 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 10})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1  one\n2  two\n3  three"
+        assert result.content == "@@ lines 1-3 @@\none\ntwo\nthree\n@@ end lines 1-3 @@"
         assert "remaining from offset" not in result.content
 
     def test_read_file_offset_window_reports_source_line_range(self):
@@ -1581,7 +1576,9 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 2, "limit": 2})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("3  three\n4  four\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]")
+        assert result.content == (
+            "@@ lines 3-4 @@\nthree\nfour\n@@ end lines 3-4 @@\n\n[Read 2 lines (lines 3-4 of 5 total). 1 line remaining from offset 4.]"
+        )
 
     def test_read_file_single_line_window_uses_singular_read_unit(self):
         files = {
@@ -1597,7 +1594,9 @@ class TestFilesystemMiddleware:
         result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == ("1  one\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]")
+        assert result.content == (
+            "@@ lines 1-1 @@\none\n@@ end lines 1-1 @@\n\n[Read 1 line (lines 1-1 of 5 total). 4 lines remaining from offset 1.]"
+        )
 
     def _read_notes(self, *, offset: int, limit: int) -> ToolMessage:
         """Invoke `read_file` against a fixed 3-line file with the given window."""
@@ -1682,19 +1681,22 @@ class TestFilesystemMiddleware:
         """A clamped offset still reads, and says so.
 
         The window reaches EOF here, which suppresses the pagination notice, so
-        the disclosure has to come from its own notice or the model gets a
-        gutter starting at line 1 with no sign its request was reinterpreted.
+        the disclosure has to come from its own notice or the model gets a range
+        starting at line 1 with no sign its request was reinterpreted.
         """
         result = self._read_notes(offset=-1, limit=100)
 
         assert result.status == "success"
-        assert result.content == ("1  one\n2  two\n3  three\n\n[Requested offset -1 is before the start of the file; read from line 1 instead.]")
+        assert result.content == (
+            "@@ lines 1-3 @@\none\ntwo\nthree\n@@ end lines 1-3 @@\n\n"
+            "[Requested offset -1 is before the start of the file; read from line 1 instead.]"
+        )
 
     def test_read_file_non_negative_offset_has_no_clamp_notice(self):
         """The clamp notice must not appear on ordinary reads."""
         result = self._read_notes(offset=0, limit=100)
 
-        assert result.content == "1  one\n2  two\n3  three"
+        assert result.content == "@@ lines 1-3 @@\none\ntwo\nthree\n@@ end lines 1-3 @@"
 
     def test_read_file_unknown_total_reports_next_offset(self):
         backend, _ = _make_backend()
@@ -1711,7 +1713,7 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 1})
 
         assert isinstance(result, ToolMessage)
-        assert result.content == "1  one\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
+        assert result.content == "@@ lines 1-1 @@\none\n@@ end lines 1-1 @@\n\n[Read 1 line (lines 1-1). More lines remain from offset 1.]"
 
     def test_read_file_truncation_omits_notice_when_no_complete_line_fits(self):
         backend, _ = _make_backend()
@@ -1751,8 +1753,8 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
-        last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
+        footer = next(line for line in result.content.splitlines() if line.startswith("@@ end lines "))
+        last_displayed_line = int(footer.removesuffix(" @@").rsplit("-", maxsplit=1)[1])
         assert last_displayed_line < 100
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
@@ -1775,10 +1777,10 @@ class TestFilesystemMiddleware:
             result = read_file_tool.invoke({"runtime": _runtime(), "file_path": "/notes.txt", "offset": 0, "limit": 100})
 
         assert isinstance(result, ToolMessage)
-        numbered_lines = [line for line in result.content.splitlines() if line.lstrip().partition("  ")[0].isdigit()]
-        last_displayed_line = int(numbered_lines[-1].lstrip().partition("  ")[0])
+        footer = next(line for line in result.content.splitlines() if line.startswith("@@ end lines "))
+        last_displayed_line = int(footer.removesuffix(" @@").rsplit("-", maxsplit=1)[1])
         assert last_displayed_line < 100
-        assert numbered_lines[-1].endswith("x" * 80)
+        assert f"line {last_displayed_line}: " + "x" * 80 in result.content
         assert f"remaining from offset {last_displayed_line}.]" in result.content
 
     def test_read_file_truncation_never_splits_a_wrapped_source_line(self):

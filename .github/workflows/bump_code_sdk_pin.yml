@@ -18,8 +18,9 @@
 #
 # Notes:
 # - A pin *ahead* of the workspace version (intentional prerelease
-#   coordination) is respected: the job only acts when the pin is strictly
-#   behind the workspace SDK version.
+#   coordination) is respected. Two gates enforce this: the pin on `main`
+#   must be behind the workspace SDK version for the job to act at all, and
+#   the pin on the PR branch must be behind it for any file to change.
 # - The commit regenerates `libs/code/uv.lock` so the pre-commit lock check
 #   stays green on the PR.
 # - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
@@ -28,9 +29,15 @@
 # - The PR is created and updated with the Org Membership App installation
 #   token rather than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent: if the automated PR already targets the workspace version (or
-#   the pin is already current), the workflow exits. When an older automated
-#   bump PR is still open, the workflow updates it instead of replacing it.
+# - Idempotent: the workflow finds its own open PR by the
+#   `<!-- bump-code-sdk-pin-pr -->` body marker, then compares the pin on
+#   that PR's branch against the workspace SDK version. An older automated
+#   PR is updated in place, never replaced, so its review history survives.
+#   A branch that already pins the target version gets a metadata refresh
+#   only. A branch that pins a newer version keeps its files.
+# - The branch name records the SDK version at the time of creation only. A
+#   long-lived PR keeps its original branch as the pin moves, so the PR title
+#   is authoritative and the branch name is not.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -63,13 +70,15 @@ jobs:
       # `Authorization` header while ignoring the app token embedded in the
       # push URL — git cannot send two `Authorization` headers, so the config
       # credential wins and the push runs as `github-actions[bot]` with
-      # `contents: read` and is denied (403). The only write in this job
-      # authenticates explicitly with the app token below, so nothing is
-      # lost; the fetch path in the push step also uses that app-token URL.
+      # `contents: read` and is denied (403). Nothing is lost: this repo is
+      # public, so the reads through `origin` succeed anonymously, and every
+      # write below authenticates explicitly with the app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Updating an existing PR merges the latest default branch without
-          # rewriting history, which requires the shared merge base.
+          # Updating an existing PR merges the default branch into the PR
+          # branch. A shallow clone shares no commit with the fetched PR
+          # branch, so that merge fails outright. Full history also gives the
+          # `origin/<default branch>` ref that the merge uses.
           fetch-depth: 0
           persist-credentials: false
 
@@ -339,11 +348,15 @@ jobs:
             echo "$BRANCH already matches origin; no push needed."
           fi
 
+          # The body describes the whole diff of the PR against the default
+          # branch, so it quotes CODE_PIN, the pin on `main`. branch_code_pin
+          # would describe only the newest increment and would disagree with
+          # the Files changed tab.
           body_file="$(mktemp)"
           {
             printf '%s\n' '<!-- bump-code-sdk-pin-pr -->'
             printf 'Bumps the exact %s pin in %s from `%s` to `%s` and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$pr_version" '`libs/code/uv.lock`'
-            printf 'Opened automatically by %s after a commit on `main` changed the SDK version. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents-code`'
+            printf 'Maintained automatically by %s, which runs after each %s release. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents`' '`deepagents-code`'
           } > "$body_file"
 
           title="chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $pr_version"

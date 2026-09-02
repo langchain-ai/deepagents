@@ -208,9 +208,15 @@ jobs:
             git checkout -B "$BRANCH" "origin/$BRANCH"
             # The lockfile resolves `deepagents` through the adjacent editable
             # checkout, so bring the latest SDK version onto the PR branch
-            # before regenerating it. This is a normal merge and keeps the
-            # automated branch update fast-forward-only.
-            if ! git merge --no-edit "$DEFAULT_BRANCH"; then
+            # before regenerating it. The merge appends a commit; the branch
+            # is never force-pushed, so review history and existing review
+            # comments on the PR stay valid.
+            # Merge the remote-tracking ref. `actions/checkout` creates a
+            # local branch only for the ref it checks out, so a local
+            # `$DEFAULT_BRANCH` exists only on a default-branch dispatch and
+            # the merge fails outright on any other. A local ref would also
+            # pin the dispatched commit rather than the current tip.
+            if ! git merge --no-edit "origin/$DEFAULT_BRANCH"; then
               mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
               if [ "${#conflicts[@]}" -eq 0 ]; then
                 echo "::error::Merge of $DEFAULT_BRANCH failed without reporting a file conflict."
@@ -319,7 +325,18 @@ jobs:
 
             git add "$code_pyproject" "$lockfile"
             git commit -m "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
+          fi
+
+          # Push whenever the branch moved: a pin commit, or the merge commit
+          # alone. The merge above runs on every update, but a push confined
+          # to the `behind` path discarded it with the runner. The PR then
+          # stayed behind the default branch, and the next run had to resolve
+          # the same conflict again.
+          if [ -z "$EXISTING_PR" ] || \
+            [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BRANCH")" ]; then
             git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+          else
+            echo "$BRANCH already matches origin; no push needed."
           fi
 
           body_file="$(mktemp)"

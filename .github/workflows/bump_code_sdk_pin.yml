@@ -210,7 +210,35 @@ jobs:
             # checkout, so bring the latest SDK version onto the PR branch
             # before regenerating it. This is a normal merge and keeps the
             # automated branch update fast-forward-only.
-            git merge --no-edit "$DEFAULT_BRANCH"
+            if ! git merge --no-edit "$DEFAULT_BRANCH"; then
+              mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
+              if [ "${#conflicts[@]}" -eq 0 ]; then
+                echo "::error::Merge of $DEFAULT_BRANCH failed without reporting a file conflict."
+                exit 1
+              fi
+
+              unexpected_conflict=false
+              for conflict in "${conflicts[@]}"; do
+                case "$conflict" in
+                  "$code_pyproject" | "$lockfile")
+                    # An obsolete bump PR and the latest default branch are
+                    # expected to have changed these generated pin files from
+                    # the same base. Start from the default branch versions;
+                    # the target pin and lockfile are regenerated below.
+                    git checkout --theirs -- "$conflict"
+                    git add "$conflict"
+                    ;;
+                  *)
+                    echo "::error::Unexpected merge conflict in $conflict"
+                    unexpected_conflict=true
+                    ;;
+                esac
+              done
+              if [ "$unexpected_conflict" = "true" ]; then
+                exit 1
+              fi
+              git commit --no-edit
+            fi
           else
             # Reuse-or-recreate an orphan branch from a prior run that pushed
             # but failed before `gh pr create` (no open PR sits on it).

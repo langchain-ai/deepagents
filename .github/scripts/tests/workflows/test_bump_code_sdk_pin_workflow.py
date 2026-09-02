@@ -36,7 +36,11 @@ def test_existing_pr_update_preserves_branch_history() -> None:
 
     assert checkout["with"]["fetch-depth"] == 0
     assert step["env"]["BRANCH"] == "${{ steps.existing.outputs.branch }}"
-    assert 'git merge --no-edit "$DEFAULT_BRANCH"' in run
+    assert 'if ! git merge --no-edit "$DEFAULT_BRANCH"; then' in run
+    assert '"$code_pyproject" | "$lockfile")' in run
+    assert 'git checkout --theirs -- "$conflict"' in run
+    assert 'echo "::error::Unexpected merge conflict in $conflict"' in run
+    assert "git commit --no-edit" in run
     assert 'git push "https://x-access-token:${GH_TOKEN}' in run
     assert '"$BRANCH:$BRANCH"' in run
     assert "--force" not in run

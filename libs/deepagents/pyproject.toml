@@ -1,6 +1,6 @@
 [project]
 name = "deepagents"
-version = "0.7.11"
+version = "0.7.13"
 
 description = "Production-ready, extensible agent harness with a built-in filesystem and context management, sub-agent delegation, skills, and long-term memory."
 readme = "README.md"
@@ -139,6 +139,7 @@ filterwarnings = [
     # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
     "error",
     "ignore:Passing `model=None` to `create_deep_agent`:DeprecationWarning",
+    "ignore:The feature `forked subagents` is in beta:langchain_core._api.LangChainBetaWarning",
     # `langsmith.sandbox` is alpha upstream; the FutureWarning fires on import.
     "ignore:langsmith.sandbox is in alpha:FutureWarning",
     # pytest-cov complains when invoked with `--no-cov` (used for fast runs).

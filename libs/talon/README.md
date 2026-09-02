@@ -8,8 +8,8 @@ Deep Agents Talon is the local runtime host for long-running Deep Agents. It own
 
 Talon currently includes:
 
-- A host process with graceful shutdown, per-conversation serialization, and `/stop` cancellation.
-- A generic channel protocol plus a WhatsApp adapter backed by a loopback Node bridge.
+- A host process with graceful shutdown, per-conversation interrupt-and-continue, and `/stop` cancellation.
+- A generic channel protocol plus WhatsApp, Telegram, and Discord adapters (WhatsApp is backed by a loopback Node bridge).
 - A persistent cron scheduler with agent-facing cron tool helpers.
 - MCP tool loading from explicit config paths or `~/.deepagents/.mcp.json`.
 - Optional LangSmith tracing for each channel or cron-triggered run.
@@ -28,6 +28,10 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+
+## Interrupt and Continue
+
+A new message in a conversation cancels the active turn, records an interruption marker after the latest committed graph checkpoint, and starts the new message on the same thread. Partial output from the cancelled turn is not fabricated or delivered. `/stop` and `/new` also recover interrupted state; process shutdown does not. If cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and does not start the new message; restart Talon to recover.
 
 ## Local Agent Activity Logs
 
@@ -105,6 +109,36 @@ uv run --directory libs/talon deepagents-talon --telegram
 ```
 
 In `allowlist` mode, `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_USERS` allows private bot DMs from specific Telegram user IDs, while `DEEPAGENTS_TALON_TELEGRAM_ALLOWLIST_CHATS` allows channel posts from specific channel chat IDs. `DEEPAGENTS_TALON_TELEGRAM_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB); Telegram's smaller Bot API upload limits still apply. If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
+
+## Discord
+
+The Discord channel uses the [`discord.py`](https://discordpy.readthedocs.io/) Gateway client for real-time message delivery. Create a bot application in the [Discord Developer Portal](https://discord.com/developers/applications), copy its token, and enable the **Message Content** privileged intent under the Bot settings — without it, the bot receives events but not message text:
+
+```bash
+DEEPAGENTS_TALON_DISCORD_ENABLED=true \
+DEEPAGENTS_TALON_DISCORD_BOT_TOKEN=... \
+DEEPAGENTS_TALON_DISCORD_EXPOSURE=allowlist \
+DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS=123456789012345678 \
+DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS=234567890123456789 \
+AGENT_ASSISTANT_ID=discord-local \
+AGENT_MODEL=<provider>:<model-id> \
+uv run deepagents-talon --discord
+```
+
+From the repository root, run the same host with:
+
+```bash
+DEEPAGENTS_TALON_DISCORD_ENABLED=true \
+DEEPAGENTS_TALON_DISCORD_BOT_TOKEN=... \
+DEEPAGENTS_TALON_DISCORD_EXPOSURE=allowlist \
+DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS=123456789012345678 \
+DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS=234567890123456789 \
+AGENT_ASSISTANT_ID=discord-local \
+AGENT_MODEL=<provider>:<model-id> \
+uv run --directory libs/talon deepagents-talon --discord
+```
+
+`conversation_id` is the Discord channel ID, which works uniformly for DM channels and guild text channels. In `allowlist` mode, `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_USERS` allows DMs from specific Discord user IDs regardless of channel, while `DEEPAGENTS_TALON_DISCORD_ALLOWLIST_CHATS` allows messages from specific channel IDs (DM or guild). `DEEPAGENTS_TALON_DISCORD_OPERATOR_ID` accepts one or more comma-separated operator IDs for `self` exposure, the default mode, which only accepts DMs from those operators. Outbound text over Discord's 2000-character message limit is split into multiple separate messages sent in order; outbound media is sent as a file attachment with the caption as the message content when it fits, or as a preceding separate message otherwise. `DEEPAGENTS_TALON_MAX_MEDIA_BYTES` caps inbound and outbound channel media across providers and defaults to `1073741824` (1 GiB). If `AGENT_MODEL` and `DEEPAGENTS_TALON_MODEL` are both unset, Talon uses the echo runtime and replies with the inbound text unchanged.
 
 ## Tracing
 

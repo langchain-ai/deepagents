@@ -3,15 +3,15 @@
 # `deepagents-code` publishes with an exact SDK pin (see `check_sdk_pin.yml`
 # and the release workflow's pin gate), so every time the workspace SDK
 # version in `libs/deepagents/pyproject.toml` moves ahead of the pin, someone
-# has to bump it by hand before the next Code release. This workflow opens
-# that bump PR automatically.
+# has to bump it by hand before the next Code release. This workflow creates
+# or updates that bump PR automatically.
 #
 # Triggering:
 # - `release.yml` dispatches this workflow via `workflow_dispatch` from its
 #   `bump-code-sdk-pin` job after a `deepagents` release has been published
 #   to PyPI. Running post-publish (rather than on the version-commit push to
 #   `main`) guarantees the new SDK is installable from PyPI, so CI on the
-#   auto-opened PR can resolve `deepagents==X.Y.Z`.
+#   automated PR can resolve `deepagents==X.Y.Z`.
 # - It can also be run manually from the Actions UI / `gh` CLI (e.g. to
 #   recover after a failed dispatch, or to bump the pin for an unreleased
 #   workspace version).
@@ -25,11 +25,12 @@
 # - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
 #   files inside the managed `libs/code` package would make release-please
 #   open a separate `release(deepagents-code)` PR (multi-component fan-out).
-# - The PR is created with the Org Membership App installation token rather
-#   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
+# - The PR is created and updated with the Org Membership App installation
+#   token rather than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
 #   `pull_request` workflows, so the required checks would never run.
-# - Idempotent: if a PR for the target version already exists (or the pin is
-#   already current), the workflow exits without creating a duplicate.
+# - Idempotent: if the automated PR already targets the workspace version (or
+#   the pin is already current), the workflow exits. When an older automated
+#   bump PR is still open, the workflow updates it instead of replacing it.
 # - Because this runs unattended, a failure would otherwise be invisible: the
 #   final step files (or refreshes) a tracking issue so a broken bump does
 #   not just stop happening.
@@ -48,7 +49,7 @@ concurrency:
 
 jobs:
   bump:
-    name: "Open PR if the Code SDK pin is stale"
+    name: "Create or update PR if the Code SDK pin is stale"
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -67,6 +68,9 @@ jobs:
       # lost; the fetch path in the push step also uses that app-token URL.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          # Updating an existing PR merges the latest default branch without
+          # rewriting history, which requires the shared merge base.
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Set up Python and uv
@@ -124,26 +128,45 @@ jobs:
           CODE_PIN: ${{ steps.versions.outputs.code_pin }}
         run: 'echo "::notice::Nothing to do: Code SDK pin $CODE_PIN is not behind the workspace SDK version $SDK_VERSION."'
 
-      - name: Skip if PR already open for this version
+      - name: Find existing automated pin bump PR
         id: existing
         if: steps.versions.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRANCH: ${{ steps.versions.outputs.branch }}
+          NEW_BRANCH: ${{ steps.versions.outputs.branch }}
+          SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
         run: |
           set -euo pipefail
-          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
-          count=$(printf '%s' "$existing_json" | jq 'length')
-          echo "count=$count" >> "$GITHUB_OUTPUT"
-          if [ "$count" -gt 0 ]; then
-            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
-            echo "Open PR already exists for $BRANCH; skipping."
-            echo "::notice::Open SDK pin bump PR already exists: $pr_url"
+          open_prs=$(gh pr list --state open --limit 100 \
+            --json body,headRefName,isCrossRepository,number,title,url)
+          existing=$(printf '%s' "$open_prs" | \
+            python .github/scripts/release/find_code_sdk_pin_pr.py)
+          number=$(printf '%s' "$existing" | jq -r '.number // ""')
+          if [ -z "$number" ]; then
+            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
+
+          branch=$(printf '%s' "$existing" | jq -r '.headRefName')
+          title=$(printf '%s' "$existing" | jq -r '.title')
+          url=$(printf '%s' "$existing" | jq -r '.url')
+          expected_title="chore(deps): bump \`deepagents\` pin in \`deepagents-code\` to $SDK_VERSION"
+          current=false
+          if [ "$title" = "$expected_title" ]; then
+            current=true
+            echo "::notice::Open SDK pin bump PR already targets $SDK_VERSION: $url"
+          else
+            echo "Updating existing SDK pin bump PR on $branch: $url"
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "number=$number" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - name: Generate GitHub App token
         id: app-token
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.current != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
@@ -151,14 +174,16 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
-      - name: Open pin bump PR
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+      - name: Create or update pin bump PR
+        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.current != 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
           CODE_PIN: ${{ steps.versions.outputs.code_pin }}
-          BRANCH: ${{ steps.versions.outputs.branch }}
+          BRANCH: ${{ steps.existing.outputs.branch }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          EXISTING_PR: ${{ steps.existing.outputs.number }}
+          EXISTING_PR_URL: ${{ steps.existing.outputs.url }}
         run: |
           set -euo pipefail
 
@@ -176,78 +201,113 @@ jobs:
           code_pyproject="libs/code/pyproject.toml"
           lockfile="libs/code/uv.lock"
 
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -n "$EXISTING_PR" ]; then
+            git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            # The lockfile resolves `deepagents` through the adjacent editable
+            # checkout, so bring the latest SDK version onto the PR branch
+            # before regenerating it. This is a normal merge and keeps the
+            # automated branch update fast-forward-only.
+            git merge --no-edit "$DEFAULT_BRANCH"
+          else
+            # Reuse-or-recreate an orphan branch from a prior run that pushed
+            # but failed before `gh pr create` (no open PR sits on it).
+            if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+              echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+              if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
+                echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+              fi
+            fi
+            git checkout -b "$BRANCH"
+          fi
+
+          branch_code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
+          relation=$(BRANCH_CODE_PIN="$branch_code_pin" SDK_VERSION="$SDK_VERSION" uv run --no-project --with packaging python - <<'PY'
+          import os
+
+          from packaging.version import Version
+
+          branch = Version(os.environ["BRANCH_CODE_PIN"])
+          target = Version(os.environ["SDK_VERSION"])
+          print("behind" if branch < target else "ahead" if branch > target else "current")
+          PY
+          )
+          if [ "$relation" = "ahead" ]; then
+            echo "::notice::Existing SDK pin bump PR already points past workspace SDK version $SDK_VERSION ($branch_code_pin); leaving it unchanged."
+            exit 0
+          fi
+
           # Update only the exact-pin dependency line. The quoted
           # `deepagents==` match cannot touch the unquoted
           # `[tool.uv.sources]` path entry. `grep -c` returns 1 on no-match
           # and 2 on read errors; capture the exit code separately so
           # `set -e` doesn't swallow either case.
-          pattern="\"deepagents==${CODE_PIN}\""
+          pattern="\"deepagents==${branch_code_pin}\""
           replacement="\"deepagents==${SDK_VERSION}\""
-          set +e
-          before=$(grep -cF "$pattern" "$code_pyproject")
-          before_rc=$?
-          set -e
-          if [ "$before_rc" -gt 1 ]; then
-            echo "::error::grep read error on $code_pyproject (exit=$before_rc)"
-            exit 1
-          fi
-          if [ "$before" -ne 1 ]; then
-            echo "::error::Expected exactly 1 '$pattern' in $code_pyproject, found $before"
-            exit 1
-          fi
-          sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
-          after=$(grep -cF "$replacement" "$code_pyproject")
-          if [ "$after" -ne 1 ]; then
-            echo "::error::Expected exactly 1 '$replacement' after sed, found $after"
-            exit 1
+          if [ "$relation" = "behind" ]; then
+            set +e
+            before=$(grep -cF "$pattern" "$code_pyproject")
+            before_rc=$?
+            set -e
+            if [ "$before_rc" -gt 1 ]; then
+              echo "::error::grep read error on $code_pyproject (exit=$before_rc)"
+              exit 1
+            fi
+            if [ "$before" -ne 1 ]; then
+              echo "::error::Expected exactly 1 '$pattern' in $code_pyproject, found $before"
+              exit 1
+            fi
+            sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
+            after=$(grep -cF "$replacement" "$code_pyproject")
+            if [ "$after" -ne 1 ]; then
+              echo "::error::Expected exactly 1 '$replacement' after sed, found $after"
+              exit 1
+            fi
           fi
 
           # Regenerate the lockfile alongside the manifest change so the
           # pre-commit lock check passes on the PR.
-          uv lock --directory libs/code --python 3.12
+          if [ "$relation" = "behind" ]; then
+            uv lock --directory libs/code --python 3.12
+          fi
           if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
             echo "::error::Expected $lockfile to exist after uv lock"
             exit 1
           fi
-          if git diff --quiet "$code_pyproject" "$lockfile"; then
-            echo "No changes after edit; bailing out (pin=$CODE_PIN, sdk=$SDK_VERSION)."
-            exit 1
-          fi
-
-          # Reuse-or-recreate orphan branch from a prior run that pushed
-          # but failed before `gh pr create` (no open PR sits on it).
-          # The delete can race a concurrent run (manual workflow_dispatch
-          # firing while a push-triggered run is mid-flight, since the
-          # concurrency group does not cancel-in-progress); fall through
-          # with a warning so a losing race does not kill an otherwise-clean
-          # job mid-state.
-          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
-            echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
-            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
-              echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+          if [ "$relation" = "behind" ]; then
+            if git diff --quiet "$code_pyproject" "$lockfile"; then
+              echo "No changes after edit; bailing out (pin=$branch_code_pin, sdk=$SDK_VERSION)."
+              exit 1
             fi
-          fi
 
-          git config --local user.name "github-actions[bot]"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "$BRANCH"
-          git add "$code_pyproject" "$lockfile"
-          git commit -m "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
-          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+            git add "$code_pyproject" "$lockfile"
+            git commit -m "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
+            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+          fi
 
           body_file="$(mktemp)"
           {
+            printf '%s\n' '<!-- bump-code-sdk-pin-pr -->'
             printf 'Bumps the exact %s pin in %s from `%s` to `%s` (current workspace SDK version) and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$SDK_VERSION" '`libs/code/uv.lock`'
             printf 'Opened automatically by %s after a commit on `main` changed the SDK version. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents-code`'
           } > "$body_file"
 
-          pr_url=$(gh pr create \
-            --head "$BRANCH" \
-            --base "$DEFAULT_BRANCH" \
-            --title "chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION" \
-            --body-file "$body_file")
-          echo "Opened SDK pin bump PR: $pr_url"
-          echo "::notice::Opened SDK pin bump PR: $pr_url"
+          title="chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
+          if [ -n "$EXISTING_PR" ]; then
+            gh pr edit "$EXISTING_PR" --title "$title" --body-file "$body_file"
+            echo "Updated SDK pin bump PR: $EXISTING_PR_URL"
+            echo "::notice::Updated SDK pin bump PR: $EXISTING_PR_URL"
+          else
+            pr_url=$(gh pr create \
+              --head "$BRANCH" \
+              --base "$DEFAULT_BRANCH" \
+              --title "$title" \
+              --body-file "$body_file")
+            echo "Opened SDK pin bump PR: $pr_url"
+            echo "::notice::Opened SDK pin bump PR: $pr_url"
+          fi
 
       - name: File a tracking issue on failure
         # A failed dispatch is otherwise invisible until the next Code

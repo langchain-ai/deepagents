@@ -59,6 +59,11 @@ jobs:
     name: "Create or update PR if the Code SDK pin is stale"
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    # Both the workspace pin and the branch pin are validated against this
+    # before `packaging` sees them. One definition, so the two checks cannot
+    # drift apart.
+    env:
+      SEMVER_PATTERN: '^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$'
     permissions:
       contents: read
       # For the failure-tracking issue in the final step.
@@ -97,12 +102,11 @@ jobs:
           sdk_version=$(grep -m1 -E '^version = "' "$sdk_pyproject" | sed -E 's/version = "([^"]+)"/\1/')
 
           code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
-          semver='^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$'
-          if [[ ! "$sdk_version" =~ $semver ]]; then
+          if [[ ! "$sdk_version" =~ $SEMVER_PATTERN ]]; then
             echo "::error::Could not parse SDK version from $sdk_pyproject (got '$sdk_version')"
             exit 1
           fi
-          if [[ ! "$code_pin" =~ $semver ]]; then
+          if [[ ! "$code_pin" =~ $SEMVER_PATTERN ]]; then
             echo "::error::Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
             exit 1
           fi
@@ -272,6 +276,19 @@ jobs:
           # title-based skip would then exit green on a PR whose title names a
           # version that the branch does not pin.
           branch_code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
+          # This file comes off the PR branch after a merge, so a person may
+          # have edited it. Without these checks a malformed pin reaches
+          # `Version()` and surfaces as a bare `InvalidVersion` traceback that
+          # names neither the file nor the branch, and an absent pin line
+          # fails the assignment through `pipefail` with no output at all.
+          if [ -z "$branch_code_pin" ]; then
+            echo "::error::No quoted \"deepagents==...\" pin found in $code_pyproject on branch $BRANCH"
+            exit 1
+          fi
+          if [[ ! "$branch_code_pin" =~ $SEMVER_PATTERN ]]; then
+            echo "::error::Could not parse the Code SDK pin in $code_pyproject on branch $BRANCH (got '$branch_code_pin')"
+            exit 1
+          fi
           relation=$(BRANCH_CODE_PIN="$branch_code_pin" SDK_VERSION="$SDK_VERSION" uv run --no-project --with packaging python - <<'PY'
           import os
 

@@ -1,4 +1,4 @@
-.PHONY: dataset dataset-check lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog
+.PHONY: dataset dataset-check lint format type typecheck test help test_integration test_watch stage-harbor-local-deps run-hello-world run-terminal-bench-modal run-terminal-bench-docker run-terminal-bench-daytona run-terminal-bench-runloop run-terminal-bench-langsmith evals evals-trials format_unsafe radar radar-from-summary model-groups eval-catalog fork-cache-demo
 
 .DEFAULT_GOAL := help
 
@@ -34,6 +34,60 @@ evals-trials: ## Run evals N times (set MODEL=<id> TRIALS=<n>; both required)
 		exit 1; \
 	fi
 	uv run --group test python scripts/run_trials.py --model $(MODEL) --trials $(TRIALS) $(TRIAL_ARGS)
+
+# Fork-vs-isolated general-purpose subagent cache demo, against a fixed PR
+# (#5873) on this checkout of `main` -- one leg per --gp-mode, no branch
+# switching needed. Set MODEL to your own provider:model (its API key must
+# already be exported, e.g. OPENAI_API_KEY) and `gh` must be authenticated
+# (used to fetch the PR diff). LANGSMITH_API_KEY is required too -- these
+# runs need to be traced so they can be shared afterward (LangSmith's
+# "Share" button on a trace works from any org's key, no LangChain org
+# access needed). Traces land in LANGSMITH_PROJECT (default below) unless
+# you've already exported your own.
+FORK_CACHE_DEMO_REPO ?= langchain-ai/deepagents
+FORK_CACHE_DEMO_PR ?= 5873
+FORK_CACHE_DEMO_OUT_DIR = ../../_fork_cache_demo
+export LANGSMITH_PROJECT ?= fork-cache-demo
+fork-cache-demo: ## Compare fork vs isolated general-purpose subagent on PR #5873, traced (set MODEL=<id>; required)
+	@if [ -z "$(MODEL)" ]; then \
+		echo "ERROR: MODEL is required. Example: make fork-cache-demo MODEL=openai:gpt-5.6-luna" >&2; \
+		exit 1; \
+	fi
+	@if [ -z "$$LANGSMITH_API_KEY" ]; then \
+		echo "ERROR: LANGSMITH_API_KEY is required -- these runs need to be traced so they" >&2; \
+		echo "can be shared afterward. Export your own org's key first." >&2; \
+		exit 1; \
+	fi
+	@mkdir -p $(FORK_CACHE_DEMO_OUT_DIR)
+	@echo "=== Isolated leg (LangSmith project: $$LANGSMITH_PROJECT) ==="
+	LANGSMITH_TRACING=true uv run --group test python ../../.github/scripts/evals/fork_cache_demo.py \
+		--repo $(FORK_CACHE_DEMO_REPO) \
+		--pr $(FORK_CACHE_DEMO_PR) \
+		--branch-tag isolated \
+		--model $(MODEL) \
+		--gp-mode isolated \
+		--out-json $(FORK_CACHE_DEMO_OUT_DIR)/isolated.json
+	@echo "=== Fork leg (LangSmith project: $$LANGSMITH_PROJECT) ==="
+	LANGSMITH_TRACING=true uv run --group test python ../../.github/scripts/evals/fork_cache_demo.py \
+		--repo $(FORK_CACHE_DEMO_REPO) \
+		--pr $(FORK_CACHE_DEMO_PR) \
+		--branch-tag fork \
+		--model $(MODEL) \
+		--gp-mode fork \
+		--out-json $(FORK_CACHE_DEMO_OUT_DIR)/fork.json
+	@echo "=== Comparison ==="
+	uv run --group test python ../../.github/scripts/evals/compare_fork_cache_demo.py \
+		--fork-json $(FORK_CACHE_DEMO_OUT_DIR)/fork.json \
+		--isolated-json $(FORK_CACHE_DEMO_OUT_DIR)/isolated.json
+	@echo "=== Cache-hit gate ==="
+	uv run --group test python ../../.github/scripts/evals/assert_cache_hit_gate.py \
+		--fork-json $(FORK_CACHE_DEMO_OUT_DIR)/fork.json \
+		--isolated-json $(FORK_CACHE_DEMO_OUT_DIR)/isolated.json
+	@echo ""
+	@echo "Both runs are traced under LangSmith project '$$LANGSMITH_PROJECT' -- open that"
+	@echo "project, find the 'fork-cache-demo-isolated' and 'fork-cache-demo-fork' runs,"
+	@echo "and use the Share button on each trace to get a public link (works without a"
+	@echo "LangSmith account on the viewer's end)."
 
 test_watch: ## Run tests in watch mode
 	uv run --group test ptw . -- $(TEST_FILE)

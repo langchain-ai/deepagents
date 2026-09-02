@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Fork-vs-handoff cost/cache demo: PR review with specialized reviewers.
+"""Fork-vs-isolated cost/cache demo: PR review with specialized reviewers.
 
 Parent fetches a real PR's diff once, then delegates to the general-purpose
-subagent N times (one per lens), with an identical instruction each time. No
-custom subagent or `mode=` flag: fork vs. handoff comes entirely from which
-`deepagents` checkout this runs against (see fork_cache_demo.yml, which
-checks out a different ref per leg).
+subagent N times (one per lens), with an identical instruction each time. By
+default (--gp-mode isolated), no subagents= override is used at all -- fork
+vs. isolated comes entirely from which `deepagents` checkout this runs
+against (see fork_cache_demo.yml, which checks out a different ref per leg).
+--gp-mode fork instead declares a caller-owned `general-purpose` spec with
+mode="fork" (optionally with --gp-system-prompt), which routes through the
+real per-spec fork merge logic in graph.py rather than depending on the
+checkout's own auto-added default.
 
 Metrics come from a callback handler on the top-level `invoke()` (subagents
 inherit it automatically). Since every call shares `lc_agent_name`
@@ -38,6 +42,7 @@ from langchain_core.messages import HumanMessage
 from langchain_core.tools import tool
 
 from deepagents import create_deep_agent
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 
 DEFAULT_LENSES = ["correctness", "backcompat", "tests", "performance", "api_design"]
 
@@ -80,10 +85,27 @@ def fetch_pr_meta(repo: str, pr_number: str) -> dict[str, str]:
 
 
 def build_parent_instruction(
-    repo: str, pr_number: str, title: str, body: str, lenses: list[str]
+    repo: str, pr_number: str, title: str, body: str, lenses: list[str], per_lens: bool = False
 ) -> str:
     trimmed_body = (body or "(no description)").strip()[:2000]
     lens_line = '  "Review this change specifically for {lens} issues."'
+    if per_lens:
+        delegation_note = f"""Then delegate the review to each specialist subagent, ONE CALL AT A TIME
+(wait for each result before starting the next -- do not delegate in
+parallel). Each subagent_type below matches a lens name exactly -- use it
+directly, in this order: {", ".join(lenses)}. For each call, use EXACTLY this
+instruction (only the lens name changes):
+
+{lens_line}"""
+    else:
+        delegation_note = f"""Then delegate the review to the general-purpose subagent, ONE CALL AT A TIME
+(wait for each result before starting the next -- do not delegate in
+parallel), using EXACTLY this instruction each time (only the lens name
+changes):
+
+{lens_line}
+
+Use these lenses in this exact order: {", ".join(lenses)}."""
     return f"""You are reviewing pull request #{pr_number} in the {repo} repo: "{title}"
 
 {trimmed_body}
@@ -91,14 +113,7 @@ def build_parent_instruction(
 First, use get_pr_diff to fetch the diff, and read_repo_file for any files you
 need to understand the change in its surrounding context.
 
-Then delegate the review to the general-purpose subagent, ONE CALL AT A TIME
-(wait for each result before starting the next -- do not delegate in
-parallel), using EXACTLY this instruction each time (only the lens name
-changes):
-
-{lens_line}
-
-Use these lenses in this exact order: {", ".join(lenses)}.
+{delegation_note}
 
 Once all have reported back, summarize their findings in one paragraph.
 """
@@ -209,15 +224,21 @@ class MetricsHandler(BaseCallbackHandler):
             return
         if not isinstance(parsed, dict):
             return
-        if parsed.get("subagent_type") != "general-purpose":
+        subagent_type = parsed.get("subagent_type")
+        if subagent_type in self._lenses:
+            # fork-per-lens mode: subagent_type IS the lens, no guessing needed.
+            lens = subagent_type
+        elif subagent_type == "general-purpose":
+            # Shared general-purpose subagent called N times: only the call
+            # order tells lenses apart, since subagent_type is always the same.
+            lens = (
+                self._lenses[self._task_seq]
+                if self._task_seq < len(self._lenses)
+                else f"unexpected-lens-{self._task_seq}"
+            )
+            self._task_seq += 1
+        else:
             return
-
-        lens = (
-            self._lenses[self._task_seq]
-            if self._task_seq < len(self._lenses)
-            else f"unexpected-lens-{self._task_seq}"
-        )
-        self._task_seq += 1
         self._task_run_lens[str(run_id)] = lens
         self._active_stack.append(lens)
         self.directives[lens] = parsed.get("description", "")
@@ -282,11 +303,74 @@ def make_tools(repo_root_dir: Path, allowed_prefix: Path, diff_text: str):
     return get_pr_diff, read_repo_file
 
 
-def build_agent(model: str, tools: list, branch_tag: str):
-    # No subagents= override: fork/handoff comes from the deepagents checkout, not this script.
-    # name= gives the parent's own LangSmith run this label instead of the generic
-    # "LangGraph" default -- otherwise every leg's top-level trace looks identical.
+def build_general_purpose_fork_spec(system_prompt: str | None) -> dict:
+    """A caller-declared `general-purpose` spec, forced into `mode="fork"`.
+
+    Declaring a spec named `"general-purpose"` makes `create_deep_agent`'s
+    auto-add block skip entirely, so this spec goes through the normal
+    per-spec loop instead -- the only path that inherits `final_system_prompt`
+    and appends a spec's own `system_prompt` as an addendum to it. The
+    auto-add block builds its own default general-purpose subagent separately
+    and never reuses that logic, so patching its output directly (as earlier
+    revisions of this eval did) skips the real merge behavior this is meant
+    to exercise. `tools` is omitted so it falls back to the parent's tools,
+    same as the auto-add default.
+    """
+    spec = {
+        "name": GENERAL_PURPOSE_SUBAGENT["name"],
+        "description": GENERAL_PURPOSE_SUBAGENT["description"],
+        "mode": "fork",
+    }
+    if system_prompt:
+        spec["system_prompt"] = system_prompt
+    return spec
+
+
+def build_lens_fork_specs(lenses: list[str], system_prompt_template: str | None) -> list[dict]:
+    """One forked subagent per lens, so the system prompt can name the lens.
+
+    Unlike `build_general_purpose_fork_spec` (one subagent shared across all
+    lenses), each of these has its own name -- the parent calls `task` with
+    `subagent_type=<lens>` directly. `system_prompt_template` is formatted
+    with `lens=<lens name>` per spec; `tools` is omitted so it falls back to
+    the parent's tools, same as the auto-add default.
+    """
+    specs = []
+    for lens in lenses:
+        spec: dict = {
+            "name": lens,
+            "description": f"Specialist reviewer focused on {lens} issues for a code change.",
+            "mode": "fork",
+        }
+        if system_prompt_template:
+            spec["system_prompt"] = system_prompt_template.format(lens=lens)
+        specs.append(spec)
+    return specs
+
+
+def build_agent(
+    model: str,
+    tools: list,
+    branch_tag: str,
+    gp_mode: str,
+    gp_system_prompt: str | None,
+    lenses: list[str],
+):
+    # gp_mode="isolated" (default): no subagents= override, matching the
+    # original script -- fork/isolated then comes from whichever deepagents
+    # checkout is on PYTHONPATH. gp_mode="fork": declare our own
+    # general-purpose spec so it goes through the real fork merge logic.
+    # gp_mode="fork-per-lens": one forked subagent per lens, each with its
+    # own system prompt naming that lens. name= gives the parent's own
+    # LangSmith run this label instead of the generic "LangGraph" default --
+    # otherwise every leg's top-level trace looks identical.
     agent_name = f"fork-cache-demo-{branch_tag}"
+    if gp_mode == "fork":
+        subagents = [build_general_purpose_fork_spec(gp_system_prompt)]
+    elif gp_mode == "fork-per-lens":
+        subagents = build_lens_fork_specs(lenses, gp_system_prompt)
+    else:
+        subagents = None
     custom_header = os.environ.get("ANTHROPIC_CUSTOM_HEADERS")
     if custom_header and model.startswith("anthropic:"):
         # Gateway auth: ChatAnthropic.default_headers has no env-var binding of its
@@ -297,8 +381,8 @@ def build_agent(model: str, tools: list, branch_tag: str):
             model=model.split(":", 1)[1],
             default_headers={header_name.strip(): header_value.strip()},
         )
-        return create_deep_agent(model=chat_model, tools=list(tools), name=agent_name)
-    return create_deep_agent(model=model, tools=list(tools), name=agent_name)
+        return create_deep_agent(model=chat_model, tools=list(tools), name=agent_name, subagents=subagents)
+    return create_deep_agent(model=model, tools=list(tools), name=agent_name, subagents=subagents)
 
 
 def main() -> None:
@@ -310,11 +394,32 @@ def main() -> None:
     parser.add_argument(
         "--branch-tag",
         default="unknown",
-        help="Label for this run's output only (e.g. 'fork'/'handoff') -- "
-        "does not affect agent construction. The actual fork/handoff "
+        help="Label for this run's output only (e.g. 'fork'/'isolated') -- "
+        "does not affect agent construction. The actual fork/isolated "
         "behavior comes from whichever deepagents checkout is on PYTHONPATH.",
     )
     parser.add_argument("--model", default="anthropic:claude-sonnet-4-6")
+    parser.add_argument(
+        "--gp-mode",
+        choices=["isolated", "fork", "fork-per-lens"],
+        default="isolated",
+        help="isolated (default): no subagents= override, matching the original "
+        "script -- fork/isolated comes from whichever deepagents checkout is on "
+        "PYTHONPATH. fork: declare a caller-owned general-purpose spec with "
+        "mode='fork' so it goes through the real fork merge logic instead of "
+        "relying on the checkout's own default. fork-per-lens: one forked "
+        "subagent per lens (parent calls subagent_type=<lens> directly), each "
+        "with its own --gp-system-prompt (formatted with {lens}).",
+    )
+    parser.add_argument(
+        "--gp-system-prompt",
+        default=None,
+        help="Only used with --gp-mode fork/fork-per-lens. For fork: appended "
+        "as an addendum to the parent's own system prompt (real merge logic "
+        "in graph.py). For fork-per-lens: a template formatted per-subagent "
+        "with {lens}, e.g. 'Pay extra attention to {lens} issues.'. Omit for "
+        "forks with no system_prompt of their own.",
+    )
     parser.add_argument(
         "--lenses",
         default=",".join(DEFAULT_LENSES),
@@ -336,12 +441,17 @@ def main() -> None:
     diff_text = fetch_pr_diff(args.repo, args.pr)
     meta = fetch_pr_meta(args.repo, args.pr)
     instruction = build_parent_instruction(
-        args.repo, args.pr, meta.get("title", ""), meta.get("body", ""), lenses
+        args.repo,
+        args.pr,
+        meta.get("title", ""),
+        meta.get("body", ""),
+        lenses,
+        per_lens=(args.gp_mode == "fork-per-lens"),
     )
 
     tools = make_tools(root, allowed_prefix, diff_text)
     handler = MetricsHandler(lenses)
-    agent = build_agent(args.model, tools, args.branch_tag)
+    agent = build_agent(args.model, tools, args.branch_tag, args.gp_mode, args.gp_system_prompt, lenses)
 
     print(f"=== Running branch_tag={args.branch_tag} model={args.model} ===", flush=True)
     start = time.monotonic()
@@ -364,6 +474,8 @@ def main() -> None:
         payload = {
             "branch_tag": args.branch_tag,
             "model": args.model,
+            "gp_mode": args.gp_mode,
+            "gp_system_prompt": args.gp_system_prompt,
             "repo": args.repo,
             "pr": args.pr,
             "lenses": lenses,

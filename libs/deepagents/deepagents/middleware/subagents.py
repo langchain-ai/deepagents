@@ -90,8 +90,8 @@ class SubAgent(TypedDict):
         system_prompt: Instructions for the subagent.
 
             Appended to the inherited prompt under `mode="fork"`.
-        mode: `handoff` (default) for an isolated subagent, or `fork` to
-            continue the parent's conversation.
+        mode: `isolated` (default) for a subagent that only sees the
+            delegated task, or `fork` to continue the parent's conversation.
         tools: Tools the subagent can use.
 
             If not specified, inherits tools from the main agent
@@ -206,8 +206,8 @@ class SubAgent(TypedDict):
     replacing it.
     """
 
-    mode: NotRequired[Literal["handoff", "fork"]]
-    """Context mode. Defaults to `handoff`, an isolated subagent.
+    mode: NotRequired[Literal["isolated", "fork"]]
+    """Context mode. Defaults to `isolated`, where the subagent only sees the delegated task.
 
     Under `fork`, the subagent receives the parent's effective conversation
     history and state, and mirrors the parent's prompt-producing middleware so
@@ -296,7 +296,7 @@ class CompiledSubAgent(TypedDict):
     results back to the main agent.
     """
 
-    mode: NotRequired[Literal["handoff", "fork"]]
+    mode: NotRequired[Literal["isolated", "fork"]]
     """Use `fork` to inherit the parent's conversation without changing the runnable prompt.
 
     A declarative [`SubAgent`][deepagents.middleware.subagents.SubAgent] fork
@@ -310,8 +310,8 @@ _SubAgentSpec = SubAgent | CompiledSubAgent
 def _validate_subagent_mode(spec: _SubAgentSpec) -> None:
     """Reject unsupported context modes before a subagent can run."""
     mode = spec.get("mode")
-    if mode not in (None, "handoff", "fork"):
-        msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'handoff' or 'fork'"
+    if mode not in (None, "isolated", "fork", "handoff"):  # "handoff" is legacy alias for "isolated"
+        msg = f"SubAgent '{spec['name']}' has invalid mode '{mode}'; expected 'isolated' or 'fork'"
         raise ValueError(msg)
     if mode == "fork" and spec.get("skills"):
         msg = f"SubAgent '{spec['name']}' cannot set skills under mode='fork'; the parent's skills are inherited instead."

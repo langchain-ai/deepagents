@@ -2539,9 +2539,10 @@ def parse_args() -> argparse.Namespace:
         dest="auto_classifier_model",
         metavar="MODEL",
         help="Model the Auto approval classifier reviews actions with "
-        "(e.g. anthropic:claude-haiku-4-5). Local TUI or ACP only. Defaults to "
+        "(e.g. anthropic:claude-sonnet-5). Local TUI or ACP only. Defaults to "
         "DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL, then [models].auto_classifier, "
-        "then the main agent model. A weaker model weakens Auto's review.",
+        "then a provider-specific model or the main agent model. A weaker model "
+        "weakens Auto's review.",
     )
 
     parser.add_argument(
@@ -3002,6 +3003,20 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
+_DEFAULT_AUTO_CLASSIFIER_MODELS = {
+    "anthropic": "anthropic:claude-sonnet-5",
+    "google_genai": "google_genai:gemini-3.7-flash",
+    "google_vertexai": "google_vertexai:gemini-3.7-flash",
+    "openai": "openai:gpt-5.6-luna",
+    "openai_codex": "openai_codex:gpt-5.6-luna",
+}
+
+
+def _default_auto_classifier_model(provider: str) -> str | None:
+    """Return the default Auto classifier model for a main-model provider."""
+    return _DEFAULT_AUTO_CLASSIFIER_MODELS.get(provider)
+
+
 def _classifier_model_after_policy(spec: str | None) -> str | None:
     """Downgrade a policy-blocked classifier spec to "inherit the runtime model".
 
@@ -3227,10 +3242,11 @@ async def run_textual_cli_async(
         auto_classifier_model: Model spec the Auto approval classifier reviews
             with, from `--auto-classifier-model`.
 
-            `None` resolves from env / `config.toml` and then reuses the main
-            agent model. A blank string means the flag was explicitly supplied
-            with no value: it overrides any env / `config.toml` classifier so
-            reviews inherit the main agent model.
+            `None` resolves from env / `config.toml`, then to the lightweight
+            default for the main model's provider. Providers without a default
+            reuse the main agent model. A blank string means the flag was
+            explicitly supplied with no value: it overrides any configured or
+            provider default so reviews inherit the main agent model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from runtime configuration at agent-build time.
 
@@ -3312,6 +3328,10 @@ async def run_textual_cli_async(
             resolved_auto_classifier_model,
             auto_classifier_problem,
         ) = resolve_auto_classifier_model_with_problem()
+        if resolved_auto_classifier_model is None and auto_classifier_problem is None:
+            resolved_auto_classifier_model = _default_auto_classifier_model(
+                runtime_state.model_provider
+            )
     if (
         resolved_auto_classifier_model is not None
         and resolved_auto_classifier_model != INHERIT_CLASSIFIER_MODEL

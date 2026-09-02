@@ -234,7 +234,7 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
-    "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
+    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
     "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
 }

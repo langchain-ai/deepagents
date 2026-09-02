@@ -4,10 +4,9 @@
 
 ## [0.7.13](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.12...deepagents==0.7.13) (2026-09-02)
 
-
 ### Bug Fixes
 
-* **sdk:** rename `handoff` subagent mode to `isolated` ([#6030](https://github.com/langchain-ai/deepagents/issues/6030)) ([15454a8](https://github.com/langchain-ai/deepagents/commit/15454a85438146a59c804af3a525f96091c55fe8))
+- Renamed the SDK subagent mode from `handoff` to `isolated` ([#6030](https://github.com/langchain-ai/deepagents/issues/6030)).
 
 ## [0.7.12](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.11...deepagents==0.7.12) (2026-09-01)
 

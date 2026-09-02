@@ -11,16 +11,31 @@ LEGACY_BODY_MARKER = "Opened automatically by `bump_code_sdk_pin.yml`"
 
 
 def _is_automated_bump(pull_request: dict[str, object]) -> bool:
-    """Return whether a PR belongs to the SDK pin bump workflow."""
+    """Return whether a PR belongs to the SDK pin bump workflow.
+
+    A PR must satisfy all three conditions:
+
+    - Its head branch starts with `BRANCH_PREFIX`. Only this workflow creates
+      such branches.
+    - Its body holds `BODY_MARKER`, or the pre-marker `LEGACY_BODY_MARKER`.
+    - It comes from this repository. An absent `isCrossRepository` field also
+      fails this condition, because the caller must confirm the origin.
+
+    The branch condition is necessary because `BODY_MARKER` is an HTML comment.
+    It is invisible in a rendered body, so it moves silently when a person
+    copies the body into their own PR. The caller pushes commits to the branch
+    of the PR that this function selects, and it replaces the title and the
+    body of that PR. Body text alone must not give a PR that authority.
+    """
     body = pull_request.get("body")
     branch = pull_request.get("headRefName")
     if not isinstance(body, str) or not isinstance(branch, str):
         return False
     if pull_request.get("isCrossRepository") is not False:
         return False
-    return BODY_MARKER in body or (
-        branch.startswith(BRANCH_PREFIX) and LEGACY_BODY_MARKER in body
-    )
+    if not branch.startswith(BRANCH_PREFIX):
+        return False
+    return BODY_MARKER in body or LEGACY_BODY_MARKER in body
 
 
 def find_existing_pr(

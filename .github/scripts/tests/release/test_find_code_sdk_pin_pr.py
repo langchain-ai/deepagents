@@ -9,7 +9,7 @@ def _pull_request(
     *,
     body: str,
     branch: str = "chore/bump-code-sdk-pin-0.7.13",
-    is_cross_repository: bool = False,
+    is_cross_repository: bool | None = False,
 ) -> dict[str, object]:
     return {
         "body": body,
@@ -44,6 +44,15 @@ def test_adopts_legacy_versioned_bump_pr() -> None:
             branch="maintainer/manual-pin-bump",
         ),
         _pull_request(6036, body=BODY_MARKER, is_cross_repository=True),
+        # The marker is an HTML comment, so it survives a copied body. A PR on
+        # a branch this workflow never creates must not be adopted, because
+        # the workflow pushes to that branch and replaces its title and body.
+        _pull_request(
+            6036,
+            body=f"Supersedes the automated bump.\n{BODY_MARKER}",
+            branch="maintainer/manual-pin-bump",
+        ),
+        _pull_request(6036, body=BODY_MARKER, is_cross_repository=None),
     ],
 )
 def test_ignores_prs_not_owned_by_the_workflow(

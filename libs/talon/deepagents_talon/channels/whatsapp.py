@@ -65,6 +65,7 @@ DEFAULT_BOT_HEADER = "deepagents bot"
 DEFAULT_BRIDGE_TOKEN_BYTES = 32
 DEFAULT_WHATSAPP_MAX_MEDIA_BYTES = 64 * 1024 * 1024
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
+_REPLY_CONTEXT_STATUSES = frozenset({"not_reply", "resolved", "lookup_failed"})
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 
 
@@ -545,9 +546,13 @@ class WhatsAppChannel:
                             "whatsapp.inbound.message.dispatching",
                             has_media=bool(checked.metadata.get("has_media")),
                             media_type=checked.metadata.get("media_type"),
+                            quoted_message_id_present=(
+                                checked.metadata.get("quoted_message_id") is not None
+                            ),
                             quoted_participant_present=(
                                 checked.metadata.get("quoted_participant") is not None
                             ),
+                            reply_context_status=checked.metadata.get("reply_context_status"),
                             text_chars=len(checked.text),
                         )
                         await dispatch_message(self._handler, checked, provider="WhatsApp")
@@ -765,6 +770,12 @@ def _parse_message(payload: object) -> ChannelMessage:
     if not isinstance(text, str):
         text = values.get("body")
     has_media = bool(values.get("has_media") or values.get("hasMedia") or media_paths)
+    quoted_participant = optional_str(
+        values.get("quoted_participant") or values.get("quotedParticipant"),
+    )
+    quoted_message_id = optional_str(
+        values.get("quoted_message_id") or values.get("quotedMessageId"),
+    )
     message = ChannelMessage(
         conversation_id=_required_str_any(values, ("chat_id", "chatId")),
         text=text if isinstance(text, str) else "",
@@ -778,8 +789,12 @@ def _parse_message(payload: object) -> ChannelMessage:
             "chat_type": values.get("chat_type") or values.get("chatType"),
             "chat_id_from": values.get("chat_id_from") or values.get("chatIdFrom"),
             "user_name": values.get("user_name") or values.get("senderName"),
-            "quoted_participant": optional_str(
-                values.get("quoted_participant") or values.get("quotedParticipant"),
+            "quoted_participant": quoted_participant,
+            "quoted_message_id": quoted_message_id,
+            "reply_context_status": _reply_context_status(
+                values,
+                quoted_participant=quoted_participant,
+                quoted_message_id=quoted_message_id,
             ),
             "raw_message": values.get("raw_message") or {},
             "from_self": values.get("from_self") is True or values.get("fromSelf") is True,
@@ -792,6 +807,20 @@ def _parse_message(payload: object) -> ChannelMessage:
         mime_types=media_mime_types,
         has_media=has_media,
     )
+
+
+def _reply_context_status(
+    values: Mapping[str, object],
+    *,
+    quoted_participant: str | None,
+    quoted_message_id: str | None,
+) -> str:
+    status = optional_str(values.get("reply_context_status") or values.get("replyContextStatus"))
+    if status in _REPLY_CONTEXT_STATUSES:
+        return status
+    if quoted_participant is not None or quoted_message_id is not None:
+        return "resolved"
+    return "not_reply"
 
 
 def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> ChannelMessage:

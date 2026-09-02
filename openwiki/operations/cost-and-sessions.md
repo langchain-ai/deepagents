@@ -3,16 +3,19 @@ type: operations-guide
 title: Cost Tracking, Sessions & Runtime Stats
 description: How dcode produces display-only model-cost estimates, prevents streamed usage revisions and replay from inflating request statistics, and persists resumable thread state through LangGraph SQLite checkpoints.
 tags: [cost-tracking, pricing, sessions, checkpoints, usage-stats, resume, genai-prices, deepagents-code]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-08-28T11:44:48.051Z
 sources:
   - id: openwiki-source-dc8749c06f6da0ecc0666f26
     resource: repo://libs/code/deepagents_code/_session_stats.py
+  - id: openwiki-source-fdf5afeb1dd1d11652374e88
+    resource: repo://libs/code/deepagents_code/app.py
   - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
     resource: repo://libs/code/deepagents_code/client/non_interactive.py
+  - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
+    resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
     resource: repo://libs/code/deepagents_code/cost_tracking.py
+  - id: openwiki-source-9b6cab59e92c8914079f0f53
+    resource: repo://libs/code/deepagents_code/offload.py
   - id: openwiki-source-620b4c9d0fcbd4c7e6aa0120
     resource: repo://libs/code/deepagents_code/resume_state.py
   - id: openwiki-source-0f8622164498a685abc913d5
@@ -21,7 +24,12 @@ sources:
     resource: repo://libs/code/deepagents_code/tui/textual_adapter.py
   - id: openwiki-source-5775d9bd08f14b550e010f4c
     resource: repo://libs/code/PRICING.md
-generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
+  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
+    resource: repo://libs/code/tests/unit_tests/test_sessions.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-02T08:05:45.554Z
 ---
 
 # Cost Tracking, Sessions & Runtime Stats
@@ -131,7 +139,15 @@ LangGraph checkpoints are stored in one SQLite database at `DEFAULT_STATE_DIR/se
 - **Goal and rubric facts:** accepted goal/rubric fields and the tri-state `_rubric_model_spec` are restored separately from public graph input. The TUI writes user selections via `aupdate_state`; graph middleware/tools write proposals and agent-driven status updates. Both write routes use the same checkpoint semantics for local and remote graphs.
 - **Cost facts:** `CostState` inherits `ResumeState`, so `_session_cost_usd` and pending nested transfers resume through that same state path.
 
-`list_threads` creates a non-fatal covering index, `idx_dcode_threads_list`, so its checkpoint metadata grouping can avoid scanning blob-heavy checkpoint rows. `delete_thread` deletes checkpoint and write rows, invalidates in-module caches, and then best-effort removes offloaded conversation history; its Boolean result only says whether checkpoint rows were deleted.
+`list_threads` creates a non-fatal covering index, `idx_dcode_threads_list`, so its checkpoint metadata grouping can avoid scanning blob-heavy checkpoint rows. `delete_thread` deletes checkpoint and write rows, invalidates in-module caches, and then best-effort removes offloaded conversation history; its Boolean result only says whether checkpoint rows were deleted. It still attempts archive cleanup when no checkpoint rows exist, which removes stranded local archives while returning `False` for the missing thread.
+
+### Offloaded-history retention and deletion
+
+Local offload archives are per-thread Markdown files under `~/.deepagents/conversation_history/` (or a private temporary fallback when the profile location is unavailable). The archive subdirectory is created and hardened to `0o700`; fallback storage is explicitly ephemeral. In server/sandbox mode archive persistence belongs to that backend, so local cleanup has no remote effect.
+
+At TUI startup, a fire-and-forget worker calls `sweep_offloaded_history()` off the event loop. It resolves `history.retention_days` through normal configuration layering; the default is 30 days, and `DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS` is an available override. A value of `0` disables the sweep before it resolves archive storage. The sweep considers only direct, regular `.md` children whose mtime is older than the cutoff. It rechecks mtime on an open descriptor before unlinking, avoiding a race with a concurrent archive refresh; missing files and filesystem failures are non-fatal and do not inflate its deletion count.
+
+`delete_offloaded_history(thread_id)` is likewise best effort and rejects a path-escaping thread ID before unlinking `{root}/conversation_history/{thread_id}.md`. Root resolution may create/harden the archive directory and probe writability even if the archive is absent. Consequently, checkpoint deletion remains authoritative: an archive-cleanup failure is logged rather than allowed to block deletion.
 
 ## Safe changes and focused verification
 
@@ -142,4 +158,4 @@ When changing this area, preserve these boundaries:
 3. Treat a later chunk in the same active request as a **revision**, but treat a finalized request on a later HITL pass as a **replay**. Preserve attempt scoping and boundary finalization when altering stream loops.
 4. Keep a server operation's prepared cost coupled atomically to its state write, with rollback on every abandoned path.
 5. Test model/provider fallback, aliases, missing usage, cache clamping, failed catalog/override loads, and upstream-versus-user-versus-bundled precedence. Test full-message replay, incremental chunks, final-chunk model discovery, retried IDs, and HITL replay separately.
-6. Exercise nested interruption/transfer behavior plus SQLite list/delete and cancelled connection startup. See the repository unit suites for `test_cost_tracking.py`, `test_session_stats.py`, and `test_sessions.py`, and the broader [Testing Guide](../testing/testing-guide.md).
+6. Exercise nested interruption/transfer behavior plus SQLite list/delete and cancelled connection startup. For archive retention, cover old versus fresh regular Markdown files, `0` retention, layered overrides, and unlink failure; cover orphan-archive deletion separately. See the repository unit suites for `test_cost_tracking.py`, `test_session_stats.py`, `test_sessions.py`, and `test_offload.py`, and the broader [Testing Guide](../testing/testing-guide.md).

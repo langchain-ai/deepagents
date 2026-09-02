@@ -1,14 +1,22 @@
 ---
-type: concept
-title: State & Persistence
-description: How Deep Agents models run state with DeepAgentState and the DeltaChannel messages reducer, and how the two persistence axes — LangGraph checkpoints versus backend filesystem/memory — differ and interact.
-tags: [state, persistence, checkpoints, deltachannel, reducer, subagents, langgraph, middleware]
+type: state persistence model
+title: State Persistence
+description: Ownership, reduction, checkpointing, and resumption of state in Deep Agents SDK graphs and dcode sessions. Explains private middleware channels, session metadata, and the isolation boundary for subagent state.
+tags: [state, persistence, checkpoints, reducer, middleware, subagents, sessions, langgraph]
 verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+  - by: openwiki/0.4.2
+    at: 2026-09-02T08:05:45.554Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
+  - id: openwiki-source-2e03fee957625ca21a1c21af
+    resource: repo://libs/code/deepagents_code/main.py
+  - id: openwiki-source-620b4c9d0fcbd4c7e6aa0120
+    resource: repo://libs/code/deepagents_code/resume_state.py
+  - id: openwiki-source-0f8622164498a685abc913d5
+    resource: repo://libs/code/deepagents_code/sessions.py
+  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
+    resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-822ae989625ba99d4c7cc08b
     resource: repo://libs/deepagents/deepagents/_messages_reducer.py
   - id: openwiki-source-07f9eac13e71bcbdb4e6994b
@@ -23,219 +31,123 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/subagents.py
   - id: openwiki-source-dc64f28a66d10932b86fcd61
     resource: repo://libs/deepagents/tests/unit_tests/test_messages_reducer.py
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
 ---
 
-# State & Persistence
+# State Persistence
 
-Deep Agents keeps almost none of its own runtime state. The authoritative state
-container is LangGraph's graph state, which Deep Agents extends with a small
-`TypedDict` (`DeepAgentState`) and a specialized reducer for the `messages`
-channel. Persistence then splits into two independent axes: **LangGraph
-checkpoints**, which preserve conversation/message history, interrupts, and
-resumability, and **backend filesystem/memory**, which decides whether files
-survive a thread and where they physically live.
+Deep Agents has three deliberately separate concerns:
 
-This page explains the state schema, the `DeltaChannel` reducer that keeps
-checkpoint growth linear, how middleware contributes state without leaking
-private fields into subagents, and how the two persistence axes relate. For how
-long message histories are compacted or offloaded (a consumer of this state
-model), see [Context management](/openwiki/concepts/context-management.md). For
-the backend routes that back the filesystem axis, see
-[Backends](/openwiki/concepts/backends.md).
+1. **Graph state and checkpoints** are LangGraph's responsibility. A checkpointer preserves a graph thread's channel values and enables resume and interrupts.
+2. **Message reduction** is a storage-efficiency mechanism on the `messages` channel. It controls how that one channel is represented across checkpoints; it is not a durability policy.
+3. **Subagent transfer** is an invocation boundary. It decides which parent values form a subagent input and which returned values may merge back; it does not make subagent state part of the parent checkpoint.
 
-## The state schema: DeepAgentState
+dcode builds on the SDK model with an SQLite-backed checkpointer, resume-only private channels, and a thread browser. For context compaction rather than state durability, see [Context management](/openwiki/concepts/context-management.md). For running and resuming dcode, see [Run a dcode session](/openwiki/workflows/run-dcode-session.md).
 
-`DeepAgentState` subclasses LangChain's `AgentState`. Its only override is the
-`messages` field, which is annotated with a `DeltaChannel` reducer instead of
-the default `add_messages` reducer:
+## SDK graph state and checkpoint ownership
 
-```python
-class DeepAgentState(AgentState):
-    messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]
-```
+`create_deep_agent` passes its `checkpointer` and `store` through to LangChain's `create_agent`. The optional checkpointer persists graph state between runs; a `store` is required when the selected backend uses a store route. This is distinct from the backend that implements file and memory operations.
 
-The class docstring states the reason directly: the `DeltaChannel` on `messages`
-reduces checkpoint growth from O(N²) to O(N). Every other field a running agent
-relies on — `todos`, `files`, `structured_response`, and middleware-specific
-fields — is contributed by middleware state schemas rather than declared here.
+| Concern | Owner | Scope and implication |
+| --- | --- | --- |
+| Graph state, interrupts, resume | LangGraph checkpointer | A checkpointed thread; state is restored at the selected/latest checkpoint. |
+| Files and memory data | Deep Agents backend | Route-dependent: state-backed files follow the thread; store or filesystem routes can outlive it. |
+| dcode session catalog | `sessions.py` over the checkpoint database | Reads checkpoint rows and metadata to list, filter, resume, and delete local threads. |
 
-`DeepAgentState` is the default `state_schema` that `create_deep_agent` forwards
-to `langchain.agents.create_agent`. Because it is a `TypedDict`, the requirement
-that a custom `state_schema` subclass `DeepAgentState` is enforced only by the
-type checker; there is no runtime `issubclass` check.
-
-## Why DeltaChannel: linear checkpoint growth
-
-With the default append reducer, every checkpoint stores the full message list,
-so a thread of N steps writes roughly N + (N-1) + ... = O(N²) message copies
-across all checkpoints. `DeltaChannel` instead persists deltas and writes a full
-snapshot only every `snapshot_frequency` steps (50). Replay reconstructs the
-current value from the most recent snapshot plus the deltas after it, so total
-persisted volume grows linearly with thread length while bounding replay depth.
-
-The same `DeltaChannel(..., snapshot_frequency=50)` pattern is applied to the
-`files` state key on `FilesystemState`, for the same reason: state-backed files
-can be large and change often, so snapshots every ~50 pregel steps bound read
-depth.
-
-## The messages delta reducer
-
-`_messages_delta_reducer` is a batch reducer designed specifically for use with
-`DeltaChannel` on the `messages` key. Its responsibilities are narrow and its
-invariants matter:
-
-- **Flatten and coerce writes.** Each write is either a list of message-likes or
-  a single message-like; only lists are flattened. Raw `dict` / `str` / `tuple`
-  inputs are coerced to typed `BaseMessage` via `convert_to_messages`, so
-  HTTP-driven graphs work without a separate coercion step. A fast path skips
-  coercion when the input is already typed `BaseMessage`.
-- **Dedup and update by ID.** Messages are indexed by `id`. A write whose `id`
-  already exists replaces the existing entry in place; a new `id` is appended.
-- **Tombstone via RemoveMessage.** A `RemoveMessage` whose id matches an existing
-  message removes it. A `RemoveMessage` carrying the `REMOVE_ALL_MESSAGES`
-  sentinel resets the whole list, discarding prior state and any writes before
-  the sentinel.
-- **`id=None` messages are appended as-is** rather than deduped.
-- **Tolerate `state is None` on replay.** `DeltaChannel.replay_writes` can pass
-  `state=None` for threads whose earliest checkpoint did not seed `messages: []`;
-  the reducer treats that as the empty list.
-
-The reducer intentionally does **not** assign message IDs. LangGraph's
-`ensure_message_ids` hook stamps stable UUIDs on all `BaseMessage` writes before
-they are serialized to the checkpoint, so by the time the reducer runs a message
-already has a stable ID. Assigning IDs inside the reducer would be redundant and
-fragile, because the reducer also runs on replay, where a freshly random ID would
-diverge from the one stored in the checkpoint. Tests assert the end-to-end
-property this enables: `get_state()` always returns messages with stable,
-non-None IDs — both within a single invocation and across resumed threads, and
-for both `BaseMessage` and dict-style (over-the-wire) input.
-
-This reducer is a Deep Agents-local adaptation of langgraph's upstream
-`_messages_delta_reducer`. Unlike upstream, it deliberately skips coercing
-`BaseMessageChunk` writes to full messages, because Deep Agents never writes
-chunks to the `messages` channel (`create_agent` appends full `AIMessage`
-objects, and streaming operates on the output side via `astream_events`).
-
-```mermaid
-flowchart TD
-    W["writes: message-likes"] --> F["flatten lists, coerce dict / str / tuple to BaseMessage"]
-    F --> R{"RemoveMessage with REMOVE_ALL_MESSAGES?"}
-    R -->|yes| Reset["clear state and drop writes before sentinel"]
-    R -->|no| Idx["index existing state by id"]
-    Reset --> Idx
-    Idx --> P{"per write message"}
-    P -->|"id is None"| App["append as-is"]
-    P -->|"RemoveMessage, id known"| Tomb["tombstone existing entry"]
-    P -->|"id already present"| Upd["replace in place"]
-    P -->|"new id"| App2["append and index"]
-    App --> Out["drop tombstones, return list"]
-    Tomb --> Out
-    Upd --> Out
-    App2 --> Out
-```
-
-Control flow of `_messages_delta_reducer` for one batch of writes.
-
-## Middleware-owned state vs custom state_schema
-
-There are two ways state fields enter the graph, and choosing between them is an
-architectural decision:
-
-- **Middleware-owned state.** Middleware declare their own `state_schema`
-  (`FilesystemState.files`, the planning `todos` field, etc.). `create_deep_agent`
-  collects `mw.state_schema` from every assembled middleware and merges them into
-  the graph schema. Prefer this when a field is only meaningful to the middleware
-  that owns it, so it stays scoped to that middleware's hooks and tools.
-- **Custom `state_schema`.** A caller passes a `TypedDict` subclass of
-  `DeepAgentState` as `state_schema`. It becomes the base graph schema, is merged
-  with middleware schemas, and is forwarded when compiling declarative `SubAgent`
-  specs for the `task` tool so subagents see the same custom fields as the parent.
-  Prefer this when tools or multiple middleware need a shared graph-level field.
-
-`CompiledSubAgent` runnables do not inherit a custom `state_schema` (they are
-already compiled), and remote `AsyncSubAgent` specs use the schema configured on
-the remote graph.
-
-## Private fields must not leak into subagents
-
-Middleware state fields can be marked private with `PrivateStateAttr`.
-`private_state_field_names` scans every state schema (the custom schema plus each
-middleware's schema) and returns the frozenset of field names carrying that
-marker. `create_deep_agent` computes this set and assigns it to the subagent
-middleware's `private_state_keys`.
-
-The `task` tool then enforces the boundary in both directions:
-
-- **On the way in**, parent state is filtered to drop `_EXCLUDED_STATE_KEYS`
-  (`messages`, `todos`, `structured_response`) and every private key before the
-  subagent is invoked with a fresh `HumanMessage`.
-- **On the way back**, the subagent's result is filtered by the same exclusions
-  and private keys before it is merged into parent state; only the final message
-  is forwarded as a `ToolMessage`.
-
-`private_state_field_names` resolves annotations at runtime with
-`get_type_hints`. A schema whose `PrivateStateAttr` annotation references a
-`TYPE_CHECKING`-only name cannot be resolved; that schema is skipped with a
-warning rather than failing the whole agent. This is a real hazard, not cosmetic:
-a skipped schema keeps **none** of its private fields, so they will be forwarded
-to and merged back from subagents. Keep names used in `PrivateStateAttr`
-annotations importable at runtime.
-
-## Two persistence axes
-
-Persistence in Deep Agents is two related but separate mechanisms. Conflating
-them is a common source of confusion when debugging why data did or did not
-survive.
-
-| Axis | Owner | Preserves | Scope |
-| --- | --- | --- | --- |
-| Graph state / checkpoints | LangGraph checkpointer | conversation state, message history, interrupts, resumability | per thread |
-| Filesystem / memory | Deep Agents backends | files and long-term memory | depends on backend route |
-
-**LangGraph checkpoints** are configured by passing a `checkpointer` to
-`create_deep_agent`, which forwards it to `create_agent`. Checkpoints save the
-graph state (including `messages`, `todos`, and state-backed `files`) after each
-step, enabling interrupts and thread resumption. The `DeltaChannel` reducer above
-is what makes this checkpointing cheap over long threads.
-
-**Backend persistence** is a separate axis. The default `StateBackend` stores
-files inside agent state, so they are checkpointed with the thread but persist
-only *within* that conversation thread, not across threads. It reads and writes
-through LangGraph's `CONFIG_KEY_READ` / `CONFIG_KEY_SEND` config keys, so it only
-works inside a graph execution. Store-backed or filesystem-backed routes make
-files durable across threads or map them to disk / sandbox storage; a `store`
-passed to `create_deep_agent` is required when a backend uses a store route. See
-[Backends](/openwiki/concepts/backends.md) for the route model and
-[Cost and sessions](/openwiki/operations/cost-and-sessions.md) for how thread
-scoping affects sessions.
+The default `StateBackend` keeps files in agent state through LangGraph's `CONFIG_KEY_READ` and `CONFIG_KEY_SEND`. Those files therefore travel with checkpoints within one thread, cannot be used outside graph execution, and do not become cross-thread data. A filesystem- or store-backed route has a different durability boundary; do not infer it from the presence of a checkpointer.
 
 ```mermaid
 flowchart LR
-    subgraph Run["Agent run"]
-        S["DeepAgentState: messages, todos, files, middleware fields"]
-    end
-    S -->|"DeltaChannel deltas plus snapshots"| CP["LangGraph checkpointer, per thread"]
-    S -->|"StateBackend files in state"| CP
-    S -->|"store or filesystem route"| DUR["Durable store or disk, across threads"]
-    CP -->|"resume, interrupts, replay"| Run
+    Input["Agent input"] --> Graph["LangGraph graph state"]
+    Graph --> Checkpoint["Checkpointer per thread"]
+    Checkpoint --> Resume["Resume and interrupts"]
+    Graph --> StateFiles["StateBackend files"]
+    StateFiles --> Checkpoint
+    Graph --> Durable["Store or filesystem backend route"]
 ```
 
-The two persistence axes: checkpoints capture thread state, while store or disk
-routes make backend files durable beyond a single thread.
+Checkpoint durability and backend file durability are independent axes.
 
-## Practical implications
+## DeepAgentState and message reduction
 
-- Long threads stay affordable to checkpoint because `messages` (and state-backed
-  `files`) persist as deltas with periodic snapshots, not full copies per step.
-- Message IDs are stable across resumes; do not rely on the reducer to mint IDs.
-- If you add application state, prefer middleware-owned state for
-  middleware-local fields and a custom `state_schema` (subclassing
-  `DeepAgentState`) for shared graph-level fields — and remember `messages` must
-  keep the `DeltaChannel` reducer.
-- If subagents unexpectedly see or overwrite internal fields, check that the
-  fields are annotated `PrivateStateAttr` and that
-  `private_state_field_names` could resolve the schema (no `TYPE_CHECKING`-only
-  names in the annotation).
-- Files in the default `StateBackend` disappear when you start a new thread; use a
-  store- or filesystem-backed route for cross-thread durability.
+`DeepAgentState` subclasses LangChain's `AgentState` and only overrides `messages`. It assigns that field `DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)`, replacing the normal full-list accumulation behavior. It is the default `state_schema` passed to `create_agent` unless the caller supplies one.
+
+`DeltaChannel` stores writes as deltas and periodically writes a full snapshot (every 50 pregel steps). Thus a long message history grows linearly in persisted volume rather than repeatedly storing the full growing list, while replay needs only the latest snapshot plus the bounded tail of writes. `FilesystemState.files` uses the same channel and frequency.
+
+The custom schema contract is type-level only: a caller should subclass `DeepAgentState` so the message reducer remains present, but `TypedDict` prevents runtime `issubclass` validation. A schema that replaces `messages` without the channel can lose this storage behavior.
+
+### Reducer invariants
+
+`_messages_delta_reducer` accepts batched writes and reconstructs a message list:
+
+- It flattens list writes, treats other inputs as one message-like value, and coerces raw dictionaries, strings, and tuples with `convert_to_messages`.
+- Existing IDs index the accumulated list: a repeated ID replaces in place, a new ID appends, and an `id=None` value appends without deduplication.
+- `RemoveMessage` tombstones an identified message. The `REMOVE_ALL_MESSAGES` sentinel clears current state and ignores every write preceding the last sentinel in the batch.
+- Replay may begin with `state=None`; the reducer treats this as an empty list, which supports old threads whose first checkpoint did not seed `messages: []`.
+
+Message IDs are not minted in this reducer. LangGraph's `ensure_message_ids` assigns stable IDs before serialization, avoiding new IDs during replay. Reducer tests cover stable, non-`None` IDs returned by `get_state()` for both object and over-the-wire dictionary input, including resumed threads. The local reducer intentionally does not convert `BaseMessageChunk`: Deep Agents writes full `AIMessage` objects to state and streams on the output-event path.
+
+```mermaid
+flowchart TD
+    Writes["Message writes"] --> Coerce["Flatten lists and coerce message-likes"]
+    Coerce --> Clear{"Clear-all sentinel"}
+    Clear -->|"yes"| Reset["Discard prior state and earlier writes"]
+    Clear -->|"no"| Index["Index existing messages by ID"]
+    Reset --> Index
+    Index --> Apply["Append update or tombstone by ID"]
+    Apply --> Result["Reduced message list"]
+```
+
+The reducer reconstructs channel value; `DeltaChannel` decides whether a checkpoint carries a snapshot or only writes.
+
+## Middleware state, custom schemas, and privacy
+
+The final graph schema combines a caller-provided base `state_schema` with every assembled middleware's `state_schema`. Middleware-owned fields are appropriate for data meaningful only to that middleware's hooks and tools; use a custom schema for an application field shared across graph components.
+
+A declarative `SubAgent` is compiled with the parent's custom base schema, so it can declare the same custom fields. A precompiled `CompiledSubAgent` and a remote `AsyncSubAgent` are owned elsewhere and do not inherit it.
+
+`PrivateStateAttr` marks middleware channels that must not cross the ordinary subagent boundary. `private_state_field_names` resolves every participating schema's annotations, and `create_deep_agent` supplies the resulting key set to `SubAgentMiddleware`. Annotation resolution is operationally important: if a schema refers to a name available only under `TYPE_CHECKING`, `get_type_hints` fails, the schema is skipped with a warning, and none of that schema's private fields are protected.
+
+### Handoff is isolation, not checkpoint sharing
+
+For the default `mode="handoff"`, the `task` tool builds a fresh subagent input. It removes `messages`, `todos`, `structured_response`, the fork marker, and all private keys, then supplies exactly one `HumanMessage` containing the task description. On return, it removes the same excluded/private keys from the subagent result, requires a `messages` key, merges only allowed state updates, and returns one `ToolMessage` based on structured output or the last non-empty AI response. The parent sees neither intermediate work nor the subagent's message history.
+
+`mode="fork"` is the explicit exception and is experimental. A declarative fork gets the parent's effective conversation and state, including private keys, plus a marker and a task preamble; its prompt-producing middleware is mirrored. A forked compiled runnable is treated more conservatively because it is opaque: private keys remain excluded. Forks cannot define `skills`, and the fork marker prevents recursive use of `task`.
+
+```mermaid
+sequenceDiagram
+    participant Parent
+    participant Task as task tool
+    participant Child as subagent
+    Parent->>Task: state and task description
+    Task->>Task: filter excluded and private state
+    Task->>Child: fresh handoff state
+    Child-->>Task: result state
+    Task->>Task: filter result and choose final response
+    Task-->>Parent: allowed updates and one ToolMessage
+```
+
+Normal handoff state transfer is filtered input/output projection, not shared mutable state or parent-checkpoint continuation.
+
+## dcode sessions: SQLite checkpoints and resume state
+
+In local dcode mode, `get_checkpointer()` opens the hardened global `sessions.db` and yields `AsyncSqliteSaver`; startup calls `setup()` before constructing the CLI graph. Thread IDs generated for new sessions are UUID7 strings, although the browser tolerates legacy short IDs. `ThreadInfo` is derived from checkpoint metadata and can include the agent name, created/updated time, Git branch, working directory, first prompt, message count, and latest checkpoint ID. `list_threads` supports agent, branch, and exact-`cwd` filters and orders by update or creation time.
+
+`ResumeStateMiddleware` contributes private checkpoint channels used to rehydrate dcode without replaying or re-tokenizing history. After a successful model turn it records context-token usage from the latest `AIMessage`; configurable-model middleware writes the effective model and parameters and cache-request facts on the successful model checkpoint. Goal/rubric state has distinct ownership: accepted goal and sticky rubric choices can be written by the TUI using `aupdate_state`, while proposed criteria and agent-driven goal status are graph-written. Reading a particular checkpoint returns the values as they were at that checkpoint, not thread-wide aggregates.
+
+When opening a thread, the TUI obtains `aget_state` by `thread_id`; remote mode first idempotently registers the thread so the remote graph can reconstruct delta channels. It projects serialized messages for display and reads the private resume values. This is why resume facts are channels rather than a separate dcode side database.
+
+### Listing and deletion caveats
+
+A delta-channel checkpoint between snapshots may omit an inline `messages` value. To populate a visible message count, dcode reads the latest checkpoint when it has an inline list; otherwise it replays root-namespace `messages` writes in checkpoint/task/index order. It intentionally excludes subgraph writes under the same thread ID. Cached counts and initial prompts are keyed by the latest checkpoint ID (or update time fallback), so a new checkpoint invalidates them.
+
+Deleting a local thread deletes its `checkpoints` rows and `writes` rows, clears relevant in-memory entries, and then makes a best-effort cleanup of its per-thread offloaded conversation-history archive. The Boolean result reports checkpoint deletion only: failure to remove the archive is logged and does not make deletion fail. Therefore session deletion is authoritative for graph resume state but archive cleanup is a separate, best-effort lifecycle concern.
+
+## Safe extension and operations checklist
+
+- Pass a checkpointer when an SDK graph must resume; select a backend route separately for files that must survive across threads.
+- Subclass `DeepAgentState` for custom graph state and preserve its `messages` annotation. Prefer middleware state for middleware-local behavior.
+- Mark internal middleware data with `PrivateStateAttr`, ensure every annotation name imports at runtime, and test both task input and result filtering.
+- Do not treat normal subagents as resumable children of the parent. Send required context in the task description; choose experimental `fork` only when its inherited-state semantics are intended.
+- For dcode thread UI or tooling, tolerate a missing inline message snapshot and use the writes-aware reconstruction path rather than interpreting it as an empty conversation.
+- Treat a successful thread deletion as deletion of checkpoint state; monitor/log any offloaded-history cleanup failure when retention matters.

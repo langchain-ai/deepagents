@@ -13,6 +13,7 @@ const {
   isSelfChat,
   normalizeId,
   normalizeMessage,
+  quotedMessageContext,
   serializedId,
   widString,
 } = require("../../../deepagents_talon/channels/whatsapp_bridge/id_compat");
@@ -25,6 +26,45 @@ test("reads legacy, renamed, and component WhatsApp IDs", () => {
     serializedId({ fromMe: true, remote: { user: "123", server: "lid" }, id: "ABC" }),
     "true_123@lid_ABC",
   );
+});
+
+test("classifies messages without quoted context", async () => {
+  assert.deepEqual(await quotedMessageContext({ hasQuotedMsg: false }), {
+    participant: null,
+    messageId: null,
+    status: "not_reply",
+  });
+});
+
+test("resolves quoted message context", async () => {
+  const context = await quotedMessageContext({
+    hasQuotedMsg: true,
+    getQuotedMessage: async () => ({
+      author: { user: "quoted-user", server: "lid" },
+      id: { fromMe: false, remote: "chat@lid", id: "ABC" },
+    }),
+  });
+
+  assert.deepEqual(context, {
+    participant: "quoted-user@lid",
+    messageId: "false_chat@lid_ABC",
+    status: "resolved",
+  });
+});
+
+test("reports quoted message lookup failures", async () => {
+  const context = await quotedMessageContext({
+    hasQuotedMsg: true,
+    getQuotedMessage: async () => {
+      throw new Error("private provider failure");
+    },
+  });
+
+  assert.deepEqual(context, {
+    participant: null,
+    messageId: null,
+    status: "lookup_failed",
+  });
 });
 
 test("collects the paired account phone and LID aliases", () => {

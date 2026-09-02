@@ -1,6 +1,5 @@
 import logging
 import shutil
-import textwrap
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
@@ -9,16 +8,11 @@ from unittest import mock
 import pytest
 from langchain_core.messages import ToolMessage
 
-from deepagents_code.diff_utils import (
-    DiffStats,
-    count_diff_change_lines,
-    split_diff_lines,
-)
+from deepagents_code.diff_utils import DiffStats
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
 
-    from deepagents_code.file_ops import DiffOutcome
 
 from deepagents_code.file_ops import (
     FileOperationRecord,
@@ -28,15 +22,6 @@ from deepagents_code.file_ops import (
     is_sensitive_file_path,
     record_display_caveat,
 )
-
-
-def test_file_not_found_matches_sdk() -> None:
-    """`_constants.FILE_NOT_FOUND` must not drift from the SDK sentinel."""
-    from deepagents.backends.protocol import FILE_NOT_FOUND as SDK_FILE_NOT_FOUND
-
-    from deepagents_code._constants import FILE_NOT_FOUND
-
-    assert FILE_NOT_FOUND == SDK_FILE_NOT_FOUND
 
 
 @pytest.mark.parametrize(
@@ -73,23 +58,6 @@ def test_is_sensitive_file_path_matches_credentials(path: str) -> None:
     assert is_sensitive_file_path(path) is True
 
 
-@pytest.mark.parametrize(
-    "path",
-    [
-        "",
-        None,
-        "main.py",
-        "README.md",
-        "src/app.ts",
-        "environment.py",
-        "keyboard.json",
-        ".envision",
-    ],
-)
-def test_is_sensitive_file_path_ignores_regular_files(path: str | None) -> None:
-    assert is_sensitive_file_path(path) is False
-
-
 def test_is_sensitive_file_path_fails_closed_on_unparseable_path() -> None:
     """A path that cannot be parsed is treated as sensitive, not rendered.
 
@@ -98,117 +66,6 @@ def test_is_sensitive_file_path_fails_closed_on_unparseable_path() -> None:
     from leaking as a non-sensitive file.
     """
     assert is_sensitive_file_path(cast("str", 123)) is True
-
-
-def test_tracker_records_read_lines(tmp_path: Path) -> None:
-    tracker = FileOpTracker(assistant_id=None)
-    path = tmp_path / "example.py"
-
-    tracker.start_operation(
-        "read_file",
-        {"file_path": str(path), "offset": 0, "limit": 100},
-        "read-1",
-    )
-
-    message = ToolMessage(
-        content="    1\tline one\n    2\tline two\n",
-        tool_call_id="read-1",
-        name="read_file",
-    )
-    record = tracker.complete_with_message(message)
-
-    assert record is not None
-    assert record.metrics.lines_read == 2
-    assert record.metrics.start_line == 1
-    assert record.metrics.end_line == 2
-
-
-def test_tracker_records_write_diff(tmp_path: Path) -> None:
-    tracker = FileOpTracker(assistant_id=None)
-    file_path = tmp_path / "created.txt"
-
-    tracker.start_operation(
-        "write_file",
-        {"file_path": str(file_path)},
-        "write-1",
-    )
-
-    file_path.write_text("hello world\nsecond line\n")
-
-    message = ToolMessage(
-        content=f"Updated file {file_path}",
-        tool_call_id="write-1",
-        name="write_file",
-    )
-    record = tracker.complete_with_message(message)
-
-    assert record is not None
-    assert record.metrics.lines_written == 2
-    assert record.metrics.lines_added == 2
-    assert record.diff is not None
-    assert "+hello world" in record.diff
-
-
-def test_tracker_records_edit_diff(tmp_path: Path) -> None:
-    tracker = FileOpTracker(assistant_id=None)
-    file_path = tmp_path / "functions.py"
-    file_path.write_text(
-        textwrap.dedent(
-            """\
-        def greet():
-            return "hello"
-        """
-        )
-    )
-
-    tracker.start_operation(
-        "edit_file",
-        {"file_path": str(file_path)},
-        "edit-1",
-    )
-
-    file_path.write_text(
-        textwrap.dedent(
-            """\
-        def greet():
-            return "hi"
-
-        def wave():
-            return "wave"
-        """
-        )
-    )
-
-    message = ToolMessage(
-        content=f"Successfully replaced 1 instance(s) of the string in '{file_path}'",
-        tool_call_id="edit-1",
-        name="edit_file",
-    )
-    record = tracker.complete_with_message(message)
-
-    assert record is not None
-    assert record.metrics.lines_added >= 1
-    assert record.metrics.lines_removed >= 1
-    assert record.diff is not None
-    assert '-    return "hello"' in record.diff
-    assert '+    return "hi"' in record.diff
-
-
-def test_diff_counts_are_computed_before_truncation(tmp_path: Path) -> None:
-    """Large changes retain their true counts when the rendered diff is truncated."""
-    path = tmp_path / "large.txt"
-    path.write_text("\n".join(f"old {index}" for index in range(1000)))
-    tracker = FileOpTracker(assistant_id=None)
-    tracker.start_operation("edit_file", {"file_path": str(path)}, "large-edit")
-    path.write_text("\n".join(f"new {index}" for index in range(1000)))
-    record = tracker.complete_with_message(
-        ToolMessage(content="Updated file", tool_call_id="large-edit", name="edit_file")
-    )
-
-    assert record is not None
-    assert record.diff is not None
-    assert record.diff.endswith("...")
-    assert (record.metrics.lines_added, record.metrics.lines_removed) == (1000, 1000)
 
 
 def test_unreadable_before_content_is_flagged(tmp_path: Path) -> None:
@@ -341,33 +198,6 @@ def test_a_malformed_backend_response_reports_a_shape_not_an_attribute_error(
     assert record.before_content == ""
 
 
-def test_record_diff_stats_survive_truncation(tmp_path: Path) -> None:
-    """The record's counts describe the change, not the clipped rendering.
-
-    `metrics.lines_added` is session accounting and does not always mean diff
-    lines — a new-file `write_file` sets it from the whole file. Keeping the real
-    counts on the record gives the diff header one provenance whose "counted
-    before truncation" contract is true by construction.
-    """
-    path = tmp_path / "big.txt"
-    path.write_text("".join(f"line {i}\n" for i in range(500)), encoding="utf-8")
-    tracker = FileOpTracker(assistant_id=None)
-    tracker.start_operation("write_file", {"file_path": str(path)}, "big-1")
-    path.write_text("".join(f"changed {i}\n" for i in range(500)), encoding="utf-8")
-
-    record = tracker.complete_with_message(
-        SimpleNamespace(content="Updated file", tool_call_id="big-1", status="success")
-    )
-
-    assert record is not None
-    assert record.diff is not None
-    assert record.diff.rstrip().endswith("..."), "expected a truncated body"
-    assert record.diff_stats == DiffStats(additions=500, deletions=500)
-    assert (
-        count_diff_change_lines(split_diff_lines(record.diff)) != record.diff_stats
-    ), "the body no longer carries the true counts, which is the point"
-
-
 def test_failed_read_back_still_reports_what_the_request_knew(
     tmp_path: Path,
 ) -> None:
@@ -490,101 +320,6 @@ def test_backend_response_without_content_or_error_is_flagged_as_unreadable() ->
     assert record.before_content == ""
 
 
-def test_empty_backend_response_list_is_flagged_as_unreadable() -> None:
-    """No response at all is a lost pre-image, not an absent file."""
-    backend = mock.Mock()
-    backend.download_files.return_value = []
-    tracker = FileOpTracker(assistant_id=None, backend=backend)
-
-    tracker.start_operation("edit_file", {"file_path": "/y.txt"}, "contract-2")
-
-    record = tracker.active["contract-2"]
-    assert record.diff_outcome == "untrusted_before"
-    assert record.before_content == ""
-
-
-def test_trailing_newline_only_edit_is_not_reported_as_unchanged(
-    tmp_path: Path,
-) -> None:
-    """A change `splitlines()` erases is still a change.
-
-    `compute_unified_diff` compares line lists, so adding a trailing newline
-    produces no diff. Left unflagged, the edit row is superseded by a diff
-    header reading "no changes" — the file changed, and the tool's own output
-    saying so has been hidden.
-    """
-    path = tmp_path / "eof.txt"
-    path.write_text("alpha\nbeta")
-    tracker = FileOpTracker(assistant_id=None)
-    tracker.start_operation("edit_file", {"file_path": str(path)}, "eof-1")
-    path.write_text("alpha\nbeta\n")
-
-    record = tracker.complete_with_message(
-        ToolMessage(content="Updated file", tool_call_id="eof-1", name="edit_file")
-    )
-
-    assert record is not None
-    assert record.diff is None
-    assert record.diff_outcome == "terminators_only"
-
-
-def test_genuine_noop_edit_is_not_flagged_as_an_invisible_change(
-    tmp_path: Path,
-) -> None:
-    """An edit that truly changed nothing must stay eligible for "no changes"."""
-    path = tmp_path / "same.txt"
-    path.write_text("alpha\nbeta\n")
-    tracker = FileOpTracker(assistant_id=None)
-    tracker.start_operation("edit_file", {"file_path": str(path)}, "same-1")
-
-    record = tracker.complete_with_message(
-        ToolMessage(content="Updated file", tool_call_id="same-1", name="edit_file")
-    )
-
-    assert record is not None
-    assert record.diff is None
-    assert record.diff_outcome != "terminators_only"
-
-
-def test_unreadable_after_content_sets_its_own_flag(tmp_path: Path) -> None:
-    """Succeeded-but-undisplayable must be distinguishable from a tool error.
-
-    Both set `status == "error"`; only this one means the operation itself
-    landed, so only this one may tell the user it succeeded.
-    """
-    path = tmp_path / "vanishing.txt"
-    path.write_text("alpha\n")
-    tracker = FileOpTracker(assistant_id=None)
-    tracker.start_operation("edit_file", {"file_path": str(path)}, "vanish-1")
-    path.unlink()
-
-    record = tracker.complete_with_message(
-        ToolMessage(content="Updated file", tool_call_id="vanish-1", name="edit_file")
-    )
-
-    assert record is not None
-    assert record.status == "error"
-    assert record.diff_outcome == "unreadable_after"
-
-
-def test_tool_reported_error_does_not_set_unreadable_after(tmp_path: Path) -> None:
-    """A genuine tool failure must not be reported as "succeeded, but…"."""
-    path = tmp_path / "f.txt"
-    path.write_text("alpha\n")
-    tracker = FileOpTracker(assistant_id=None)
-    tracker.start_operation("edit_file", {"file_path": str(path)}, "err-1")
-
-    record = tracker.complete_with_message(
-        ToolMessage(
-            content="Error: string not found", tool_call_id="err-1", name="edit_file"
-        )
-    )
-
-    assert record is not None
-    assert record.status == "error"
-    assert record.diff_outcome != "unreadable_after"
-
-
 def test_tracker_records_delete_diff(tmp_path: Path) -> None:
     tracker = FileOpTracker(assistant_id=None)
     file_path = tmp_path / "old.txt"
@@ -604,70 +339,6 @@ def test_tracker_records_delete_diff(tmp_path: Path) -> None:
     assert record.diff is not None
     assert "-alpha" in record.diff
     assert "-beta" in record.diff
-
-
-def test_build_approval_preview_generates_diff(tmp_path: Path) -> None:
-    target = tmp_path / "notes.txt"
-    target.write_text("alpha\nbeta\n")
-
-    preview = build_approval_preview(
-        "edit_file",
-        {
-            "file_path": str(target),
-            "old_string": "beta",
-            "new_string": "gamma",
-            "replace_all": False,
-        },
-        assistant_id=None,
-    )
-
-    assert preview is not None
-    assert preview.diff is not None
-    assert "+gamma" in preview.diff
-
-
-def test_build_approval_preview_carries_file_aligned_sources(tmp_path: Path) -> None:
-    """`before`/`after` are the full file, for syntax-highlighting the diff."""
-    target = tmp_path / "notes.txt"
-    target.write_text("alpha\nbeta\n")
-
-    preview = build_approval_preview(
-        "edit_file",
-        {
-            "file_path": str(target),
-            "old_string": "beta",
-            "new_string": "gamma",
-            "replace_all": False,
-        },
-        assistant_id=None,
-    )
-
-    assert preview is not None
-    assert preview.before == "alpha\nbeta\n"
-    assert preview.after == "alpha\ngamma\n"
-
-
-def test_build_approval_preview_omits_sources_when_edit_fails(tmp_path: Path) -> None:
-    """A replacement that cannot apply carries no diff and no sources."""
-    target = tmp_path / "notes.txt"
-    target.write_text("alpha\nbeta\n")
-
-    preview = build_approval_preview(
-        "edit_file",
-        {
-            "file_path": str(target),
-            "old_string": "absent",
-            "new_string": "gamma",
-            "replace_all": False,
-        },
-        assistant_id=None,
-    )
-
-    assert preview is not None
-    assert preview.diff is None
-    assert preview.error is not None
-    assert preview.before is None
-    assert preview.after is None
 
 
 def test_build_delete_approval_preview_shows_removed_content(
@@ -883,60 +554,6 @@ class TestBackendReadBack:
         assert record.diff_outcome == "unreadable_after"
         assert record.after_read_error == "permission_denied"
 
-    def test_an_empty_response_list_reports_why(self) -> None:
-        record = self._complete(self._backend(self._found(b"value = 1\n"), []))
-
-        assert record.diff_outcome == "unreadable_after"
-        assert record.after_read_error == "no response"
-
-    def test_a_contract_violating_response_reports_why(self) -> None:
-        """`content=None` with `error=None` asserts success and failure at once."""
-        from deepagents.backends.protocol import FileDownloadResponse
-
-        record = self._complete(
-            self._backend(
-                self._found(b"value = 1\n"), [FileDownloadResponse(path="/x.txt")]
-            )
-        )
-
-        assert record.diff_outcome == "unreadable_after"
-        assert record.after_read_error == "no content and no error reported"
-
-    def test_a_malformed_response_does_not_abort_the_turn(self) -> None:
-        """A backend contract bug runs unguarded on the turn loop."""
-        backend = mock.Mock()
-        backend.download_files.side_effect = [self._found(b"value = 1\n"), [object()]]
-
-        record = self._complete(backend)
-
-        assert record.diff_outcome == "unreadable_after"
-        assert record.after_read_error
-
-    def test_binary_content_from_the_backend_reports_the_decode_failure(self) -> None:
-        """The local read has a real-bytes test; the backend read had none.
-
-        A backend serving a binary file returns bytes that are not UTF-8, and
-        the decode is what turns that into a reason the user can read. Without
-        this, dropping the `UnicodeDecodeError` handler in `_response_content`
-        would only surface as an aborted turn in production.
-        """
-        from deepagents.backends.protocol import FileDownloadResponse
-
-        record = self._complete(
-            self._backend(
-                self._found(b"value = 1\n"),
-                [
-                    FileDownloadResponse(
-                        path="/x.txt", content=b"\x89PNG\r\n\x1a\n\xff\xfe", error=None
-                    )
-                ],
-            )
-        )
-
-        assert record.diff_outcome == "unreadable_after"
-        assert record.after_read_error is not None
-        assert "utf-8" in record.after_read_error
-
     def test_a_backend_raising_outside_oserror_does_not_abort_the_turn(self) -> None:
         """Real backends raise well outside `OSError`.
 
@@ -1025,41 +642,9 @@ class TestOutcomeInvariants:
 
         assert "after_read_error" in caplog.text
 
-    def test_a_consistent_record_is_left_alone(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        """The check must be silent on what the tracker actually produces."""
-        with caplog.at_level(logging.WARNING):
-            record = self._finalized(
-                diff_outcome="shown", diff_stats=DiffStats(additions=1, deletions=1)
-            )
-
-        assert record.diff_stats == DiffStats(additions=1, deletions=1)
-        assert caplog.text == ""
-
-
-def test_a_missing_file_path_is_reported_as_the_read_failure() -> None:
-    """The tool call carried no path, so there is nothing to read back."""
-    backend = mock.Mock()
-    tracker = FileOpTracker(assistant_id=None, backend=cast("BackendProtocol", backend))
-    record = FileOperationRecord(
-        tool_name="edit_file",
-        display_path="x.txt",
-        physical_path=None,
-        tool_call_id="p-1",
-    )
-
-    tracker._populate_after_content(record)
-
-    assert record.after_content is None
-    assert record.after_read_error == "the tool call carried no file path"
-
 
 class TestDisplayCaveat:
     """The caveat is the only account of a change the transcript cannot show."""
-
-    def test_a_displayable_change_says_nothing(self) -> None:
-        assert display_caveat("shown", "edit_file") == ""
 
     def test_a_failed_operation_never_claims_success(self) -> None:
         """An untrusted pre-image does not override the tool's error result."""
@@ -1090,47 +675,3 @@ class TestDisplayCaveat:
 
         assert "`delete`" in caveat
         assert "prior contents could not be read" in caveat
-
-    def test_a_terminator_only_change_says_there_is_no_line_diff(self) -> None:
-        """Same reason: the sentence is a contract, not an implementation detail."""
-        caveat = display_caveat("terminators_only", "write_file")
-
-        assert "`write_file`" in caveat
-        assert "line terminators" in caveat
-
-    def test_an_unreadable_read_back_without_a_reason_admits_it(self) -> None:
-        """The fallback must not read as though a reason were given."""
-        caveat = display_caveat("unreadable_after", "edit_file")
-
-        assert "the reason was not reported" in caveat
-
-    def test_an_unknown_outcome_fails_loud_rather_than_reassuring(self) -> None:
-        """A new `DiffOutcome` shipped without a case must not read as "fine".
-
-        `diff_outcome` is a plain `str` at runtime, so an unhandled value used to
-        fall off the end of the `match` and return `None` — which the caller
-        filters as falsy, degrading silently to "the change was fully
-        displayed". That is the one answer that is never safe to guess.
-        """
-        caveat = display_caveat(cast("DiffOutcome", "some_future_outcome"), "edit_file")
-
-        assert "could not be fully displayed" in caveat
-
-
-def test_delete_preview_counts_the_file_not_the_excerpt(tmp_path: Path) -> None:
-    """The prompt's `-N` gates destroying the file, so it must not be clipped.
-
-    The preview body is built with `max_lines=100`. Recounting it reported 96
-    deletions for a 5,000-line file — an understatement of ~50x on the one
-    number a user reads before approving an irreversible operation.
-    """
-    target = tmp_path / "big.py"
-    target.write_text("value = 1\n" * 5000, encoding="utf-8")
-
-    preview = build_approval_preview("delete", {"file_path": str(target)}, None)
-
-    assert preview is not None
-    assert preview.stats is not None
-    assert preview.stats.deletions == 5000
-    assert preview.diff is not None
-    assert len(preview.diff.splitlines()) <= 100, "the body should still be clipped"

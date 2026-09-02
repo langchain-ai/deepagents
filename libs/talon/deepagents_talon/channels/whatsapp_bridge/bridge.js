@@ -5,27 +5,47 @@ const http = require("http");
 const path = require("path");
 const { Client, LocalAuth, MessageMedia } = require("whatsapp-web.js");
 const qrcode = require("qrcode-terminal");
+const {
+  AckTracker,
+  SentBodyReservations,
+  contactIdentityIds,
+  createCompatibleClientClass,
+  isSelfChat,
+  normalizeMessage,
+  serializedId,
+  widString,
+} = require("./id_compat");
 
 const host = process.env.WHATSAPP_BRIDGE_HOST || "127.0.0.1";
 const port = Number(process.env.WHATSAPP_BRIDGE_PORT || "3000");
 const sessionDir = path.resolve(process.env.WHATSAPP_SESSION_DIR || path.join(process.cwd(), ".whatsapp"));
 const mediaDir = path.resolve(process.env.WHATSAPP_MEDIA_DIR || path.join(sessionDir, "..", "media"));
-const botHeader = process.env.WHATSAPP_BOT_HEADER || "deepagents bot";
 const bridgeToken = process.env.WHATSAPP_BRIDGE_TOKEN || "";
-const maxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES) || (64 * 1024 * 1024);
+const maxMediaBytes = Number(process.env.WHATSAPP_MAX_MEDIA_BYTES) || 64 * 1024 * 1024;
 const webVersionCacheUrl =
   process.env.WHATSAPP_WEB_VERSION_CACHE_URL ||
   "https://raw.githubusercontent.com/wppconnect-team/wa-version/main/html/2.3000.1026029003.html";
 
+const ACK_TIMEOUT_MS = 60 * 1000;
 const MAX_CACHED_SENT_MESSAGES = 200;
-const SENT_BODY_TTL_MS = 5 * 60 * 1000;
 
 let status = "disconnected";
 let botId = null;
+let botIds = [];
+let bridgeMediaSends = 0;
 const queue = [];
 const sentMessageIds = new Set();
 const sentMessages = new Map();
-const recentSentBodies = new Map();
+const sentBodies = new SentBodyReservations();
+const ackTracker = new AckTracker({
+  timeoutMs: ACK_TIMEOUT_MS,
+  onAck: (ack, tracked) => {
+    console.log(`[bridge] Outbound message acknowledgement; ack=${ack} tracked=${tracked}`);
+  },
+  onTimeout: () => {
+    console.error("[bridge] Outbound message acknowledgement timed out");
+  },
+});
 
 process.on("unhandledRejection", (reason) => {
   const message = reason && reason.message ? reason.message : reason;
@@ -43,7 +63,7 @@ cleanStaleLocks(sessionDir);
 
 const chromePath = process.env.CHROME_PATH || process.env.WHATSAPP_CHROME_PATH || findChrome();
 if (chromePath) {
-  console.log(`Using Chrome at: ${chromePath}`);
+  console.log("Using configured Chrome executable");
 } else {
   console.log("No system Chrome found; using Puppeteer's bundled browser if available");
 }
@@ -56,7 +76,8 @@ if (chromePath) {
   puppeteer.executablePath = chromePath;
 }
 
-const client = new Client({
+const CompatibleClient = createCompatibleClientClass(Client);
+const client = new CompatibleClient({
   authStrategy: new LocalAuth({
     dataPath: sessionDir,
   }),
@@ -74,9 +95,7 @@ client.on("qr", (qr) => {
 });
 
 client.on("ready", () => {
-  status = "connected";
-  botId = client.info && client.info.wid ? client.info.wid._serialized : null;
-  console.log(`WhatsApp connected as ${botId || "unknown"}`);
+  void onClientReady();
 });
 
 client.on("disconnected", (reason) => {
@@ -89,40 +108,107 @@ client.on("auth_failure", (message) => {
   console.error(`WhatsApp auth failure: ${message || "unknown error"}`);
 });
 
-client.on("message_create", (message) => {
-  void enqueueMessage(message);
+client.on("compatibility_error", (error) => {
+  status = "compatibility_error";
+  console.error(`[bridge] WhatsApp compatibility setup failed: ${error.message || error}`);
 });
 
-async function enqueueMessage(message) {
-  if (message.from === "status@broadcast") {
+client.on("message_create", (message) => {
+  if (message.fromMe === true) {
+    void enqueueMessage(message, true);
+  }
+});
+
+client.on("message", (message) => {
+  void enqueueMessage(message, false);
+});
+
+client.on("media_uploaded", (message) => {
+  if (bridgeMediaSends === 0) {
+    void enqueueMessage(message, true);
+  }
+});
+
+client.on("message_ack", (message, ack) => {
+  recordMessageAck(message, ack);
+});
+
+async function onClientReady() {
+  try {
+    const compatibility = client.idCompatibility;
+    if (!compatibility || compatibility.compatible !== true) {
+      throw new Error("WhatsApp message key compatibility is not active");
+    }
+    const webVersion = safeVersion(await client.getWWebVersion());
+    botIds = await resolveBotIds();
+    botId = botIds[0] || null;
+    status = "connected";
+    console.log(
+      `[bridge] WhatsApp connected; webVersion=${webVersion} idCompatibilityInstalled=${compatibility.installed === true} botIdAvailable=${Boolean(botId)} botIdAliasAvailable=${botIds.length > 1}`,
+    );
+  } catch (error) {
+    status = "compatibility_error";
+    console.error(`[bridge] WhatsApp compatibility setup failed: ${error.message || error}`);
+  }
+}
+
+async function resolveBotIds() {
+  const initialIds = contactIdentityIds(client.info && client.info.wid);
+  if (initialIds.length === 0 || typeof client.getContactLidAndPhone !== "function") {
+    return initialIds;
+  }
+  try {
+    const mappings = await client.getContactLidAndPhone(initialIds);
+    return contactIdentityIds(initialIds[0], mappings);
+  } catch (_error) {
+    console.log("[bridge] Paired-account ID aliases unavailable; using primary ID only");
+    return initialIds;
+  }
+}
+
+async function enqueueMessage(message, fromSelf) {
+  normalizeMessage(message);
+  const data = message && message._data ? message._data : {};
+  const messageFrom = widString(message.from) || widString(data.from);
+  if (messageFrom === "status@broadcast") {
     return;
   }
-  const fromSelf = isSelfMessage(message);
   if (fromSelf && isBridgeSentMessage(message)) {
     return;
   }
 
-  const chat = await safeGetChat(message);
-  const contact = await safeGetContact(message);
-  const messageId = serializedId(message.id);
-  const chatId = serializedId(chat && chat.id) || (fromSelf ? message.to : message.from);
+  const messageId = serializedId(message.id) || serializedId(data.id);
+  const messageTo = widString(message.to) || widString(data.to);
+  const remoteId = widString(message.id && message.id.remote) || widString(data.id && data.id.remote);
+  const chatId = (fromSelf ? messageTo : messageFrom) || remoteId;
   if (!messageId || !chatId) {
     console.error("Skipping WhatsApp message without a message id or chat id");
     return;
   }
+  const selfChat = isSelfChat(fromSelf, chatId, botIds);
+  if (fromSelf && !selfChat) {
+    console.log("[bridge] Ignoring paired-account message outside the self-chat");
+    return;
+  }
 
+  const [chat, contact] = await Promise.all([safeGetChat(message), safeGetContact(message)]);
   const media = await downloadMessageMedia(message);
   const mediaType = classifyMedia(message, media);
   if (message.hasMedia && media.length === 0) {
     console.log(
-      `[bridge] Message ${messageId} reported media but no attachment was downloaded; type=${message.type || "unknown"} mediaType=${mediaType}`,
+      `[bridge] Message media unavailable; type=${message.type || "unknown"} mediaType=${mediaType}`,
     );
   }
-  const senderId = message.author || (fromSelf && botId ? botId : message.from);
+  const senderId = widString(message.author) || (fromSelf && botId ? botId : messageFrom);
+  const senderName =
+    (contact && (contact.pushname || contact.name || contact.shortName)) ||
+    data.notifyName ||
+    data.senderName ||
+    senderId ||
+    null;
+  const chatName = (chat && chat.name) || data.chatName || chatId;
   const isGroup =
-    chat && typeof chat.isGroup === "boolean"
-      ? chat.isGroup
-      : typeof chatId === "string" && chatId.endsWith("@g.us");
+    chat && typeof chat.isGroup === "boolean" ? chat.isGroup : chatId.endsWith("@g.us");
 
   const entry = {
     text: message.body || "",
@@ -133,19 +219,17 @@ async function enqueueMessage(message) {
     mediaType,
     chat_id: chatId,
     chatId,
-    chat_id_from: message.from,
-    chatIdFrom: message.from,
-    chat_name: (chat && chat.name) || chatId,
-    chatName: (chat && chat.name) || chatId,
+    chat_id_from: messageFrom,
+    chatIdFrom: messageFrom,
+    chat_name: chatName,
+    chatName,
     chat_type: isGroup ? "group" : "direct",
     chatType: isGroup ? "group" : "direct",
     isGroup,
     user_id: senderId || null,
     senderId: senderId || null,
-    user_name:
-      (contact && (contact.pushname || contact.name || contact.shortName)) || senderId || null,
-    senderName:
-      (contact && (contact.pushname || contact.name || contact.shortName)) || senderId || null,
+    user_name: senderName,
+    senderName,
     message_id: messageId,
     messageId,
     has_media: Boolean(message.hasMedia || media.length > 0),
@@ -161,20 +245,24 @@ async function enqueueMessage(message) {
     media_file_names: media.map((item) => item.fileName),
     from_self: fromSelf,
     fromSelf,
+    self_chat: selfChat,
+    selfChat,
     mentionedIds: normalizeIds(message.mentionedIds || []),
-    botIds: botId ? [botId] : [],
+    botIds,
     quotedParticipant: await quotedParticipant(message),
     raw_message: {
-      from: message.from,
-      to: message.to,
-      author: message.author || null,
-      fromMe: Boolean(message.fromMe),
-      idFromMe: Boolean(message.id && message.id.fromMe),
+      from: messageFrom,
+      to: messageTo,
+      author: widString(message.author),
+      fromMe: message.fromMe === true,
+      idFromMe: message.id && message.id.fromMe === true,
       timestamp: message.timestamp || null,
     },
   };
 
-  console.log(`[bridge] Queued message ${messageId} for ${chatId}`);
+  console.log(
+    `[bridge] Queued message; fromSelf=${fromSelf} hasMedia=${entry.hasMedia} chatType=${entry.chatType}`,
+  );
   queue.push(entry);
 }
 
@@ -243,8 +331,8 @@ function findChrome() {
 async function safeGetChat(message) {
   try {
     return await message.getChat();
-  } catch (error) {
-    console.log(`[bridge] getChat failed (non-fatal): ${error.message || error}`);
+  } catch (_error) {
+    console.log("[bridge] getChat failed (non-fatal)");
     return null;
   }
 }
@@ -252,8 +340,8 @@ async function safeGetChat(message) {
 async function safeGetContact(message) {
   try {
     return await message.getContact();
-  } catch (error) {
-    console.log(`[bridge] getContact failed (non-fatal): ${error.message || error}`);
+  } catch (_error) {
+    console.log("[bridge] getContact failed (non-fatal)");
     return null;
   }
 }
@@ -279,7 +367,7 @@ async function downloadMessageMedia(message) {
     const expectedSize = messageMediaSize(message);
     if (expectedSize !== null && expectedSize > maxMediaBytes) {
       console.log(
-        `[bridge] Skipping oversized media ${messageId}: ${expectedSize} bytes exceeds ${maxMediaBytes}`,
+        `[bridge] Skipping oversized media; bytes=${expectedSize} maxBytes=${maxMediaBytes}`,
       );
       return [];
     }
@@ -293,7 +381,7 @@ async function downloadMessageMedia(message) {
     const size = decodedBase64Size(media.data);
     if (size > maxMediaBytes) {
       console.log(
-        `[bridge] Skipping oversized media ${messageId}: ${size} bytes exceeds ${maxMediaBytes}`,
+        `[bridge] Skipping oversized media; bytes=${size} maxBytes=${maxMediaBytes}`,
       );
       return [];
     }
@@ -368,50 +456,44 @@ function decodedBase64Size(value) {
   return Math.floor((data.length * 3) / 4) - padding;
 }
 
-function serializedId(value) {
-  return value && value._serialized ? value._serialized : null;
-}
-
 function normalizeIds(values) {
-  return values.map((value) => (typeof value === "object" ? value._serialized : value)).filter(Boolean);
+  return values.map(widString).filter(Boolean);
 }
 
-function isSelfMessage(message) {
-  if (message.fromMe === true || (message.id && message.id.fromMe === true)) {
-    return true;
-  }
-  const id = serializedId(message.id);
-  return typeof id === "string" && id.startsWith("true_");
+function safeVersion(value) {
+  const version = String(value || "unknown").replace(/[^0-9A-Za-z._-]/g, "");
+  return version.slice(0, 64) || "unknown";
 }
 
-function rememberSentMessage(message, body) {
+function cacheSentMessage(message) {
+  normalizeMessage(message);
   const id = serializedId(message && message.id);
   if (!id) {
-    return;
+    return null;
   }
   sentMessageIds.add(id);
   sentMessages.set(id, message);
-  rememberSentBody(body);
   if (sentMessages.size > MAX_CACHED_SENT_MESSAGES) {
     const oldest = sentMessages.keys().next().value;
     sentMessages.delete(oldest);
+    sentMessageIds.delete(oldest);
+    ackTracker.forget(oldest);
   }
+  return id;
 }
 
-function rememberSentBody(body) {
-  if (!body) {
-    return;
+function rememberSentMessage(message) {
+  const id = cacheSentMessage(message);
+  if (!id) {
+    return null;
   }
-  const key = String(body);
-  recentSentBodies.set(key, (recentSentBodies.get(key) || 0) + 1);
-  setTimeout(() => {
-    const count = recentSentBodies.get(key) || 0;
-    if (count <= 1) {
-      recentSentBodies.delete(key);
-    } else {
-      recentSentBodies.set(key, count - 1);
-    }
-  }, SENT_BODY_TTL_MS).unref();
+  ackTracker.register(id, message.ack);
+  return id;
+}
+
+function recordMessageAck(message, ack) {
+  normalizeMessage(message);
+  ackTracker.record(serializedId(message && message.id), ack);
 }
 
 function isBridgeSentMessage(message) {
@@ -419,11 +501,25 @@ function isBridgeSentMessage(message) {
   if (id && sentMessageIds.has(id)) {
     return true;
   }
-  const body = message.body || "";
-  if (body && recentSentBodies.has(body)) {
-    return true;
+  return sentBodies.has(message.body || "");
+}
+
+async function withSentBodyReservation(body, operation) {
+  const release = sentBodies.reserve(body);
+  try {
+    return await operation();
+  } finally {
+    release();
   }
-  return Boolean(body && body.startsWith(`*${botHeader}*`));
+}
+
+async function withBridgeMediaSend(operation) {
+  bridgeMediaSends += 1;
+  try {
+    return await operation();
+  } finally {
+    bridgeMediaSends -= 1;
+  }
 }
 
 function readJson(req) {
@@ -487,6 +583,11 @@ async function handle(req, res) {
       return;
     }
 
+    if (req.method === "POST" && status !== "connected") {
+      sendJson(res, 503, { success: false, error: "WhatsApp bridge is not connected" });
+      return;
+    }
+
     if (req.method === "POST" && req.url === "/send") {
       const body = await readJson(req);
       const chatId = body.chat_id || body.chatId;
@@ -495,12 +596,16 @@ async function handle(req, res) {
         sendJson(res, 400, { success: false, error: "chat_id and text required" });
         return;
       }
-      rememberSentBody(text);
-      const sent = await client.sendMessage(chatId, text, {
-        quotedMessageId: body.replyTo || body.reply_to || undefined,
+      const messageId = await withSentBodyReservation(text, async () => {
+        const sent = await client.sendMessage(chatId, text, {
+          quotedMessageId: body.replyTo || body.reply_to || undefined,
+        });
+        return rememberSentMessage(sent);
       });
-      rememberSentMessage(sent, text);
-      const messageId = serializedId(sent.id);
+      if (!messageId) {
+        sendJson(res, 502, { success: false, error: "WhatsApp send returned no message id" });
+        return;
+      }
       sendJson(res, 200, {
         success: true,
         message_id: messageId,
@@ -527,15 +632,19 @@ async function handle(req, res) {
         media.filename = body.fileName || body.file_name;
       }
       const caption = body.caption || undefined;
-      if (caption) {
-        rememberSentBody(caption);
+      const messageId = await withBridgeMediaSend(() =>
+        withSentBodyReservation(caption, async () => {
+          const sent = await client.sendMessage(chatId, media, {
+            caption,
+            sendMediaAsDocument: body.mediaType === "document",
+          });
+          return rememberSentMessage(sent);
+        }),
+      );
+      if (!messageId) {
+        sendJson(res, 502, { success: false, error: "WhatsApp send returned no message id" });
+        return;
       }
-      const sent = await client.sendMessage(chatId, media, {
-        caption,
-        sendMediaAsDocument: body.mediaType === "document",
-      });
-      rememberSentMessage(sent, caption || "");
-      const messageId = serializedId(sent.id);
       sendJson(res, 200, {
         success: true,
         message_id: messageId,
@@ -570,10 +679,13 @@ async function handle(req, res) {
         sendJson(res, 200, { success: false, error: "message not found" });
         return;
       }
-      rememberSentBody(content);
-      const edited = await message.edit(content);
-      rememberSentMessage(edited, content);
-      const editedId = serializedId(edited.id) || messageId;
+      normalizeMessage(message);
+      const edited = await withSentBodyReservation(content, () => message.edit(content));
+      if (!edited) {
+        sendJson(res, 200, { success: false, error: "message could not be edited" });
+        return;
+      }
+      const editedId = cacheSentMessage(edited) || messageId;
       sendJson(res, 200, {
         success: true,
         message_id: editedId,

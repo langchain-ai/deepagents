@@ -19,6 +19,7 @@ from typing import (
 )
 
 from deepagents.middleware.filesystem import FilesystemState
+from deepagents.middleware.rubric import GraderResponse, RubricState
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -367,6 +368,33 @@ class GoalCriteriaAgentState(AgentState):
 
     criteria_objective: NotRequired[str]
     criteria_operation_id: NotRequired[str]
+
+
+class RubricGraderState(AgentState[GraderResponse]):
+    """Nested-grader state used to scope verification-tool budgets."""
+
+    rubric_grading_operation_id: NotRequired[str]
+
+
+def _rubric_grader_messages(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Remove dcode control turns from the grader transcript.
+
+    Returns:
+        Transcript messages visible to the grader.
+    """
+    return [
+        message for message in messages if not is_conversation_control_message(message)
+    ]
+
+
+def _rubric_grader_state(state: RubricState, iteration: int) -> dict[str, str]:
+    """Build the nested grader's verification-operation state.
+
+    Returns:
+        State containing the stable operation identifier.
+    """
+    grading_run_id = state.get("_current_grading_run_id") or "untracked"
+    return {"rubric_grading_operation_id": f"{grading_run_id}:{iteration}"}
 
 
 class _GoalContextFallbackMiddleware(AgentMiddleware[Any, Any]):

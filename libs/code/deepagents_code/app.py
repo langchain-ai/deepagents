@@ -902,6 +902,9 @@ def _format_mcp_server_changes(
     Returns:
         A user-facing MCP server change summary.
     """
+    from deepagents_code.config import get_glyphs
+
+    glyphs = get_glyphs()
     if current is None:
         detail = f" ({error})" if error else ""
         return f"MCP server changes couldn't be determined{detail}; use /mcp to check."
@@ -1043,7 +1046,8 @@ def _format_mcp_server_changes(
         lines.append(f"  - Recovered: {', '.join(recovered)}")
     if status_changed:
         transitions = ", ".join(
-            f"{name} ({before[name].status} → {servers[name].status})"
+            f"{name} ({before[name].status} {glyphs.arrow_right} "
+            f"{servers[name].status})"
             for name in status_changed
         )
         lines.append(f"  - Status changed: {transitions}")
@@ -1052,9 +1056,14 @@ def _format_mcp_server_changes(
         for name in reconfigured:
             was, now = before[name], servers[name]
             if was.transport != now.transport:
-                edits.append(f"{name} ({was.transport} → {now.transport})")
+                edits.append(
+                    f"{name} ({was.transport} {glyphs.arrow_right} {now.transport})"
+                )
             else:
-                edits.append(f"{name} ({len(was.tools)} → {len(now.tools)} tools)")
+                edits.append(
+                    f"{name} ({len(was.tools)} {glyphs.arrow_right} "
+                    f"{len(now.tools)} tools)"
+                )
         lines.append(f"  - Reconfigured: {', '.join(edits)}")
     if new_config_errors:
         lines.append(f"  - Config errors: {', '.join(new_config_errors)}")
@@ -2103,6 +2112,7 @@ class ExternalInput(Message):
 
 DeferredActionKind = Literal[
     "model_switch",
+    "summarization_model_switch",
     "thread_switch",
     "chat_output",
     "agent_switch",
@@ -2416,10 +2426,13 @@ def _action_label(entry: PendingNotification, action_id: ActionId) -> str:
 
 def _truncate(text: str, *, limit: int) -> str:
     """Return *text* truncated to *limit* characters with an ellipsis suffix."""
+    from deepagents_code.config import get_glyphs
+
     text = text.strip()
     if len(text) <= limit:
         return text
-    return text[: limit - 1].rstrip() + "…"
+    ellipsis = get_glyphs().ellipsis
+    return text[: limit - len(ellipsis)].rstrip() + ellipsis
 
 
 def _markdown_table(headers: Sequence[str], rows: Sequence[Sequence[str]]) -> str:
@@ -3670,7 +3683,14 @@ class DeepAgentsApp(App):
         and cannot restart it).
         """
 
+        if server_kwargs is not None:
+            server_kwargs["cwd"] = self._cwd
         self._server_kwargs = server_kwargs
+        if self._agent is not None:
+            from deepagents_code.client.remote_client import RemoteAgent as _RemoteAgent
+
+            if isinstance(self._agent, _RemoteAgent):
+                self._configure_remote_agent(self._agent)
         """Cached kwargs for `start_server_and_get_agent`.
 
         When non-`None`, startup is deferred and the UI begins in a status-bar
@@ -4575,6 +4595,26 @@ class DeepAgentsApp(App):
         Startup workers register notices (missing deps, update available)
         here; the user opens them via toast click or `ctrl+n`.
         """
+
+    def _configure_remote_agent(self, agent: RemoteAgent) -> RemoteAgent:
+        """Attach this session's explicit workspace to a remote client.
+
+        Returns:
+            The configured client.
+        """
+        if self._server_kwargs is None:
+            agent.set_workspace(self._cwd)
+            return agent
+
+        from deepagents_code._server_config import ServerConfig
+
+        config = ServerConfig.from_env()
+        agent.set_workspace(
+            self._cwd,
+            config.to_workspace_payload(),
+            config_fingerprint=config.workspace_fingerprint(),
+        )
+        return agent
 
     def _remote_agent(self) -> RemoteAgent | None:
         """Return the agent narrowed to `RemoteAgent`, or `None`.
@@ -5946,6 +5986,9 @@ class DeepAgentsApp(App):
             start_server_and_get_agent,
         )
 
+        if self._server_kwargs is None:
+            return
+        self._server_kwargs["cwd"] = self._cwd
         coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]  # ty: ignore[invalid-argument-type]
 
         if self._mcp_preload_kwargs is not None:
@@ -9623,9 +9666,7 @@ class DeepAgentsApp(App):
         Returns:
             A Future that resolves to the user's decision.
         """
-        from deepagents_code.config import (
-            is_shell_command_allowed,
-        )
+        from deepagents_code.config import get_glyphs, is_shell_command_allowed
 
         loop = asyncio.get_running_loop()
         result_future: asyncio.Future = loop.create_future()
@@ -9662,7 +9703,8 @@ class DeepAgentsApp(App):
                     messages = self.query_one("#messages", Container)
                     for command in approved_commands:
                         auto_msg = AppMessage(
-                            f"✓ Auto-approved shell command (allow-list): {command}",
+                            f"{get_glyphs().checkmark} Auto-approved shell command "
+                            f"(allow-list): {command}",
                         )
                         await self._mount_before_queued(messages, auto_msg)
                     with suppress(NoMatches, ScreenStackError):
@@ -14585,6 +14627,8 @@ class DeepAgentsApp(App):
             empty_message: Optional override for the no-goal message. Bare
                 `/goal` passes full usage tips; `/goal show` keeps a short nudge.
         """
+        from deepagents_code.config import get_glyphs
+
         lines: list[str] = []
         if self._active_goal:
             status = self._goal_status or "active"
@@ -14612,7 +14656,8 @@ class DeepAgentsApp(App):
         if lines:
             grader_model, grader_iterations = self._grader_display_values()
             lines.append(
-                f"Grader: {grader_model} · max iterations: {grader_iterations}"
+                f"Grader: {grader_model} {get_glyphs().separator} "
+                f"max iterations: {grader_iterations}"
             )
             if self._active_goal and self._goal_status == "active":
                 lines.append(
@@ -16010,7 +16055,7 @@ class DeepAgentsApp(App):
         Args:
             command: The slash command (including /)
         """
-        from deepagents_code.config import newline_shortcut, runtime_state
+        from deepagents_code.config import get_glyphs, newline_shortcut, runtime_state
 
         cmd = command.lower().strip()
 
@@ -16295,7 +16340,11 @@ class DeepAgentsApp(App):
                 else:
                     usage = f"{formatted} tokens used"
 
-                msg = f"{usage} \u00b7 {model_name}" if model_name else usage
+                msg = (
+                    f"{usage} {get_glyphs().separator} {model_name}"
+                    if model_name
+                    else usage
+                )
 
                 conv_tokens = await self._get_conversation_token_count()
                 if conv_tokens is not None:
@@ -16307,8 +16356,10 @@ class DeepAgentsApp(App):
                     conv_unit = " tokens" if conv_tokens < 1000 else ""  # noqa: PLR2004  # not bothersome, cosmetic
 
                     msg += (
-                        f"\n\u251c System prompt + tools: ~{overhead_str}{overhead_unit} (fixed)"  # noqa: E501
-                        f"\n\u2514 Conversation: ~{conv_str}{conv_unit}"
+                        f"\n{get_glyphs().tree_branch} System prompt + tools: "
+                        f"~{overhead_str}{overhead_unit} (fixed)"
+                        f"\n{get_glyphs().tree_last} Conversation: "
+                        f"~{conv_str}{conv_unit}"
                     )
 
                 if self._displayed_cost_usd > 0:
@@ -16863,6 +16914,8 @@ class DeepAgentsApp(App):
 
     async def _run_reload_unlocked(self) -> None:
         """Run `/reload` while the environment mutation lock is held."""
+        from deepagents_code.config import get_glyphs
+
         try:
             # Snapshot pre-reload state so the report can show diffs.
             old_skill_names = {s["name"] for s in self._discovered_skills}
@@ -17002,13 +17055,14 @@ class DeepAgentsApp(App):
                 )
                 plugin_skill_count = sum(1 for name in new_skill_names if ":" in name)
                 hook_count = sum(map(len, map(plugin_hook_event_names, plugins)))
+                separator = f" {get_glyphs().separator} "
                 report += (
                     f"\nPlugins: {plugin_count} plugin"
-                    f"{'s' if plugin_count != 1 else ''} · "
+                    f"{'s' if plugin_count != 1 else ''}{separator}"
                     f"{plugin_skill_count} skill"
-                    f"{'s' if plugin_skill_count != 1 else ''} · "
+                    f"{'s' if plugin_skill_count != 1 else ''}{separator}"
                     f"{mcp_count} plugin MCP server"
-                    f"{'s' if mcp_count != 1 else ''} · "
+                    f"{'s' if mcp_count != 1 else ''}{separator}"
                     f"{hook_count} hook{'s' if hook_count != 1 else ''}"
                 )
                 if old_plugin_fingerprints is not None:
@@ -17246,7 +17300,7 @@ class DeepAgentsApp(App):
         try:
             await self._set_spinner("Offloading")
             from deepagents_code._cli_context import CLIContext
-            from deepagents_code.config import runtime_state
+            from deepagents_code.config import get_glyphs, runtime_state
 
             context = CLIContext(
                 model=self._effective_model_spec(),
@@ -17348,12 +17402,14 @@ class DeepAgentsApp(App):
             )
             if tokens_after <= tokens_before:
                 stats_line = (
-                    f"{usage_label}: {before} → {after} tokens ({pct}% decrease), "
+                    f"{usage_label}: {before} {get_glyphs().arrow_right} {after} "
+                    f"tokens ({pct}% decrease), "
                     f"{result['messages_kept']} {kept_message_label} kept."
                 )
             else:
                 stats_line = (
-                    f"{usage_label}: {before} → {after} tokens (increase), "
+                    f"{usage_label}: {before} {get_glyphs().arrow_right} {after} "
+                    "tokens (increase), "
                     f"{result['messages_kept']} {kept_message_label} kept."
                 )
             offloaded_message_label = (
@@ -23821,7 +23877,9 @@ class DeepAgentsApp(App):
             Returns:
                 A fresh `RemoteAgent`, exposed as `Any`.
             """
-            return _RemoteAgent(url=url, graph_name="agent")
+            return self._configure_remote_agent(
+                _RemoteAgent(url=url, graph_name="agent")
+            )
 
         previous_agent = self._assistant_id
         previous_default_agent = self._default_assistant_id
@@ -27641,6 +27699,13 @@ class DeepAgentsApp(App):
                     server_proc,
                     timeout=restart_timeout,
                 )
+                # `langgraph dev` lazily builds the agent graph. Wait for that
+                # build before reporting a completed restart so graph-bound
+                # extensions are registered and `/extensions` is accurate.
+                await server_proc.wait_for_graph_ready(
+                    "agent",
+                    timeout=restart_timeout,
+                )
             # `asyncio.CancelledError` is intentionally NOT caught here (it is a
             # `BaseException`): `_restart_server_process` raises it only when app
             # teardown has begun or a terminal `stop()` bumped the server's stop
@@ -27698,7 +27763,9 @@ class DeepAgentsApp(App):
                     mcp_status = "fresh" if mcp_info is not None else "unavailable"
 
             def _build_agent(url: str) -> Any:  # noqa: ANN401  # union narrowed elsewhere
-                return _RemoteAgent(url=url, graph_name="agent")
+                return self._configure_remote_agent(
+                    _RemoteAgent(url=url, graph_name="agent")
+                )
 
             # A failed refresh must not reach the UI as "zero servers": the
             # `ServerReady` handler recomputes the status-bar counters and the
@@ -28470,7 +28537,10 @@ class DeepAgentsApp(App):
             self._preserve_launch_relative_server_paths(previous_cwd)
             await self._switch_process_cwd(cwd)
 
-            coros: list[Any] = [start_server_and_get_agent(**self._server_kwargs)]
+            self._server_kwargs["cwd"] = self._cwd
+            coros: list[Any] = [
+                start_server_and_get_agent(**self._server_kwargs)  # ty: ignore[invalid-argument-type]
+            ]
             if self._mcp_preload_kwargs is not None:
                 coros.append(
                     _preload_session_mcp_server_info(**self._mcp_preload_kwargs)
@@ -29195,7 +29265,7 @@ class DeepAgentsApp(App):
         return (message, now)
 
     async def _handle_summarization_model_command(self, command: str) -> None:
-        """Set, clear, or display the session's summary-model override.
+        """Set, clear, or select the session's summary-model override.
 
         The override is session-scoped: unlike `/model --default` there is no
         persistent tier, so `[models].summarization_default` is the only way to
@@ -29208,10 +29278,7 @@ class DeepAgentsApp(App):
         await self._mount_message(UserMessage(command))
         argument = command.strip()[len("/summarization-model") :].strip()
         if not argument:
-            current = self._summarization_model_override
-            if current in {None, INHERIT_SUMMARIZATION_MODEL}:
-                current = "the main agent model"
-            await self._mount_message(AppMessage(f"Summarization model: {current}"))
+            await self._show_summarization_model_selector()
             return
         if argument.lower() in _CLEAR_TOKENS:
             self._summarization_model_override = INHERIT_SUMMARIZATION_MODEL
@@ -29225,11 +29292,129 @@ class DeepAgentsApp(App):
             )
             return
 
+        await self._set_summarization_model(argument)
+
+    async def _show_summarization_model_selector(self) -> None:
+        """Open the model selector for choosing the summarization model."""
+        from deepagents_code.config import detect_provider
+        from deepagents_code.model_config import ModelSpec
+        from deepagents_code.tui.widgets.model_selector import ModelSelectorScreen
+
+        current_spec = self._summarization_model_override
+        if current_spec in {None, INHERIT_SUMMARIZATION_MODEL}:
+            current_spec = self._effective_model_spec()
+        parsed = ModelSpec.try_parse(current_spec) if current_spec else None
+        current_provider = parsed.provider if parsed else None
+        current_model = parsed.model if parsed else None
+        if current_spec and parsed is None:
+            current_provider = detect_provider(current_spec)
+            current_model = current_spec if current_provider else None
+
+        def handle_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                if self._chat_input:
+                    self.call_after_refresh(self._chat_input.focus_input)
+                return
+            model_spec, _ = result
+            extra = screen.pending_install_extra
+
+            async def apply_selection() -> None:
+                await self._apply_summarization_model_selection(model_spec, extra)
+
+            def start_selection_worker() -> None:
+                self.run_worker(
+                    apply_selection(),
+                    exclusive=True,
+                    group="summarization-model",
+                )
+                if self._chat_input:
+                    self._chat_input.focus_input()
+
+            self.call_after_refresh(start_selection_worker)
+
+        screen = ModelSelectorScreen(
+            current_model=current_model,
+            current_provider=current_provider,
+            cli_profile_override=self._profile_override,
+            title="Choose the summarization model",
+            description=(
+                "Pick the model used for context-compaction summaries. Clear it "
+                "with `/summarization-model clear` to follow the main agent model."
+            ),
+            default_scope=None,
+            check_provider_requirements=(
+                self._remote_agent() is None or self._server_kwargs is not None
+            ),
+        )
+        self.push_screen(screen, handle_result)
+
+    async def _apply_summarization_model_selection(
+        self, model_spec: str, extra: str | None
+    ) -> None:
+        """Install any provider extra, then apply a picker selection."""
+        if self._defer_summarization_model_install_if_busy(model_spec, extra):
+            return
+        if extra and not await self._install_summarization_model_extra(
+            extra, model_spec
+        ):
+            return
+        await self._set_summarization_model(model_spec)
+
+    def _defer_summarization_model_install_if_busy(
+        self, model_spec: str, extra: str | None
+    ) -> bool:
+        """Defer an install-backed summary selection while the app is busy.
+
+        Returns:
+            Whether the selection was deferred.
+        """
+        from functools import partial
+
+        if not extra or not (
+            self._agent_running or self._shell_running or self._connecting
+        ):
+            return False
+        self._defer_action(
+            DeferredAction(
+                kind="summarization_model_switch",
+                execute=partial(
+                    self._apply_summarization_model_selection, model_spec, extra
+                ),
+            )
+        )
+        self.notify(
+            "Summarization model will switch after current work finishes.",
+            markup=False,
+        )
+        return True
+
+    async def _install_summarization_model_extra(
+        self, extra: str, model_spec: str
+    ) -> bool:
+        """Install and authenticate a summary model provider.
+
+        Returns:
+            Whether model selection may continue.
+        """
+        if not await self._install_extra(extra, auto_restart=True):
+            return False
+        if await self._prompt_model_auth_if_needed(model_spec):
+            return True
+        await self._mount_message(
+            AppMessage(
+                f"Installed '{extra}'. Set {model_spec} after adding its "
+                "credentials with `/auth`."
+            )
+        )
+        return False
+
+    async def _set_summarization_model(self, model_spec: str) -> None:
+        """Validate and set the session's summarization model."""
         if self._remote_agent() is not None and self._server_kwargs is None:
-            self._summarization_model_override = argument
+            self._summarization_model_override = model_spec
             await self._mount_message(
                 AppMessage(
-                    f"Summarization model requested: {argument}. The remote server "
+                    f"Summarization model requested: {model_spec}. The remote server "
                     "will validate it at compaction time and use the main agent "
                     "model if initialization fails."
                 )
@@ -29239,11 +29424,11 @@ class DeepAgentsApp(App):
         try:
             result = await asyncio.to_thread(
                 _create_model_with_deepagents_import_lock,
-                argument,
+                model_spec,
                 cli_max_retries=(self._server_kwargs or {}).get("cli_max_retries"),
             )
         except Exception as exc:
-            logger.exception("Failed to resolve summarization model %s", argument)
+            logger.exception("Failed to resolve summarization model %s", model_spec)
             await self._mount_message(ErrorMessage(_build_model_switch_error_body(exc)))
             return
 
@@ -29514,7 +29699,7 @@ class DeepAgentsApp(App):
                 model name for auto-detection).
             extra_kwargs: Extra constructor kwargs from `--model-params`.
         """
-        from deepagents_code.config import detect_provider
+        from deepagents_code.config import detect_provider, get_glyphs
         from deepagents_code.model_config import ModelSpec, get_provider_auth_status
 
         if self._server_kwargs is None:
@@ -29573,7 +29758,9 @@ class DeepAgentsApp(App):
         except (NoMatches, ScreenStackError):
             messages = None
         if messages is not None and messages.is_attached:
-            new_widget = AppMessage(f"Retrying startup with {display}…")
+            new_widget = AppMessage(
+                f"Retrying startup with {display}{get_glyphs().ellipsis}"
+            )
             # Mount before storing the reference so `on_deep_agents_app_server_ready`
             # cannot observe a half-mounted widget if it races during this await.
             await self._mount_before_queued(messages, new_widget)

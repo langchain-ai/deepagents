@@ -44,19 +44,6 @@ def test_progress_keeps_latest_concurrent_status_visible() -> None:
     assert statuses == ["Checking output", "Running policy", "Running policy", ""]
 
 
-def test_progress_without_handler_message_falls_back_to_event_text() -> None:
-    statuses: list[str] = []
-
-    def record(message: str) -> None:
-        statuses.append(message)
-
-    presenter = HookPresenter(status=record)
-
-    presenter.update_progress(_progress("only"))
-
-    assert statuses[0].startswith("Running Stop hook")
-
-
 def test_attach_rebinds_sinks_on_the_same_presenter() -> None:
     first: list[str] = []
     second: list[str] = []

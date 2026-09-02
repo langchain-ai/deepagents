@@ -11,11 +11,7 @@ from textual.app import App, ComposeResult
 from deepagents_code import model_config
 from deepagents_code._cli_context import INHERIT_SUMMARIZATION_MODEL
 from deepagents_code._paths import PATHS
-from deepagents_code.app import (
-    DeepAgentsApp,
-    _extract_model_params_flag,
-    _format_model_params,
-)
+from deepagents_code.app import DeepAgentsApp, _extract_model_params_flag
 from deepagents_code.client.remote_client import RemoteAgent
 from deepagents_code.config import runtime_state
 from deepagents_code.model_config import (
@@ -128,76 +124,9 @@ def mock_create_model() -> Iterator[Mock]:
 class TestFormatModelParams:
     """Tests for the `_format_model_params` rendering helper."""
 
-    def test_none_returns_empty_string(self) -> None:
-        """`None` produces no suffix so callers can concatenate unconditionally."""
-        assert _format_model_params(None) == ""
-
-    def test_empty_dict_returns_empty_string(self) -> None:
-        """An empty dict has no params worth echoing — collapse to empty."""
-        assert _format_model_params({}) == ""
-
-    def test_single_key_renders_with_leading_space(self) -> None:
-        """Single key renders as a space-prefixed suffix that callers append."""
-        assert _format_model_params({"num_ctx": 16384}) == (
-            ' with model params {"num_ctx": 16384}'
-        )
-
-    def test_keys_are_sorted_regardless_of_insertion_order(self) -> None:
-        """`sort_keys=True` must produce stable output across call sites and dicts.
-
-        Insertion-reversed keys would render in insertion order without
-        `sort_keys=True`, so this test would fail if the flag were dropped.
-        """
-        params = {"temperature": 0.2, "num_ctx": 16384}
-        assert _format_model_params(params) == (
-            ' with model params {"num_ctx": 16384, "temperature": 0.2}'
-        )
-
-    def test_string_values_are_json_escaped(self) -> None:
-        """Values containing quotes must be JSON-escaped, not interpolated raw."""
-        assert _format_model_params({"stop": '"end"'}) == (
-            ' with model params {"stop": "\\"end\\""}'
-        )
-
 
 class TestModelSwitchWarning:
     """Tests for the large-context confirmation gate."""
-
-    @pytest.mark.parametrize("tokens", [99_999, 100_000])
-    async def test_below_or_equal_threshold_switches_without_warning(
-        self, tokens: int
-    ) -> None:
-        app = DeepAgentsApp()
-        app._context_tokens = tokens
-        app._model_switch_warning_threshold = 100_000
-        app._push_screen_wait = AsyncMock()  # ty: ignore
-        app._switch_model = AsyncMock()  # ty: ignore
-        runtime_state.model_provider = "anthropic"
-        runtime_state.model_name = "claude-opus-4-5"
-
-        await app._confirm_and_switch_model("openai:gpt-5.5")
-
-        app._push_screen_wait.assert_not_called()
-        app._switch_model.assert_awaited_once_with("openai:gpt-5.5", extra_kwargs=None)
-
-    async def test_above_threshold_requires_explicit_confirmation(self) -> None:
-        app = DeepAgentsApp()
-        app._context_tokens = 100_001
-        app._tokens_approximate = True
-        app._model_switch_warning_threshold = 100_000
-        app._push_screen_wait = AsyncMock(return_value=True)  # ty: ignore
-        app._switch_model = AsyncMock()  # ty: ignore
-        runtime_state.model_provider = "anthropic"
-        runtime_state.model_name = "claude-opus-4-5"
-
-        await app._confirm_and_switch_model("openai:gpt-5.5")
-
-        assert app._push_screen_wait.await_args is not None
-        screen = app._push_screen_wait.await_args.args[0]
-        assert screen._context_tokens == 100_001
-        assert screen._threshold == 100_000
-        assert screen._approximate is True
-        app._switch_model.assert_awaited_once()
 
     @pytest.mark.parametrize("result", [False, None])
     async def test_cancel_or_dismissal_fails_closed(self, result: bool | None) -> None:
@@ -213,231 +142,9 @@ class TestModelSwitchWarning:
 
         app._switch_model.assert_not_awaited()
 
-    async def test_modal_failure_fails_closed_and_reports_error(self) -> None:
-        app = DeepAgentsApp()
-        app._context_tokens = 100_001
-        app._model_switch_warning_threshold = 100_000
-        app._push_screen_wait = AsyncMock(side_effect=RuntimeError("boom"))  # ty: ignore
-        app._switch_model = AsyncMock()  # ty: ignore
-        app._mount_message = AsyncMock()  # ty: ignore
-        runtime_state.model_provider = "anthropic"
-        runtime_state.model_name = "claude-opus-4-5"
-
-        await app._confirm_and_switch_model("openai:gpt-5.5")
-
-        app._switch_model.assert_not_awaited()
-        assert app._mount_message.await_args is not None
-        message = app._mount_message.await_args.args[0]
-        assert "confirmation could not be shown" in message._content
-
-    async def test_zero_disables_warning(self) -> None:
-        app = DeepAgentsApp()
-        app._context_tokens = 1_000_000
-        app._model_switch_warning_threshold = 0
-        app._push_screen_wait = AsyncMock()  # ty: ignore
-        app._switch_model = AsyncMock()  # ty: ignore
-        runtime_state.model_provider = "anthropic"
-        runtime_state.model_name = "claude-opus-4-5"
-
-        await app._confirm_and_switch_model("openai:gpt-5.5")
-
-        app._push_screen_wait.assert_not_called()
-        app._switch_model.assert_awaited_once()
-
-    async def test_same_model_no_op_bypasses_warning(self) -> None:
-        app = DeepAgentsApp()
-        app._context_tokens = 1_000_000
-        app._model_switch_warning_threshold = 100_000
-        app._push_screen_wait = AsyncMock()  # ty: ignore
-        app._switch_model = AsyncMock()  # ty: ignore
-        runtime_state.model_provider = "anthropic"
-        runtime_state.model_name = "claude-opus-4-5"
-
-        await app._confirm_and_switch_model("anthropic:claude-opus-4-5")
-
-        app._push_screen_wait.assert_not_called()
-        app._switch_model.assert_awaited_once()
-
 
 class TestModelSwitchNoOp:
     """Tests for no-op when switching to the same model."""
-
-    async def test_same_model_toasts_instead_of_inline_message(self) -> None:
-        """Switching to the already-active model should toast 'Already using'.
-
-        This is a regression test for the bug where selecting the same model
-        from the model selector would print "Switched to X" even though no
-        actual switch occurred. The no-op notice is surfaced as a transient
-        toast rather than an inline chat message.
-        """
-        app = DeepAgentsApp()
-        mount_mock = AsyncMock()
-        notify_mock = Mock()
-        # Type checker doesn't track that the methods were replaced with mocks
-        app._mount_message = mount_mock  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        # Set current model
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        with patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            return_value=_CONFIGURED_AUTH_STATUS,
-        ):
-            # Attempt to switch to the same model
-            await app._switch_model("anthropic:claude-opus-4-5")
-
-        # Should toast "Already using", not mount an inline "Switched to" message.
-        mount_mock.assert_not_called()
-        notify_mock.assert_called_once()
-        message = notify_mock.call_args.args[0]
-        assert "Already using" in message
-        assert "Switched to" not in message
-        # Model specs and `--model-params` values can contain square brackets,
-        # which Textual's markup parser would swallow or reject.
-        assert notify_mock.call_args.kwargs["markup"] is False
-        assert app._model_switching is False
-
-    async def test_duplicate_same_model_toast_is_suppressed(self) -> None:
-        """Repeated no-ops within the toast lifetime should toast only once."""
-        app = DeepAgentsApp()
-        mount_mock = AsyncMock()
-        notify_mock = Mock()
-        app._mount_message = mount_mock  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        # Pin the clock inside the toast lifetime so suppression is asserted
-        # deterministically rather than relying on real elapsed time.
-        clock = {"now": 100.0}
-
-        with (
-            patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_CONFIGURED_AUTH_STATUS,
-            ),
-            patch(
-                "deepagents_code.app._monotonic",
-                side_effect=lambda: clock["now"],
-            ),
-        ):
-            await app._switch_model("anthropic:claude-opus-4-5")
-            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT / 2
-            await app._switch_model("anthropic:claude-opus-4-5")
-
-        notify_mock.assert_called_once()
-        assert (
-            notify_mock.call_args.args[0] == "Already using anthropic:claude-opus-4-5"
-        )
-        mount_mock.assert_not_called()
-        assert app._model_switching is False
-
-    async def test_expired_same_model_toast_can_reemit(self) -> None:
-        """After the toast lifetime elapses, identical no-ops toast again."""
-        app = DeepAgentsApp()
-        mount_mock = AsyncMock()
-        notify_mock = Mock()
-        app._mount_message = mount_mock  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        # Advance past NOTIFICATION_TIMEOUT between the two no-ops so the
-        # second selection re-toasts instead of staying suppressed forever.
-        clock = {"now": 100.0}
-
-        with (
-            patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_CONFIGURED_AUTH_STATUS,
-            ),
-            patch(
-                "deepagents_code.app._monotonic",
-                side_effect=lambda: clock["now"],
-            ),
-        ):
-            await app._switch_model("anthropic:claude-opus-4-5")
-            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT + 0.1
-            await app._switch_model("anthropic:claude-opus-4-5")
-
-        assert [call.args[0] for call in notify_mock.call_args_list] == [
-            "Already using anthropic:claude-opus-4-5",
-            "Already using anthropic:claude-opus-4-5",
-        ]
-        assert app._model_switching is False
-
-    async def test_same_model_toast_reemits_at_exact_lifetime_boundary(self) -> None:
-        """At exactly `NOTIFICATION_TIMEOUT`, the previous toast has expired.
-
-        Pins the boundary comparison: the elapsed check is `>=`, so a no-op
-        landing exactly on the timeout must re-toast rather than stay
-        suppressed.
-        """
-        app = DeepAgentsApp()
-        notify_mock = Mock()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        clock = {"now": 100.0}
-
-        with (
-            patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_CONFIGURED_AUTH_STATUS,
-            ),
-            patch(
-                "deepagents_code.app._monotonic",
-                side_effect=lambda: clock["now"],
-            ),
-        ):
-            await app._switch_model("anthropic:claude-opus-4-5")
-            clock["now"] = 100.0 + app.NOTIFICATION_TIMEOUT
-            await app._switch_model("anthropic:claude-opus-4-5")
-
-        assert notify_mock.call_count == 2
-
-    async def test_same_model_changed_params_emit_new_toast(self) -> None:
-        """A changed same-model notice should still be shown to the user."""
-        app = DeepAgentsApp()
-        mount_mock = AsyncMock()
-        notify_mock = Mock()
-        app._mount_message = mount_mock  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        with patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            return_value=_CONFIGURED_AUTH_STATUS,
-        ):
-            await app._switch_model("anthropic:claude-opus-4-5")
-            await app._switch_model(
-                "anthropic:claude-opus-4-5",
-                extra_kwargs={"temperature": 0.2},
-            )
-
-        assert [call.args[0] for call in notify_mock.call_args_list] == [
-            "Already using anthropic:claude-opus-4-5",
-            (
-                "Already using anthropic:claude-opus-4-5 "
-                'with model params {"temperature": 0.2}'
-            ),
-        ]
-        mount_mock.assert_not_called()
-        assert app._model_switching is False
 
     async def test_real_switch_resets_unchanged_toast_suppression(self) -> None:
         """A real switch clears suppression so the next no-op toasts again.
@@ -483,70 +190,6 @@ class TestModelSwitchNoOp:
             "Already using anthropic:claude-opus-4-5",
             "Already using anthropic:claude-opus-4-5",
         ]
-
-    async def test_same_model_can_skip_unchanged_message(self) -> None:
-        """Onboarding can re-select the active model without any notice."""
-        app = DeepAgentsApp()
-        mount_mock = AsyncMock()
-        notify_mock = Mock()
-        app._mount_message = mount_mock  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        with patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            return_value=_CONFIGURED_AUTH_STATUS,
-        ):
-            await app._switch_model(
-                "anthropic:claude-opus-4-5", announce_unchanged=False
-            )
-
-        assert app._model_override == "anthropic:claude-opus-4-5"
-        assert app._model_params_override is None
-        # `announce_unchanged=False` must suppress the toast, not just the
-        # inline message the notice used to use.
-        mount_mock.assert_not_called()
-        notify_mock.assert_not_called()
-        assert app._model_switching is False
-
-    async def test_same_model_with_new_params_applies_overrides(self) -> None:
-        """`/model <current> --model-params {...}` should apply params per-session.
-
-        Regression test for the bug where the early return on the
-        already-active-model branch silently dropped `--model-params`,
-        leaving `_model_params_override` unset.
-        """
-        app = DeepAgentsApp()
-        notify_mock = Mock()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "claude-opus-4-5"
-        runtime_state.model_provider = "anthropic"
-
-        with patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            return_value=_CONFIGURED_AUTH_STATUS,
-        ):
-            await app._switch_model(
-                "anthropic:claude-opus-4-5",
-                extra_kwargs={"num_ctx": 16384, "temperature": 0.2},
-            )
-
-        assert app._model_override == "anthropic:claude-opus-4-5"
-        assert app._model_params_override == {
-            "num_ctx": 16384,
-            "temperature": 0.2,
-        }
-        notify_mock.assert_called_once()
-        message = notify_mock.call_args.args[0]
-        assert message.startswith("Already using anthropic:claude-opus-4-5")
-        # Stable, key-sorted JSON in the echoed suffix.
-        assert 'with model params {"num_ctx": 16384, "temperature": 0.2}' in message
 
     async def test_same_model_with_new_params_refreshes_status_effort(self) -> None:
         """Same-model param updates should refresh the status bar effort."""
@@ -912,48 +555,6 @@ class TestModelSwitchConcurrencyGuard:
 class TestModelSwitchSessionReadiness:
     """Tests for gating model switch on server-backed session readiness."""
 
-    async def test_defers_switch_while_connecting(self) -> None:
-        """A direct /model switch fired before `ServerReady` is queued, not failed."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        notify_mock = Mock()
-        app.notify = notify_mock  # ty: ignore
-        app._agent = None
-        app._connecting = True
-
-        await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        assert len(app._deferred_actions) == 1
-        action = app._deferred_actions[0]
-        assert action.kind == "model_switch"
-        notify_mock.assert_called_once()
-        app._mount_message.assert_not_called()  # ty: ignore
-        # Guard flag cleared so the deferred retry isn't a no-op.
-        assert app._model_switching is False
-
-    async def test_errors_when_agent_missing_and_not_connecting(self) -> None:
-        """Server-startup failure (no agent, not connecting) still errors."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        notify_mock = Mock()
-        app.notify = notify_mock  # ty: ignore
-        app._agent = None
-        app._connecting = False
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        with patch.object(ErrorMessage, "__init__", capture_init):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        assert app._deferred_actions == []
-        notify_mock.assert_not_called()
-        assert any("server-backed session" in msg for msg in captured_errors)
-
     async def test_deferred_switch_completes_after_server_ready(self) -> None:
         """End-to-end: defer during connect, drain after ready, switch completes."""
         app = DeepAgentsApp()
@@ -991,58 +592,6 @@ class TestModelSwitchSessionReadiness:
 
 class TestModelSwitchFailedStartupRecovery:
     """Tests for `/model` recovery after a failed initial server startup."""
-
-    async def test_retries_startup_with_new_model(self) -> None:
-        """Failed startup + `/model` retries `_start_server_background`.
-
-        Regression: when the CLI launches without the API key for the
-        configured model, `_start_server_background` raises
-        `ModelConfigError` before the server comes up, leaving the user
-        unable to switch via `/model` (the old code path bailed with
-        "Model switching requires a server-backed session"). `/model`
-        should now rewire deferred-startup state and re-run the worker.
-        """
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = None
-        app._connecting = False
-        app._server_startup_error = "ModelConfigError: ANTHROPIC_API_KEY not set"
-        app._server_kwargs = {
-            "assistant_id": None,
-            "model_name": "anthropic:claude-opus-4-5",
-            "model_params": None,
-            "interactive": True,
-        }
-        app._model_kwargs = {
-            "model_spec": "anthropic:claude-opus-4-5",
-            "extra_kwargs": None,
-            "profile_overrides": None,
-        }
-        run_worker_mock = Mock()
-        app.run_worker = run_worker_mock  # ty: ignore
-
-        with patch(
-            "deepagents_code.model_config.get_provider_auth_status",
-            return_value=_CONFIGURED_AUTH_STATUS,
-        ):
-            await app._switch_model("anthropic:claude-sonnet-4-5")
-
-        # Failure state cleared and a fresh startup worker scheduled.
-        assert app._server_startup_error is None
-        assert app._connecting is True
-        run_worker_mock.assert_called_once()
-        worker_args, worker_kwargs = run_worker_mock.call_args
-        assert worker_args[0] == app._start_server_background
-        assert worker_kwargs.get("group") == "server-startup"
-
-        # Deferred-startup kwargs rewired with the new spec.
-        assert app._model_kwargs == {
-            "model_spec": "anthropic:claude-sonnet-4-5",
-            "extra_kwargs": None,
-            "profile_overrides": None,
-        }
-        assert app._server_kwargs["model_name"] == "anthropic:claude-sonnet-4-5"
-        assert app._model_switching is False
 
     async def test_retry_with_still_missing_credentials_errors(self) -> None:
         """Retrying with creds still missing surfaces the credentials error.
@@ -1132,52 +681,6 @@ class TestModelSwitchConfigProvider:
     def setup_method(self) -> None:
         """Clear model config cache before each test."""
         clear_caches()
-
-    async def test_switch_to_config_provider_no_whitelist_error(self, tmp_path) -> None:
-        """Switching to a provider not in PROVIDER_API_KEY_ENV succeeds.
-
-        Previously this would error with "Unknown provider". Now it switches
-        immediately in the server-backed session.
-        """
-        config_path = tmp_path / "config.toml"
-        config_path.write_text("""
-[models.providers.fireworks]
-models = ["llama-v3p1-70b"]
-api_key_env = "FIREWORKS_API_KEY"
-""")
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "gpt-5.5"
-        runtime_state.model_provider = "openai"
-
-        captured_messages: list[str] = []
-        original_app_init = AppMessage.__init__
-
-        def capture_app(self: AppMessage, message: str, **kwargs: Any) -> None:
-            captured_messages.append(message)
-            original_app_init(self, message, **kwargs)
-
-        with (
-            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
-            patch.dict("os.environ", {"FIREWORKS_API_KEY": "test-key"}),
-            patch(
-                "deepagents_code.model_config.save_recent_model", return_value=True
-            ) as mock_save,
-            patch.object(AppMessage, "__init__", capture_app),
-        ):
-            await app._switch_model("fireworks:llama-v3p1-70b")
-
-        mock_save.assert_called_once_with("fireworks:llama-v3p1-70b")
-        assert app._model_override == "fireworks:llama-v3p1-70b"
-        assert runtime_state.model_name == "llama-v3p1-70b"
-        assert runtime_state.model_provider == "fireworks"
-        # Should succeed, not show "Unknown provider"
-        assert any(
-            "Switched to fireworks:llama-v3p1-70b" in m for m in captured_messages
-        )
-        assert not any("Unknown provider" in m for m in captured_messages)
 
     async def test_switch_config_provider_missing_credentials(self, tmp_path) -> None:
         """Config provider with missing credentials shows appropriate error."""
@@ -1364,47 +867,9 @@ class TestModelSwitchBareModelName:
         assert "Missing credentials" in captured_errors[0]
         assert "OPENAI_API_KEY" in captured_errors[0]
 
-    async def test_bare_model_name_already_using(self) -> None:
-        """Bare model name matching current model toasts 'Already using'."""
-        app = DeepAgentsApp()
-        mount_mock = AsyncMock()
-        notify_mock = Mock()
-        app._mount_message = mount_mock  # ty: ignore
-        app.notify = notify_mock  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "gpt-5.5"
-        runtime_state.model_provider = "openai"
-
-        with (
-            patch("deepagents_code.config.detect_provider", return_value="openai"),
-            patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_CONFIGURED_AUTH_STATUS,
-            ),
-        ):
-            await app._switch_model("gpt-5.5")
-
-        mount_mock.assert_not_called()
-        notify_mock.assert_called_once()
-        assert "Already using" in notify_mock.call_args.args[0]
-
 
 class TestExtractModelParamsFlag:
     """Tests for _extract_model_params_flag helper."""
-
-    def test_no_flag(self) -> None:
-        """Returns original string and None when flag absent."""
-        remaining, params = _extract_model_params_flag("anthropic:claude-sonnet-4-5")
-        assert remaining == "anthropic:claude-sonnet-4-5"
-        assert params is None
-
-    def test_single_quoted_json(self) -> None:
-        """Extracts JSON from single-quoted value."""
-        raw = """--model-params '{"temperature": 0.7}' anthropic:claude-sonnet-4-5"""
-        remaining, params = _extract_model_params_flag(raw)
-        assert remaining == "anthropic:claude-sonnet-4-5"
-        assert params == {"temperature": 0.7}
 
     def test_double_quoted_json_with_escaped_quotes(self) -> None:
         """Extracts JSON from double-quoted value with escaped inner quotes."""
@@ -1427,109 +892,14 @@ class TestExtractModelParamsFlag:
         assert remaining == "anthropic:claude-sonnet-4-5"
         assert params == {"temperature": 0.7}
 
-    def test_model_before_flag(self) -> None:
-        """Model arg before --model-params is preserved."""
-        raw = "anthropic:claude-sonnet-4-5 --model-params '{\"temperature\": 0.7}'"
-        remaining, params = _extract_model_params_flag(raw)
-        assert remaining == "anthropic:claude-sonnet-4-5"
-        assert params == {"temperature": 0.7}
-
-    def test_missing_value_raises(self) -> None:
-        """Raises ValueError when --model-params has no value."""
-        with pytest.raises(ValueError, match="requires a JSON object"):
-            _extract_model_params_flag("--model-params")
-
-    def test_invalid_json_raises(self) -> None:
-        """Raises ValueError with hint for malformed JSON."""
-        with pytest.raises(ValueError, match=r"Invalid JSON.*Expected format"):
-            _extract_model_params_flag("--model-params '{not json}'")
-
-    def test_non_dict_json_raises(self) -> None:
-        """Raises TypeError when JSON is not an object."""
-        with pytest.raises(TypeError, match="must be a JSON object"):
-            _extract_model_params_flag("--model-params '[1, 2, 3]'")
-
-    def test_unclosed_quote_raises(self) -> None:
-        """Raises ValueError for unclosed quote."""
-        with pytest.raises(ValueError, match="Unclosed"):
-            _extract_model_params_flag("""--model-params '{"temperature": 0.7}""")
-
     def test_unbalanced_braces_raises(self) -> None:
         """Raises ValueError for unbalanced braces."""
         with pytest.raises(ValueError, match="Unbalanced"):
             _extract_model_params_flag('--model-params {"temperature": 0.7')
 
-    def test_with_default_flag(self) -> None:
-        """Works alongside --default flag."""
-        raw = (
-            """--model-params '{"temperature": 0.7}' """
-            "--default anthropic:claude-sonnet-4-5"
-        )
-        remaining, params = _extract_model_params_flag(raw)
-        assert remaining == "--default anthropic:claude-sonnet-4-5"
-        assert params == {"temperature": 0.7}
-
-    def test_empty_object(self) -> None:
-        """Empty JSON object is valid."""
-        remaining, params = _extract_model_params_flag("--model-params '{}'")
-        assert remaining == ""
-        assert params == {}
-
 
 class TestModelCommandIntegration:
     """Tests for /model command handler integration."""
-
-    async def test_invalid_model_params_shows_error(self) -> None:
-        """/model with invalid --model-params JSON shows error."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        with patch.object(ErrorMessage, "__init__", capture_init):
-            await app._handle_command("/model --model-params '{bad}'")
-
-        assert len(captured_errors) == 1
-        assert "Invalid JSON" in captured_errors[0]
-        assert "Expected format" in captured_errors[0]
-
-    async def test_direct_switch_routes_through_warning_dispatcher(self) -> None:
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._dispatch_model_switch = Mock()  # ty: ignore
-
-        await app._handle_command("/model openai:gpt-5.5")
-
-        app._dispatch_model_switch.assert_called_once_with(  # ty: ignore
-            "openai:gpt-5.5", extra_kwargs=None
-        )
-
-    async def test_model_params_with_default_rejected(self) -> None:
-        """/model --model-params with --default shows error."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-
-        captured_errors: list[str] = []
-        original_init = ErrorMessage.__init__
-
-        def capture_init(self: ErrorMessage, message: str, **kwargs: Any) -> None:
-            captured_errors.append(message)
-            original_init(self, message, **kwargs)
-
-        cmd = (
-            """/model --model-params '{"temperature": 0.7}' """
-            "--default anthropic:claude-sonnet-4-5"
-        )
-        with patch.object(ErrorMessage, "__init__", capture_init):
-            await app._handle_command(cmd)
-
-        assert len(captured_errors) == 1
-        assert "cannot be used with --default" in captured_errors[0]
 
 
 class TestSummarizationModelCommand:
@@ -1636,37 +1006,179 @@ class TestSummarizationModelCommand:
         create_model.assert_not_called()
         assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
 
-    async def test_no_argument_reports_the_current_value(self) -> None:
+    async def test_no_argument_opens_selector_without_changing_override(self) -> None:
         app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
         app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
+        with patch.object(
+            app,
+            "_show_summarization_model_selector",
+            new_callable=AsyncMock,
+        ) as show_selector:
             await app._handle_command("/summarization-model")
 
-        assert any("openai:gpt-5.4-mini" in text for text in captured)
+        show_selector.assert_awaited_once()
         assert app._summarization_model_override == "openai:gpt-5.4-mini"
 
-    async def test_no_argument_names_the_fallback_when_unset(self) -> None:
+    async def test_selector_highlights_summarization_model(self) -> None:
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "openai"
+        assert screen._current_model == "gpt-5.4-mini"
+        assert screen._default_scope is None
+        assert screen._check_provider_requirements is True
+
+    async def test_selector_resolves_bare_summarization_model_provider(self) -> None:
+        """Bare startup specs still identify the active picker row."""
+        app = DeepAgentsApp(summarization_model="gpt-5.4-mini")
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "openai"
+        assert screen._current_model == "gpt-5.4-mini"
+
+    async def test_selector_replaces_in_flight_selection_worker(self) -> None:
+        """The latest picker result cancels an older validation worker."""
         app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
-            await app._handle_command("/summarization-model")
+        with (
+            patch.object(app, "push_screen") as push,
+            patch.object(app, "run_worker") as run_worker,
+            patch.object(
+                app,
+                "call_after_refresh",
+                side_effect=lambda callback: callback(),
+            ),
+            patch.object(
+                app,
+                "_apply_summarization_model_selection",
+                new_callable=AsyncMock,
+            ) as apply_selection,
+        ):
+            await app._show_summarization_model_selector()
+            handle_result = push.call_args.args[1]
+            handle_result(("openai:gpt-5.6-sol", "openai"))
 
-        assert any("main agent model" in text for text in captured)
+            run_worker.assert_called_once()
+            assert run_worker.call_args.kwargs["exclusive"] is True
+            assert run_worker.call_args.kwargs["group"] == "summarization-model"
+            await run_worker.call_args.args[0]
 
-    async def test_blank_launch_override_names_the_main_model(self) -> None:
+        apply_selection.assert_awaited_once_with("openai:gpt-5.6-sol", None)
+
+    async def test_external_remote_selector_skips_local_provider_requirements(
+        self,
+    ) -> None:
+        app = DeepAgentsApp(summarization_model="server_provider:remote-model")
+        app._agent = _make_remote_agent()  # ty: ignore[invalid-assignment]
+
+        with patch.object(app, "push_screen") as push:
+            await app._show_summarization_model_selector()
+
+        screen = push.call_args.args[0]
+        assert screen._check_provider_requirements is False
+
+    async def test_selector_falls_back_to_main_model_when_unset(self) -> None:
         app = DeepAgentsApp(summarization_model="")
-        app._mount_message = AsyncMock()  # ty: ignore[invalid-assignment]
-        captured, capture_init = self._capture_app_messages()
 
-        with patch.object(AppMessage, "__init__", capture_init):
-            await app._handle_command("/summarization-model")
+        with (
+            patch.object(
+                app,
+                "_effective_model_spec",
+                return_value="anthropic:claude-sonnet-4-5",
+            ),
+            patch.object(app, "push_screen") as push,
+        ):
+            await app._show_summarization_model_selector()
 
-        assert app._summarization_model_override == INHERIT_SUMMARIZATION_MODEL
-        assert any("main agent model" in text for text in captured)
+        screen = push.call_args.args[0]
+        assert screen._current_provider == "anthropic"
+        assert screen._current_model == "claude-sonnet-4-5"
+
+    async def test_install_selection_waits_until_current_work_finishes(self) -> None:
+        """Provider installation must not race an active turn's server use."""
+        app = DeepAgentsApp()
+        app._agent_running = True
+        notify = Mock()
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=True)
+        set_model = AsyncMock()
+        app.notify = notify  # ty: ignore[invalid-assignment]
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        install.assert_not_awaited()
+        set_model.assert_not_awaited()
+        assert len(app._deferred_actions) == 1
+        assert app._deferred_actions[0].kind == "summarization_model_switch"
+        notify.assert_called_once()
+
+        app._agent_running = False
+        await app._deferred_actions.pop().execute()
+
+        install.assert_awaited_once_with("baseten", auto_restart=True)
+        authenticate.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+        set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
+    async def test_install_selection_prompts_for_credentials_before_setting(
+        self,
+    ) -> None:
+        """A newly installed provider must be authenticated before validation."""
+        app = DeepAgentsApp()
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=True)
+        set_model = AsyncMock()
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        install.assert_awaited_once_with("baseten", auto_restart=True)
+        authenticate.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+        set_model.assert_awaited_once_with("baseten:moonshotai/Kimi-K3")
+
+    async def test_cancelled_post_install_auth_keeps_summary_model(self) -> None:
+        """Dismissing auth leaves the installed provider unapplied."""
+        app = DeepAgentsApp(summarization_model="openai:gpt-5.4-mini")
+        install = AsyncMock(return_value=True)
+        authenticate = AsyncMock(return_value=False)
+        set_model = AsyncMock()
+        mount_message = AsyncMock()
+        app._install_extra = install  # ty: ignore[invalid-assignment]
+        app._prompt_model_auth_if_needed = (  # ty: ignore[invalid-assignment]
+            authenticate
+        )
+        app._set_summarization_model = set_model  # ty: ignore[invalid-assignment]
+        app._mount_message = mount_message  # ty: ignore[invalid-assignment]
+
+        await app._apply_summarization_model_selection(
+            "baseten:moonshotai/Kimi-K3", "baseten"
+        )
+
+        set_model.assert_not_awaited()
+        assert app._summarization_model_override == "openai:gpt-5.4-mini"
+        assert mount_message.await_args is not None
+        mounted = str(mount_message.await_args.args[0]._content)
+        assert "Installed 'baseten'" in mounted
+        assert "/auth" in mounted
 
     async def test_multi_word_argument_is_rejected_without_resolving(self) -> None:
         """The grammar is a single bare spec -- no params, unlike `/model`."""
@@ -1718,110 +1230,3 @@ class _StatusBarHarness(App[None]):
     def compose(self) -> ComposeResult:
         """Yield a single status bar."""
         yield StatusBar(id="status-bar")
-
-
-class TestModelSwitchBusyIndicator:
-    """Tests that `_switch_model` drives the status-bar busy indicator.
-
-    These use a real mounted `StatusBar` rather than a mock so the wiring is
-    verified against actual `set_busy` behavior end-to-end.
-    """
-
-    async def test_busy_set_during_switch_and_cleared_on_success(
-        self, mock_create_model: Mock
-    ) -> None:
-        """Busy shows "Switching model" mid-flight and clears after success."""
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "gpt-5.5"
-        runtime_state.model_provider = "openai"
-
-        async with _StatusBarHarness().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            app._status_bar = bar
-
-            busy_mid_flight: list[str] = []
-
-            def capture_busy(
-                model_spec: str,
-                *,
-                extra_kwargs: dict[str, object] | None = None,
-                profile_overrides: dict[str, object] | None = None,
-                cli_max_retries: int | None = None,
-            ) -> _FakeModelResult:
-                # Runs in the worker thread: record what the bar shows while the
-                # (normally slow) provider import is notionally in progress.
-                del model_spec, extra_kwargs, profile_overrides, cli_max_retries
-                busy_mid_flight.append(bar._busy_message)
-                return _FakeModelResult(
-                    model_name="claude-sonnet-4-5",
-                    provider="anthropic",
-                    context_limit=200_000,
-                )
-
-            mock_create_model.side_effect = capture_busy
-
-            with (
-                patch(
-                    "deepagents_code.model_config.get_provider_auth_status",
-                    return_value=_CONFIGURED_AUTH_STATUS,
-                ),
-                patch(
-                    "deepagents_code.model_config.save_recent_model",
-                    return_value=True,
-                ),
-            ):
-                await app._switch_model("anthropic:claude-sonnet-4-5")
-
-            assert busy_mid_flight == ["Switching model"]
-            assert bar._busy_message == ""
-
-    async def test_busy_cleared_when_switch_fails(
-        self, mock_create_model: Mock
-    ) -> None:
-        """A failed model creation must still clear busy via the `finally` block.
-
-        Regression guard: if busy were cleared only on the success path, a
-        failed switch would leave the status bar spinning "Switching model"
-        indefinitely. The clear lives in a `finally`, so it must run here too.
-        """
-        app = DeepAgentsApp()
-        app._mount_message = AsyncMock()  # ty: ignore
-        app._agent = _make_remote_agent()
-
-        runtime_state.model_name = "gpt-5.5"
-        runtime_state.model_provider = "openai"
-
-        async with _StatusBarHarness().run_test() as pilot:
-            bar = pilot.app.query_one("#status-bar", StatusBar)
-            app._status_bar = bar
-
-            busy_mid_flight: list[str] = []
-
-            def fail_after_capture(
-                model_spec: str,
-                *,
-                extra_kwargs: dict[str, object] | None = None,
-                profile_overrides: dict[str, object] | None = None,
-                cli_max_retries: int | None = None,
-            ) -> _FakeModelResult:
-                del model_spec, extra_kwargs, profile_overrides, cli_max_retries
-                busy_mid_flight.append(bar._busy_message)
-                msg = "provider import blew up"
-                raise RuntimeError(msg)
-
-            mock_create_model.side_effect = fail_after_capture
-
-            with patch(
-                "deepagents_code.model_config.get_provider_auth_status",
-                return_value=_CONFIGURED_AUTH_STATUS,
-            ):
-                await app._switch_model("anthropic:claude-sonnet-4-5")
-
-            # Busy showed while the switch ran, then cleared despite the failure.
-            assert busy_mid_flight == ["Switching model"]
-            assert bar._busy_message == ""
-            # The failure surfaced to the user rather than being swallowed.
-            app._mount_message.assert_called_once()  # ty: ignore

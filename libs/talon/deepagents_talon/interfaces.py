@@ -261,3 +261,6 @@ class AgentRuntime(Protocol):
         Returns:
             Agent output for the host to route back to the trigger.
         """
+
+    async def recover_interrupted(self, conversation_id: str) -> None:
+        """Record an interrupted turn after its latest committed checkpoint."""

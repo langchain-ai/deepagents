@@ -765,11 +765,10 @@ def collect_sections() -> list[DiagnosticSection]:
 
 def _tree_connectors() -> tuple[str, str]:
     """Return the `(tee, corner)` tree connectors for the active charset."""
-    from deepagents_code.config import is_ascii_mode
+    from deepagents_code.config import get_glyphs
 
-    if is_ascii_mode():
-        return "|-", "`-"
-    return "\u251c", "\u2514"  # ├ └
+    glyphs = get_glyphs()
+    return glyphs.tree_branch, glyphs.tree_last
 
 
 def _render_text(sections: list[DiagnosticSection]) -> None:

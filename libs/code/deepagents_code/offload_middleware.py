@@ -814,6 +814,16 @@ class _HasRunContext(Protocol):
         ...
 
 
+def _runtime_cwd(runtime: _HasRunContext) -> Path:
+    """Return the bound workspace directory, or preserve the process fallback."""
+    context = CLIContextSchema.from_payload(runtime.context)
+    if context is not None:
+        cwd = context.workspace.get("cwd")
+        if isinstance(cwd, str) and cwd:
+            return Path(cwd)
+    return Path.cwd()
+
+
 def _runtime_model_config(runtime: _HasRunContext) -> RuntimeModelConfig:
     """Read the active model configuration from a run context carrier.
 
@@ -1058,7 +1068,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         except RuntimeError:
             config = None
         decision = _invoke_hook(
-            _hook_context(runtime.context, config, Path.cwd()),
+            _hook_context(runtime.context, config, _runtime_cwd(runtime)),
             PreCompactEvent(event=HookEvent.PRE_COMPACT, trigger=CompactTrigger.AUTO),
             gate=gate,
             config=config,

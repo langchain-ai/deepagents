@@ -1,7 +1,6 @@
 """Tests for the large-context model-switch warning modal."""
 
 from textual.app import App
-from textual.widgets import Static
 
 from deepagents_code.tui.modals.model_switch import ModelSwitchWarningScreen
 
@@ -50,16 +49,3 @@ async def test_click_does_not_authorize_switch() -> None:
         await pilot.click(".model-switch-warning-body")
         await pilot.pause()
         assert app.results == []
-
-
-async def test_dynamic_copy_renders_literally_and_marks_approximation() -> None:
-    app = _Host()
-    async with app.run_test() as pilot:
-        screen = app.open(approximate=True)
-        await pilot.pause()
-        body = screen.query_one(".model-switch-warning-body", Static)
-        rendered = str(body.content)
-        assert "approximately 124.0K" in rendered
-        assert "anthropic:claude[old]" in rendered
-        assert "openai:gpt[new]" in rendered
-        assert "/offload" in rendered

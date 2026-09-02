@@ -860,7 +860,8 @@ def _glob_search_files(
         relative = _relative_to_root(file_path, normalized_path)
 
         if matcher(relative):
-            matches.append((file_path, file_data["modified_at"]))
+            # `modified_at` is NotRequired on `FileData`; undated files sort last.
+            matches.append((file_path, file_data.get("modified_at", "")))
 
     matches.sort(key=lambda x: x[1], reverse=True)
 

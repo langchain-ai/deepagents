@@ -422,6 +422,50 @@ class ServerConfig:
     extension_paths: tuple[str, ...] = ()
     """Absolute one-run extension files or directories from repeatable CLI flags."""
 
+    def to_workspace_payload(self) -> dict[str, Any]:
+        """Return non-secret resource policy for a durable workspace binding."""
+        return {
+            "assistant_id": self.assistant_id,
+            "auto_approve": self.auto_approve,
+            "interrupt_shell_only": self.interrupt_shell_only,
+            "shell_allow_list": self.shell_allow_list,
+            "interactive": self.interactive,
+            "enable_shell": self.enable_shell,
+            "enable_ask_user": self.enable_ask_user,
+            "enable_memory": self.enable_memory,
+            "enable_skills": self.enable_skills,
+            "enable_interpreter": self.enable_interpreter,
+            "interpreter_ptc": self.interpreter_ptc,
+            "interpreter_ptc_acknowledge_unsafe": (
+                self.interpreter_ptc_acknowledge_unsafe
+            ),
+            "allow_fs_tools": self.allow_fs_tools,
+            "recursion_limit": self.recursion_limit,
+            "sandbox_type": self.sandbox_type,
+            "sandbox_id": self.sandbox_id,
+            "sandbox_snapshot_name": self.sandbox_snapshot_name,
+            "sandbox_setup": self.sandbox_setup,
+            "mcp_config_path": self.mcp_config_path,
+            "no_mcp": self.no_mcp,
+            "trust_project_mcp": self.trust_project_mcp,
+            "trust_project_extensions": self.trust_project_extensions,
+            "extension_paths": list(self.extension_paths),
+        }
+
+    def workspace_fingerprint(self) -> str:
+        """Fingerprint the full effective config without persisting its contents.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
+        import hashlib
+
+        values = self.to_env()
+        values.pop("CWD")
+        values.pop("PROJECT_ROOT")
+        serialized = json.dumps(values, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode()).hexdigest()
+
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.
 

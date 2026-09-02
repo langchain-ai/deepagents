@@ -35,6 +35,7 @@ from deepagents_code._env_vars import (
     DISABLED_PROJECT_MCP_SERVERS,
     HIDE_SPLASH_VERSION,
     READ_PROJECT_DOTENV,
+    UI_CHARSET_MODE,
     is_env_truthy,
 )
 from deepagents_code._git import resolve_git_branch
@@ -1541,8 +1542,14 @@ class Glyphs:
     question: str  # ? vs [?]
     hourglass: str  # ⏳ vs [~]
     retry: str  # ↻ vs [R]
+    tool: str  # wrench vs [T]
+    file: str  # memo vs [F]
     arrow_up: str  # up arrow vs ^
     arrow_down: str  # down arrow vs v
+    arrow_right: str  # right arrow vs ->
+    separator: str  # middle dot vs |
+    tree_branch: str  # tree branch vs |-
+    tree_last: str  # final tree branch vs `-
     bullet: str  # bullet vs -
     cursor: str  # cursor vs >
     disclosure_collapsed: str  # ▸ vs >
@@ -1582,8 +1589,14 @@ UNICODE_GLYPHS = Glyphs(
     question="?",
     hourglass="⏳",
     retry="↻",
+    tool="🔧",
+    file="📝",
     arrow_up="↑",
     arrow_down="↓",
+    arrow_right="→",
+    separator="·",
+    tree_branch="├",
+    tree_last="└",
     bullet="•",
     cursor="›",  # noqa: RUF001  # Intentional Unicode glyph
     disclosure_collapsed="▸",
@@ -1617,8 +1630,14 @@ ASCII_GLYPHS = Glyphs(
     question="[?]",
     hourglass="[~]",
     retry="[R]",
+    tool="[T]",
+    file="[F]",
     arrow_up="^",
     arrow_down="v",
+    arrow_right="->",
+    separator="|",
+    tree_branch="|-",
+    tree_last="`-",
     bullet="-",
     cursor=">",
     disclosure_collapsed=">",
@@ -1799,22 +1818,19 @@ def _compute_charset_mode() -> CharsetMode:
     Returns:
         The detected CharsetMode based on environment and terminal encoding.
     """
-    from deepagents_code.model_config import resolve_env_var
-
-    env_mode = (resolve_env_var("UI_CHARSET_MODE") or "auto").lower()
-    if env_mode == "unicode":
+    prefixed = os.environ.get(UI_CHARSET_MODE)
+    mode = prefixed if prefixed is not None else os.environ.get("UI_CHARSET_MODE")
+    mode = (mode or "auto").lower()
+    if mode == "unicode":
         return CharsetMode.UNICODE
-    if env_mode == "ascii":
+    if mode == "ascii":
         return CharsetMode.ASCII
 
-    # Auto: check stdout encoding and LANG
     encoding = getattr(sys.stdout, "encoding", "") or ""
     if "utf" in encoding.lower():
         return CharsetMode.UNICODE
     lang = os.environ.get("LANG", "") or os.environ.get("LC_ALL", "")
-    if "utf" in lang.lower():
-        return CharsetMode.UNICODE
-    return CharsetMode.ASCII
+    return CharsetMode.UNICODE if "utf" in lang.lower() else CharsetMode.ASCII
 
 
 def get_glyphs() -> Glyphs:

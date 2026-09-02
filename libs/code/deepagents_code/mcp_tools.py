@@ -25,6 +25,7 @@ import unicodedata
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
+from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
@@ -52,6 +53,11 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 logger = logging.getLogger(__name__)
+
+_MCP_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
+_MCP_TOOL_NAME_MAX_LENGTH = 64
+_MCP_TOOL_NAME_HASH_LENGTH = 12
+_MCP_ORIGINAL_TOOL_NAME_KEY = "_deepagents_code_mcp_tool"
 
 # Maintainer note: `deepagents-talon` imports `MCPConfigError`,
 # `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
@@ -2008,6 +2014,28 @@ def _normalize_mcp_arguments(
     return cleaned
 
 
+def _mcp_tool_name(server_name: str, tool_name: str) -> str:
+    """Compose a provider-safe MCP tool name.
+
+    Returns:
+        A deterministic name no longer than the strictest provider limit.
+    """
+    raw_name = f"{server_name}_{tool_name}"
+    sanitized = _MCP_TOOL_NAME_RE.sub("_", raw_name).strip("_") or "unnamed"
+    if sanitized == raw_name and len(sanitized) <= _MCP_TOOL_NAME_MAX_LENGTH:
+        return sanitized
+    digest = sha256(f"{server_name}\0{tool_name}".encode()).hexdigest()[
+        :_MCP_TOOL_NAME_HASH_LENGTH
+    ]
+    server = _MCP_TOOL_NAME_RE.sub("_", server_name).strip("_") or "unnamed"
+    tool = _MCP_TOOL_NAME_RE.sub("_", tool_name).strip("_") or "unnamed"
+    available = _MCP_TOOL_NAME_MAX_LENGTH - len(digest) - 2
+    tool_length = min(len(tool), available // 2)
+    server_length = min(len(server), available - tool_length)
+    tool_length = min(len(tool), available - server_length)
+    return f"{server[:server_length]}_{tool[:tool_length]}_{digest}"
+
+
 def _build_cached_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
@@ -2035,7 +2063,7 @@ def _build_cached_mcp_tool(
 
     original_tool_name = mcp_tool.name
     lc_tool_name = (
-        f"{server_name}_{original_tool_name}"
+        _mcp_tool_name(server_name, original_tool_name)
         if tool_name_prefix and server_name
         else original_tool_name
     )
@@ -2050,6 +2078,7 @@ def _build_cached_mcp_tool(
         **wrapped_meta,
         "_deepagents_code_mcp": True,
         "_deepagents_code_mcp_server": server_name,
+        _MCP_ORIGINAL_TOOL_NAME_KEY: original_tool_name,
     }
 
     def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
@@ -2172,32 +2201,18 @@ def _build_cached_mcp_tool(
 _GLOB_METACHARS = frozenset("*?[")
 
 
-def _entry_matches_tool(entry: str, tool_name: str, prefix: str) -> bool:
-    """Return True if a single filter entry matches a tool name.
-
-    An entry containing `*`, `?`, or `[` is treated as an `fnmatch`-style glob;
-    otherwise it is matched literally. Each entry is tried against both the
-    bare MCP tool name and the server-prefixed form (`f"{prefix}{tool}"`), so
-    users can write either `read_*` or `fs_read_*`.
-
-    Args:
-        entry: Filter list entry from `allowedTools` / `disabledTools`.
-        tool_name: Adapter-supplied tool name (already server-prefixed).
-        prefix: Server prefix (`f"{server_name}_"`).
-
-    Returns:
-        True if the entry matches this tool under either match mode.
-    """
-    is_glob = any(ch in _GLOB_METACHARS for ch in entry)
-    if is_glob:
-        if fnmatch.fnmatchcase(tool_name, entry):
-            return True
-        if tool_name.startswith(prefix):
-            return fnmatch.fnmatchcase(tool_name[len(prefix) :], entry)
-        return False
-    if tool_name == entry:
-        return True
-    return tool_name.startswith(prefix) and tool_name[len(prefix) :] == entry
+def _entry_matches_tool(
+    entry: str, tool_name: str, prefix: str, original_name: str | None = None
+) -> bool:
+    """Return True if a single filter entry matches a tool name."""
+    candidates = [tool_name]
+    if original_name is not None:
+        candidates.extend((original_name, f"{prefix}{original_name}"))
+    elif tool_name.startswith(prefix):
+        candidates.append(tool_name[len(prefix) :])
+    if any(ch in _GLOB_METACHARS for ch in entry):
+        return any(fnmatch.fnmatchcase(candidate, entry) for candidate in candidates)
+    return entry in candidates
 
 
 @overload
@@ -2250,14 +2265,15 @@ def _apply_tool_filter(
     prefix = f"{server_name}_"
     field_name = "allowedTools" if allowed is not None else "disabledTools"
 
-    def _any_entry_matches(tool_name: str, entry_list: list[str]) -> bool:
-        return any(_entry_matches_tool(e, tool_name, prefix) for e in entry_list)
+    def _original_name(tool: BaseTool) -> str | None:
+        metadata = tool.metadata or {}
+        value = metadata.get(_MCP_ORIGINAL_TOOL_NAME_KEY)
+        return value if isinstance(value, str) else None
 
-    missing = [
-        e
-        for e in entries
-        if not any(_entry_matches_tool(e, t.name, prefix) for t in tools)
-    ]
+    def _matches(entry: str, tool: BaseTool) -> bool:
+        return _entry_matches_tool(entry, tool.name, prefix, _original_name(tool))
+
+    missing = [e for e in entries if not any(_matches(e, tool) for tool in tools)]
     if missing:
         logger.warning(
             "MCP server '%s' %s entries matched no tools: %s",
@@ -2267,8 +2283,12 @@ def _apply_tool_filter(
         )
 
     if allowed is not None:
-        return [t for t in tools if _any_entry_matches(t.name, entries)]
-    return [t for t in tools if not _any_entry_matches(t.name, entries)]
+        return [
+            tool for tool in tools if any(_matches(entry, tool) for entry in entries)
+        ]
+    return [
+        tool for tool in tools if not any(_matches(entry, tool) for entry in entries)
+    ]
 
 
 _MCP_LOAD_CONCURRENCY = 8
@@ -2735,16 +2755,22 @@ async def _load_tools_from_config(
         # shutdown signals still propagate so the bounded runner can tear down.
         try:
             if runtime_manager is None:
-                server_tools: list[BaseTool] = [
-                    convert_mcp_tool_to_langchain_tool(
+                server_tools: list[BaseTool] = []
+                for mcp_tool in mcp_tools:
+                    tool = convert_mcp_tool_to_langchain_tool(
                         None,
                         mcp_tool,
                         connection=connections[server_name],
                         server_name=server_name,
-                        tool_name_prefix=True,
                     )
-                    for mcp_tool in mcp_tools
-                ]
+                    tool.name = _mcp_tool_name(server_name, mcp_tool.name)
+                    tool.metadata = {
+                        **(tool.metadata or {}),
+                        "_deepagents_code_mcp": True,
+                        "_deepagents_code_mcp_server": server_name,
+                        _MCP_ORIGINAL_TOOL_NAME_KEY: mcp_tool.name,
+                    }
+                    server_tools.append(tool)
             else:
                 server_tools = [
                     _build_cached_mcp_tool(
@@ -2782,7 +2808,7 @@ async def _load_tools_from_config(
                         exc,
                     )
                     schema_copy = None
-                lc_name = f"{server_name}_{tool_name}"
+                lc_name = _mcp_tool_name(server_name, tool_name)
                 schemas[lc_name] = schema_copy
 
             tool_infos: list[MCPToolInfo] = []

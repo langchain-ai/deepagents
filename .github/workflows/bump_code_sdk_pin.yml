@@ -231,6 +231,10 @@ jobs:
           code_pyproject="libs/code/pyproject.toml"
           lockfile="libs/code/uv.lock"
 
+          # Set on the create path when the pre-push branch delete fails, so
+          # the push below can name the real cause of a rejection.
+          delete_failed=0
+
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
           if [ -n "$EXISTING_PR" ]; then
@@ -280,6 +284,7 @@ jobs:
             if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
               echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
               if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
+                delete_failed=1
                 echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
               fi
             fi
@@ -369,7 +374,16 @@ jobs:
           # the same conflict again.
           if [ -z "$EXISTING_PR" ] || \
             [ "$(git rev-parse HEAD)" != "$(git rev-parse "origin/$BRANCH")" ]; then
-            git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+            # The push carries no `--force`, so an undeleted branch is
+            # rejected as a non-fast-forward. Read on its own that message
+            # points at the push; the cause is the delete that failed
+            # roughly a hundred lines earlier.
+            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"; then
+              if [ "$delete_failed" = 1 ]; then
+                fail "Push of $BRANCH was rejected, and the earlier delete of the same branch also failed. A concurrent run probably owns this branch."
+              fi
+              fail "Push of $BRANCH to origin was rejected."
+            fi
           else
             echo "$BRANCH already matches origin; no push needed."
           fi

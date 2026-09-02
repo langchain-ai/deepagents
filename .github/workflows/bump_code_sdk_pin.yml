@@ -90,6 +90,11 @@ jobs:
       - name: Set up Python and uv
         uses: "./.github/actions/uv_setup"
         with:
+          # `uv_setup` declares this `required: true`, but GitHub does not
+          # enforce `required` on composite-action inputs: it resolved to
+          # empty and `setup-uv` installed no managed Python. Match the
+          # version the lockfile is regenerated with below.
+          python-version: "3.12"
           enable-cache: "false"
 
       - name: Resolve workspace SDK version and current Code pin
@@ -170,7 +175,7 @@ jobs:
               url: .html_url
             }]')
           existing=$(printf '%s' "$open_prs" | \
-            python .github/scripts/release/find_code_sdk_pin_pr.py)
+            uv run --no-project python .github/scripts/release/find_code_sdk_pin_pr.py)
           number=$(printf '%s' "$existing" | jq -r '.number // ""')
           if [ -z "$number" ]; then
             echo "No open automated pin bump PR; the next step creates one on $NEW_BRANCH."

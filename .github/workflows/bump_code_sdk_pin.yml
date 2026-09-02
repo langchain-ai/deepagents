@@ -96,6 +96,16 @@ jobs:
         id: versions
         run: |
           set -euo pipefail
+          # Record the cause for the tracking issue step below, which
+          # otherwise files the same contentless issue for every failure
+          # mode. A failure that does not come through here (a crash in a
+          # tool, say) leaves the reason unset and the issue says so.
+          fail() {
+            echo "::error::$1"
+            echo "BUMP_FAILURE_REASON=$1" >> "$GITHUB_ENV"
+            exit 1
+          }
+
           sdk_pyproject="libs/deepagents/pyproject.toml"
           code_pyproject="libs/code/pyproject.toml"
 
@@ -103,12 +113,10 @@ jobs:
 
           code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
           if [[ ! "$sdk_version" =~ $SEMVER_PATTERN ]]; then
-            echo "::error::Could not parse SDK version from $sdk_pyproject (got '$sdk_version')"
-            exit 1
+            fail "Could not parse SDK version from $sdk_pyproject (got '$sdk_version')"
           fi
           if [[ ! "$code_pin" =~ $SEMVER_PATTERN ]]; then
-            echo "::error::Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
-            exit 1
+            fail "Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
           fi
 
           stale=$(CODE_PIN="$code_pin" SDK_VERSION="$sdk_version" uv run --no-project --with packaging python - <<'PY'
@@ -199,6 +207,16 @@ jobs:
           EXISTING_PR_URL: ${{ steps.existing.outputs.url }}
         run: |
           set -euo pipefail
+          # Record the cause for the tracking issue step below, which
+          # otherwise files the same contentless issue for every failure
+          # mode. A failure that does not come through here (a crash in a
+          # tool, say) leaves the reason unset and the issue says so.
+          fail() {
+            echo "::error::$1"
+            echo "BUMP_FAILURE_REASON=$1" >> "$GITHUB_ENV"
+            exit 1
+          }
+
 
           # The push and PR calls authenticate as the Org Membership App
           # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
@@ -207,8 +225,7 @@ jobs:
           # persisted, an empty app token would now degrade these to an
           # anonymous 403; fail fast instead so the cause is obvious.
           if [ -z "${GH_TOKEN}" ]; then
-            echo "::error::App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
-            exit 1
+            fail "App installation token is empty; check ORG_MEMBERSHIP_APP_CLIENT_ID and ORG_MEMBERSHIP_APP_PRIVATE_KEY."
           fi
 
           code_pyproject="libs/code/pyproject.toml"
@@ -232,8 +249,7 @@ jobs:
             if ! git merge --no-edit "origin/$DEFAULT_BRANCH"; then
               mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
               if [ "${#conflicts[@]}" -eq 0 ]; then
-                echo "::error::Merge of $DEFAULT_BRANCH failed without reporting a file conflict."
-                exit 1
+                fail "Merge of $DEFAULT_BRANCH failed without reporting a file conflict."
               fi
 
               unexpected_conflict=false
@@ -254,7 +270,7 @@ jobs:
                 esac
               done
               if [ "$unexpected_conflict" = "true" ]; then
-                exit 1
+                fail "Merge of $DEFAULT_BRANCH into $BRANCH conflicts outside the generated pin files"
               fi
               git commit --no-edit
             fi
@@ -282,12 +298,10 @@ jobs:
           # names neither the file nor the branch, and an absent pin line
           # fails the assignment through `pipefail` with no output at all.
           if [ -z "$branch_code_pin" ]; then
-            echo "::error::No quoted \"deepagents==...\" pin found in $code_pyproject on branch $BRANCH"
-            exit 1
+            fail "No quoted \"deepagents==...\" pin found in $code_pyproject on branch $BRANCH"
           fi
           if [[ ! "$branch_code_pin" =~ $SEMVER_PATTERN ]]; then
-            echo "::error::Could not parse the Code SDK pin in $code_pyproject on branch $BRANCH (got '$branch_code_pin')"
-            exit 1
+            fail "Could not parse the Code SDK pin in $code_pyproject on branch $BRANCH (got '$branch_code_pin')"
           fi
           relation=$(BRANCH_CODE_PIN="$branch_code_pin" SDK_VERSION="$SDK_VERSION" uv run --no-project --with packaging python - <<'PY'
           import os
@@ -323,30 +337,25 @@ jobs:
             before_rc=$?
             set -e
             if [ "$before_rc" -gt 1 ]; then
-              echo "::error::grep read error on $code_pyproject (exit=$before_rc)"
-              exit 1
+              fail "grep read error on $code_pyproject (exit=$before_rc)"
             fi
             if [ "$before" -ne 1 ]; then
-              echo "::error::Expected exactly 1 '$pattern' in $code_pyproject, found $before"
-              exit 1
+              fail "Expected exactly 1 '$pattern' in $code_pyproject, found $before"
             fi
             sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
             after=$(grep -cF "$replacement" "$code_pyproject")
             if [ "$after" -ne 1 ]; then
-              echo "::error::Expected exactly 1 '$replacement' after sed, found $after"
-              exit 1
+              fail "Expected exactly 1 '$replacement' after sed, found $after"
             fi
 
             # Regenerate the lockfile alongside the manifest change so the
             # pre-commit lock check passes on the PR.
             uv lock --directory libs/code --python 3.12
             if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
-              echo "::error::$lockfile is not tracked in $BRANCH after uv lock"
-              exit 1
+              fail "$lockfile is not tracked in $BRANCH after uv lock"
             fi
             if git diff --quiet "$code_pyproject" "$lockfile"; then
-              echo "::error::No changes after edit; bailing out (pin=$branch_code_pin, sdk=$SDK_VERSION)."
-              exit 1
+              fail "No changes after edit; bailing out (pin=$branch_code_pin, sdk=$SDK_VERSION)."
             fi
 
             git add "$code_pyproject" "$lockfile"
@@ -399,19 +408,23 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          REASON: ${{ env.BUMP_FAILURE_REASON }}
         with:
           script: |
             const marker = '<!-- bump-code-sdk-pin-failure -->';
             const { owner, repo } = context.repo;
             const runUrl = process.env.RUN_URL;
+            const reason = process.env.REASON || 'not recorded; see the run log';
             const title = 'Code SDK pin bump is failing';
             const body = [
               marker,
               '`bump_code_sdk_pin.yml` failed, so the `deepagents` pin in `libs/code/pyproject.toml` is not being bumped automatically after SDK releases.',
               '',
+              `Cause: ${reason}`,
+              '',
               `Most recent failed run: ${runUrl}`,
               '',
-              'This issue is reused by later failures rather than duplicated. Close it once the workflow is green again.',
+              'This issue is reused by later failures rather than duplicated. It closes itself when the workflow next succeeds.',
             ].join('\n');
 
             try {
@@ -425,7 +438,7 @@ jobs:
               if (found) {
                 await github.rest.issues.createComment({
                   owner, repo, issue_number: found.number,
-                  body: `Still failing: ${runUrl}`,
+                  body: `Still failing (${reason}): ${runUrl}`,
                 });
                 core.info(`Commented on existing tracking issue #${found.number}.`);
               } else {
@@ -436,4 +449,42 @@ jobs:
               // Never mask the real failure with a reporting failure — the job
               // is already red for the reason that matters.
               core.warning(`Could not file the SDK pin bump tracking issue: ${err.message}`);
+            }
+
+      - name: Close the tracking issue when the bump is healthy
+        # The failure issue is reused rather than duplicated, so nothing else
+        # would ever close it. It would stay open after a person fixed the
+        # cause, and a health signal that needs a manual reset gets ignored.
+        # A run where the pin was already current counts as healthy.
+        if: success()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        with:
+          script: |
+            const marker = '<!-- bump-code-sdk-pin-failure -->';
+            const { owner, repo } = context.repo;
+            try {
+              const existing = await github.paginate(
+                github.rest.issues.listForRepo,
+                { owner, repo, state: 'open', per_page: 100 },
+              );
+              const found = existing.find(
+                i => !i.pull_request && (i.body ?? '').startsWith(marker),
+              );
+              if (!found) {
+                return;
+              }
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: found.number,
+                body: `Green again: ${process.env.RUN_URL}`,
+              });
+              await github.rest.issues.update({
+                owner, repo, issue_number: found.number, state: 'closed',
+              });
+              core.info(`Closed tracking issue #${found.number}.`);
+            } catch (err) {
+              // Closing the issue is bookkeeping. Never fail a successful
+              // bump because the bookkeeping failed.
+              core.warning(`Could not close the SDK pin bump tracking issue: ${err.message}`);
             }

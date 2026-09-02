@@ -1231,7 +1231,7 @@ requires-dist = [
     { name = "langchain-groq", marker = "extra == 'groq'", specifier = ">=1.1.3,<2.0.0" },
     { name = "langchain-huggingface", marker = "extra == 'huggingface'", specifier = ">=1.2.2,<2.0.0" },
     { name = "langchain-ibm", marker = "extra == 'ibm'", specifier = ">=1.1.0,<2.0.0" },
-    { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.7.0,<2.0.0" },
+    { name = "langchain-litellm", marker = "extra == 'litellm'", specifier = ">=0.7.1,<2.0.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.3.2,<1.0.0" },
     { name = "langchain-meta", marker = "extra == 'meta'", specifier = ">=0.5.0,<2.0.0" },
     { name = "langchain-mistralai", marker = "extra == 'mistralai'", specifier = ">=1.1.6,<2.0.0" },
@@ -2766,7 +2766,7 @@ wheels = [
 
 [[package]]
 name = "langchain-litellm"
-version = "0.7.0"
+version = "0.7.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "cryptography" },
@@ -2774,9 +2774,9 @@ dependencies = [
     { name = "langchain-core" },
     { name = "litellm" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/72/24/473283e69791fb35e11126c11e7347ffbf110c2dfcebebe90bd974bc7348/langchain_litellm-0.7.0.tar.gz", hash = "sha256:d3b8d0e6f65132f048fbe9d706e5334d45830e3c49aa033d32c37c6683ad2ceb", size = 345959, upload-time = "2026-06-15T10:00:36.437Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/76/2f/3602ea4c111740b021316b0458c9b5eb4da291aed780a1bd2191a880b1ee/langchain_litellm-0.7.1.tar.gz", hash = "sha256:15c7e8b7ef72993e13860a2be87706a50769a9c778c580a6208c2139d4eea776", size = 355108, upload-time = "2026-08-31T17:20:02.925Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9b/d7/73ffd47f1e4bfe4649f25a58229fca4e0162c2f946c9f8f9ae5eb44e5c3c/langchain_litellm-0.7.0-py3-none-any.whl", hash = "sha256:5f67e456bc4e14e1247aa5a30e9da08d61d390aee66ff97e0113bfcb4334ff42", size = 25465, upload-time = "2026-06-15T10:00:37.428Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/4d/4d5d1428695d12c0c31db8bedfab131775c1aa14b6150f40d5b19b4e459d/langchain_litellm-0.7.1-py3-none-any.whl", hash = "sha256:fd6a2c683d32c7d7d15300abd7c787ef99b881552b579f63c980611d0345a38b", size = 25463, upload-time = "2026-08-31T17:20:01.736Z" },
 ]
 
 [[package]]

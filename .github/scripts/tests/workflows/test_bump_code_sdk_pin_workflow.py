@@ -24,7 +24,9 @@ def _find_step(name: str) -> dict:
 def test_existing_pr_lookup_uses_tested_selector() -> None:
     step = _find_step("Find existing automated pin bump PR")
 
-    assert "gh pr list --state open" in step["run"]
+    assert "gh api --paginate --slurp" in step["run"]
+    assert "pulls?state=open&per_page=100" in step["run"]
+    assert "gh pr list" not in step["run"]
     assert ".github/scripts/release/find_code_sdk_pin_pr.py" in step["run"]
     assert 'echo "branch=$branch" >> "$GITHUB_OUTPUT"' in step["run"]
 

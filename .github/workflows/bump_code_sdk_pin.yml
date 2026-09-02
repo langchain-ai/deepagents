@@ -134,9 +134,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           NEW_BRANCH: ${{ steps.versions.outputs.branch }}
-          SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
         run: |
           set -euo pipefail
+          # Every field here is read either by the selector or by the `jq`
+          # calls below. A dropped field makes the selector match nothing,
+          # which silently opens a duplicate PR.
           open_prs=$(gh api --paginate --slurp \
             "repos/${GITHUB_REPOSITORY}/pulls?state=open&per_page=100" \
             --jq '[.[][] | {
@@ -144,37 +146,27 @@ jobs:
               headRefName: .head.ref,
               isCrossRepository: (.head.repo.full_name != .base.repo.full_name),
               number,
-              title,
               url: .html_url
             }]')
           existing=$(printf '%s' "$open_prs" | \
             python .github/scripts/release/find_code_sdk_pin_pr.py)
           number=$(printf '%s' "$existing" | jq -r '.number // ""')
           if [ -z "$number" ]; then
-            echo "current=false" >> "$GITHUB_OUTPUT"
+            echo "No open automated pin bump PR; the next step creates one on $NEW_BRANCH."
             echo "branch=$NEW_BRANCH" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           branch=$(printf '%s' "$existing" | jq -r '.headRefName')
-          title=$(printf '%s' "$existing" | jq -r '.title')
           url=$(printf '%s' "$existing" | jq -r '.url')
-          expected_title="chore(deps): bump \`deepagents\` pin in \`deepagents-code\` to $SDK_VERSION"
-          current=false
-          if [ "$title" = "$expected_title" ]; then
-            current=true
-            echo "::notice::Open SDK pin bump PR already targets $SDK_VERSION: $url"
-          else
-            echo "Updating existing SDK pin bump PR on $branch: $url"
-          fi
-          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "Found the open automated pin bump PR on $branch: $url"
           echo "number=$number" >> "$GITHUB_OUTPUT"
           echo "url=$url" >> "$GITHUB_OUTPUT"
           echo "branch=$branch" >> "$GITHUB_OUTPUT"
 
       - name: Generate GitHub App token
         id: app-token
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.current != 'true'
+        if: steps.versions.outputs.stale == 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
         with:
           client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
@@ -183,7 +175,7 @@ jobs:
           permission-pull-requests: write
 
       - name: Create or update pin bump PR
-        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.current != 'true'
+        if: steps.versions.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
           SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
@@ -259,6 +251,11 @@ jobs:
             git checkout -b "$BRANCH"
           fi
 
+          # The pin on the branch, not the PR title, is the authority on what
+          # the PR does. A title can be edited by hand, and a prior run can
+          # push a pin commit and then fail before it updates the title. A
+          # title-based skip would then exit green on a PR whose title names a
+          # version that the branch does not pin.
           branch_code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
           relation=$(BRANCH_CODE_PIN="$branch_code_pin" SDK_VERSION="$SDK_VERSION" uv run --no-project --with packaging python - <<'PY'
           import os
@@ -270,19 +267,25 @@ jobs:
           print("behind" if branch < target else "ahead" if branch > target else "current")
           PY
           )
+          # `ahead` means the branch pins a newer SDK than this run targets:
+          # intentional prerelease coordination, or a hand-pushed commit. Keep
+          # the files as they are, but describe the pin that the branch really
+          # has. An exit here would leave the PR title and body naming a
+          # version that the branch does not pin.
+          pr_version="$SDK_VERSION"
           if [ "$relation" = "ahead" ]; then
-            echo "::notice::Existing SDK pin bump PR already points past workspace SDK version $SDK_VERSION ($branch_code_pin); leaving it unchanged."
-            exit 0
+            echo "::warning::The pin bump PR pins $branch_code_pin, ahead of workspace SDK version $SDK_VERSION; correcting its title and body only."
+            pr_version="$branch_code_pin"
           fi
 
-          # Update only the exact-pin dependency line. The quoted
-          # `deepagents==` match cannot touch the unquoted
-          # `[tool.uv.sources]` path entry. `grep -c` returns 1 on no-match
-          # and 2 on read errors; capture the exit code separately so
-          # `set -e` doesn't swallow either case.
-          pattern="\"deepagents==${branch_code_pin}\""
-          replacement="\"deepagents==${SDK_VERSION}\""
           if [ "$relation" = "behind" ]; then
+            # Update only the exact-pin dependency line. The quoted
+            # `deepagents==` match cannot touch the unquoted
+            # `[tool.uv.sources]` path entry. `grep -c` returns 1 on no-match
+            # and 2 on read errors; capture the exit code separately so
+            # `set -e` doesn't swallow either case.
+            pattern="\"deepagents==${branch_code_pin}\""
+            replacement="\"deepagents==${SDK_VERSION}\""
             set +e
             before=$(grep -cF "$pattern" "$code_pyproject")
             before_rc=$?
@@ -301,20 +304,16 @@ jobs:
               echo "::error::Expected exactly 1 '$replacement' after sed, found $after"
               exit 1
             fi
-          fi
 
-          # Regenerate the lockfile alongside the manifest change so the
-          # pre-commit lock check passes on the PR.
-          if [ "$relation" = "behind" ]; then
+            # Regenerate the lockfile alongside the manifest change so the
+            # pre-commit lock check passes on the PR.
             uv lock --directory libs/code --python 3.12
-          fi
-          if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
-            echo "::error::Expected $lockfile to exist after uv lock"
-            exit 1
-          fi
-          if [ "$relation" = "behind" ]; then
+            if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
+              echo "::error::$lockfile is not tracked in $BRANCH after uv lock"
+              exit 1
+            fi
             if git diff --quiet "$code_pyproject" "$lockfile"; then
-              echo "No changes after edit; bailing out (pin=$branch_code_pin, sdk=$SDK_VERSION)."
+              echo "::error::No changes after edit; bailing out (pin=$branch_code_pin, sdk=$SDK_VERSION)."
               exit 1
             fi
 
@@ -326,11 +325,11 @@ jobs:
           body_file="$(mktemp)"
           {
             printf '%s\n' '<!-- bump-code-sdk-pin-pr -->'
-            printf 'Bumps the exact %s pin in %s from `%s` to `%s` (current workspace SDK version) and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$SDK_VERSION" '`libs/code/uv.lock`'
+            printf 'Bumps the exact %s pin in %s from `%s` to `%s` and regenerates %s.\n\n' '`deepagents`' '`libs/code/pyproject.toml`' "$CODE_PIN" "$pr_version" '`libs/code/uv.lock`'
             printf 'Opened automatically by %s after a commit on `main` changed the SDK version. Merge this before the next %s release so the SDK pin check goes green.\n' '`bump_code_sdk_pin.yml`' '`deepagents-code`'
           } > "$body_file"
 
-          title="chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $SDK_VERSION"
+          title="chore(deps): bump "'`deepagents`'" pin in "'`deepagents-code`'" to $pr_version"
           if [ -n "$EXISTING_PR" ]; then
             gh pr edit "$EXISTING_PR" --title "$title" --body-file "$body_file"
             echo "Updated SDK pin bump PR: $EXISTING_PR_URL"

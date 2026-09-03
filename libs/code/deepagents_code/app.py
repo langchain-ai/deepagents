@@ -19792,7 +19792,8 @@ class DeepAgentsApp(App):
             return True
 
         await self._ensure_transcript_spacers(messages)
-        await self._move_transcript_window_to_tail(messages)
+        if not await self._move_transcript_window_to_tail(messages):
+            return False
 
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
@@ -19871,13 +19872,22 @@ class DeepAgentsApp(App):
 
     async def _move_transcript_window_to_tail(
         self, messages_container: Container
-    ) -> None:
-        """Replace an outdated mounted window with the bounded transcript tail."""
+    ) -> bool:
+        """Replace an outdated mounted window with the bounded transcript tail.
+
+        Returns:
+            Whether the mounted window reached the store tail.
+        """
         if not self._message_store.has_messages_below:
-            return
+            return True
         tail = self._message_store.get_tail_window(self._message_store.WINDOW_SIZE)
         if tail is None:
-            return
+            while self._message_store.has_messages_below:
+                before = self._message_store.get_visible_range()[1]
+                await self._hydrate_messages("below")
+                if self._message_store.get_visible_range()[1] == before:
+                    return False
+            return True
 
         generation = self._transcript_generation
         mounted_ids = {data.id for data in self._message_store.get_visible_messages()}
@@ -19904,9 +19914,9 @@ class DeepAgentsApp(App):
             entries,
             generation=generation,
         ):
-            return
+            return False
         if generation != self._transcript_generation:
-            return
+            return False
 
         moved = self._message_store.move_visible_window_to_tail(
             self._message_store.WINDOW_SIZE
@@ -19918,11 +19928,12 @@ class DeepAgentsApp(App):
                 for node in ((widget, footer) if footer is not None else (widget,))
             ]
             await messages_container.remove_children(hydrated_nodes)
-            return
+            return False
         await messages_container.remove_children(obsolete)
         self._schedule_message_height_measurements([data.id for data in moved])
         self._sync_transcript_spacers(messages_container)
         await self._regroup_completed_tools()
+        return True
 
     async def _prune_messages(
         self,

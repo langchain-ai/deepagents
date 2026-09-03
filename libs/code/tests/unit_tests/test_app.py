@@ -11235,6 +11235,81 @@ class TestMessageTimestampFooters:
                 with pytest.raises(NoMatches):
                     app.query_one(f"#{message_id}", UserMessage)
 
+    async def test_mount_message_hydrates_tail_blocked_by_protected_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A protected old row keeps the store and mounted append in sync."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+            app._message_store.bulk_load(
+                [
+                    MessageData(
+                        type=MessageType.USER,
+                        content=f"m{index}",
+                        id=f"blocked-{index}",
+                    )
+                    for index in range(10)
+                ]
+            )
+            messages = app.query_one("#messages", Container)
+            tail_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                tail_entries,
+                generation=app._transcript_generation,
+            )
+            await app._ensure_transcript_spacers(messages)
+            await messages.remove_children(
+                [
+                    child
+                    for child in messages.children
+                    if child.id
+                    and any(
+                        child.id.startswith(f"blocked-{index}")
+                        for index in range(7, 10)
+                    )
+                ]
+            )
+            app._message_store._visible_start = 1
+            app._message_store._visible_end = 3
+            middle_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                middle_entries,
+                generation=app._transcript_generation,
+            )
+            app._message_store.protect_message("blocked-2")
+
+            assert await app._mount_message(UserMessage("new", id="blocked-new"))
+            await pilot.pause()
+
+            visible_ids = {
+                data.id for data in app._message_store.get_visible_messages()
+            }
+            mounted_ids = {
+                child.id
+                for child in messages.children
+                if child.id
+                in {
+                    *{f"blocked-{index}" for index in range(10)},
+                    "blocked-new",
+                }
+            }
+            assert app._message_store.get_visible_range() == (1, 11)
+            assert mounted_ids == visible_ids
+            assert len(app.query("#blocked-new")) == 1
+
     async def test_hydrate_below_replaces_unbuildable_message(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

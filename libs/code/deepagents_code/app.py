@@ -235,7 +235,7 @@ _DEFERRED_START_NOTICE = (
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
     "anthropic:claude-sonnet-5": "Claude Sonnet 5",
-    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
+    "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
 }
 """Lower-latency models recommended for repeated Auto action reviews."""

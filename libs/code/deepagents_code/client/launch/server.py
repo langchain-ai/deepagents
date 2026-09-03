@@ -27,7 +27,11 @@ from deepagents_code._paths import (
     PATHS,
     export_profile_env,
 )
-from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
+from deepagents_code.config import (
+    _INHERITED_PYTHONPATH_ENV,
+    _dotenv_loaded_values,
+    export_user_tracing_env,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -401,6 +405,9 @@ def _build_server_env() -> dict[str, str]:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
+    for key, value in _dotenv_loaded_values.items():
+        if env.get(key) == value:
+            env.pop(key)
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
@@ -421,6 +428,12 @@ def _build_server_env() -> dict[str, str]:
 
     if inherited_pythonpath is not None:
         env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath
+
+    # Relay the caller's pre-bootstrap tracing values. The server inherits an
+    # environment where bootstrap already replaced them, so it cannot recapture
+    # them itself; without this, `execute` commands would run under the agent's
+    # LangSmith key and project.
+    export_user_tracing_env(env)
     return env
 
 

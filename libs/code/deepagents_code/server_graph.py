@@ -18,6 +18,7 @@ import logging
 import sys
 from collections import OrderedDict
 from pathlib import Path
+from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 # Imported at runtime rather than under TYPE_CHECKING: the LangGraph server
@@ -38,10 +39,11 @@ from deepagents_code.project_utils import ProjectContext, get_server_project_con
 from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Mapping
 
     from deepagents.backends.composite import CompositeBackend
 
+    from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
     from deepagents_code.offload_middleware import OffloadOperation
     from deepagents_code.workspace import WorkspaceBinding
@@ -88,6 +90,9 @@ def _get_mcp_session_manager() -> Any:  # noqa: ANN401
 async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
+    *,
+    has_tavily: bool | None = None,
+    tavily_api_key: str | None = None,
 ) -> tuple[list[Any], list[Any] | None, list[Any]]:
     """Assemble the tool list based on server config.
 
@@ -106,6 +111,8 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
+        has_tavily: Workspace credential availability override.
+        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
 
     Returns:
         Tuple of `(tools, mcp_server_info, mcp_tools)`.
@@ -115,11 +122,21 @@ async def _build_tools(
         RuntimeError: If MCP tool loading fails.
     """
     from deepagents_code.config import credentials
-    from deepagents_code.tools import fetch_url, get_current_thread_id, web_search
+    from deepagents_code.tools import (
+        create_web_search_tool,
+        fetch_url,
+        get_current_thread_id,
+        web_search,
+    )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    if credentials.has_tavily:
-        tools.append(web_search)
+    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
+    if tavily_available:
+        tools.append(
+            web_search
+            if has_tavily is None
+            else create_web_search_tool(tavily_api_key or "")
+        )
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -179,9 +196,10 @@ def _criteria_context_tools(
         MCP tools are included only when their protocol annotations explicitly
         declare them read-only.
     """
-    from deepagents_code.tools import fetch_url, web_search
+    from deepagents_code.tools import fetch_url, is_web_search_tool
 
-    allowed_ids = {id(fetch_url), id(web_search)}
+    allowed_ids = {id(fetch_url)}
+    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )
@@ -239,6 +257,60 @@ async def _make_graphs(
             offload operation bound to that backend.
     """
     config = config_override or ServerConfig.from_env()
+    from deepagents_code.config import (
+        Credentials,
+        _preview_dotenv_environ,
+        use_environment,
+    )
+
+    workspace_path = (
+        project_context_override.user_cwd
+        if project_context_override is not None
+        else Path(config.cwd)
+        if config.cwd is not None
+        else None
+    )
+
+    # Offload the workspace environment snapshot off the event loop. Dotenv
+    # discovery walks parent directories (`Path.resolve()`, `is_file()`) and
+    # reads up to three files, and `snapshot_from_environment` adds
+    # `find_project_root()` -> `Path.cwd()` — all of which `blockbuster`
+    # rejects when invoked directly from the server loop (see issue #5043),
+    # for the same reason as the offload in `_make_graphs_in_environment`.
+    def _resolve_workspace_environment() -> tuple[
+        Mapping[str, str], CredentialsSnapshot
+    ]:
+        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        return environ, Credentials.snapshot_from_environment(
+            start_path=workspace_path,
+            environ=environ,
+        )
+
+    workspace_env, workspace_credentials = await asyncio.to_thread(
+        _resolve_workspace_environment
+    )
+
+    with use_environment(workspace_env):
+        return await _make_graphs_in_environment(
+            config=config,
+            project_context_override=project_context_override,
+            workspace_env=workspace_env,
+            workspace_credentials=workspace_credentials,
+        )
+
+
+async def _make_graphs_in_environment(
+    *,
+    config: ServerConfig,
+    project_context_override: ProjectContext | None,
+    workspace_env: Mapping[str, str],
+    workspace_credentials: CredentialsSnapshot,
+) -> ServerRuntime:
+    """Build one runtime while its immutable workspace environment is active.
+
+    Returns:
+        Agent graph and its workspace-bound resources.
+    """
 
     # Offload cwd/path resolution and the lazy settings bootstrap off the event
     # loop. On Windows, `Path.resolve()` / `Path.cwd()` call `os.getcwd()`, which
@@ -267,13 +339,10 @@ async def _make_graphs(
         from deepagents_code.config import (
             configure_langsmith_secret_redaction,
             create_model,
-            credentials,
             is_memory_auto_save_enabled,
             resolve_auto_classifier_model_for_provider,
         )
 
-        if project_context is not None:
-            credentials.reload_from_environment(start_path=project_context.user_cwd)
         return (
             project_context,
             create_cli_agent,
@@ -308,7 +377,12 @@ async def _make_graphs(
     )
     result.apply_to_runtime_state()
 
-    tools, mcp_server_info, mcp_tools = await _build_tools(config, project_context)
+    tools, mcp_server_info, mcp_tools = await _build_tools(
+        config,
+        project_context,
+        has_tavily=workspace_credentials.has_tavily,
+        tavily_api_key=workspace_credentials.tavily_api_key,
+    )
     read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
 
     # Create sandbox backend if a sandbox provider is configured.
@@ -418,6 +492,9 @@ async def _make_graphs(
             cli_max_retries=result.cli_max_retries,
             summarization_model=config.summarization_model,
             extension_registry=extension_registry,
+            environ=workspace_env,
+            credentials_snapshot=workspace_credentials,
+            model_result=result,
         )
         from deepagents_code.offload_middleware import offload_operation_from
 
@@ -436,7 +513,7 @@ async def _make_graphs(
 
     from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    if is_env_truthy(EXPERIMENTAL):
+    if is_env_truthy(EXPERIMENTAL, environ=workspace_env):
         from deepagents_code.extensions import ExtensionMode, load_extensions
         from deepagents_code.extensions.runtime import bind_server_extensions
 

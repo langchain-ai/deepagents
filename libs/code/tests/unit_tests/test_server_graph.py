@@ -7,7 +7,7 @@ import os
 import sys
 from types import ModuleType, SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
@@ -170,6 +170,25 @@ class TestServerGraph:
         captured = capsys.readouterr()
         assert f"{STARTUP_ERROR_MARKER}ValueError: boom: bad model" in captured.err
 
+    async def test_build_tools_binds_workspace_tavily_key(self) -> None:
+        """Web search uses a workspace-specific tool instead of the singleton."""
+        module = _import_fresh_server_graph()
+        bound_tool = object()
+
+        with patch(
+            "deepagents_code.tools.create_web_search_tool",
+            return_value=bound_tool,
+        ) as create:
+            tools, _, _ = await module._build_tools(
+                ServerConfig(no_mcp=True),
+                None,
+                has_tavily=True,
+                tavily_api_key="workspace-key",
+            )
+
+        assert bound_tool in tools
+        create.assert_called_once_with("workspace-key")
+
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
         """`no_mcp=True` should not call the MCP resolver at all."""
         fetch_tool = object()
@@ -177,12 +196,15 @@ class TestServerGraph:
         resolve_mcp_tools = AsyncMock()
         config_module = _module_with_attrs(
             "deepagents_code.config",
+            active_environment=dict,
             credentials=SimpleNamespace(has_tavily=False),
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
+            create_web_search_tool=Mock(),
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
+            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         mcp_module = _module_with_attrs(
@@ -226,9 +248,16 @@ class TestServerGraph:
             observed["auto_classifier_model"] = kwargs["auto_classifier_model"]
             return graph_obj, _backend_with_offload(object())
 
-        settings_obj = SimpleNamespace(has_tavily=False)
+        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None)
+        environment = dict(os.environ)
         config_module = _module_with_attrs(
             "deepagents_code.config",
+            Credentials=SimpleNamespace(
+                snapshot_from_environment=MagicMock(return_value=settings_obj)
+            ),
+            _preview_dotenv_environ=MagicMock(return_value=environment),
+            active_environment=MagicMock(return_value=environment),
+            use_environment=__import__("contextlib").nullcontext,
             configure_langsmith_secret_redaction=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
@@ -252,8 +281,10 @@ class TestServerGraph:
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
+            create_web_search_tool=Mock(),
             fetch_url=object(),
             get_current_thread_id=object(),
+            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         config = ServerConfig(

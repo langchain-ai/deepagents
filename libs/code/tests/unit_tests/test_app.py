@@ -19195,6 +19195,72 @@ class TestNotificationCenterIntegration:
         app.notify.assert_not_called()  # ty: ignore
         mark_notified.assert_called_once_with("9.9.9")
 
+    async def test_header_failure_does_not_swallow_the_update_notice(self) -> None:
+        """A broken header still leaves the notice and the message intact."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=7,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.mark_update_notified",
+            ),
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.release_requires_prereleases",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.upgrade_command",
+                return_value="uv tool upgrade deepagents-code",
+            ),
+            patch.object(
+                app,
+                "_refresh_stale_install_header",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+                messages = [message.render().plain for message in app.query(AppMessage)]
+
+        assert app._update_available == (True, "9.9.9")
+        assert app._notice_registry.get("update:available") is not None
+        assert any("Update available: v9.9.9" in message for message in messages)
+
     async def test_auto_update_mounts_durable_restart_prompt(self) -> None:
         """With auto-update on, the restart prompt is a message, not a toast."""
         from deepagents_code.tui.widgets.messages import AppMessage

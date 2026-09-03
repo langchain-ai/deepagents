@@ -3793,8 +3793,9 @@ class DeepAgentsApp(App):
         )
         """Whether the installed version is old enough to force the header banner.
 
-        Initialized from the cache-only install-age check, then refreshed by each
-        background update check so long-running sessions can reveal it in place.
+        Initialized from the cache-only install-age check. Every update check
+        that resolves a version refreshes it. A long-running session can
+        therefore both reveal and hide the banner without a restart.
         """
 
         if self._installation_stale:
@@ -6542,6 +6543,15 @@ class DeepAgentsApp(App):
             and days >= INSTALLED_STALE_NOTICE_DAYS
         )
         self._installation_stale = stale
+        # A pushed modal is the top screen and owns no header, so `query_one`
+        # would silently miss. Walk the stack and stop at the screen that has it.
+        for screen in self.screen_stack:
+            headers = screen.query("#app-header")
+            if headers:
+                headers.first().display = is_env_truthy(SHOW_HEADER) or stale
+                break
+        else:
+            logger.debug("No #app-header to refresh; the app is not running yet")
         owned_sub_title = self._stale_header_sub_title
         owns_sub_title = (
             owned_sub_title is not None and self.sub_title == owned_sub_title
@@ -6558,14 +6568,6 @@ class DeepAgentsApp(App):
         elif not stale and owns_sub_title:
             self.sub_title = self._base_sub_title
             self._stale_header_sub_title = None
-        with suppress(NoMatches, ScreenStackError):
-            for screen in self.screen_stack:
-                headers = screen.query("#app-header")
-                if headers:
-                    headers.first(_StaticHeader).display = (
-                        is_env_truthy(SHOW_HEADER) or stale
-                    )
-                    break
 
     async def _mount_update_message(self, latest: str, message: str) -> bool:
         """Mount one durable update message per target version this session.
@@ -6607,13 +6609,16 @@ class DeepAgentsApp(App):
     async def _check_for_updates_impl(self, *, periodic: bool = False) -> None:
         """Check PyPI for a newer version and surface it in-session.
 
-        Phase 1 contacts PyPI and records the latest version on the app.
+        Phase 1 contacts PyPI, records the latest version on the app, and
+        refreshes the stale-install header so a long-running session can reveal
+        or hide the banner in place.
         Phase 2 surfaces a detected update without installing it in-session
         (the actual install runs at startup via `_run_startup_auto_update`):
         when auto-update is enabled it mounts a durable prompt to restart so the
-        startup path can upgrade; otherwise it mounts a durable actionable notice
-        (periodic recheck) or registers the notice and schedules the update
-        modal (initial check).
+        startup path can upgrade. Otherwise it registers an actionable notice,
+        reachable via ctrl+n on either path. A periodic recheck also mounts a
+        durable message pointing at it; the initial check schedules the update
+        modal instead.
         Phase 2 sets `_update_modal_pending` *only* when the modal is
         actually being scheduled; a detected-but-throttled update
         leaves the event clear so missing-dep toasts still fire.
@@ -6637,21 +6642,34 @@ class DeepAgentsApp(App):
                 bypass_cache=periodic,
             )
             if latest is None:
+                # PyPI was unreachable. Keep the last known result rather than
+                # retracting a warning that is already on screen.
                 return
-            if not available:
-                self._update_available = (False, None)
-                self._refresh_stale_install_header(None, update_available=False)
-                return
-            if await asyncio.to_thread(is_installed_version_at_least, latest):
-                self._update_available = (False, None)
-                self._refresh_stale_install_header(None, update_available=False)
-                return
-
-            self._update_available = (True, latest)
-            days = await asyncio.to_thread(installed_days_old)
-            self._refresh_stale_install_header(days, update_available=True)
+            update_available = available and not await asyncio.to_thread(
+                is_installed_version_at_least,
+                latest,
+            )
+            days = (
+                await asyncio.to_thread(installed_days_old)
+                if update_available
+                else None
+            )
         except Exception:
             logger.debug("Background update check failed", exc_info=True)
+            return
+
+        self._update_available = (True, latest) if update_available else (False, None)
+        # Painting the header is our own work, not a network round-trip: a
+        # failure there is a bug worth a warning, and it must not skip phase 2.
+        try:
+            self._refresh_stale_install_header(
+                days,
+                update_available=update_available,
+            )
+        except Exception:
+            logger.warning("Could not refresh the stale-install header", exc_info=True)
+
+        if not update_available:
             return
 
         # Phase 2: auto-update or register actionable notice

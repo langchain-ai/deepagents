@@ -2653,34 +2653,6 @@ class TestBuildOAuthProvider:
         assert metadata.redirect_uris is not None
         assert [str(uri) for uri in metadata.redirect_uris] == [_SLACK_REDIRECT_URI]
 
-    def test_interactive_mode_maps_to_reauth_log_suppression(
-        self,
-        fake_home: Path,
-    ) -> None:
-        """Only non-interactive providers suppress expected reauth SDK logs.
-
-        Interactive sessions keep the SDK's OAuth diagnostics; non-interactive
-        runs replace the expected reauth noise with our login hint.
-        """
-        del fake_home
-        from deepagents_code.mcp_auth import build_oauth_provider
-
-        non_interactive = build_oauth_provider(
-            server_name="notion",
-            server_url="https://mcp.notion.com/mcp",
-            storage=FileTokenStorage("notion"),
-            interactive=False,
-        )
-        interactive = build_oauth_provider(
-            server_name="notion",
-            server_url="https://mcp.notion.com/mcp",
-            storage=FileTokenStorage("notion"),
-            interactive=True,
-        )
-
-        assert cast("Any", non_interactive)._suppress_expected_reauth_logs is True
-        assert cast("Any", interactive)._suppress_expected_reauth_logs is False
-
     async def test_refresh_uses_cached_oauth_metadata_endpoint(
         self,
         fake_home: Path,

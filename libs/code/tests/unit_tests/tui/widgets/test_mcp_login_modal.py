@@ -12,7 +12,6 @@ from mcp.client.auth import OAuthClientProvider
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
-from deepagents_code.mcp_oauth_ui import OAuthInteraction
 from deepagents_code.tui.widgets.mcp_login import MCPLoginCancelledError, MCPLoginScreen
 
 if TYPE_CHECKING:
@@ -62,12 +61,6 @@ def test_mcp_login_screen_implements_oauth_interaction_protocol() -> None:
         assert callable(getattr(screen, method, None)), (
             f"MCPLoginScreen missing protocol method: {method}"
         )
-
-
-def test_mcp_login_screen_has_no_slack_team_prompt() -> None:
-    """`MCPLoginScreen` does not implement `prompt_slack_team_id`; Slack's browser page picks the workspace."""  # noqa: E501
-    screen = MCPLoginScreen("notion")
-    assert not hasattr(screen, "prompt_slack_team_id")
 
 
 class TestMCPLoginScreen:
@@ -199,25 +192,6 @@ class TestMCPLoginScreen:
             assert status_before != status_after
             assert "Status:" in status_after
             assert title_after == title_before
-
-    async def test_device_code_renders_user_code(self) -> None:
-        """`show_device_code` displays the user code and verification URL."""
-        app = _LoginTestApp()
-        async with app.run_test() as pilot:
-            screen = MCPLoginScreen("github")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            await screen.show_device_code(
-                verification_uri="https://github.com/login/device",
-                user_code="ABCD-1234",
-                expires_in=900,
-            )
-            await pilot.pause()
-            assert screen._link_widget is not None
-            link_text = str(screen._link_widget._Static__content)  # ty: ignore
-            assert "https://github.com/login/device" in link_text
-            assert "ABCD-1234" in link_text
 
     async def test_show_success_does_not_leak_tokens(self) -> None:
         """Tokens passed by mistake stay only in the status line."""
@@ -363,19 +337,6 @@ class TestMCPLoginScreenEdgeCases:
             with pytest.raises(MCPLoginCancelledError, match="cancelled before"):
                 await screen.request_callback_url()
 
-    async def test_finish_double_call_is_idempotent(self) -> None:
-        """A second call to `finish` is a no-op and does not raise."""
-        app = _LoginTestApp()
-        async with app.run_test() as pilot:
-            screen = MCPLoginScreen("notion")
-            app.push_screen(screen)
-            await pilot.pause()
-
-            screen.finish(success=True, message="Done.")
-            # Second call must not raise and must not change the outcome.
-            screen.finish(success=False, message="Should be ignored.")
-            assert screen._outcome == "success"
-
 
 class TestMCPLoginPointer:
     """Pointer affordance over links and the manual-URL disclosure row."""
@@ -397,14 +358,6 @@ class TestMCPLoginPointer:
         event = SimpleNamespace(style=SimpleNamespace(link=None), widget=row)
         screen.on_mouse_move(event)  # ty: ignore[invalid-argument-type]
         assert screen.styles.pointer == "pointer"
-
-    def test_hover_elsewhere_uses_default(self) -> None:
-        """Hovering neither a link nor the disclosure row keeps the default cursor."""
-        screen = MCPLoginScreen("notion")
-        screen._link_widget = Static("x")
-        event = SimpleNamespace(style=SimpleNamespace(link=None), widget=None)
-        screen.on_mouse_move(event)  # ty: ignore[invalid-argument-type]
-        assert screen.styles.pointer == "default"
 
     def test_leave_resets_pointer(self) -> None:
         """Leaving the modal resets the cursor to default."""

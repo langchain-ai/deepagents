@@ -1476,7 +1476,7 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
-def _build_mcp_tool(
+async def _build_mcp_tool(
     *,
     mcp_tool: Any,  # noqa: ANN401
     server_name: str,
@@ -1484,11 +1484,11 @@ def _build_mcp_tool(
 ) -> BaseTool:
     """Adapt one mounted MCP tool, then badge it as this app's.
 
-    `langchain.mcp.convert_mcp_tool_to_langchain_tool` owns everything
-    protocol-facing: schema conversion, calling through `client`, and turning an
-    MCP `isError` result into a failed `ToolMessage` carrying the server's own
-    content. The tool arrives namespaced by its mount; that name is recomposed
-    here so it stays within the strictest provider limit.
+    `langchain.mcp.as_langchain_tool` owns everything protocol-facing: schema
+    conversion, calling through `client`, and turning an MCP `isError` result
+    into a failed `ToolMessage` carrying the server's own content. The tool
+    arrives namespaced by its mount; that name is recomposed here so it stays
+    within the strictest provider limit.
 
     Args:
         mcp_tool: MCP tool metadata, as returned by `Client.list_tools`.
@@ -1498,9 +1498,9 @@ def _build_mcp_tool(
     Returns:
         A LangChain `BaseTool` wrapper around the MCP tool.
     """
-    from langchain.mcp import convert_mcp_tool_to_langchain_tool
+    from langchain.mcp import as_langchain_tool
 
-    tool = convert_mcp_tool_to_langchain_tool(mcp_tool, client)
+    tool = await as_langchain_tool(mcp_tool, client)
 
     # Mounting already namespaced the tool as `server_tool`, but that name still
     # has to satisfy the strictest provider limit, so it is recomposed through
@@ -1686,7 +1686,12 @@ def _warm_mcp_adapter_imports() -> None:
     import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
     at the real use site. Runs only when at least one active MCP server exists.
     """
-    from langchain import mcp as _langchain_mcp  # noqa: F401
+    from langchain_core._api import (  # noqa: PLC2701
+        suppress_langchain_beta_warning,
+    )
+
+    with suppress_langchain_beta_warning():
+        from langchain import mcp as _langchain_mcp  # noqa: F401
 
     try:
         from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
@@ -2203,7 +2208,7 @@ async def _load_tools_from_config(
             continue
         by_server[owner].append(mcp_tool)
 
-    def _build_server(
+    async def _build_server(
         server_name: str,
         server_config: dict[str, Any],
     ) -> tuple[list[BaseTool], MCPServerInfo]:
@@ -2222,12 +2227,14 @@ async def _load_tools_from_config(
         """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
         redact_failure_details = redacts[server_name]
         try:
-            server_tools: list[BaseTool] = [
-                _build_mcp_tool(
-                    mcp_tool=mcp_tool, server_name=server_name, client=client
+            server_tools = await asyncio.gather(
+                *(
+                    _build_mcp_tool(
+                        mcp_tool=mcp_tool, server_name=server_name, client=client
+                    )
+                    for mcp_tool in by_server[server_name]
                 )
-                for mcp_tool in by_server[server_name]
-            ]
+            )
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
             # Pair each tool's schema by its mounted name, so the lookup needs no
@@ -2288,7 +2295,7 @@ async def _load_tools_from_config(
                 ),
             )
             continue
-        server_tools, server_info = _build_server(server_name, server_config)
+        server_tools, server_info = await _build_server(server_name, server_config)
         all_tools.extend(server_tools)
         server_infos.append(server_info)
 

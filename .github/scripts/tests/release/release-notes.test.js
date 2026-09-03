@@ -10,6 +10,7 @@ const releaseNotes = require('../../release/release-notes.js');
 
 const APP_SLUG = 'release-notes-bot';
 const BOT = { login: `${APP_SLUG}[bot]`, id: 42 };
+const WORKFLOW_BOT = { login: 'github-actions[bot]', id: 41898282, type: 'Bot' };
 const BOT_AUTH = { appSlug: APP_SLUG, login: BOT.login, id: BOT.id };
 const COMPONENT = 'deepagents-code';
 const RELEASE_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${COMPONENT}`;
@@ -94,6 +95,21 @@ function appliedComment({ id = 20, overrideId = 10, overrideUpdatedAt = OVERRIDE
   };
 }
 
+function staleWarningComment({ id, head, fingerprint, user = WORKFLOW_BOT }) {
+  return {
+    id,
+    node_id: `IC_${id}`,
+    user,
+    body: [
+      '<!-- release-notes-stale',
+      `head: ${head}`,
+      `changelog-fingerprint: ${fingerprint}`,
+      '-->',
+      'New generated release entries appeared.',
+    ].join('\n'),
+  };
+}
+
 function makeCore() {
   return {
     failed: null,
@@ -105,7 +121,7 @@ function makeCore() {
   };
 }
 
-function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, files = new Map(), comparison = 'ahead', changedFiles = [], malformedContent = false, onGetPr = null, onListComments = null, onCreateComment = null } = {}) {
+function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, commentUser = BOT, files = new Map(), comparison = 'ahead', changedFiles = [], malformedContent = false, onGetPr = null, onListComments = null, onCreateComment = null } = {}) {
   const calls = {
     createBlob: [],
     createComment: [],
@@ -115,6 +131,7 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
     getCommit: [],
     getContent: [],
     getRef: [],
+    graphql: [],
     updateComment: [],
     updatePr: [],
     updateRef: [],
@@ -146,7 +163,8 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
         createComment: async params => {
           calls.createComment.push(params);
           if (onCreateComment) onCreateComment({ count: calls.createComment.length, params });
-          const comment = { id: 100 + calls.createComment.length, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body };
+          const id = 100 + calls.createComment.length;
+          const comment = { id, node_id: `IC_${id}`, updated_at: APPLIED_UPDATED_AT, user: commentUser, body: params.body };
           comments.push(comment);
           return { data: comment };
         },
@@ -219,6 +237,10 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
           return { data: appUser };
         },
       },
+    },
+    graphql: async (query, variables) => {
+      calls.graphql.push({ query, variables });
+      return { minimizeComment: { minimizedComment: { isMinimized: true } } };
     },
     paginate: async (method, params) => (await method(params)).data,
   };
@@ -1080,7 +1102,12 @@ test('required check fails after override edit and after release-please overwrit
     body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
   });
   const files = new Map([[overwrittenPr.head.sha, changelog(newGenerated)]]);
-  const overwritten = makeGithub({ pr: overwrittenPr, comments: [overrideComment(), appliedComment()], files });
+  const overwritten = makeGithub({
+    pr: overwrittenPr,
+    comments: [overrideComment(), appliedComment()],
+    commentUser: WORKFLOW_BOT,
+    files,
+  });
   const overwrittenCore = makeCore();
   await releaseNotes.checkCuratedState({ github: overwritten.github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core: overwrittenCore, number: 123, ...BOT_AUTH });
   assert.match(overwrittenCore.failed, /changelog does not contain/);
@@ -1100,7 +1127,7 @@ test('required check warns when generated entries change after draft before appl
   });
   const comments = [overrideComment()];
   const files = new Map([[changedHead, changelog(newGenerated)]]);
-  const { github, calls } = makeGithub({ pr, comments, files });
+  const { github, calls } = makeGithub({ pr, comments, commentUser: WORKFLOW_BOT, files });
 
   const core = makeCore();
   const result = await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
@@ -1142,7 +1169,7 @@ test('a failed new-entries warning comment does not mask the actionable gate rea
   });
   assert.equal(result.status, 'missing');
   assert.match(core.failed, /draft and then/);
-  assert.ok(core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+  assert.ok(core.warnings.some(message => /Could not update the new-entries warning comments/.test(message)));
 });
 
 test('the new-entries warning comment retries a transient post failure', async () => {
@@ -1176,7 +1203,7 @@ test('the new-entries warning comment retries a transient post failure', async (
   });
   assert.equal(result.status, 'missing');
   assert.equal(createCommentAttempts, 2);
-  assert.ok(!core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+  assert.ok(!core.warnings.some(message => /Could not update the new-entries warning comments/.test(message)));
 });
 
 test('the new-entries warning retry does not duplicate a comment the server already accepted', async () => {
@@ -1194,7 +1221,8 @@ test('the new-entries warning retry does not duplicate a comment the server alre
   // snapshot would post the identical warning again; the retry must re-read
   // comments, see the marker, and stop after one POST.
   github.rest.issues.createComment = async params => {
-    comments.push({ id: 100 + comments.length, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body });
+    const id = 100 + comments.length;
+    comments.push({ id, node_id: `IC_${id}`, updated_at: APPLIED_UPDATED_AT, user: WORKFLOW_BOT, body: params.body });
     calls.createComment.push(params);
     throw new Error('request timed out');
   };
@@ -1211,7 +1239,76 @@ test('the new-entries warning retry does not duplicate a comment the server alre
   });
   assert.equal(result.status, 'missing');
   assert.equal(calls.createComment.length, 1);
-  assert.ok(!core.warnings.some(message => /Could not post the new-entries warning comment/.test(message)));
+  assert.ok(!core.warnings.some(message => /Could not update the new-entries warning comments/.test(message)));
+});
+
+test('the newest new-entries warning hides prior bot warnings and uses copyable command blocks', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const comments = [
+    overrideComment(),
+    staleWarningComment({ id: 30, head: 'b'.repeat(40), fingerprint: 'old-1' }),
+    staleWarningComment({ id: 31, head: 'c'.repeat(40), fingerprint: 'old-2' }),
+    staleWarningComment({
+      id: 32,
+      head: 'c'.repeat(40),
+      fingerprint: 'contributor-copy',
+      user: { login: 'contributor', id: 7, type: 'User' },
+    }),
+  ];
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github, calls } = makeGithub({ pr, comments, commentUser: WORKFLOW_BOT, files });
+
+  await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: makeCore(),
+    number: 123,
+    ...BOT_AUTH,
+  });
+
+  assert.equal(calls.createComment.length, 1);
+  assert.match(
+    calls.createComment[0].body,
+    /please re-run:\n\n```\n@release-bot draft\n```\n\nand then:\n\n```\n@release-bot apply\n```$/,
+  );
+  assert.deepEqual(calls.graphql.map(call => call.variables.id), ['IC_30', 'IC_31']);
+  for (const { query } of calls.graphql) {
+    assert.match(query, /minimizeComment\(input: \{subjectId: \$id, classifier: OUTDATED\}\)/);
+  }
+});
+
+test('returning to an older warned state creates a fresh visible warning', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const fingerprint = releaseNotes.changelogFingerprint(newGenerated);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const comments = [
+    overrideComment(),
+    staleWarningComment({ id: 30, head: changedHead, fingerprint }),
+    staleWarningComment({ id: 31, head: 'e'.repeat(40), fingerprint: 'newer-state' }),
+  ];
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github, calls } = makeGithub({ pr, comments, commentUser: WORKFLOW_BOT, files });
+
+  await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: makeCore(),
+    number: 123,
+    ...BOT_AUTH,
+  });
+
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, new RegExp(`^<!-- release-notes-stale\\nhead: ${changedHead}\\nchangelog-fingerprint: ${fingerprint}\\n-->`));
+  assert.deepEqual(calls.graphql.map(call => call.variables.id), ['IC_30', 'IC_31']);
 });
 
 test('draft, unmanaged branch, and bypass label pass without metadata', async () => {

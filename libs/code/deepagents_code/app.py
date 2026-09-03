@@ -19792,7 +19792,7 @@ class DeepAgentsApp(App):
             return True
 
         await self._ensure_transcript_spacers(messages)
-        await self._hydrate_all_messages_below()
+        await self._move_transcript_window_to_tail(messages)
 
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
@@ -19869,14 +19869,60 @@ class DeepAgentsApp(App):
 
         return True
 
-    async def _hydrate_all_messages_below(self) -> None:
-        """Mount any hidden tail before appending fresh transcript output."""
-        while self._message_store.has_messages_below:
-            before = self._message_store.get_visible_range()[1]
-            await self._hydrate_messages("below")
-            after = self._message_store.get_visible_range()[1]
-            if after == before:
-                break
+    async def _move_transcript_window_to_tail(
+        self, messages_container: Container
+    ) -> None:
+        """Replace an outdated mounted window with the bounded transcript tail."""
+        if not self._message_store.has_messages_below:
+            return
+        tail = self._message_store.get_tail_window(self._message_store.WINDOW_SIZE)
+        if tail is None:
+            return
+
+        generation = self._transcript_generation
+        mounted_ids = {data.id for data in self._message_store.get_visible_messages()}
+        tail_ids = {data.id for data in tail}
+        entries = [
+            self._build_hydration_entry(data)
+            for data in tail
+            if data.id not in mounted_ids
+        ]
+        obsolete_ids = mounted_ids - tail_ids
+        obsolete_footer_ids = {
+            _message_timestamp_footer_id(message_id) for message_id in obsolete_ids
+        }
+        obsolete = [
+            child
+            for child in messages_container.children
+            if child.id in obsolete_ids
+            or child.id in obsolete_footer_ids
+            or isinstance(child, ToolGroupSummary)
+        ]
+
+        if not await self._mount_hydration_batch(
+            messages_container,
+            entries,
+            generation=generation,
+        ):
+            return
+        if generation != self._transcript_generation:
+            return
+
+        moved = self._message_store.move_visible_window_to_tail(
+            self._message_store.WINDOW_SIZE
+        )
+        if moved is None:
+            hydrated_nodes = [
+                node
+                for widget, _data, footer in entries
+                for node in ((widget, footer) if footer is not None else (widget,))
+            ]
+            await messages_container.remove_children(hydrated_nodes)
+            return
+        await messages_container.remove_children(obsolete)
+        self._schedule_message_height_measurements([data.id for data in moved])
+        self._sync_transcript_spacers(messages_container)
+        await self._regroup_completed_tools()
 
     async def _prune_messages(
         self,

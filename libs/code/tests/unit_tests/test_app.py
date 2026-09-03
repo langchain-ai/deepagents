@@ -11153,47 +11153,87 @@ class TestMessageTimestampFooters:
                 app.query_one("#spacer-0", UserMessage)
             assert app.query_one("#spacer-4", UserMessage)
 
-    async def test_mount_message_hydrates_hidden_tail_before_append(
+    async def test_mount_message_moves_directly_to_bounded_tail(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """New live output should not skip messages hidden below the window."""
-        from deepagents_code.tui.widgets.message_store import MessageType
+        """New live output should mount only the bounded tail before appending."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            for index in range(5):
-                await app._mount_message(UserMessage(f"m{index}", id=f"tail-{index}"))
-            await pilot.pause()
-
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            archived = [
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"m{index}",
+                    id=f"tail-{index}",
+                )
+                for index in range(100)
+            ]
+            app._message_store.bulk_load(archived)
+            entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
             messages = app.query_one("#messages", Container)
-            await app._prune_messages("below", messages)
+            assert await app._mount_hydration_batch(
+                messages,
+                entries,
+                generation=app._transcript_generation,
+            )
+            await app._ensure_transcript_spacers(messages)
+            app._message_store._visible_start = 10
+            app._message_store._visible_end = 13
+            tail_nodes = [
+                child
+                for child in messages.children
+                if child.id
+                and any(
+                    child.id.startswith(f"tail-{index}") for index in range(97, 100)
+                )
+            ]
+            await messages.remove_children(tail_nodes)
+            middle_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                middle_entries,
+                generation=app._transcript_generation,
+            )
             await pilot.pause()
 
-            assert app._message_store.has_messages_below
-            with pytest.raises(NoMatches):
-                app.query_one("#tail-3", UserMessage)
+            hydrate_calls = 0
 
+            async def count_hydration(
+                direction: Literal["above", "below"], *, count: int | None = None
+            ) -> int:
+                nonlocal hydrate_calls
+                hydrate_calls += 1
+                await asyncio.sleep(0)
+                assert direction in {"above", "below"}
+                assert count is None or count >= 0
+                return 0
+
+            monkeypatch.setattr(app, "_hydrate_messages", count_hydration)
             await app._mount_message(UserMessage("new", id="tail-new"))
             await pilot.pause()
 
-            assert not app._message_store.has_messages_below
+            assert hydrate_calls == 0
+            assert app._message_store.get_visible_range() == (97, 101)
             assert [
                 msg.id
                 for msg in app._message_store.get_all_messages()
                 if msg.type is MessageType.USER
-            ] == [
-                "tail-0",
-                "tail-1",
-                "tail-2",
-                "tail-3",
-                "tail-4",
-                "tail-new",
-            ]
-            for message_id in ["tail-3", "tail-4", "tail-new"]:
+            ] == [*[f"tail-{index}" for index in range(100)], "tail-new"]
+            for message_id in ["tail-97", "tail-98", "tail-99", "tail-new"]:
                 assert app.query_one(f"#{message_id}", UserMessage)
+            for message_id in ["tail-10", "tail-11", "tail-12", "tail-50"]:
+                with pytest.raises(NoMatches):
+                    app.query_one(f"#{message_id}", UserMessage)
 
     async def test_hydrate_below_replaces_unbuildable_message(
         self, monkeypatch: pytest.MonkeyPatch

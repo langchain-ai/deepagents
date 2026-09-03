@@ -21,7 +21,15 @@ class _AnthropicPromptCachingMiddleware(AnthropicPromptCachingMiddleware):
 
 def _is_anthropic_vertex(model: BaseChatModel) -> bool:
     """Return whether a model uses Anthropic through Vertex AI."""
-    return model._llm_type == "anthropic-chat-vertexai"
+    module_name = "langchain_google_vertexai.model_garden"
+    try:
+        module = import_module(module_name)
+    except ImportError as exc:
+        if exc.name not in {"langchain_google_vertexai", module_name}:
+            raise
+        logger.debug("Anthropic Vertex prompt caching is unavailable.", exc_info=exc)
+        return False
+    return isinstance(model, module.ChatAnthropicVertex)
 
 
 logger = logging.getLogger(__name__)

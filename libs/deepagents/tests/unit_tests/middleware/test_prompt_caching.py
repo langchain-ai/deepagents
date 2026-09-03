@@ -1,7 +1,11 @@
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import pytest
 from langchain.agents.middleware.types import ModelRequest, ModelResponse
 from langchain_core.messages import HumanMessage
 
-from deepagents.middleware._prompt_caching import _AnthropicPromptCachingMiddleware
+from deepagents.middleware._prompt_caching import _AnthropicPromptCachingMiddleware, _is_anthropic_vertex
 from tests.unit_tests.chat_model import GenericFakeChatModel
 
 
@@ -22,7 +26,9 @@ def test_anthropic_vertex_receives_prompt_caching() -> None:
         captured.append(cached)
         return ModelResponse(result=[])
 
-    middleware.wrap_model_call(request, handler)
+    module = SimpleNamespace(ChatAnthropicVertex=AnthropicVertexFakeChatModel)
+    with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
+        middleware.wrap_model_call(request, handler)
 
     assert captured[0].model_settings["cache_control"] == {"type": "ephemeral", "ttl": "5m"}
 
@@ -38,7 +44,30 @@ def test_other_models_do_not_receive_anthropic_prompt_caching() -> None:
         captured.append(cached)
         return ModelResponse(result=[])
 
-    middleware.wrap_model_call(request, handler)
+    module = SimpleNamespace(ChatAnthropicVertex=AnthropicVertexFakeChatModel)
+    with patch("deepagents.middleware._prompt_caching.import_module", return_value=module):
+        middleware.wrap_model_call(request, handler)
 
     assert captured[0] is request
     assert "cache_control" not in captured[0].model_settings
+
+
+def test_anthropic_vertex_optional_dependency_can_be_absent() -> None:
+    model = AnthropicVertexFakeChatModel(messages=iter([]))
+    error = ModuleNotFoundError(name="langchain_google_vertexai")
+
+    with patch("deepagents.middleware._prompt_caching.import_module", side_effect=error):
+        assert not _is_anthropic_vertex(model)
+
+
+def test_anthropic_vertex_preserves_unrelated_import_errors() -> None:
+    model = AnthropicVertexFakeChatModel(messages=iter([]))
+
+    with (
+        patch(
+            "deepagents.middleware._prompt_caching.import_module",
+            side_effect=ImportError(name="missing_transitive"),
+        ),
+        pytest.raises(ImportError),
+    ):
+        _is_anthropic_vertex(model)

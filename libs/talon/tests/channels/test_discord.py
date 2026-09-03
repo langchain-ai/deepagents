@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -14,6 +15,7 @@ from deepagents_talon.channels.discord import (
     _DiscordAttachment,
     _DiscordInboundMessage,
     _DiscordInboundReaction,
+    _DiscordPyGateway,
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia
@@ -107,6 +109,45 @@ def _stub_failing_download(monkeypatch):
         raise OSError(msg)
 
     monkeypatch.setattr(discord_module, "_download_attachment_file", fake_download)
+
+
+async def test_gateway_enables_reconnect(monkeypatch: pytest.MonkeyPatch) -> None:
+    reconnect_values: list[bool] = []
+
+    class FakeClient:
+        user = None
+
+        def __init__(self, *, intents: object) -> None:
+            del intents
+            self.closed = asyncio.Event()
+
+        def event(self, callback):
+            return callback
+
+        async def start(self, token: str, *, reconnect: bool) -> None:
+            del token
+            reconnect_values.append(reconnect)
+            await self.closed.wait()
+
+        async def wait_until_ready(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            self.closed.set()
+
+    monkeypatch.setattr(discord_module.discord, "Client", FakeClient)
+    gateway = _DiscordPyGateway(
+        token="test-token",  # noqa: S106  # inert test token
+        connect_timeout_seconds=1,
+    )
+
+    await gateway.start(
+        handle_message=lambda _: asyncio.sleep(0),
+        handle_reaction=lambda _: asyncio.sleep(0),
+    )
+    await gateway.stop()
+
+    assert reconnect_values == [True]
 
 
 def _collector():

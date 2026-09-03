@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:2ebd3b35aede807642a48db0e6a9251a61962d975d4fe2f690d33ccba4e02440",
+  "pageVersion": "sha256:29b876069f93c2d5cb46c7e8ceda814b0fc12cc5e02366c7f7a3ab08baa14800",
   "claims": [
     {
       "id": "claim_02af55a6152f4eb88b7452398694e90f",
@@ -80,7 +80,7 @@
     },
     {
       "id": "claim_6ca6f10c76864bfba0c2afaa47253f71",
-      "statement": "The declared core package dependencies are directional: deepagents-code depends on deepagents and deepagents-acp; deepagents-acp depends on deepagents; deepagents-evals depends on deepagents, deepagents-code, and Harbor; and deepagents-talon depends on deepagents and deepagents-code.",
+      "statement": "The core manifests declare directional first-party dependencies: deepagents-code depends on deepagents==0.7.13 and deepagents-acp>=0.0.10,<1.0.0; deepagents-acp depends on deepagents; deepagents-evals depends on deepagents, deepagents-code, and Harbor; and deepagents-talon depends on deepagents and deepagents-code.",
       "evidence": [
         {
           "resource": "repo://libs/acp/pyproject.toml#L25-L29",
@@ -92,7 +92,7 @@
         },
         {
           "resource": "repo://libs/code/pyproject.toml#L28-L38",
-          "version": "repo-lines-v1:sha256:cf8deac27ecd047d620a840e4dd24c2afe8a6a1e6eabf105e6c41fced4700707:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGNmYTA0N2MyMWZmNzU5NTMxOWE3ZjBhYTJhYThjY2FhMDcwM2RmMDY5YjkzZDViOGNmM2I3NDdkMTdjYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwYzI4MDIwMjljNmIzMjFhMDlkMjcwNTQ5NmQ0YTE5ZjExZDhhNmI4OTM4ZDJhZjkzOWM4Y2JkYzY1YjJlODcifQ"
+          "version": "repo-lines-v1:sha256:f511015e22eac83ffbd0798ed9e272826c6fc8ce65892c86adba1ff06a146ac5:eyJzZWxlY3RlZExpbmVDb3VudCI6MTEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImFkOTVmNWU5ZWRlMDE4MTYwNDNjMDc5N2FjZThkYTJhYzRlOTlhOGE2YTYxMGZhOTg1NzBlZjM0YjkzNTYxMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImQ4OGNmYTA0N2MyMWZmNzU5NTMxOWE3ZjBhYTJhYThjY2FhMDcwM2RmMDY5YjkzZDViOGNmM2I3NDdkMTdjYmQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImFhZmQwZDk4OTM5MWMwMDdhN2Q3YWM0NWI0OWJmY2Y3MjE0OWNlNjA3MTgzOTBiY2U0MTQzMDZkNGQ4YTQ2ZDQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjAwYzI4MDIwMjljNmIzMjFhMDlkMjcwNTQ5NmQ0YTE5ZjExZDhhNmI4OTM4ZDJhZjkzOWM4Y2JkYzY1YjJlODcifQ"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml#L19-L31",
@@ -128,7 +128,7 @@
         },
         {
           "resource": "repo://libs/deepagents/pyproject.toml#L1-L18",
-          "version": "repo-lines-v1:sha256:43d9731daa2e9b9d54c02100e835c253aa7ca82ef0ea7b7b10d50c6814cba052:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhMTk3MWViNTA5MzQ5ZTY0MjI0MWEzMThlZjdjMGEyYzdiN2M2ZTAxYWMyMThmYTZiNDVkN2E0MDNkOTQ3NGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MifQ"
+          "version": "repo-lines-v1:sha256:cd06b15833dea4158b346be08e258e8aa03747018d18ac8da139fd46666fe837:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRhMTk3MWViNTA5MzQ5ZTY0MjI0MWEzMThlZjdjMGEyYzdiN2M2ZTAxYWMyMThmYTZiNDVkN2E0MDNkOTQ3NGUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjowLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjA5M2ViZjNhZWE3MzgxN2NmZTQzNmY4YTVhOWIxNGVhMDI4NmE2MmVhNDRhMWYyZTk4ZjUxODBhZTUyODNiY2MifQ"
         },
         {
           "resource": "repo://libs/evals/pyproject.toml#L1-L18",
@@ -139,10 +139,24 @@
           "version": "repo-lines-v1:sha256:9854fa09f7a45652a92ce6d72930e8e00d9e89fb03c63b5e212dc748a3bbea33:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjcwMmE4MWMzODM2ZWRlZjJkMGJhMTFkMjM1M2ZiNmRhYmM3NzcxNTBhN2NhODNlYTBkOWU5YTcwMzEzZmVhYmIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY5NDE2ZTA5Zjc4YmEzMTZjMDMyNTY4MjEzYjg1NWVlNzU2ZTQxNTY1ZDkxOGYwOTUxOWM4MWZkNjIwZjQwNjAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxMzdhYWFhYzhhZjRmMGNiYjA4YTcxZjZlNTRjMjhmYjBhNDgxYjdlYWRlZWExMjEzNGM0NzM4NzUzNGU3ZjgiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjRjMDYzNzc1Zjc3MzZiOGFkMjkxNGI2MmJlYTEzYTY1YjFiZTM2YzVjNTRlYjUyYWQ0YTY3OWM0NGZjM2U3MjUifQ"
         }
       ]
+    },
+    {
+      "id": "claim_26e1f47683f84f508dde75ffe7e80c44",
+      "statement": "create_deep_agent() is the Deep Agents assembly point: it configures the default middleware stack and can configure backends, subagents, skills, memory, and profiles before delegating agent construction to LangChain's create_agent().",
+      "evidence": [
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L24-L26",
+          "version": "repo-lines-v1:sha256:f416a70f76576d49d0db8831f6c451c6f8fe0954bcf3a63afe5f2fd33d9103e7:eyJzZWxlY3RlZExpbmVDb3VudCI6MywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiN2YzYzdiYTU5M2RhYjMyOTgzODhlMmMxYjkzOTA2MjQ0ZmM1NjYwMmUzNjE5YjM1YmUxNTI4OTFhNjkzYjM2MiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiYjc0ODdlY2Q1ZjFjM2Q2ODlmMmNhOTE1MDNlOGVlYjZjYWM4ODUzYjJlOWFjZWNhYjg2NTI5MmIzMzliY2VhZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMDAzMjJlYzUzZjFkNjFkMjA4NzQ2OWY1YTEyOWVlOTdmYjk1MWVkMjZhZTk1YjBkZmUxYjg4OWU5NzhkZDc2YiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMjZhODRjNDViMGQ3NGMyNGQ5NjM1NjFhNjk2NjMwOGRhMzhlZDYyNWUyZjljY2FhOGE2MmZhNGJiZjBjZTU5NiJ9"
+        },
+        {
+          "resource": "repo://libs/ARCHITECTURE.md#L32-L47",
+          "version": "repo-lines-v1:sha256:558653b333e98813ec93983ccbf976a240ae30f02a5a0f76e9e1519b1a97b340:eyJzZWxlY3RlZExpbmVDb3VudCI6MTYsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE4ZmU1YzgyOTQzMGNhNWFhY2ZmMzQ1NTMwYjQ4YThmMjBlY2FiODhlZDI3NmE4N2Q3Nzk5ZDMxNzQ4Y2IzOWQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjI0NjczNzQxNmFmNDM3Yzg1YjRhY2ZhYmNmMzcwMjYyZjg5NGZjYjkyZjFkZmU2MDQzYmY1YWQ2MWQzYzA5YTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImYxODZjZTE5Y2NlOWIxMGUyZDU1NjA3YzI1ZjljYmY1NDYyNGJhMjJhOWUwMWM5MzNlOTBmYTU3YWJjYTViZWUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImNmMmZlNDEyMTQ1YjIxMTc4ZjI3ZWJhNzNjYmFjNGE4ZDc4MTZjZjdiNWZjN2Y4NWU5ZDIzYjk3NzhlMTZkNGYifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-02T08:05:45.554Z"
+    "at": "2026-09-03T08:05:39.427Z"
   }
 }

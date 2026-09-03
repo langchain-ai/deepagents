@@ -6,6 +6,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import os
@@ -246,7 +247,12 @@ class _BridgeTransport:
                 timeout=self.timeout,
             ) as response:
                 return json.loads(response.read().decode())
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as error:
             msg = f"WhatsApp bridge request failed: {method} {path}"
             retryable = (
                 isinstance(error, urllib.error.HTTPError)
@@ -502,19 +508,23 @@ class WhatsAppChannel:
         await self._wait_for_bridge()
 
     async def _stop_bridge(self) -> None:
-        if self._process is None:
+        process = self._process
+        if process is None:
             log_debug_event(logger, "whatsapp.bridge.stop.skipped", reason="not_running")
             return
         log_debug_event(logger, "whatsapp.bridge.stopping")
-        self._process.terminate()
         try:
-            await asyncio.wait_for(self._process.wait(), timeout=5)
-        except TimeoutError:
-            self._process.kill()
-            await self._process.wait()
-        await self._stop_bridge_output_tasks()
-        self._process = None
-        log_debug_event(logger, "whatsapp.bridge.stopped")
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+        finally:
+            self._process = None
+            await self._stop_bridge_output_tasks()
+            log_debug_event(logger, "whatsapp.bridge.stopped")
 
     async def _restart_bridge(self) -> None:
         logger.warning("Restarting WhatsApp bridge after failed health checks")
@@ -605,7 +615,17 @@ class WhatsAppChannel:
                     detail="disconnected",
                 )
                 if self._failed_health_checks >= _FAILED_HEALTH_RESTART_THRESHOLD:
-                    await self._restart_bridge()
+                    try:
+                        await self._restart_bridge()
+                    except (OSError, _WhatsAppBridgeError) as error:
+                        logger.warning(
+                            "Failed to restart WhatsApp bridge; retrying after interval",
+                        )
+                        log_debug_event(
+                            logger,
+                            "whatsapp.bridge.restart.failed",
+                            error_type=type(error).__name__,
+                        )
             await asyncio.sleep(self.config.health_interval_seconds)
 
     async def _wait_for_bridge(self) -> None:

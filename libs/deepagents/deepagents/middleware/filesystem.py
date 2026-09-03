@@ -1027,6 +1027,30 @@ def _truncate_paginated_read(
     return content[:max_content_length] + truncation_msg
 
 
+def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
+    r"""Restore blank source rows a page loses to `split("\n")`.
+
+    Backends that join a page's lines with `"\n"` as a separator leave a blank
+    final row indistinguishable from a trailing terminator, which
+    `format_content_with_line_numbers` drops. Pads to the window the backend
+    reported and never truncates, since a backend may append a truncation
+    banner numbered past `end_line`.
+
+    Args:
+        content: Serialized content for the read window.
+        start_line: First source line in the window.
+        end_line: Last source line in the window.
+
+    Returns:
+        A list of rows when padding was needed, `content` unchanged otherwise.
+    """
+    rows = content.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    missing = end_line - start_line + 1 - len(rows)
+    return [*rows, *[""] * missing] if missing > 0 else content
+
+
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
     """Merge file updates with support for deletions.
 
@@ -1906,22 +1930,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
-            # Empty files get a uniform warning regardless of encoding/type, so
-            # check before routing to avoid a degenerate empty content block for
-            # binary reads.
+            # Empty content earns the warning ahead of type routing so a binary
+            # read never renders a degenerate empty content block. Only content
+            # that is the whole file qualifies: an unpaginated result, or a
+            # window spanning every line. A blank window of a file with content
+            # elsewhere renders its rows below instead. Unknown `total_lines`
+            # fails closed, so an unprovable whole-file claim renders rows too.
             empty_msg = check_empty_content(content)
-            if empty_msg:
-                # Empty content has two causes that must not be conflated: a
-                # zero-line window, where the file was never inspected, and a
-                # genuinely empty file. Reporting the former as the latter
-                # states something false about a file that may have contents.
-                # The backend declares which one happened: both arrive as
-                # empty content with no pagination metadata, but only the
-                # never-inspected window sets `no_lines_requested` — a file
-                # that was inspected and is empty (whitespace-only text from
-                # `slice_read_response`'s blank branch, or empty base64 from
-                # a binary read that ignored `limit`) keeps the empty-file
-                # reminder.
+            is_whole_file = read_result.start_line is None or (read_result.start_line == 1 and read_result.total_lines == read_result.end_line)
+            if empty_msg and is_whole_file:
+                # A zero-line window never inspected the file, so it must not be
+                # reported as empty.
                 if not content and read_result.no_lines_requested:
                     empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
                 return ToolMessage(
@@ -1959,11 +1978,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            # `max(offset, 0)` so the fallback gutter stays 1-indexed: a backend
-            # that returns numberable text without `start_line` would otherwise
-            # render a zero or negative line marker, which the row-marker
-            # parsers downstream assume never happens.
-            content = format_content_with_line_numbers(content, start_line=read_result.start_line or max(offset, 0) + 1)
+            rows: str | list[str] = content
+            if read_result.start_line is not None and read_result.end_line is not None:
+                rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
+            content = format_content_with_line_numbers(
+                rows,
+                # `max(offset, 0)` so the fallback gutter stays 1-indexed: a
+                # backend that returns numberable text without `start_line`
+                # would otherwise render a zero or negative line marker, which
+                # the row-marker parsers downstream assume never happens.
+                start_line=read_result.start_line or max(offset, 0) + 1,
+            )
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).

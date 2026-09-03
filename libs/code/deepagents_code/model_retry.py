@@ -32,7 +32,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any
 
-from langchain.agents.middleware.types import AgentMiddleware
+from langchain.agents.middleware.types import AgentMiddleware, TracePolicy, omit_payload
 from langchain_core.callbacks import BaseCallbackManager
 from langchain_core.exceptions import ModelError
 from langchain_core.runnables.config import var_child_runnable_config
@@ -1036,6 +1036,8 @@ class CodeModelRetryMiddleware(AgentMiddleware):
     reconcile output from a superseded attempt when a transient failure is
     retried after streaming began.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
 
     def __init__(
         self,

@@ -47,6 +47,22 @@ function serializedId(value) {
   return typeof value.id === "string" && value.id ? value.id : null;
 }
 
+async function quotedMessageContext(message) {
+  if (!message.hasQuotedMsg) {
+    return { participant: null, messageId: null, status: "not_reply" };
+  }
+  try {
+    const quoted = await message.getQuotedMessage();
+    return {
+      participant: widString(quoted.author) || widString(quoted.from),
+      messageId: serializedId(quoted.id),
+      status: "resolved",
+    };
+  } catch (_error) {
+    return { participant: null, messageId: null, status: "lookup_failed" };
+  }
+}
+
 function normalizeId(value) {
   if (!value || typeof value !== "object" || value._serialized) {
     return value;
@@ -257,6 +273,7 @@ module.exports = {
   isSelfChat,
   normalizeId,
   normalizeMessage,
+  quotedMessageContext,
   serializedId,
   widString,
 };

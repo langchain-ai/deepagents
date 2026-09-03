@@ -14,8 +14,13 @@ import logging
 import threading
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, get_type_hints
 
+from langchain_core.tools.base import (
+    InjectedToolCallId,
+    _is_injected_arg_type,
+    get_all_basemodel_annotations,
+)
 from langgraph.errors import GraphInterrupt
 from langgraph.prebuilt.tool_node import _get_all_injected_args
 from quickjs_rs import (
@@ -293,7 +298,13 @@ def _inject_tool_args_for_ptc(
 
 def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
     """Return whether a tool declares an injected tool call ID."""
-    return "tool_call_id" in _get_all_injected_args(tool).all_injected_keys
+    schema_annotations = get_all_basemodel_annotations(tool.get_input_schema())
+    func = getattr(tool, "func", None) or getattr(tool, "coroutine", None)
+    func_annotations = get_type_hints(func, include_extras=True) if func else {}
+    return any(
+        _is_injected_arg_type(type_, injected_type=InjectedToolCallId)
+        for type_ in {**func_annotations, **schema_annotations}.values()
+    )
 
 
 def _bridge_symbol_name(tool_name: str) -> str:

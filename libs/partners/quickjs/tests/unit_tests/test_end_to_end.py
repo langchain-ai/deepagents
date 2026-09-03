@@ -124,10 +124,10 @@ def get_user_email_or_none(user_id: int) -> str | None:
 @tool
 def echo_call_id(
     value: str,
-    tool_call_id: Annotated[str, InjectedToolCallId],
+    correlation: Annotated[str, InjectedToolCallId],
 ) -> str:
     """Return the synthetic tool_call_id back to the caller."""
-    return f"{value}|{tool_call_id}"
+    return f"{value}|{correlation}"
 
 
 class _StreamingFakeChatModel(BaseChatModel):

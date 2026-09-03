@@ -28,6 +28,7 @@ WORKFLOW = ROOT / ".github" / "workflows" / "bump_code_sdk_pin.yml"
 STALE_GATE = "steps.versions.outputs.stale == 'true'"
 LOOKUP_STEP = "Find existing automated pin bump PR"
 WRITE_STEP = "Create or update pin bump PR"
+COMPARE_SCRIPT = ".github/scripts/release/compare_versions.py"
 
 
 def _load_workflow() -> dict:
@@ -105,6 +106,16 @@ def test_lookup_delegates_to_the_tested_selector() -> None:
     assert "gh pr list" not in run
     assert "--paginate" in run
     assert 'echo "branch=$branch" >> "$GITHUB_OUTPUT"' in run
+
+
+def test_both_version_gates_use_the_same_comparison() -> None:
+    # A local reimplementation of either gate can order a prerelease pin
+    # differently from the other, and the workflow then bumps a branch it
+    # judged current, or leaves a branch it judged stale alone.
+    for name in ("Resolve workspace SDK version and current Code pin", WRITE_STEP):
+        run = _find_step(name)["run"]
+        assert COMPARE_SCRIPT in run
+        assert "from packaging.version import Version" not in run
 
 
 def test_pr_body_carries_the_marker_the_selector_matches() -> None:

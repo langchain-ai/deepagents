@@ -124,16 +124,15 @@ jobs:
             fail "Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
           fi
 
-          stale=$(CODE_PIN="$code_pin" SDK_VERSION="$sdk_version" uv run --no-project --with packaging python - <<'PY'
-          import os
-          import sys
-
-          from packaging.version import Version
-
-          stale = Version(os.environ["CODE_PIN"]) < Version(os.environ["SDK_VERSION"])
-          sys.stdout.write("true" if stale else "false")
-          PY
-          )
+          # `compare_versions.py` owns the PEP 440 ordering for both this gate
+          # and the branch-pin gate below, so the two cannot disagree about
+          # which of two versions is older.
+          relation=$(uv run --no-project --with packaging python \
+            .github/scripts/release/compare_versions.py "$code_pin" "$sdk_version")
+          stale=false
+          if [ "$relation" = "behind" ]; then
+            stale=true
+          fi
 
           echo "sdk_version=$sdk_version" >> "$GITHUB_OUTPUT"
           echo "code_pin=$code_pin" >> "$GITHUB_OUTPUT"
@@ -221,7 +220,6 @@ jobs:
             echo "BUMP_FAILURE_REASON=$1" >> "$GITHUB_ENV"
             exit 1
           }
-
 
           # The push and PR calls authenticate as the Org Membership App
           # installation, not `github-actions[bot]` (whose `GITHUB_TOKEN` is
@@ -313,16 +311,8 @@ jobs:
           if [[ ! "$branch_code_pin" =~ $SEMVER_PATTERN ]]; then
             fail "Could not parse the Code SDK pin in $code_pyproject on branch $BRANCH (got '$branch_code_pin')"
           fi
-          relation=$(BRANCH_CODE_PIN="$branch_code_pin" SDK_VERSION="$SDK_VERSION" uv run --no-project --with packaging python - <<'PY'
-          import os
-
-          from packaging.version import Version
-
-          branch = Version(os.environ["BRANCH_CODE_PIN"])
-          target = Version(os.environ["SDK_VERSION"])
-          print("behind" if branch < target else "ahead" if branch > target else "current")
-          PY
-          )
+          relation=$(uv run --no-project --with packaging python \
+            .github/scripts/release/compare_versions.py "$branch_code_pin" "$SDK_VERSION")
           # `ahead` means the branch pins a newer SDK than this run targets:
           # intentional prerelease coordination, or a hand-pushed commit. Keep
           # the files as they are, but describe the pin that the branch really

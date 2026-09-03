@@ -17,6 +17,7 @@ from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphInterrupt
+from langgraph.prebuilt.tool_node import _get_all_injected_args
 from quickjs_rs import (
     UNDEFINED,
     ConcurrentEvalError,
@@ -231,7 +232,7 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
 
 
 def _synth_tool_call_id() -> str:
-    """Mint a synthetic tool_call_id for a PTC-driven tool invocation."""
+    """Mint a UUID tool_call_id for a PTC-driven tool invocation."""
     return str(uuid.uuid4())
 
 
@@ -252,13 +253,6 @@ def _inject_tool_args_for_ptc(
     `BaseTool.arun(..., tool_call_id=...)` at the bridge site.
     """
     enriched = dict(payload)
-
-    try:
-        from langgraph.prebuilt.tool_node import (  # noqa: PLC0415 — optional dep, imported here so ImportError is catchable
-            _get_all_injected_args,
-        )
-    except ImportError:  # pragma: no cover — langgraph always present
-        return enriched
 
     injected = _get_all_injected_args(tool)
     if not injected or outer_runtime is None:
@@ -299,10 +293,6 @@ def _inject_tool_args_for_ptc(
 
 def _tool_uses_injected_tool_call_id(tool: Any) -> bool:
     """Return whether a tool declares an injected tool call ID."""
-    try:
-        from langgraph.prebuilt.tool_node import _get_all_injected_args  # noqa: PLC0415
-    except ImportError:  # pragma: no cover — langgraph always present
-        return False
     return "tool_call_id" in _get_all_injected_args(tool).all_injected_keys
 
 
@@ -619,19 +609,20 @@ class _ThreadREPL:
     ) -> Any:
         """Run the tool with the outer runtime's loop and config when available."""
         args = tool_call["args"]
+        tool_call_id = tool_call.get("id")
 
         async def _call() -> Any:
-            config = outer_runtime.config if outer_runtime is not None else None
             return await tool.arun(
                 args,
-                callbacks=config.get("callbacks") if config is not None else None,
-                tags=config.get("tags") if config is not None else None,
-                metadata=config.get("metadata") if config is not None else None,
-                run_name=config.get("run_name") if config is not None else None,
-                run_id=uuid.UUID(tool_call["id"]),
-                config=config,
+                callbacks=(
+                    outer_runtime.config.get("callbacks")
+                    if outer_runtime is not None
+                    else None
+                ),
+                run_id=(uuid.UUID(tool_call_id) if tool_call_id is not None else None),
+                config=outer_runtime.config if outer_runtime is not None else None,
                 tool_call_id=(
-                    tool_call["id"] if _tool_uses_injected_tool_call_id(tool) else None
+                    tool_call_id if _tool_uses_injected_tool_call_id(tool) else None
                 ),
             )
 

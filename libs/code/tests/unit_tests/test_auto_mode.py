@@ -208,14 +208,20 @@ class _OpenAIConversationModel(_StructuredModel):
         *,
         model_name: str = "gpt-test",
         base_url: str = "https://api.openai.com/v1",
+        organization: str | None = None,
+        project: str | None = None,
     ) -> None:
         super().__init__(model_name=model_name)
         self.results = results
-        self.model_kwargs: dict[str, object] = {}
+        self.model_kwargs: dict[str, object] = (
+            {"project": project} if project is not None else {}
+        )
         self.openai_api_base = base_url
+        self.openai_organization = organization
         self.use_responses_api: bool | None = None
         self.use_previous_response_id: bool | None = None
         self.store: bool | None = None
+        self._deepagents_model_retries = 0
         self.include_raw: list[bool] = []
         self._next = 0
 
@@ -699,6 +705,43 @@ async def test_openai_classifier_resume_restores_and_identity_changes_reset(
     assert resumed_model.call_kwargs[1].get("previous_response_id") is None
 
 
+@pytest.mark.parametrize(
+    ("attribute", "initial", "changed"),
+    [
+        ("openai_organization", "org-a", "org-b"),
+        ("model_kwargs", {"project": "project-a"}, {"project": "project-b"}),
+    ],
+)
+async def test_openai_classifier_account_changes_reset_conversation(
+    tmp_path: Path,
+    attribute: str,
+    initial: str | dict[str, str],
+    changed: str | dict[str, str],
+) -> None:
+    model = _OpenAIConversationModel([_allow_result(), _allow_result()])
+    setattr(model, attribute, initial)
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    await _plan(middleware, request, tool_name="delete", args={"file_path": "old.py"})
+    setattr(model, attribute, changed)
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "new.py"},
+        call_id="call-2",
+    )
+
+    assert model.call_kwargs[0].get("previous_response_id") is None
+    assert model.call_kwargs[1].get("previous_response_id") is None
+
+
 async def test_concurrent_openai_reviews_serialize_continuation(
     tmp_path: Path,
 ) -> None:
@@ -739,6 +782,48 @@ async def test_concurrent_openai_reviews_serialize_continuation(
 
     assert model.call_kwargs[0].get("previous_response_id") is None
     assert model.call_kwargs[1]["previous_response_id"] == "resp_1"
+
+
+async def test_openai_classifier_retries_from_verified_head(tmp_path: Path) -> None:
+    model = _OpenAIConversationModel(
+        [
+            _allow_result(call_id="call-1"),
+            ConnectionError("provider connection dropped"),
+            _allow_result(call_id="call-2"),
+        ]
+    )
+    model._deepagents_model_retries = 1
+    middleware = _middleware(tmp_path)
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+    )
+
+    await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "one.py"},
+        call_id="call-1",
+    )
+    plan = await _plan(
+        middleware,
+        request,
+        tool_name="delete",
+        args={"file_path": "two.py"},
+        call_id="call-2",
+    )
+
+    assert plan["decisions"][0]["disposition"] == "classifier_allow"
+    assert [kwargs.get("previous_response_id") for kwargs in model.call_kwargs] == [
+        None,
+        "resp_1",
+        "resp_1",
+    ]
+    state = cast("dict[str, Any]", request.state)
+    assert state["_auto_classifier_conversation"]["response_id"] == "resp_3"
 
 
 async def test_failed_openai_review_does_not_advance_continuation(

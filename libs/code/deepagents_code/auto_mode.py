@@ -2855,11 +2855,21 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         endpoint_overrides = {
             key: value
             for key, value in settings.items()
-            if key in {"extra_body", "extra_query", "organization", "project"}
+            if key in {"extra_body", "extra_query"}
         }
+        organization = settings.get(
+            "organization", getattr(model, "openai_organization", None)
+        )
+        model_kwargs = getattr(model, "model_kwargs", None)
+        model_project = getattr(model, "openai_project", None)
+        if isinstance(model_kwargs, Mapping):
+            model_project = model_kwargs.get("project", model_project)
+        project = settings.get("project", model_project)
         identity_payload = {
             "endpoint": endpoint,
             "endpoint_overrides": endpoint_overrides,
+            "organization": organization,
+            "project": project,
             "model": model_name,
             "policy": sha256(_CLASSIFIER_POLICY.encode()).hexdigest(),
             "schema": sha256(
@@ -2963,17 +2973,25 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
             structured = model.with_structured_output(
                 AutoDecisionBatch, include_raw=True
             )
-            result = await structured.ainvoke(
-                messages,
-                config={
-                    "run_name": "dcode_auto_classifier",
-                    "tags": ["dcode:auto"],
-                    "metadata": {
-                        "lc_source": "auto_mode_classifier",
-                        "classifier_model": spec or "inherited",
+            from deepagents_code.model_retry import aretry_model_call
+
+            result = await aretry_model_call(
+                model,
+                max_total_delay=(
+                    self._classifier_timeout_seconds * _CLASSIFIER_RETRY_DELAY_FRACTION
+                ),
+                call=lambda: structured.ainvoke(
+                    messages,
+                    config={
+                        "run_name": "dcode_auto_classifier",
+                        "tags": ["dcode:auto"],
+                        "metadata": {
+                            "lc_source": "auto_mode_classifier",
+                            "classifier_model": spec or "inherited",
+                        },
                     },
-                },
-                **settings,
+                    **settings,
+                ),
             )
             batch, response_id = self._parse_classifier_response(result)
             _validate_classifier_ids(batch, expected_ids)

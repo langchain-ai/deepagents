@@ -2297,21 +2297,25 @@ async def _load_tools_from_config(
 
     all_tools: list[BaseTool] = []
     server_infos: list[MCPServerInfo] = []
-    for server_name, server_config in server_items:
-        if server_name in skipped:
-            status, error = skipped[server_name]
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=transports[server_name],
-                    status=status,
-                    error=error,
-                ),
-            )
-            continue
-        server_tools, server_info = await _build_server(server_name, server_config)
-        all_tools.extend(server_tools)
-        server_infos.append(server_info)
+    try:
+        for server_name, server_config in server_items:
+            if server_name in skipped:
+                status, error = skipped[server_name]
+                server_infos.append(
+                    MCPServerInfo(
+                        name=server_name,
+                        transport=transports[server_name],
+                        status=status,
+                        error=error,
+                    ),
+                )
+                continue
+            server_tools, server_info = await _build_server(server_name, server_config)
+            all_tools.extend(server_tools)
+            server_infos.append(server_info)
+    except BaseException:
+        await runtime_manager.cleanup()
+        raise
 
     all_tools.sort(key=lambda tool: tool.name)
     return all_tools, None if stateless else runtime_manager, server_infos

@@ -2350,6 +2350,25 @@ class TestLoadToolsConcurrency:
         assert manager is not None
         await manager.cleanup()
 
+    async def test_tool_build_cancellation_closes_adopted_resources(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """Cancellation after discovery closes the adopted client and backends."""
+        mcp_servers.register("srv", "tool")
+        manager = MCPSessionManager()
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools._build_mcp_tool",
+                AsyncMock(side_effect=asyncio.CancelledError),
+            ),
+            pytest.raises(asyncio.CancelledError),
+        ):
+            await _load_tools_from_config(self._config("srv"), session_manager=manager)
+
+        assert manager.client is None
+
     async def test_cancellation_propagates_and_cancels_siblings(self) -> None:
         """A cancelled worker propagates and tears down its siblings.
 

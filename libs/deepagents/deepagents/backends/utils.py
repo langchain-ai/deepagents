@@ -21,6 +21,7 @@ from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMa
 logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
 
 
 class InvalidGlobPatternError(ValueError):
@@ -535,7 +536,7 @@ def perform_string_replacement(
         Tuple of `(new_content, occurrences)` on success, or error message string
     """
     if not old_string:
-        return "Error: old_string cannot be empty. Provide the exact text to replace."
+        return EMPTY_OLD_STRING_ERROR
 
     occurrences = content.count(old_string)
 

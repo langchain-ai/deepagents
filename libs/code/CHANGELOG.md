@@ -2,6 +2,31 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.66](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.65...deepagents-code==0.1.66) (2026-09-03)
+
+
+### Features
+
+* **code:** bind conversations to a recorded workspace ([#5946](https://github.com/langchain-ai/deepagents/issues/5946)) ([4ca758e](https://github.com/langchain-ai/deepagents/commit/4ca758ed8efd9b586b26685bc3dc787501f3d502))
+* **code:** default Auto classifier by provider ([#6039](https://github.com/langchain-ai/deepagents/issues/6039)) ([99ed6c8](https://github.com/langchain-ai/deepagents/commit/99ed6c83238851eb334e19b27d3faec8869fc9a7))
+* **code:** default general-purpose subagents to fork mode ([#6024](https://github.com/langchain-ai/deepagents/issues/6024)) ([d3ad134](https://github.com/langchain-ai/deepagents/commit/d3ad134a49287d80b9897b0ef38b4635f8d7de94))
+* **code:** trace effective approval mode ([#5972](https://github.com/langchain-ai/deepagents/issues/5972)) ([c56958d](https://github.com/langchain-ai/deepagents/commit/c56958d633cd9513ba699f940d4fadfee6cd3963))
+
+
+### Bug Fixes
+
+* **code:** accept bare relative paths in marketplace plugin sources ([#5959](https://github.com/langchain-ai/deepagents/issues/5959)) ([28468d6](https://github.com/langchain-ai/deepagents/commit/28468d62f208e3dea5a574898d19e7d9618db928))
+* **code:** bind request-time working directories ([#5968](https://github.com/langchain-ai/deepagents/issues/5968)) ([98db566](https://github.com/langchain-ai/deepagents/commit/98db566f2cc654a535ed68de4dbdd2e10a2edd30))
+* **code:** name models in classifier errors ([#6038](https://github.com/langchain-ai/deepagents/issues/6038)) ([fff2c77](https://github.com/langchain-ai/deepagents/commit/fff2c77c755c6d9dce3a6f776a9b94599ad05cfd))
+* **code:** say which source path a plugin install rejected ([#5960](https://github.com/langchain-ai/deepagents/issues/5960)) ([6f8c488](https://github.com/langchain-ai/deepagents/commit/6f8c48800b02397fd262bfd9caea5096984d4220))
+* **code:** show bound workspace in shell approvals ([#5966](https://github.com/langchain-ai/deepagents/issues/5966)) ([716ab9f](https://github.com/langchain-ai/deepagents/commit/716ab9fb9c1f27d912aac89a663a75c4861418a5))
+* **code:** use sharp splash border ([#5970](https://github.com/langchain-ai/deepagents/issues/5970)) ([096d20c](https://github.com/langchain-ai/deepagents/commit/096d20cc7f0d61ed027686b226217f4a717925b0))
+
+
+### Performance Improvements
+
+* **code,quickjs:** omit middleware trace inputs ([#6015](https://github.com/langchain-ai/deepagents/issues/6015)) ([673844d](https://github.com/langchain-ai/deepagents/commit/673844d06fe0ee186f2e492c3c0a19ec5facffc2))
+
 ## [0.1.65](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.64...deepagents-code==0.1.65) (2026-08-28)
 
 ### Features

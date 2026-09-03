@@ -3775,13 +3775,15 @@ class DeepAgentsApp(App):
             is_installation_stale,
         )
 
-        self._installation_stale: bool = sub_title is None and is_installation_stale()
+        self._stale_header_allowed = sub_title is None
+        self._base_sub_title = self.sub_title
+        self._installation_stale: bool = (
+            self._stale_header_allowed and is_installation_stale()
+        )
         """Whether the installed version is old enough to force the header banner.
 
-        Set once at construction from the cache-only install-age check. When
-        `True`, `compose` renders the header even without `DEEPAGENTS_CODE_SHOW_HEADER`
-        and the subtitle carries the advisory below — overriding the sandbox
-        subtitle by design.
+        Initialized from the cache-only install-age check, then refreshed by each
+        background update check so long-running sessions can reveal it in place.
         """
 
         if self._installation_stale:
@@ -4489,6 +4491,8 @@ class DeepAgentsApp(App):
         *not* drive missing-dep toast suppression — that's gated on
         `_update_modal_pending`.
         """
+        self._update_message_versions: set[str] = set()
+        """Target versions already surfaced as durable messages this session."""
 
         self._update_check_done = asyncio.Event()
         """Set by `_check_for_updates` when it returns (success, failure, or
@@ -4696,8 +4700,9 @@ class DeepAgentsApp(App):
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
         from deepagents_code.config import runtime_state
 
-        if is_env_truthy(SHOW_HEADER) or self._installation_stale:
-            yield _StaticHeader(id="app-header")
+        header = _StaticHeader(id="app-header")
+        header.display = is_env_truthy(SHOW_HEADER) or self._installation_stale
+        yield header
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
@@ -6493,6 +6498,47 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
 
+    def _refresh_stale_install_header(self, days: int | None) -> None:
+        """Refresh the stale-install header from a fresh update result."""
+        from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
+        from deepagents_code.update_check import INSTALLED_STALE_NOTICE_DAYS
+
+        stale = (
+            self._stale_header_allowed
+            and days is not None
+            and days >= INSTALLED_STALE_NOTICE_DAYS
+        )
+        self._installation_stale = stale
+        if stale:
+            unit = "day" if days == 1 else "days"
+            self.sub_title = (
+                f"Update available — installed version is {days} {unit} old "
+                "(run /update)"
+            )
+        else:
+            self.sub_title = self._base_sub_title
+        with suppress(NoMatches, ScreenStackError):
+            for screen in self.screen_stack:
+                headers = screen.query("#app-header")
+                if headers:
+                    headers.first(_StaticHeader).display = (
+                        is_env_truthy(SHOW_HEADER) or stale
+                    )
+                    break
+
+    async def _mount_update_message(self, latest: str, message: str) -> bool:
+        """Mount one durable update message per target version this session.
+
+        Returns:
+            Whether the message was mounted.
+        """
+        if latest in self._update_message_versions:
+            return False
+        if not await self._mount_message(AppMessage(message)):
+            return False
+        self._update_message_versions.add(latest)
+        return True
+
     async def _check_for_updates(self, *, periodic: bool = False) -> None:
         """Run the update check and signal completion for downstream waiters.
 
@@ -6516,8 +6562,8 @@ class DeepAgentsApp(App):
         Phase 1 contacts PyPI and records the latest version on the app.
         Phase 2 surfaces a detected update without installing it in-session
         (the actual install runs at startup via `_run_startup_auto_update`):
-        when auto-update is enabled it toasts a prompt to restart so the
-        startup path can upgrade; otherwise it raises an actionable notice
+        when auto-update is enabled it mounts a durable prompt to restart so the
+        startup path can upgrade; otherwise it mounts a durable actionable notice
         (periodic recheck) or registers the notice and schedules the update
         modal (initial check).
         Phase 2 sets `_update_modal_pending` *only* when the modal is
@@ -6528,6 +6574,7 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
+                installed_days_old,
                 is_auto_update_enabled,
                 is_installed_version_at_least,
                 is_update_available,
@@ -6541,13 +6588,20 @@ class DeepAgentsApp(App):
                 is_update_available,
                 bypass_cache=periodic,
             )
-            if not available or latest is None:
+            if latest is None:
+                return
+            if not available:
+                self._update_available = (False, None)
+                self._refresh_stale_install_header(None)
                 return
             if await asyncio.to_thread(is_installed_version_at_least, latest):
                 self._update_available = (False, None)
+                self._refresh_stale_install_header(None)
                 return
 
             self._update_available = (True, latest)
+            days = await asyncio.to_thread(installed_days_old)
+            self._refresh_stale_install_header(days)
         except Exception:
             logger.debug("Background update check failed", exc_info=True)
             return
@@ -6574,16 +6628,14 @@ class DeepAgentsApp(App):
                     format_installed_age_suffix,
                     cli_version,
                 )
-                self.notify(
+                mounted = await self._mount_update_message(
+                    latest,
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Quit and relaunch dcode to install the update "
-                    "automatically.",
-                    severity="information",
-                    timeout=12,
-                    markup=False,
+                    "Quit and relaunch dcode to install the update automatically.",
                 )
-                await asyncio.to_thread(mark_update_notified, latest)
+                if mounted:
+                    await asyncio.to_thread(mark_update_notified, latest)
                 return
 
             if not await asyncio.to_thread(should_notify_update, latest):
@@ -6613,13 +6665,15 @@ class DeepAgentsApp(App):
                 upgrade_cmd=cmd,
             )
             if periodic:
-                self._notify_actionable(
-                    notification,
-                    severity="information",
-                    timeout=12,
-                    action_hint="Press ctrl+n to install.",
+                self._notice_registry.add(notification)
+                mounted = await self._mount_update_message(
+                    latest,
+                    f"Update available: v{latest}{release_age}. "
+                    f"Currently installed: {cli_version}{installed_age}. "
+                    "Run /update, or press ctrl+n to review install options.",
                 )
-                await asyncio.to_thread(mark_update_notified, latest)
+                if mounted:
+                    await asyncio.to_thread(mark_update_notified, latest)
                 return
             # Register without a toast: the dedicated modal is
             # the update's UI, so a parallel toast would be

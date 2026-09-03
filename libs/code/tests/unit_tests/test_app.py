@@ -19085,19 +19085,16 @@ class TestNotificationCenterIntegration:
         assert isinstance(entry.payload, UpdateAvailablePayload)
         assert "--prerelease allow" in entry.payload.upgrade_cmd
 
-    async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
-        """Hourly rechecks surface updates without interrupting the session."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        bodies: list[str] = []
-        original_notify_actionable = app._notify_actionable
+    async def test_periodic_update_check_mounts_durable_message(self) -> None:
+        """Hourly rechecks surface one durable message instead of a toast."""
+        from deepagents_code.tui.widgets.messages import AppMessage
 
-        def capture_notify_actionable(
-            entry: PendingNotification, **kwargs: Any
-        ) -> None:
-            bodies.append(f"{entry.body}\n\n{kwargs.get('action_hint', '')}")
-            original_notify_actionable(entry, **kwargs)
-
-        app._notify_actionable = capture_notify_actionable  # ty: ignore
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore
 
         with (
             patch(
@@ -19109,6 +19106,10 @@ class TestNotificationCenterIntegration:
                 return_value=(True, "9.9.9"),
             ),
             patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=7,
+            ),
+            patch(
                 "deepagents_code.update_check.is_auto_update_enabled",
                 return_value=False,
             ),
@@ -19118,7 +19119,7 @@ class TestNotificationCenterIntegration:
             ),
             patch(
                 "deepagents_code.update_check.mark_update_notified",
-            ),
+            ) as mark_notified,
             patch(
                 "deepagents_code.update_check.format_release_age_parenthetical",
                 return_value="",
@@ -19139,12 +19140,24 @@ class TestNotificationCenterIntegration:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await app._check_for_updates(periodic=True)
+                await app._check_for_updates(periodic=True)
                 await pilot.pause()
+                messages = [
+                    message.render().plain
+                    for message in app.query(AppMessage)
+                    if "Update available" in message.render().plain
+                ]
+                assert app.query_one("#app-header").display is True
 
-        entry = app._notice_registry.get("update:available")
-        assert entry is not None
-        assert any("session will not be interrupted" in body for body in bodies)
-        assert any("Press ctrl+n to install." in body for body in bodies)
+        assert app._notice_registry.get("update:available") is not None
+        assert messages == [
+            (
+                f"Update available: v9.9.9. Currently installed: {__version__}. "
+                "Run /update, or press ctrl+n to review install options."
+            )
+        ]
+        app.notify.assert_not_called()  # ty: ignore
+        mark_notified.assert_called_once_with("9.9.9")
 
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
@@ -19805,7 +19818,49 @@ class TestStaleInstallBanner:
             assert "None" not in (app.sub_title or "")
             async with app.run_test() as pilot:
                 await pilot.pause()
-                assert not app.query(Header)
+                assert app.query_one(Header).display is False
+
+    async def test_runtime_check_reveals_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh hourly result reveals the stale warning without a restart."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(Header)
+            assert header.display is False
+            app._refresh_stale_install_header(7)
+            await pilot.pause()
+            assert header.display is True
+            assert app.sub_title == (
+                "Update available — installed version is 7 days old (run /update)"
+            )
+
+    async def test_runtime_refresh_preserves_explicit_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clearing a stale result does not hide the explicitly enabled header."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_HEADER", "1")
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._refresh_stale_install_header(7)
+            app._refresh_stale_install_header(None)
+            await pilot.pause()
+            assert app.query_one("#app-header").display is True
 
 
 class TestHandleExternalSignal:

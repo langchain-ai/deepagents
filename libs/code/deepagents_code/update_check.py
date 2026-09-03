@@ -116,7 +116,7 @@ call to PyPI; older payloads trigger a fresh fetch. Set conservatively at
 INSTALLED_AGE_NOTICE_DAYS = 7
 """Minimum installed-version age before update notices call it out explicitly."""
 
-INSTALLED_STALE_NOTICE_DAYS = 14
+INSTALLED_STALE_NOTICE_DAYS = 7
 """Minimum installed-version age (days) before the stale-install banner shows."""
 
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"

@@ -1,11 +1,8 @@
 ---
 type: orientation-and-navigation
 title: Quickstart & Wiki Map
-description: Repository orientation for the independently versioned Deep Agents packages, their supported Python ranges, and a task-routing map for SDK work, dcode, integrations, operations, and tests. Use this page to choose an owner and detailed guide before changing behavior.
+description: Repository orientation for the independently versioned Deep Agents packages, their supported Python ranges, declared first-party dependencies, and a task-routing map for SDK work, dcode, integrations, operations, and tests. Use this page to choose an owner and detailed guide before changing behavior.
 tags: [quickstart, monorepo, navigation, deepagents, dcode, routing]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-02T08:05:45.554Z
 sources:
   - id: openwiki-source-bb78950c8b36b7b9f6746e96
     resource: repo://libs/acp/pyproject.toml
@@ -27,7 +24,10 @@ sources:
     resource: repo://libs/talon/README.md
   - id: openwiki-source-23775c3de52f3ab95a13cb8b
     resource: repo://README.md
-generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-03T08:05:39.427Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-03T08:05:39.427Z
 ---
 
 # Quickstart & Wiki Map
@@ -74,7 +74,7 @@ The ranges are package-local constraints, not a repository-wide runtime promise.
 
 ### Declared package dependencies
 
-The diagram covers first-party dependency edges declared by the core package manifests. It is not a runtime-call diagram: `evals` also depends on the external Harbor benchmark runtime, and partner packages are separate integration boundaries.
+The diagram covers first-party dependency edges declared by the core package manifests. It is not a runtime-call diagram: `evals` also depends on the external Harbor benchmark runtime, and partner packages are separate integration boundaries. In the current `deepagents-code` manifest, the SDK dependency is an exact `deepagents==0.7.13` pin; do not infer that its SDK compatibility is a broad range from the monorepo layout.
 
 ```mermaid
 flowchart TD

@@ -1207,15 +1207,15 @@ async function warnForNewEntries({ github, owner, repo, number, comments, head, 
     comment.user?.type === 'Bot' &&
     (comment.body ?? '').startsWith(`${STALE_MARKER}\n`),
   );
-  let current = warnings.find(comment => (comment.body ?? '').startsWith(marker));
+  const newest = [...warnings]
+    .sort((left, right) => Number(right.id) - Number(left.id))[0];
+  let current = newest && (newest.body ?? '').startsWith(marker) ? newest : null;
   if (!current) {
     const response = await createComment(github, owner, repo, number, newEntriesWarningBody(marker));
     current = response.data;
   }
-  const newest = [...warnings, current]
-    .sort((left, right) => Number(right.id) - Number(left.id))[0];
   for (const warning of warnings) {
-    if (warning.id !== newest.id) await minimizeComment(github, warning);
+    if (warning.id !== current.id) await minimizeComment(github, warning);
   }
 }
 

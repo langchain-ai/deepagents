@@ -1282,6 +1282,35 @@ test('the newest new-entries warning hides prior bot warnings and uses copyable 
   }
 });
 
+test('returning to an older warned state creates a fresh visible warning', async () => {
+  const newGenerated = GENERATED_SECTION.replace('useful feature', 'new generated entry');
+  const changedHead = 'd'.repeat(40);
+  const fingerprint = releaseNotes.changelogFingerprint(newGenerated);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: changedHead },
+    body: `Release notes preview\n\n${newGenerated}\n_End release notes preview._\n`,
+  });
+  const comments = [
+    overrideComment(),
+    staleWarningComment({ id: 30, head: changedHead, fingerprint }),
+    staleWarningComment({ id: 31, head: 'e'.repeat(40), fingerprint: 'newer-state' }),
+  ];
+  const files = new Map([[changedHead, changelog(newGenerated)]]);
+  const { github, calls } = makeGithub({ pr, comments, commentUser: WORKFLOW_BOT, files });
+
+  await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core: makeCore(),
+    number: 123,
+    ...BOT_AUTH,
+  });
+
+  assert.equal(calls.createComment.length, 1);
+  assert.match(calls.createComment[0].body, new RegExp(`^<!-- release-notes-stale\\nhead: ${changedHead}\\nchangelog-fingerprint: ${fingerprint}\\n-->`));
+  assert.deepEqual(calls.graphql.map(call => call.variables.id), ['IC_30', 'IC_31']);
+});
+
 test('draft, unmanaged branch, and bypass label pass without metadata', async () => {
   for (const pr of [
     releasePr({ draft: true }),

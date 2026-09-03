@@ -59,7 +59,7 @@ from deepagents_code.hooks.server_middleware import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Awaitable, Callable
+    from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 
     from deepagents.backends.composite import CompositeBackend
     from deepagents.backends.protocol import (
@@ -285,10 +285,12 @@ class _LazySummaryModel:
         summarization: SummarizationMiddleware,
         model_spec: str,
         cli_max_retries: int | None,
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         self._summarization = summarization
         self._model_spec = model_spec
         self._cli_max_retries = cli_max_retries
+        self._environ = environ
         self._lock = Lock()
         self._invocation_lock = Lock()
         self._configured = False
@@ -319,10 +321,13 @@ class _LazySummaryModel:
             from deepagents_code.config import create_model
 
             try:
-                model = create_model(
-                    self._model_spec,
-                    cli_max_retries=self._cli_max_retries,
-                ).model
+                from deepagents_code.config import use_environment
+
+                with use_environment(self._environ):
+                    model = create_model(
+                        self._model_spec,
+                        cli_max_retries=self._cli_max_retries,
+                    ).model
             except Exception as exc:
                 # BlockingError means this ran on the server event loop; that is
                 # a defect in the caller, not a bad model spec, so let it out.
@@ -440,6 +445,7 @@ def _install_lazy_summary_model(
     summarization: SummarizationMiddleware,
     model_spec: str,
     cli_max_retries: int | None,
+    environ: Mapping[str, str] | None = None,
 ) -> None:
     """Defer dedicated model construction until a summary is requested.
 
@@ -449,12 +455,13 @@ def _install_lazy_summary_model(
         summarization: Middleware whose summary hooks are wrapped.
         model_spec: Spec to resolve when a summary is first requested.
         cli_max_retries: Explicit `--max-retries` value, or `None`.
+        environ: Workspace environment retained for lazy model construction.
     """
     for slot in ("_create_summary", "_acreate_summary"):
         _require_helper_slot(
             summarization._lc_helper, slot, "defer summary-model construction"
         )
-    lazy = _LazySummaryModel(summarization, model_spec, cli_max_retries)
+    lazy = _LazySummaryModel(summarization, model_spec, cli_max_retries, environ)
     # LangChain annotates these private attributes as unbound method shapes;
     # instance-local bound wrappers are intentional so only this summarizer is lazy.
     summarization._lc_helper._create_summary = (  # ty: ignore[invalid-assignment]
@@ -1014,6 +1021,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         system_prompt: str | None = None,
         cli_max_retries: int | None = None,
         summarization_model_spec: str | None = None,
+        environ: Mapping[str, str] | None = None,
     ) -> None:
         """Initialize the CLI compaction middleware.
 
@@ -1023,10 +1031,12 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
             cli_max_retries: Explicit `--max-retries` value to retain when
                 rebuilding a runtime-selected model for `/offload`.
             summarization_model_spec: Startup model spec to use only for summaries.
+            environ: Workspace environment retained for lazy model construction.
         """
         super().__init__(summarization, system_prompt=system_prompt)
         self._cli_max_retries = cli_max_retries
         self._summarization_model_spec = summarization_model_spec
+        self._environ = environ
         # One-entry memo for `_summarization_for_runtime`. Every model call
         # consults it, but the runtime model configuration only changes on
         # `/model` or `/summarization-model`, so a single slot hits almost
@@ -1352,12 +1362,15 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
         from deepagents_code.config import create_model
 
         if config.model_spec:
-            model = create_model(
-                config.model_spec,
-                extra_kwargs=config.model_params or None,
-                profile_overrides=config.profile_overrides or None,
-                cli_max_retries=self._cli_max_retries,
-            ).model
+            from deepagents_code.config import use_environment
+
+            with use_environment(self._environ):
+                model = create_model(
+                    config.model_spec,
+                    extra_kwargs=config.model_params or None,
+                    profile_overrides=config.profile_overrides or None,
+                    cli_max_retries=self._cli_max_retries,
+                ).model
         else:
             model = self._summarization.model
         # Only a freshly built model may have its profile mutated. On the
@@ -1409,6 +1422,7 @@ class CLICompactionMiddleware(SummarizationToolMiddleware):
                 summarization,
                 summary_model_spec,
                 self._cli_max_retries,
+                self._environ,
             )
         else:
             _install_summary_model_retries(summarization)
@@ -1586,6 +1600,7 @@ def _create_cli_compaction_middleware(
     *,
     cli_max_retries: int | None = None,
     summarization_model_spec: str | None = None,
+    environ: Mapping[str, str] | None = None,
 ) -> CLICompactionMiddleware:
     """Create the dcode compaction middleware from the SDK configuration.
 
@@ -1594,6 +1609,7 @@ def _create_cli_compaction_middleware(
         backend: Agent backend used for archive persistence.
         cli_max_retries: Explicit `--max-retries` value for runtime rebuilds.
         summarization_model_spec: Startup model spec to use only for summaries.
+        environ: Workspace environment retained for lazy model construction.
 
     Returns:
         CLI compaction middleware with the SDK's model-aware defaults.
@@ -1605,6 +1621,7 @@ def _create_cli_compaction_middleware(
         system_prompt=sdk_middleware.system_prompt,
         cli_max_retries=cli_max_retries,
         summarization_model_spec=summarization_model_spec,
+        environ=environ,
     )
 
 

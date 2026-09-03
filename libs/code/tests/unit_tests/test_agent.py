@@ -167,6 +167,7 @@ def _patch_agent_paths(
     project_agent_skills_dir: Path | None = None,
     user_claude_skills_dir: Path | None = None,
     project_claude_skills_dir: Path | None = None,
+    expected_project_claude_root: Path | None = None,
     project_agent_md_paths: tuple[Path, ...] = (),
     user_agents_dir: Path | None = None,
     project_agents_dir: Path | None = None,
@@ -196,7 +197,12 @@ def _patch_agent_paths(
         ),
         patch(
             "deepagents_code.agent.get_project_claude_skills_dir",
-            return_value=project_claude_skills_dir,
+            side_effect=lambda root: (
+                project_claude_skills_dir
+                if expected_project_claude_root is None
+                or root == expected_project_claude_root
+                else None
+            ),
         ),
         patch(
             "deepagents_code.agent.get_user_agent_md_path",
@@ -1159,6 +1165,34 @@ def test_add_interrupt_on_gates_delete() -> None:
     assert interrupt_map["delete"]["allowed_decisions"] == ["approve", "reject"]
     assert interrupt_map["delete"]["description"] is _format_delete_description
     assert interrupt_map["delete"]["when"] is _should_interrupt_tool_call
+
+
+class TestWorkspacePromptCredentials:
+    """Workspace tool guidance uses the bound credential snapshot."""
+
+    def test_model_result_override_controls_identity(self) -> None:
+        """Workspace model metadata does not depend on global runtime state."""
+        from deepagents_code.config import ModelResult
+
+        workspace_model = ModelResult(
+            model=Mock(),
+            model_name="workspace-model",
+            provider="workspace-provider",
+            context_limit=12345,
+        )
+        prompt = get_system_prompt("test-agent", model_result=workspace_model)
+
+        assert "workspace-model" in prompt
+        assert "workspace-provider" in prompt
+        assert "12,345 tokens" in prompt
+
+    def test_has_tavily_override_controls_guidance(self) -> None:
+        """Prompt guidance does not consult process-global credentials."""
+        without = get_system_prompt("test-agent", has_tavily=False)
+        with_tavily = get_system_prompt("test-agent", has_tavily=True)
+
+        assert "When you use the web_search tool" not in without
+        assert "When you use the web_search tool" in with_tavily
 
 
 class TestBuildModelIdentitySection:
@@ -2400,6 +2434,8 @@ class TestCreateCliAgentProjectContext:
         project_skills_dir.mkdir(parents=True)
         project_agent_skills_dir = project_root / ".agents" / "skills"
         project_agent_skills_dir.mkdir(parents=True)
+        project_claude_skills_dir = project_root / ".claude" / "skills"
+        project_claude_skills_dir.mkdir(parents=True)
         project_agents_dir = project_root / ".deepagents" / "agents"
         project_agents_dir.mkdir(parents=True)
         project_context = ProjectContext.from_user_cwd(user_cwd)
@@ -2447,6 +2483,8 @@ class TestCreateCliAgentProjectContext:
                 agent_dir=agent_dir,
                 skills_dir=user_skills_dir,
                 user_agent_skills_dir=user_agent_skills_dir,
+                project_claude_skills_dir=project_claude_skills_dir,
+                expected_project_claude_root=project_root,
                 user_agents_dir=tmp_path / "agents",
             ),
             patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
@@ -2470,6 +2508,7 @@ class TestCreateCliAgentProjectContext:
         source_paths = [s[0] if isinstance(s, tuple) else s for s in sources]
         assert str(project_skills_dir) in source_paths
         assert str(project_agent_skills_dir) in source_paths
+        assert str(project_claude_skills_dir) in source_paths
         mock_list.assert_called_once_with(
             user_agents_dir=tmp_path / "agents",
             project_agents_dir=project_agents_dir,
@@ -2643,6 +2682,43 @@ class TestCreateCliAgentProjectContext:
 
         return mock_shell, user_cwd
 
+    def test_workspace_environment_is_frozen_for_local_shell(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The shell backend receives the workspace snapshot, not process state."""
+        mock_shell, _ = self._build_shell_agent(
+            monkeypatch, tmp_path, user_langchain_project=None
+        )
+        first = dict(mock_shell.call_args.kwargs["env"])
+        workspace_env = {**first, "WORKSPACE_VALUE": "second"}
+
+        project_root = tmp_path / "other"
+        project_root.mkdir()
+        project_context = ProjectContext.from_user_cwd(project_root)
+        mock_settings = Mock(project_root=project_root, user_langchain_project=None)
+        fake_model = _make_fake_chat_model()
+        with (
+            patch("deepagents_code.agent.MemoryMiddleware"),
+            patch("deepagents_code.agent.PluginSkillsMiddleware"),
+            patch("deepagents_code.agent.LocalShellBackend") as backend,
+            patch("deepagents_code.agent.create_deep_agent") as create,
+            patch("deepagents._models.init_chat_model", return_value=fake_model),
+        ):
+            create.return_value.with_config.return_value = create.return_value
+            create_cli_agent(
+                model="fake-model",
+                assistant_id="test",
+                enable_memory=False,
+                enable_skills=False,
+                project_context=project_context,
+                environ=workspace_env,
+                credentials_snapshot=mock_settings,
+            )
+
+        assert "WORKSPACE_VALUE" not in first
+        assert backend.call_args.kwargs["env"]["WORKSPACE_VALUE"] == "second"
+        assert backend.call_args.kwargs["inherit_env"] is False
+
     def test_project_context_sets_local_shell_root_dir(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -2710,6 +2786,9 @@ class TestCreateCliAgentProjectContext:
         values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
         values["LANGSMITH_PROFILE"] = "oauth"
         values["LANGSMITH_CONFIG_FILE"] = "/tmp/langsmith.json"
+        (tmp_path / ".env").write_text(
+            "LANGSMITH_PROFILE=oauth\nLANGSMITH_CONFIG_FILE=/tmp/langsmith.json\n"
+        )
         monkeypatch.setenv(
             config_mod._USER_LANGSMITH_ENV_CARRIER,
             json.dumps({"launch": dict.fromkeys(values), "user": values}),

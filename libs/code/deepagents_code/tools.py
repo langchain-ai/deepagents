@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import logging
 import socket
 import threading
+import weakref
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urljoin, urlparse
@@ -18,12 +20,16 @@ from pydantic import Field
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator
 
+    from langchain_core.tools import BaseTool
     from tavily import TavilyClient
 
 logger = logging.getLogger(__name__)
 
 _UNSET = object()
 _tavily_client: TavilyClient | object | None = _UNSET
+_workspace_web_search_tools: weakref.WeakValueDictionary[int, object] = (
+    weakref.WeakValueDictionary()
+)
 
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
@@ -303,6 +309,41 @@ def _get_tavily_client() -> TavilyClient | None:
     return _tavily_client
 
 
+def create_web_search_tool(api_key: str) -> BaseTool:
+    """Bind web search to one workspace credential.
+
+    The schema is taken from `web_search` via `functools.wraps` so the built-in
+    and workspace-bound variants can never present different arguments.
+
+    Returns:
+        Workspace-bound web search tool.
+    """
+    # Built on first use and reused: a per-call client would open a fresh
+    # connection pool and repeat the TLS handshake for every search.
+    client: TavilyClient | None = None
+
+    @tool("web_search")
+    @functools.wraps(web_search)
+    def workspace_web_search(**kwargs: Any) -> object:
+        nonlocal client
+        if client is None:
+            from tavily import TavilyClient as _TavilyClient
+
+            client = _TavilyClient(api_key=api_key)
+        return _search_with_tavily(client, **kwargs)
+
+    _workspace_web_search_tools[id(workspace_web_search)] = workspace_web_search
+    return workspace_web_search
+
+
+def is_web_search_tool(candidate: object) -> bool:
+    """Return whether `candidate` is a built-in or workspace-bound search tool."""
+    return (
+        candidate is web_search
+        or _workspace_web_search_tools.get(id(candidate)) is candidate
+    )
+
+
 @tool
 def get_current_thread_id() -> str:
     """Get the current Deep Agents thread ID for LangSmith or MCP tooling.
@@ -349,6 +390,35 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     Returns:
         Search hits with title, URL, snippet, and score.
     """
+    client = _get_tavily_client()
+    if client is None:
+        return {
+            "error": "Tavily API key not configured. "
+            "Please set TAVILY_API_KEY environment variable.",
+            "query": query,
+        }
+    return _search_with_tavily(
+        client,
+        query=query,
+        max_results=max_results,
+        topic=topic,
+        include_raw_content=include_raw_content,
+    )
+
+
+def _search_with_tavily(
+    client: TavilyClient,
+    *,
+    query: str,
+    max_results: int,
+    topic: Literal["general", "news", "finance"],
+    include_raw_content: bool,
+) -> object:
+    """Execute a Tavily search with the standard error translation.
+
+    Returns:
+        Search hits or a translated error payload.
+    """
     try:
         import requests
         from tavily import (
@@ -360,14 +430,6 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
         from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
     except ImportError as exc:
         return {"error": f"Required package not installed: {exc.name}."}
-
-    client = _get_tavily_client()
-    if client is None:
-        return {
-            "error": "Tavily API key not configured. "
-            "Please set TAVILY_API_KEY environment variable.",
-            "query": query,
-        }
 
     try:
         return client.search(

@@ -10,14 +10,35 @@ import os
 import tempfile
 import uuid
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Literal, TypedDict, cast
+from typing import Literal, NotRequired, TypedDict, cast
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 MIN_GRANULARITY_MINUTES = 1
+MAX_SCHEDULE_TEXT_LENGTH = 200
+"""Upper bound on agent-supplied schedule text, which is persisted and echoed back."""
+
+_INTERVAL_TOKENS = 2
+_WALL_CLOCK_TOKENS = 4
+_TIME_FIELDS = 2
+_MAX_HOUR = 23
+_MAX_MINUTE = 59
+_ISO_DATE_LENGTH = 10
+_DAILY_LOOKAHEAD_DAYS = 3
+"""Local dates probed when resolving the next daily fire; two always suffice."""
+
+_GAP_PROBE_MINUTES = 1440
+"""Bound on the forward probe across a nonexistent local time; real gaps are under 2h."""
+
+_SCHEDULE_FORMS_HELP = (
+    "schedule must be 'in 30m', 'every 15m', "
+    "'at 2026-09-04 13:30 America/New_York', or 'daily at 08:00 America/New_York'"
+)
 
 JobStatus = Literal["ok", "error"]
 ScheduleKind = Literal["one_shot", "recurring"]
+ScheduleForm = Literal["interval", "at", "daily"]
 
 
 class CronJobError(ValueError):
@@ -33,11 +54,21 @@ class CronOriginDict(TypedDict):
 
 
 class CronScheduleDict(TypedDict):
-    """Serialized schedule definition for a job."""
+    """Serialized schedule definition for a job.
+
+    Only `kind` and `display` are always present. Interval schedules carry
+    `minutes`; wall-clock schedules carry `form`, `timezone`, `local_time`, and
+    (for one-shots) `local_date`. Records written before wall-clock support have
+    no `form` key and load as `form="interval"`.
+    """
 
     kind: ScheduleKind
-    minutes: int
     display: str
+    minutes: NotRequired[int]
+    form: NotRequired[ScheduleForm]
+    timezone: NotRequired[str]
+    local_time: NotRequired[str]
+    local_date: NotRequired[str]
 
 
 class CronRepeatDict(TypedDict):
@@ -114,26 +145,78 @@ class CronSchedule:
 
     Args:
         kind: Whether the schedule is one-shot or recurring.
-        minutes: Delay or interval in minutes.
-        display: Human-readable schedule text supplied by the agent.
+        display: Human-readable schedule text. Canonicalized for wall-clock forms.
+        form: Which arithmetic computes the next run.
+        minutes: Delay or interval in minutes. Interval schedules only.
+        timezone: IANA timezone name. Wall-clock schedules only.
+        local_time: Local `HH:MM` wall-clock time. Wall-clock schedules only.
+        local_date: Local `YYYY-MM-DD` date. One-shot wall-clock schedules only.
     """
 
     kind: ScheduleKind
-    minutes: int
     display: str
+    form: ScheduleForm = "interval"
+    minutes: int | None = None
+    timezone: str | None = None
+    local_time: str | None = None
+    local_date: str | None = None
 
     def __post_init__(self) -> None:
-        """Validate schedule granularity."""
+        """Validate the fields required by this schedule form.
+
+        Raises:
+            CronJobError: If the field combination is invalid for `form`.
+        """
+        if len(self.display) > MAX_SCHEDULE_TEXT_LENGTH:
+            msg = f"schedule text must be at most {MAX_SCHEDULE_TEXT_LENGTH} characters"
+            raise CronJobError(msg)
+        if self.form == "interval":
+            self._validate_interval()
+        else:
+            self._validate_wall_clock()
+
+    def _validate_interval(self) -> None:
+        if self.minutes is None:
+            msg = "interval schedules require a minute count"
+            raise CronJobError(msg)
         if self.minutes < MIN_GRANULARITY_MINUTES:
             msg = "cron schedules must be at least 1 minute"
+            raise CronJobError(msg)
+        if self.timezone is not None or self.local_time is not None or self.local_date is not None:
+            msg = "interval schedules cannot carry wall-clock fields"
+            raise CronJobError(msg)
+
+    def _validate_wall_clock(self) -> None:
+        if self.minutes is not None:
+            msg = "wall-clock schedules cannot carry a minute count"
+            raise CronJobError(msg)
+        if self.timezone is None or self.local_time is None:
+            msg = "wall-clock schedules require a timezone and a local time"
+            raise CronJobError(msg)
+        _resolve_zone(self.timezone)
+        _parse_local_time(self.local_time)
+        if self.form == "at":
+            if self.local_date is None:
+                msg = "one-shot wall-clock schedules require a local date"
+                raise CronJobError(msg)
+            _parse_local_date(self.local_date)
+        elif self.local_date is not None:
+            msg = "daily schedules cannot carry a local date"
             raise CronJobError(msg)
 
     @classmethod
     def parse(cls, value: str) -> CronSchedule:
         """Parse a supported schedule string.
 
+        Recognized forms are `in 30m`, `every 15m`,
+        `at YYYY-MM-DD HH:MM <tz>`, and `daily at HH:MM <tz>`, where `<tz>` is a
+        required IANA timezone name such as `America/New_York`.
+
+        Keywords are matched case-insensitively; the timezone token keeps its
+        original case because IANA keys are case-sensitive on Linux.
+
         Args:
-            value: Schedule text such as `in 30m` or `every 15m`.
+            value: Schedule text.
 
         Returns:
             Parsed schedule.
@@ -141,44 +224,129 @@ class CronSchedule:
         Raises:
             CronJobError: If the schedule string is unsupported.
         """
-        text = " ".join(value.strip().lower().split())
-        if text.startswith("in "):
-            return cls(kind="one_shot", minutes=_parse_duration_minutes(text[3:]), display=value)
-        if text.startswith("every "):
-            return cls(kind="recurring", minutes=_parse_duration_minutes(text[6:]), display=value)
-        msg = "schedule must look like 'in 30m' or 'every 15m'"
-        raise CronJobError(msg)
+        if len(value) > MAX_SCHEDULE_TEXT_LENGTH:
+            msg = f"schedule text must be at most {MAX_SCHEDULE_TEXT_LENGTH} characters"
+            raise CronJobError(msg)
+        tokens = value.split()
+        if len(tokens) == _INTERVAL_TOKENS:
+            head = tokens[0].lower()
+            if head == "in":
+                return cls(
+                    kind="one_shot",
+                    display=" ".join(tokens),
+                    minutes=_parse_duration_minutes(tokens[1]),
+                )
+            if head == "every":
+                return cls(
+                    kind="recurring",
+                    display=" ".join(tokens),
+                    minutes=_parse_duration_minutes(tokens[1]),
+                )
+        if len(tokens) == _WALL_CLOCK_TOKENS:
+            if tokens[0].lower() == "at":
+                return cls._at(tokens[1], tokens[2], tokens[3])
+            if tokens[0].lower() == "daily" and tokens[1].lower() == "at":
+                return cls._daily(tokens[2], tokens[3])
+        raise CronJobError(_SCHEDULE_FORMS_HELP)
 
-    def next_after(self, now: datetime) -> datetime:
+    @classmethod
+    def _at(cls, date_text: str, time_text: str, zone_name: str) -> CronSchedule:
+        local_date = _parse_local_date(date_text)
+        local_time = _format_local_time(_parse_local_time(time_text))
+        _resolve_zone(zone_name)
+        return cls(
+            kind="one_shot",
+            display=f"at {local_date.isoformat()} {local_time} {zone_name}",
+            form="at",
+            timezone=zone_name,
+            local_time=local_time,
+            local_date=local_date.isoformat(),
+        )
+
+    @classmethod
+    def _daily(cls, time_text: str, zone_name: str) -> CronSchedule:
+        local_time = _format_local_time(_parse_local_time(time_text))
+        _resolve_zone(zone_name)
+        return cls(
+            kind="recurring",
+            display=f"daily at {local_time} {zone_name}",
+            form="daily",
+            timezone=zone_name,
+            local_time=local_time,
+        )
+
+    def next_after(self, now: datetime, *, previous: datetime | None = None) -> datetime:
         """Return the next scheduled run after `now`.
+
+        The result is always strictly greater than `now` except for a one-shot
+        `at` schedule whose instant has already passed, which is reported by
+        `CronJobStore` rather than silently rescheduled.
 
         Args:
             now: Current timestamp.
+            previous: Previous `next_run_at`, supplied when advancing a job that
+                just fired. Interval schedules stay phase-locked to it instead
+                of drifting by the scheduler's tick latency.
 
         Returns:
-            Next run timestamp.
+            Next run timestamp in UTC.
         """
-        return now + timedelta(minutes=self.minutes)
+        if self.form == "interval":
+            return self._next_interval(now, previous)
+        zone = _resolve_zone(cast("str", self.timezone))
+        hour, minute = _parse_local_time(cast("str", self.local_time))
+        if self.form == "at":
+            local_date = _parse_local_date(cast("str", self.local_date))
+            naive = datetime.combine(local_date, time(hour, minute))
+            return _localize(naive, zone).astimezone(UTC)
+        return _next_daily_instant(now, zone, hour, minute)
+
+    def _next_interval(self, now: datetime, previous: datetime | None) -> datetime:
+        interval = timedelta(minutes=cast("int", self.minutes))
+        if previous is None or previous > now:
+            return now + interval
+        return previous + interval * ((now - previous) // interval + 1)
 
     def to_dict(self) -> CronScheduleDict:
         """Serialize this schedule for disk storage.
 
+        Interval schedules emit exactly the keys written before wall-clock
+        support existed, so files stay stable across the upgrade.
+
         Returns:
             JSON-compatible schedule dictionary.
         """
-        return {"kind": self.kind, "minutes": self.minutes, "display": self.display}
+        data: CronScheduleDict = {"kind": self.kind, "display": self.display}
+        if self.minutes is not None:
+            data["minutes"] = self.minutes
+        if self.form != "interval":
+            data["form"] = self.form
+            data["timezone"] = cast("str", self.timezone)
+            data["local_time"] = cast("str", self.local_time)
+        if self.local_date is not None:
+            data["local_date"] = self.local_date
+        return data
 
     @classmethod
     def from_dict(cls, data: CronScheduleDict) -> CronSchedule:
         """Deserialize a cron schedule from disk.
 
         Args:
-            data: JSON schedule dictionary.
+            data: JSON schedule dictionary. A dictionary without `form` is read
+                as an interval schedule for backward compatibility.
 
         Returns:
             Parsed cron schedule.
         """
-        return cls(kind=data["kind"], minutes=data["minutes"], display=data["display"])
+        return cls(
+            kind=data["kind"],
+            display=data["display"],
+            form=data.get("form", "interval"),
+            minutes=data.get("minutes"),
+            timezone=data.get("timezone"),
+            local_time=data.get("local_time"),
+            local_date=data.get("local_date"),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,7 +538,7 @@ class CronJobStore:
             repeat=repeat,
             enabled=True,
             created_at=current,
-            next_run_at=schedule.next_after(current),
+            next_run_at=_first_run_at(schedule, current),
             last_run_at=None,
             last_status=None,
             last_error=None,
@@ -463,7 +631,9 @@ class CronJobStore:
             if job.id != job_id or not _same_origin_scope(job.origin, origin):
                 result.append(job)
                 continue
-            next_run_at = schedule.next_after(current) if schedule is not None else job.next_run_at
+            next_run_at = (
+                _first_run_at(schedule, current) if schedule is not None else job.next_run_at
+            )
             new_schedule = schedule or job.schedule
             new_repeat = job.repeat
             if repeat_times is not None:
@@ -666,19 +836,187 @@ def _advance_claimed_job(job: CronJob, now: datetime) -> CronJob:
     if repeat.exhausted:
         return replace(job, repeat=repeat, enabled=False, next_run_at=None)
 
-    next_run_at = cast("datetime", job.next_run_at)
-    interval = timedelta(minutes=job.schedule.minutes)
-    while next_run_at <= now:
-        next_run_at += interval
+    next_run_at = job.schedule.next_after(now, previous=job.next_run_at)
     return replace(job, repeat=repeat, next_run_at=next_run_at)
 
 
-def _parse_duration_minutes(value: str) -> int:
-    parts = value.split()
-    if len(parts) != 1:
-        msg = "schedule duration must be a single value such as '30m'"
+def _first_run_at(schedule: CronSchedule, now: datetime) -> datetime:
+    """Resolve a schedule's first run, rejecting a one-shot that already passed.
+
+    Args:
+        schedule: Schedule being installed on a job.
+        now: Current timestamp.
+
+    Returns:
+        First run timestamp in UTC.
+
+    Raises:
+        CronJobError: If a one-shot wall-clock schedule resolves to the past.
+    """
+    next_run_at = schedule.next_after(now)
+    if schedule.form == "at" and next_run_at <= now:
+        msg = (
+            f"{schedule.display!r} is in the past (resolves to {next_run_at.isoformat()}; "
+            f"now is {now.isoformat()})"
+        )
         raise CronJobError(msg)
-    text = parts[0]
+    return next_run_at
+
+
+def _resolve_zone(name: str) -> ZoneInfo:
+    """Look up an IANA timezone by name.
+
+    Legacy POSIX aliases such as `EST5EDT` and bare UTC offsets are rejected:
+    they cannot express a region's future daylight-saving rules, so a recurring
+    schedule under one would silently drift.
+
+    Args:
+        name: Timezone key, such as `America/New_York` or `UTC`.
+
+    Returns:
+        Resolved timezone.
+
+    Raises:
+        CronJobError: If the name is not a usable IANA region key.
+    """
+    if name != "UTC" and "/" not in name:
+        msg = (
+            f"timezone must be an IANA region name such as 'America/New_York', "
+            f"or 'UTC', not {name!r}"
+        )
+        raise CronJobError(msg)
+    try:
+        return ZoneInfo(name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        msg = f"unknown timezone {name!r}; use an IANA name such as 'America/New_York'"
+        raise CronJobError(msg) from exc
+
+
+def _local_time_exists(naive: datetime, zone: ZoneInfo) -> bool:
+    """Report whether a naive local time exists in `zone`.
+
+    A round trip through UTC is the only reliable check. Comparing the `fold=0`
+    and `fold=1` offsets does not work: they differ both in a spring-forward gap
+    and at an ambiguous fall-back time.
+
+    Args:
+        naive: Naive local wall-clock time.
+        zone: Timezone to interpret it in.
+
+    Returns:
+        Whether the wall clock reads `naive` at that instant.
+    """
+    aware = naive.replace(tzinfo=zone)
+    return aware.astimezone(UTC).astimezone(zone).replace(tzinfo=None) == naive
+
+
+def _localize(naive: datetime, zone: ZoneInfo) -> datetime:
+    """Attach `zone` to a naive local wall-clock time.
+
+    A time skipped by a spring-forward transition is snapped forward to the
+    first minute that does exist, so `daily at 02:30` fires at 03:00 on the
+    transition day rather than being skipped. An ambiguous fall-back time
+    resolves to its earlier (`fold=0`) occurrence, so the job fires once.
+
+    Args:
+        naive: Naive local wall-clock time.
+        zone: Timezone to interpret it in.
+
+    Returns:
+        Aware local datetime.
+
+    Raises:
+        CronJobError: If no nearby local time exists, which no real zone causes.
+    """
+    probe = naive
+    for _ in range(_GAP_PROBE_MINUTES):
+        if _local_time_exists(probe, zone):
+            return probe.replace(tzinfo=zone)
+        probe += timedelta(minutes=1)
+    msg = f"no valid local time near {naive.isoformat()} in {zone.key}"
+    raise CronJobError(msg)
+
+
+def _next_daily_instant(now: datetime, zone: ZoneInfo, hour: int, minute: int) -> datetime:
+    """Return the next local `hour:minute` in `zone` strictly after `now`.
+
+    Each candidate is rebuilt from a local date rather than advanced by 24
+    hours, which is what keeps the job at the same wall-clock time across
+    daylight-saving transitions.
+
+    Args:
+        now: Current timestamp.
+        zone: Schedule timezone.
+        hour: Local hour.
+        minute: Local minute.
+
+    Returns:
+        Next run timestamp in UTC.
+
+    Raises:
+        CronJobError: If no candidate within the lookahead window qualifies.
+    """
+    local_date = now.astimezone(zone).date()
+    for offset in range(_DAILY_LOOKAHEAD_DAYS):
+        naive = datetime.combine(local_date + timedelta(days=offset), time(hour, minute))
+        instant = _localize(naive, zone).astimezone(UTC)
+        if instant > now:
+            return instant
+    msg = f"could not find a daily run after {now.isoformat()} in {zone.key}"
+    raise CronJobError(msg)
+
+
+def _parse_local_time(value: str) -> tuple[int, int]:
+    """Parse a 24-hour local `HH:MM` time.
+
+    Args:
+        value: Time text.
+
+    Returns:
+        Hour and minute.
+
+    Raises:
+        CronJobError: If the text is not a valid 24-hour time.
+    """
+    parts = value.split(":")
+    if len(parts) != _TIME_FIELDS or not all(part.isdecimal() for part in parts):
+        msg = f"local time must look like '08:00', not {value!r}"
+        raise CronJobError(msg)
+    hour, minute = int(parts[0]), int(parts[1])
+    if hour > _MAX_HOUR or minute > _MAX_MINUTE:
+        msg = f"{value!r} is not a valid 24-hour local time"
+        raise CronJobError(msg)
+    return hour, minute
+
+
+def _format_local_time(parts: tuple[int, int]) -> str:
+    return f"{parts[0]:02d}:{parts[1]:02d}"
+
+
+def _parse_local_date(value: str) -> date:
+    """Parse a local `YYYY-MM-DD` date.
+
+    Args:
+        value: Date text.
+
+    Returns:
+        Parsed date.
+
+    Raises:
+        CronJobError: If the text is not an ISO calendar date.
+    """
+    if len(value) != _ISO_DATE_LENGTH:
+        msg = f"date must look like '2026-09-04', not {value!r}"
+        raise CronJobError(msg)
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        msg = f"date must look like '2026-09-04', not {value!r}"
+        raise CronJobError(msg) from exc
+
+
+def _parse_duration_minutes(value: str) -> int:
+    text = value.lower()
     if text.endswith("m"):
         return _positive_int(text[:-1])
     if text.endswith("h"):

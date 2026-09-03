@@ -41,7 +41,14 @@ class CronTools:
 
         Args:
             prompt: Prompt to run when the job fires.
-            schedule: Schedule text such as `in 30m` or `every 15m`.
+            schedule: Schedule text. One of:
+                `in 30m` / `in 2h` (one-shot, relative),
+                `every 15m` / `every 6h` (recurring, relative),
+                `at 2026-09-04 13:30 America/New_York` (one-shot, wall clock),
+                `daily at 08:00 America/New_York` (recurring, same local time
+                each day). The wall-clock forms require an explicit IANA
+                timezone name and keep firing at that local time across
+                daylight-saving changes.
             name: Optional human-readable label.
             repeat_times: Optional cap for recurring schedules.
 
@@ -81,7 +88,14 @@ class CronTools:
             job_id: Job identifier.
             name: Optional replacement label.
             prompt: Optional replacement prompt.
-            schedule: Optional replacement schedule text.
+            schedule: Optional replacement schedule text. Schedule text. One of:
+                `in 30m` / `in 2h` (one-shot, relative),
+                `every 15m` / `every 6h` (recurring, relative),
+                `at 2026-09-04 13:30 America/New_York` (one-shot, wall clock),
+                `daily at 08:00 America/New_York` (recurring, same local time
+                each day). The wall-clock forms require an explicit IANA
+                timezone name and keep firing at that local time across
+                daylight-saving changes.
             enabled: Optional enabled flag.
             repeat_times: Optional replacement repeat cap for recurring jobs.
 
@@ -142,7 +156,14 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
 
         Args:
             prompt: Self-contained prompt to run when the job fires.
-            schedule: Schedule text such as `in 30m` or `every 15m`.
+            schedule: Schedule text. One of:
+                `in 30m` / `in 2h` (one-shot, relative),
+                `every 15m` / `every 6h` (recurring, relative),
+                `at 2026-09-04 13:30 America/New_York` (one-shot, wall clock),
+                `daily at 08:00 America/New_York` (recurring, same local time
+                each day). The wall-clock forms require an explicit IANA
+                timezone name and keep firing at that local time across
+                daylight-saving changes.
             name: Optional human-readable label for the job.
             repeat_times: Optional cap for recurring schedules.
 
@@ -187,7 +208,14 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
             job_id: Job id returned by the create or list tool.
             name: Optional replacement label.
             prompt: Optional replacement prompt.
-            schedule: Optional replacement schedule text.
+            schedule: Optional replacement schedule text. Schedule text. One of:
+                `in 30m` / `in 2h` (one-shot, relative),
+                `every 15m` / `every 6h` (recurring, relative),
+                `at 2026-09-04 13:30 America/New_York` (one-shot, wall clock),
+                `daily at 08:00 America/New_York` (recurring, same local time
+                each day). The wall-clock forms require an explicit IANA
+                timezone name and keep firing at that local time across
+                daylight-saving changes.
             enabled: Optional enabled flag. Use `False` to pause, `True` to resume.
             repeat_times: Optional replacement repeat cap for recurring schedules.
 

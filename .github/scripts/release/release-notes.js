@@ -18,9 +18,14 @@ const BYPASS_LABEL = 'release: dangerously skip curated notes';
 const COMMAND_MENTION = '@release-bot';
 const OVERRIDE_MARKER = 'release-notes-override';
 const APPLIED_MARKER = 'release-notes-applied';
-// GitHub's compare endpoint returns at most 300 changed files. Treat a full page
-// as indeterminate so a package path beyond the response cannot be missed.
+// GitHub's compare response lists at most 300 changed files and does not
+// paginate them. A response at that cap may omit a package path, so treat it as
+// unknown and require a re-draft.
 const COMPARE_FILES_LIMIT = 300;
+// The same response carries at most one page of commits. When it holds fewer
+// than total_commits, the range is truncated and the file list describes only
+// part of it, so the "no package file moved" answer is not trustworthy.
+const COMPARE_COMMITS_PER_PAGE = 100;
 const CONTENT_START = '<!-- release-notes-content-start -->';
 const CONTENT_END = '<!-- release-notes-content-end -->';
 const STALE_MARKER = '<!-- release-notes-stale';
@@ -1107,13 +1112,26 @@ function pathIsInPackage(filename, packagePath) {
   return filename === packagePath || filename.startsWith(`${packagePath}/`);
 }
 
+// Returns true only when the comparison positively proves that no path inside
+// the package moved. Every ambiguous, truncated, or malformed response counts as
+// changed: the cost of a needless re-draft is a maintainer command, and the cost
+// of a wrong "unchanged" is shipping stale curated prose behind a green gate.
 function comparisonLeavesPackageUnchanged(comparison, packagePath) {
   if (comparison.status === 'identical') return true;
+  // Anything else (behind, diverged, absent) means main was rewritten or moved
+  // backwards, and the file list no longer describes the drift.
   if (comparison.status !== 'ahead') return false;
+  // A truncated commit list yields a partial file list that still looks
+  // well-formed, so it must be rejected before the file list is trusted.
+  const { total_commits: totalCommits, commits } = comparison;
+  if (typeof totalCommits !== 'number' || !Array.isArray(commits)) return false;
+  if (commits.length < totalCommits) return false;
   const changedFiles = comparison.files;
   if (!Array.isArray(changedFiles) || changedFiles.length >= COMPARE_FILES_LIMIT) return false;
   return !changedFiles.some(file => {
+    // A malformed entry could be the package path; count it as touching.
     if (typeof file?.filename !== 'string') return true;
+    // A rename out of the package is a package change that `filename` alone hides.
     return pathIsInPackage(file.filename, packagePath)
       || (typeof file.previous_filename === 'string' && pathIsInPackage(file.previous_filename, packagePath));
   });
@@ -1133,11 +1151,27 @@ async function draftCoversCurrentPackage({ github, owner, repo, override, pr, pa
   if (!currentMainHead) return false;
   if (draftMainHead === currentMainHead) return true;
 
-  const response = await github.rest.repos.compareCommitsWithBasehead({
-    owner,
-    repo,
-    basehead: `${draftMainHead}...${currentMainHead}`,
-  });
+  const basehead = `${draftMainHead}...${currentMainHead}`;
+  let response;
+  try {
+    response = await github.rest.repos.compareCommitsWithBasehead({
+      owner,
+      repo,
+      basehead,
+      per_page: COMPARE_COMMITS_PER_PAGE,
+    });
+  } catch (error) {
+    // A recorded main SHA can become unreachable after a history rewrite, and
+    // the endpoint also refuses ranges whose diff is too large. Both are
+    // expected here, so name the comparison and the remedy instead of letting a
+    // bare Octokit message reach the maintainer.
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Could not compare ${basehead} to scope ${packagePath} changes for the curated draft (${detail}); `
+      + `run ${COMMAND_MENTION} draft`,
+      { cause: error },
+    );
+  }
   return comparisonLeavesPackageUnchanged(response.data, packagePath);
 }
 
@@ -1446,6 +1480,8 @@ async function checkCuratedState({
 
 module.exports = {
   BYPASS_LABEL,
+  comparisonLeavesPackageUnchanged,
+  pathIsInPackage,
   COMMAND_MENTION,
   CONTENT_END,
   CONTENT_START,

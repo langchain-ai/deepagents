@@ -169,11 +169,22 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
           const content = files.get(params.ref) ?? fallback;
           return { data: { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64') } };
         },
-        compareCommitsWithBasehead: async params => ({
-          data: typeof comparison === 'function'
+        compareCommitsWithBasehead: async params => {
+          const raw = typeof comparison === 'function'
             ? comparison(params)
-            : { status: comparison, files: changedFiles },
-        }),
+            : { status: comparison, files: changedFiles };
+          // Fixtures that only pin status/files still have to satisfy the
+          // truncation guard, so default them to a complete commit list. An
+          // explicit total_commits/commits in the fixture wins.
+          const count = Math.max(1, (raw.files ?? []).length);
+          return {
+            data: {
+              total_commits: count,
+              commits: Array.from({ length: count }, (_, index) => ({ sha: `commit-${index}` })),
+              ...raw,
+            },
+          };
+        },
       },
       git: {
         getCommit: async params => {
@@ -2541,4 +2552,88 @@ test('the component registry fails closed on a malformed release-please config',
   }));
   assert.equal(slashed.get('x').packagePath, 'libs/x');
   assert.equal(slashed.get('x').changelogPath, 'libs/x/CHANGELOG.md');
+});
+
+// comparisonLeavesPackageUnchanged decides whether a curated draft still covers
+// main. Its wrong answer is silent: a false "unchanged" ships stale prose behind
+// a green gate, so each fail-closed branch is pinned individually here rather
+// than reached incidentally through the apply and check flows.
+test('comparisonLeavesPackageUnchanged proves unchanged only for a complete, in-range comparison', () => {
+  const unchanged = releaseNotes.comparisonLeavesPackageUnchanged;
+  const complete = (files, extra = {}) => ({
+    status: 'ahead',
+    total_commits: 2,
+    commits: [{ sha: 'a' }, { sha: 'b' }],
+    files,
+    ...extra,
+  });
+
+  // Positive case: a complete comparison touching nothing in the package.
+  assert.equal(unchanged(complete([{ filename: 'libs/other/app.py' }]), 'libs/code'), true);
+  assert.equal(unchanged(complete([]), 'libs/code'), true);
+  // An identical comparison short-circuits before any file inspection.
+  assert.equal(unchanged({ status: 'identical' }, 'libs/code'), true);
+
+  // A file inside the package, including the package directory itself.
+  assert.equal(unchanged(complete([{ filename: 'libs/code/app.py' }]), 'libs/code'), false);
+  assert.equal(unchanged(complete([{ filename: 'libs/code' }]), 'libs/code'), false);
+  // A sibling sharing the name as a prefix is a different package.
+  assert.equal(unchanged(complete([{ filename: 'libs/code-server/app.py' }]), 'libs/code'), true);
+
+  // A rename out of the package is invisible via `filename` alone.
+  assert.equal(
+    unchanged(complete([{ filename: 'libs/other/app.py', previous_filename: 'libs/code/app.py' }]), 'libs/code'),
+    false,
+  );
+
+  // Non-ahead statuses mean main moved backwards or was rewritten.
+  for (const status of ['diverged', 'behind', undefined]) {
+    assert.equal(unchanged(complete([], { status }), 'libs/code'), false, `status ${status}`);
+  }
+
+  // Truncated commit list: the file list describes only part of the range.
+  assert.equal(
+    unchanged({ status: 'ahead', total_commits: 250, commits: [{ sha: 'a' }], files: [] }, 'libs/code'),
+    false,
+  );
+  assert.equal(unchanged({ status: 'ahead', commits: [{ sha: 'a' }], files: [] }, 'libs/code'), false);
+  assert.equal(unchanged({ status: 'ahead', total_commits: 1, files: [] }, 'libs/code'), false);
+
+  // File list at GitHub's cap may omit a package path.
+  const capped = Array.from({ length: 300 }, (_, index) => ({ filename: `libs/other/f${index}.py` }));
+  assert.equal(unchanged(complete(capped), 'libs/code'), false);
+  assert.equal(unchanged(complete(capped.slice(0, 299)), 'libs/code'), true);
+
+  // Missing or malformed file entries cannot be ruled out as the package path.
+  assert.equal(unchanged(complete(undefined), 'libs/code'), false);
+  assert.equal(unchanged(complete([{}]), 'libs/code'), false);
+  assert.equal(unchanged(complete([{ filename: null }]), 'libs/code'), false);
+});
+
+test('a failed package comparison names the comparison and the remedy', async () => {
+  const pr = releasePr({ base: { ...releasePr().base, sha: NEXT_MAIN_HEAD } });
+  const comparison = () => { throw new Error('Not Found'); };
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment({ mainHead: MAIN_HEAD }), appliedComment()],
+    comparison,
+  });
+  const core = makeCore();
+  await assert.rejects(
+    releaseNotes.checkCuratedState({
+      github,
+      context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+      core,
+      number: 123,
+      ...BOT_AUTH,
+    }),
+    error => {
+      assert.match(error.message, /Could not compare/);
+      assert.match(error.message, new RegExp(`${MAIN_HEAD}\\.\\.\\.${NEXT_MAIN_HEAD}`));
+      assert.match(error.message, /libs\/code/);
+      assert.match(error.message, /Not Found/);
+      assert.match(error.message, /@release-bot draft/);
+      return true;
+    },
+  );
 });

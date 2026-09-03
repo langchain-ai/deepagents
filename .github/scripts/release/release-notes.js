@@ -964,7 +964,13 @@ async function validateApplySnapshot({ github, owner, repo, state, login, id, ex
     target.component !== state.component ||
     target.version !== state.version ||
     pr.draft ||
-    pr.base?.sha !== state.baseHead ||
+    // GitHub recomputes base.sha to main's tip whenever the release branch is
+    // synchronized, and the apply commit is itself such a push. So this field
+    // legitimately moves between the pre-push check and the post-push one, for
+    // the same reason expectedHead does. Bind it to the same flag: before the
+    // push it guards the prepare/commit window, after the push a main advance
+    // is not grounds to withhold the metadata for a commit that already landed.
+    (checkPrHead && pr.base?.sha !== state.baseHead) ||
     (checkPrHead && pr.head.sha !== expectedHead) ||
     exactSha256(pr.body ?? '') !== state.originalBodyHash
   ) {

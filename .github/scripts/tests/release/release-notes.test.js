@@ -694,6 +694,53 @@ test('apply rejects main advancing after its package-scope snapshot', async t =>
   assert.equal(run.calls.updateRef.length, 0);
 });
 
+test('apply publishes its metadata when main advances after the commit landed', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    changelogFile: workspace.file,
+    stateFile,
+    ...BOT_AUTH,
+  });
+  await releaseNotes.createApplyCommit({
+    github: run.github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    stateFile,
+    changelogFile: workspace.file,
+    ...BOT_AUTH,
+  });
+  assert.equal(run.calls.updateRef.length, 1);
+  // The apply commit is a branch push, so GitHub snaps base.sha to main's tip.
+  // The changelog commit has already landed; withholding the applied comment and
+  // the body mirror here would strand it and fail the gate for no defect.
+  run.setPr(releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    base: { ...releasePr().base, sha: NEXT_MAIN_HEAD },
+  }));
+
+  await releaseNotes.publishAppliedState({
+    github: run.github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    stateFile,
+    appliedHead: APPLIED_HEAD,
+    ...BOT_AUTH,
+  });
+  assert.equal(run.calls.updatePr.length, 1);
+  assert.equal(run.calls.createComment.length, 1);
+  const parsed = releaseNotes.parseAppliedComment({ body: run.calls.createComment[0].body });
+  assert.ok(parsed, 'applied comment should parse');
+  assert.equal(parsed.metadata['applied-head'], APPLIED_HEAD);
+});
+
 test('prepare apply preserves the generated release heading', async t => {
   const workspace = tempWorkspace();
   t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));

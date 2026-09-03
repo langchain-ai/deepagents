@@ -2725,8 +2725,10 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         from deepagents_code.configurable_model import (
             _resolve_openai_prompt_cache_key_enabled,
             _with_model_session_settings,
+            _without_injected_model_session_settings,
         )
 
+        settings = _without_injected_model_session_settings(settings)
         if self._openai_prompt_cache_key_enabled is None:
             self._openai_prompt_cache_key_enabled = (
                 _resolve_openai_prompt_cache_key_enabled()

@@ -202,6 +202,25 @@ _FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
 """Fireworks prompt-cache affinity header populated from the active thread ID."""
 
 
+class _InjectedSessionSettings(dict[str, Any]):  # noqa: FURB189  # preserve dict API
+    """Model settings carrying session hints added by this middleware."""
+
+    __slots__ = ("prompt_cache_key", "session_affinity", "session_id")
+
+    def __init__(
+        self,
+        settings: Mapping[str, Any],
+        session_id: str,
+        *,
+        prompt_cache_key: bool,
+        session_affinity: bool,
+    ) -> None:
+        super().__init__(settings)
+        self.session_id = session_id
+        self.prompt_cache_key = prompt_cache_key
+        self.session_affinity = session_affinity
+
+
 def _has_header(headers: Mapping[object, object], target: str) -> bool:
     """Return whether a headers mapping already includes `target`.
 
@@ -250,7 +269,13 @@ def _with_fireworks_session_settings(
 
     if not updated:
         return None
-    return {**model_settings, **updated}
+    result = {**model_settings, **updated}
+    return _InjectedSessionSettings(
+        result,
+        thread_id,
+        prompt_cache_key="prompt_cache_key" in updated,
+        session_affinity="extra_headers" in updated,
+    )
 
 
 def _with_openai_prompt_cache_key(
@@ -286,7 +311,12 @@ def _with_openai_prompt_cache_key(
         isinstance(model_kwargs, Mapping) and "prompt_cache_key" in model_kwargs
     ):
         return None
-    return {**model_settings, "prompt_cache_key": thread_id}
+    return _InjectedSessionSettings(
+        {**model_settings, "prompt_cache_key": thread_id},
+        thread_id,
+        prompt_cache_key=True,
+        session_affinity=False,
+    )
 
 
 def _with_model_session_settings(
@@ -306,6 +336,38 @@ def _with_model_session_settings(
     if _is_openai_model(model) and openai_prompt_cache_key:
         return _with_openai_prompt_cache_key(model, model_settings, session_id)
     return None
+
+
+def _without_injected_model_session_settings(
+    model_settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Remove session hints previously injected by this middleware.
+
+    Returns:
+        A copy without middleware-owned session hints.
+    """
+    if not isinstance(model_settings, _InjectedSessionSettings):
+        return model_settings
+    updated = dict(model_settings)
+    if model_settings.prompt_cache_key:
+        updated.pop("prompt_cache_key", None)
+    if model_settings.session_affinity:
+        raw_headers = updated.get("extra_headers")
+        if isinstance(raw_headers, Mapping):
+            headers = {
+                key: value
+                for key, value in raw_headers.items()
+                if not (
+                    isinstance(key, str)
+                    and key.lower() == _FIREWORKS_SESSION_AFFINITY_HEADER
+                    and value == model_settings.session_id
+                )
+            }
+            if headers:
+                updated["extra_headers"] = headers
+            else:
+                updated.pop("extra_headers", None)
+    return updated
 
 
 def _resolve_openai_prompt_cache_key_enabled() -> bool:

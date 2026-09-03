@@ -76,6 +76,7 @@ from deepagents_code.auto_mode import (
     sanitize_auto_reason,
     user_prompt_metadata,
 )
+from deepagents_code.configurable_model import ConfigurableModelMiddleware
 
 if TYPE_CHECKING:
     from langchain.agents.middleware.human_in_the_loop import InterruptOnConfig
@@ -334,6 +335,7 @@ def _request(
     expanded_text: str = "expanded file content must not authorize anything",
     classifier_model: str | None = None,
     thread_id: str = "thread-1",
+    model_settings: dict[str, Any] | None = None,
 ) -> tuple[ModelRequest[Any], _Store, str]:
     _ = args
     key = approval_mode_key(thread_id)
@@ -365,8 +367,24 @@ def _request(
         tools=cast("list[BaseTool | dict[str, Any]]", tools or [_tool(tool_name)]),
         state={"messages": [message]},
         runtime=cast("Runtime[Any]", runtime),
+        model_settings=model_settings,
     )
     return request, active_store, key
+
+
+def _apply_model_session_settings(request: ModelRequest[Any]) -> ModelRequest[Any]:
+    captured: list[ModelRequest[Any]] = []
+    middleware = ConfigurableModelMiddleware(
+        persist_model_state=False, openai_prompt_cache_key=True
+    )
+    middleware.wrap_model_call(
+        request,
+        lambda resolved: (
+            captured.append(resolved),
+            ModelResponse(result=[AIMessage(content="ok")]),
+        )[1],
+    )
+    return captured[0]
 
 
 async def _plan_calls(
@@ -4414,6 +4432,8 @@ async def test_classifier_reuses_thread_session_between_reviews(
     )
     model._get_ls_params = lambda: {"ls_provider": "openai"}  # ty: ignore[unresolved-attribute]
     model.model_kwargs = {}  # ty: ignore[unresolved-attribute]
+    request = _apply_model_session_settings(request)
+    assert request.model_settings["prompt_cache_key"] == "thread-1"
 
     model.result = _allow_result("call-1")
     await _plan(
@@ -4435,6 +4455,69 @@ async def test_classifier_reuses_thread_session_between_reviews(
     assert len(first) == 64
     assert first != key
     assert model.call_kwargs[1]["prompt_cache_key"] == first
+
+
+async def test_inherited_fireworks_classifier_replaces_agent_session(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    model._get_ls_params = lambda: {  # ty: ignore[unresolved-attribute]
+        "ls_provider": "fireworks"
+    }
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+    request = _apply_model_session_settings(request)
+    assert request.model_settings["prompt_cache_key"] == "thread-1"
+
+    await _plan(
+        _middleware(tmp_path),
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    session = cast("dict[str, str]", model.call_kwargs[0]["extra_headers"])[
+        "x-session-affinity"
+    ]
+    assert len(session) == 64
+    assert session != "thread-1"
+    assert model.call_kwargs[0]["prompt_cache_key"] == session
+
+
+async def test_inherited_classifier_preserves_custom_session(
+    tmp_path: Path,
+) -> None:
+    model = _StructuredModel(_allow_result())
+    model._get_ls_params = lambda: {  # ty: ignore[unresolved-attribute]
+        "ls_provider": "fireworks"
+    }
+    request, _store, _key = _request(
+        tmp_path,
+        model=model,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+        model_settings={
+            "prompt_cache_key": "custom-cache",
+            "extra_headers": {"X-Session-Affinity": "custom-session"},
+        },
+    )
+    request = _apply_model_session_settings(request)
+
+    await _plan(
+        _middleware(tmp_path),
+        request,
+        tool_name="delete",
+        args={"file_path": "old.py"},
+    )
+
+    assert model.call_kwargs[0]["prompt_cache_key"] == "custom-cache"
+    assert model.call_kwargs[0]["extra_headers"] == {
+        "X-Session-Affinity": "custom-session"
+    }
 
 
 async def test_classifier_sessions_are_isolated_by_thread(

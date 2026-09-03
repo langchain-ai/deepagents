@@ -16256,6 +16256,50 @@ class TestDeferredActions:
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "reconnecting"
 
+    async def test_retry_startup_refreshes_provider_default_classifier(self) -> None:
+        """Deferred startup refreshes its classifier default across retries."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": None, "auto_classifier_model": None}
+            app._server_startup_deferred = True
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # ty: ignore
+            app.run_worker = MagicMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.UNKNOWN,
+                        provider="anthropic",
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config.resolve_auto_classifier_model_for_provider",
+                    side_effect=[
+                        "anthropic:claude-sonnet-5",
+                        "openai:gpt-5.6-luna",
+                    ],
+                ),
+            ):
+                started = await app._maybe_start_deferred_server_from_default()
+                assert app._auto_classifier_model == "anthropic:claude-sonnet-5"
+
+                await app._retry_startup_with_model("openai:gpt-5.6")
+
+            assert started is True
+            assert app._auto_classifier_model == "openai:gpt-5.6-luna"
+            assert app._server_kwargs["auto_classifier_model"] == "openai:gpt-5.6-luna"
+
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,
     ) -> None:

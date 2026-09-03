@@ -223,6 +223,7 @@ class TestServerGraph:
             observed["interpreter_ptc"] = interpreter.ptc
             observed["acknowledge"] = interpreter.ptc_acknowledge_unsafe
             observed["enable_interpreter"] = kwargs["enable_interpreter"]
+            observed["auto_classifier_model"] = kwargs["auto_classifier_model"]
             return graph_obj, _backend_with_offload(object())
 
         settings_obj = SimpleNamespace(has_tavily=False)
@@ -232,12 +233,16 @@ class TestServerGraph:
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,
+                    provider="openai",
                     apply_to_runtime_state=MagicMock(),
                     model_retries=5,
                     cli_max_retries=None,
                 ),
             ),
             is_memory_auto_save_enabled=MagicMock(return_value=True),
+            resolve_auto_classifier_model_for_provider=MagicMock(
+                return_value="openai:gpt-5.6-luna"
+            ),
             credentials=settings_obj,
         )
         agent_module = _module_with_attrs(
@@ -285,6 +290,7 @@ class TestServerGraph:
             "interpreter_ptc": ["js_eval"],
             "acknowledge": True,
             "enable_interpreter": True,
+            "auto_classifier_model": "openai:gpt-5.6-luna",
         }
 
 

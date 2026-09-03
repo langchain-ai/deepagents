@@ -704,6 +704,13 @@ def _load_dotenv(
 _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Env vars that hold the LangSmith API key used for trace ingestion."""
 
+_PREFIXED_LANGSMITH_ENV_VARS = (
+    *_TRACING_API_KEY_ENV_VARS,
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_TRACING_V2",
+)
+"""LangSmith vars bridged from app-prefixed overrides to SDK names."""
+
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
 
@@ -1322,11 +1329,49 @@ def apply_stored_langsmith_auth(*, replace_project: bool = False) -> None:
     """
     from deepagents_code.model_config import apply_stored_service_credentials
 
+    _apply_prefixed_langsmith_env()
     apply_stored_service_credentials()
     _apply_stored_langsmith_tracing(replace_project=replace_project)
     _disable_orphaned_tracing()
     _apply_default_langsmith_project()
     configure_langsmith_secret_redaction()
+
+
+def _warn_on_prefixed_langsmith_override(canonical: str, prefixed: str) -> None:
+    """Explain why an app-prefixed LangSmith value replaced its canonical peer."""
+    from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    logger.warning(
+        "%s and %s are both set to different values. Deep Agents Code uses %s "
+        "for this session (the %s-prefixed value takes precedence). The %s you "
+        "exported in your own shell is unaffected. This is expected. To silence "
+        "this warning, unset %s or set %s=1.",
+        canonical,
+        prefixed,
+        prefixed,
+        _ENV_PREFIX,
+        canonical,
+        canonical,
+        SUPPRESS_ENV_OVERRIDE_WARNING,
+    )
+
+
+def _apply_prefixed_langsmith_env() -> None:
+    """Bridge app-prefixed LangSmith overrides to names read by the SDK."""
+    from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    suppress_warning = is_env_truthy(SUPPRESS_ENV_OVERRIDE_WARNING)
+    for canonical in _PREFIXED_LANGSMITH_ENV_VARS:
+        prefixed = f"{_ENV_PREFIX}{canonical}"
+        if prefixed not in os.environ:
+            continue
+        value = os.environ[prefixed]
+        conflict = canonical in os.environ and os.environ[canonical] != value
+        os.environ[canonical] = value
+        if conflict and not suppress_warning:
+            _warn_on_prefixed_langsmith_override(canonical, prefixed)
 
 
 def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
@@ -1542,52 +1587,10 @@ def _ensure_bootstrap() -> None:
             if deepagents_project:
                 os.environ["LANGSMITH_PROJECT"] = deepagents_project
 
-            # Propagate prefixed LangSmith env vars to canonical names.
-            # The app resolves prefixed vars via resolve_env_var(), but the
-            # LangSmith SDK reads os.environ directly and has no knowledge
-            # of the DEEPAGENTS_CODE_ prefix. Setting canonical vars here
-            # bridges that gap.
-            from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
-            from deepagents_code.model_config import _ENV_PREFIX
-
-            suppress_override_warning = is_env_truthy(SUPPRESS_ENV_OVERRIDE_WARNING)
-
-            for canonical in (
-                "LANGSMITH_API_KEY",
-                "LANGCHAIN_API_KEY",
-                "LANGSMITH_TRACING",
-                "LANGCHAIN_TRACING_V2",
-            ):
-                prefixed = f"{_ENV_PREFIX}{canonical}"
-                if prefixed not in os.environ:
-                    continue
-                prefixed_val = os.environ[prefixed]
-                if canonical not in os.environ:
-                    # Propagate (including empty string for explicit disable).
-                    os.environ[canonical] = prefixed_val
-                elif os.environ[canonical] != prefixed_val:
-                    os.environ[canonical] = prefixed_val
-                    if not suppress_override_warning:
-                        logger.warning(
-                            "%s and %s are both set to different values. Deep "
-                            "Agents Code uses %s for this session (the "
-                            "%s-prefixed value takes precedence). The %s you "
-                            "exported in your own shell is unaffected. This is "
-                            "expected. To silence this warning, unset %s or set "
-                            "%s=1.",
-                            canonical,
-                            prefixed,
-                            prefixed,
-                            _ENV_PREFIX,
-                            canonical,
-                            canonical,
-                            SUPPRESS_ENV_OVERRIDE_WARNING,
-                        )
-
-            # Bridge stored service keys, apply stored LangSmith tracing defaults,
-            # disable orphaned tracing, and route active tracing to the displayed
-            # project. Keeping this in one helper lets `/auth` save apply the same
-            # state immediately inside an already-running TUI session.
+            # Bridge prefixed and stored service keys, apply stored LangSmith
+            # tracing defaults, disable orphaned tracing, and route active tracing
+            # to the displayed project. Keeping this in one helper lets `/auth`
+            # save apply the same state inside an already-running TUI session.
             apply_stored_langsmith_auth()
         except Exception:
             logger.exception(

@@ -182,6 +182,47 @@ class TestRuntimeDotenvReload:
         finally:
             reset_env_resolution_log()
 
+    def test_reload_reapplies_prefixed_langsmith_key(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reload keeps the session key on the canonical SDK variable."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code import auth_store
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
+        )
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "prefixed-key")
+        auth_store.set_stored_key("langsmith", "stored-key")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict(
+            config_mod._bootstrap_state.launch_langsmith_env
+        )
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            runtime.reload_from_environment(start_path=tmp_path)
+
+            assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
     def test_reload_redefaults_project_when_override_cleared_and_tracing_on(
         self,
         tmp_path: Path,

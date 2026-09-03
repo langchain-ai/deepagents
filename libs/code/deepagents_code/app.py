@@ -3900,6 +3900,9 @@ class DeepAgentsApp(App):
         statements. This flag puts `INHERIT_CLASSIFIER_MODEL` on the run context
         for the latter."""
 
+        self._auto_classifier_model_is_retry_default: bool = False
+        """Whether deferred-startup retry derived the classifier from its provider."""
+
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
 
@@ -22240,6 +22243,7 @@ class DeepAgentsApp(App):
 
         self._auto_classifier_model = display
         self._auto_classifier_model_cleared = display is None
+        self._auto_classifier_model_is_retry_default = False
         if self._server_kwargs is not None:
             self._server_kwargs["auto_classifier_model"] = display
 
@@ -29729,7 +29733,13 @@ class DeepAgentsApp(App):
         display = model_spec
         if provider and not parsed:
             display = f"{provider}:{model_name}"
-        if provider and self._server_kwargs.get("auto_classifier_model") is None:
+        if provider and (
+            self._auto_classifier_model_is_retry_default
+            or (
+                self._server_kwargs.get("auto_classifier_model") is None
+                and not self._auto_classifier_model_cleared
+            )
+        ):
             from deepagents_code.config import (
                 resolve_auto_classifier_model_for_provider,
             )
@@ -29737,6 +29747,7 @@ class DeepAgentsApp(App):
             classifier_model = resolve_auto_classifier_model_for_provider(provider)
             self._auto_classifier_model = classifier_model
             self._server_kwargs["auto_classifier_model"] = classifier_model
+            self._auto_classifier_model_is_retry_default = True
 
         new_model_kwargs: dict[str, Any] = {
             "model_spec": display,

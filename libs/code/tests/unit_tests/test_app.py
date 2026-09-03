@@ -16256,10 +16256,8 @@ class TestDeferredActions:
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "reconnecting"
 
-    async def test_retry_startup_defaults_classifier_after_provider_resolution(
-        self,
-    ) -> None:
-        """Deferred startup stores the classifier default for its resolved provider."""
+    async def test_retry_startup_refreshes_provider_default_classifier(self) -> None:
+        """Deferred startup refreshes its classifier default across retries."""
         from deepagents_code.model_config import (
             ProviderAuthState,
             ProviderAuthStatus,
@@ -16287,17 +16285,20 @@ class TestDeferredActions:
                 ),
                 patch(
                     "deepagents_code.config.resolve_auto_classifier_model_for_provider",
-                    return_value="anthropic:claude-sonnet-5",
+                    side_effect=[
+                        "anthropic:claude-sonnet-5",
+                        "openai:gpt-5.6-luna",
+                    ],
                 ),
             ):
                 started = await app._maybe_start_deferred_server_from_default()
+                assert app._auto_classifier_model == "anthropic:claude-sonnet-5"
+
+                await app._retry_startup_with_model("openai:gpt-5.6")
 
             assert started is True
-            assert app._auto_classifier_model == "anthropic:claude-sonnet-5"
-            assert (
-                app._server_kwargs["auto_classifier_model"]
-                == "anthropic:claude-sonnet-5"
-            )
+            assert app._auto_classifier_model == "openai:gpt-5.6-luna"
+            assert app._server_kwargs["auto_classifier_model"] == "openai:gpt-5.6-luna"
 
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,

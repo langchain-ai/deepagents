@@ -696,6 +696,55 @@ class TestGetMCPTools:
         ]
         await manager.cleanup()
 
+    async def test_long_tool_name_is_bounded_but_calls_original(
+        self,
+        write_config: Callable[..., str],
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """A name over the provider limit is capped, and still dispatches."""
+        server_name = "server" * 10
+        original_name = "query_docs_filesystem_docs_by_lang_chain"
+        path = write_config(
+            {"mcpServers": {server_name: {"command": "node", "args": []}}}
+        )
+        mcp_servers.register(server_name, original_name)
+
+        tools, manager, server_infos = await get_mcp_tools(path)
+        result = await tools[0].ainvoke({})
+
+        # Capped for the provider, but the call still reaches the real tool --
+        # the mounted name the client dispatches on is not the LangChain name.
+        assert len(tools[0].name) == _MCP_TOOL_NAME_MAX_LENGTH
+        assert re.fullmatch(r"[A-Za-z0-9_-]+", tools[0].name)
+        assert server_infos[0].tools[0].name == tools[0].name
+        assert server_infos[0].tools[0].input_schema == {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        }
+        assert original_name in str(result)
+        await manager.cleanup()  # ty: ignore
+
+    async def test_long_tool_name_keeps_the_original_in_metadata(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """Capping is lossy, so the server-side name is recorded alongside."""
+        server_name = "server" * 10
+        original_name = "tool" * 20
+        mcp_servers.register(server_name, original_name)
+
+        tools, manager, _server_infos = await _load_tools_from_config(
+            {"mcpServers": {server_name: {"command": "node"}}}, stateless=True
+        )
+
+        assert manager is None
+        assert len(tools[0].name) == _MCP_TOOL_NAME_MAX_LENGTH
+        metadata = tools[0].metadata
+        assert metadata is not None
+        assert metadata["_deepagents_code_mcp_server"] == server_name
+        assert metadata["_deepagents_code_mcp_tool"] == original_name
+
     async def test_discovery_failure_marks_server_error(
         self,
         write_config: Callable[..., str],
@@ -2138,6 +2187,28 @@ class TestLoadToolsConcurrency:
         assert [i.name for i in infos] == names
         assert manager is not None
         await manager.cleanup()
+
+    async def test_discovery_failure_closes_adopted_resources(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """A load that fails after mounting closes the client and backends."""
+        mcp_servers.register("srv", "tool")
+        client = AsyncMock()
+        client.list_tools.side_effect = RuntimeError("discovery failed")
+        backend_stack = AsyncMock()
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools._mount_backends",
+                AsyncMock(return_value=(client, backend_stack, {})),
+            ),
+            pytest.raises(RuntimeError, match="discovery failed"),
+        ):
+            await _load_tools_from_config(self._config("srv"))
+
+        client.close.assert_awaited_once()
+        backend_stack.aclose.assert_awaited_once()
 
     async def test_preflight_concurrency_is_bounded(
         self,

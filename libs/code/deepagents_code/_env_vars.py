@@ -180,11 +180,14 @@ unset.
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
 """
 
-DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
-"""Path for the debug log file (default: `DEFAULT_DEBUG_FILE`)."""
+DEBUG_DIRECTORY = "DEEPAGENTS_CODE_DEBUG_DIRECTORY"
+"""Directory for per-thread debug logs (default: `DEFAULT_DEBUG_DIRECTORY`)."""
 
-DEFAULT_DEBUG_FILE = "/tmp/deepagents_debug.log"  # noqa: S108  # opt-in debug log
-"""Default path for the debug log when `DEBUG_FILE` is unset."""
+DEBUG_FILE = "DEEPAGENTS_CODE_DEBUG_FILE"
+"""Deprecated debug file path; its parent is used when `DEBUG_DIRECTORY` is unset."""
+
+DEFAULT_DEBUG_DIRECTORY = "/tmp/deepagents_debug"  # noqa: S108  # opt-in debug logs
+"""Default directory for debug logs when no debug path override is set."""
 
 DEBUG_MCP_PROJECT_TRUST = "DEEPAGENTS_CODE_DEBUG_MCP_PROJECT_TRUST"
 """Force the project MCP approval prompt for manual UI testing.
@@ -197,6 +200,21 @@ the debug run does not continue into TUI or server startup, and it does not
 persist trust decisions.
 
 Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` as enabled.
+"""
+
+DEBUG_MODEL_SWITCH = "DEEPAGENTS_CODE_DEBUG_MODEL_SWITCH"
+"""Force the model-switch confirmation modal on every model change.
+
+Set to a truthy value when launching the interactive TUI to make
+`_confirm_and_switch_model` show `ModelSwitchWarningScreen` for every switch
+to a different model, bypassing the `warnings.model_switch_token_threshold`
+gate. Lets the modal — including the deferred path that queues behind an
+active turn — be exercised without growing a thread past the token threshold.
+The modal shows the real current/target models and the live context-token
+count, which may be 0.
+
+Parsed by `is_env_truthy`: accepts `1`, `true`, `yes`, `on` (case-insensitive)
+as enabled, and `0`, `false`, `no`, `off`, empty string, or unset as disabled.
 """
 
 DEBUG_NOTIFICATIONS = "DEEPAGENTS_CODE_DEBUG_NOTIFICATIONS"
@@ -233,6 +251,15 @@ setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's
 shell, launch env, or global `~/.deepagents/.env` can.
 """
 
+FORKED_SUBAGENTS = "DEEPAGENTS_CODE_FORKED_SUBAGENTS"
+"""Whether dcode's built-in `general-purpose` subagent runs in fork mode.
+
+On by default. Set to a falsy value to make the subagent receive only the delegated
+task instead of inheriting the parent agent's conversation and state. Parsed by
+`is_env_truthy`; set this only through the launching shell or global
+`~/.deepagents/.env`, never a project `.env`.
+"""
+
 EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Opt into experimental, unstable dcode behavior.
 
@@ -240,6 +267,12 @@ Off by default; parsed by `is_env_truthy` (see there for the accepted truthy
 values). Marks experimental runs in UI/trace metadata. Behavior behind this
 flag may change or be removed without notice.
 """
+
+EXTENSIONS = "DEEPAGENTS_CODE_EXTENSIONS"
+"""Enable loading installed-plugin and trusted-project Python extensions."""
+
+EXTENSIONS_TRUST = "DEEPAGENTS_CODE_EXTENSIONS_TRUST"
+"""Default project extension trust policy: `ask`, `always`, or `never`."""
 
 EXTERNAL_EVENT_SOCKET = "DEEPAGENTS_CODE_EXTERNAL_EVENT_SOCKET"
 """Enable the local Unix-socket external event listener.
@@ -284,6 +317,18 @@ HIDE_SPLASH_TIPS = "DEEPAGENTS_CODE_HIDE_SPLASH_TIPS"
 HIDE_SPLASH_VERSION = "DEEPAGENTS_CODE_HIDE_SPLASH_VERSION"
 """Hide version and local-install details in the splash screen when enabled."""
 
+HISTORY_RETENTION_DAYS = "DEEPAGENTS_CODE_HISTORY_RETENTION_DAYS"
+"""Days an offloaded conversation-history archive is kept before the startup
+sweep deletes it.
+
+Archives live under `~/.deepagents/conversation_history/` and are removed by a
+best-effort background sweep at startup once their age exceeds the window.
+Non-negative integers only: `0` disables the sweep entirely, and an
+unparseable or negative value falls through to the next config source. Also
+settable via `[history].retention_days` in config.toml (managed config takes
+precedence).
+"""
+
 INVOKED_AS = "DEEPAGENTS_CODE_INVOKED_AS"
 """Internal sentinel carrying the command name the user launched with.
 
@@ -302,7 +347,7 @@ LANGSMITH_PROJECT = "DEEPAGENTS_CODE_LANGSMITH_PROJECT"
 """Override LangSmith project name for agent traces."""
 
 LANGSMITH_REDACT = "DEEPAGENTS_CODE_LANGSMITH_REDACT"
-"""Toggle LangSmith secret redaction for agent traces (defaults to off)."""
+"""Toggle LangSmith secret redaction for agent traces (defaults to on)."""
 
 LANGSMITH_REPLICA_PROJECTS = "DEEPAGENTS_CODE_LANGSMITH_REPLICA_PROJECTS"
 """Comma-separated LangSmith project names to *also* write agent traces to.
@@ -460,10 +505,9 @@ repo file, so a project `.env` cannot disable itself.
 RECURSION_LIMIT = "DEEPAGENTS_CODE_RECURSION_LIMIT"
 """Override the main agent's LangGraph `recursion_limit` (graph step budget).
 
-Parsed as an integer by the config manifest. Values below the LangGraph floor
-(`25`) or above the manifest ceiling are ignored with a logged warning, falling
-back to `config.toml` then the default. See `[runtime].recursion_limit` and the
-`--recursion-limit` CLI flag.
+Parsed as an integer by the config manifest. Values outside the accepted range
+are ignored with a logged warning, falling back to `config.toml`. See
+`[runtime].recursion_limit` and the `--recursion-limit` CLI flag.
 """
 
 RESTARTED_AFTER_UPDATE = "DEEPAGENTS_CODE_RESTARTED_AFTER_UPDATE"
@@ -488,9 +532,9 @@ settable as `[features].resume_term_program` in config.toml.
 RIPGREP_INSTALLER = "DEEPAGENTS_CODE_RIPGREP_INSTALLER"
 """Select how ripgrep is provisioned: `managed` (default) or `system`.
 
-`managed` downloads the pinned, SHA-256-verified upstream binary into
-`~/.deepagents/bin` (no sudo). `system` skips that download so power users can
-rely on their distro package / existing toolchain instead; the install script's
+`managed` downloads the pinned, SHA-256-verified upstream binary into the dcode
+installation (no sudo). `system` skips that download so power users can rely on
+their distro package / existing toolchain instead; the install script's
 `system` mode keeps the brew/apt/cargo path. A system `rg` already on `PATH` is
 reused under either setting. Unrecognized values fall back to `managed`. See
 `managed_tools.ripgrep_installer`."""
@@ -520,6 +564,16 @@ Off by default; use the `/timestamps` slash command or
 value rather than forcing the default). While this env var is set it outranks
 the persisted value, so a `/timestamps` toggle will not appear to "stick"
 across restarts.
+"""
+
+SHOW_REASONING = "DEEPAGENTS_CODE_SHOW_REASONING"
+"""Show provider-visible reasoning in local TUI and headless output.
+
+Off by default; use `[ui].show_reasoning` in config.toml to persist it. Parsed
+by `classify_env_bool` (an unrecognized value falls through to the config value
+rather than forcing the default). A recognized value outranks the config value
+but loses to `--show-reasoning`, which is the only way to change the setting for
+a single run.
 """
 
 SHOW_SCROLLBAR = "DEEPAGENTS_CODE_SHOW_SCROLLBAR"
@@ -595,6 +649,9 @@ sequence regardless.
 
 THEME = "DEEPAGENTS_CODE_THEME"
 """Force the CLI to launch with this theme name when set."""
+
+UI_CHARSET_MODE = "DEEPAGENTS_CODE_UI_CHARSET_MODE"
+"""Terminal character-set mode (`auto`, `ascii`, or `unicode`)."""
 
 USER_ID = "DEEPAGENTS_CODE_USER_ID"
 """Attach a user identifier to LangSmith trace metadata."""

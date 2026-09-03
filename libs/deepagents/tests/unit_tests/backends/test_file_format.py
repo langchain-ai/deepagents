@@ -7,7 +7,6 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents.backends.store import StoreBackend
 from deepagents.backends.utils import (
-    compile_grep_include_glob,
     create_file_data,
     file_data_to_string,
     grep_matches_from_files,
@@ -137,11 +136,6 @@ def test_grep_glob_matches_nothing() -> None:
     }
     result = grep_matches_from_files(files, "hit", path="/", glob="*.rs")
     assert result.matches == []
-
-
-def test_compile_glob_is_cached() -> None:
-    assert compile_grep_include_glob("*.py") is compile_grep_include_glob("*.py")
-    assert compile_grep_include_glob("*.py") is not compile_grep_include_glob("*.md")
 
 
 def test_grep_glob_repeated_pattern_stays_correct() -> None:

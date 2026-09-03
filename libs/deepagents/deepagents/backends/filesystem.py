@@ -40,10 +40,10 @@ from deepagents.backends.protocol import (
 )
 from deepagents.backends.utils import (
     MAX_VIDEO_INPUT_BYTES,
+    InvalidGlobPatternError,
     _get_backend_read_file_type,
     check_empty_content,
     compile_grep_include_glob,
-    compile_recursive_glob,
     perform_string_replacement,
     slice_read_response,
 )
@@ -614,7 +614,7 @@ class FilesystemBackend(BackendProtocol):
         except (OSError, RuntimeError) as e:
             return DeleteResult(error=f"Error deleting '{file_path}': {e}")
 
-    def grep(
+    def grep(  # noqa: C901 -- path resolution, glob validation, engine selection, and context attach are each guarded early-exits; splitting them would scatter the partial-error bookkeeping
         self,
         pattern: str,
         path: str | None = None,
@@ -651,6 +651,16 @@ class FilesystemBackend(BackendProtocol):
         if context_lines < 0:
             msg = "context_lines must be non-negative"
             raise ValueError(msg)
+
+        # Validate the include glob before choosing a search path: the shared
+        # matcher refuses some patterns (e.g. any `..` segment) by raising, and
+        # the Python fallback compiles it outside any error handling. Reporting
+        # a refusal here keeps `grep` non-throwing on both paths -- and
+        # consistent, since ripgrep would otherwise treat it as a silent
+        # no-match.
+        glob_refusal = self._refused_grep_glob_error(glob)
+        if glob_refusal is not None:
+            return GrepResult(error=glob_refusal, matches=[])
 
         # Resolve base path
         try:
@@ -690,6 +700,25 @@ class FilesystemBackend(BackendProtocol):
                 newline=context_newline,
             )
         return GrepResult(error=partial_error, matches=matches, truncated=truncated)
+
+    @staticmethod
+    def _refused_grep_glob_error(glob: str | None) -> str | None:
+        """Return the refusal message for an include glob the shared matcher rejects.
+
+        `grep` validates the glob before choosing a search path: the shared
+        matcher refuses some patterns (e.g. any `..` segment) by raising
+        `InvalidGlobPatternError`, and the Python fallback compiles it outside
+        any error handling. Reporting a refusal up front keeps `grep`
+        non-throwing on both paths -- and consistent, since ripgrep would
+        otherwise treat the same glob as a silent no-match.
+        """
+        if glob is None:
+            return None
+        try:
+            compile_grep_include_glob(glob)
+        except InvalidGlobPatternError as e:
+            return str(e)
+        return None
 
     def _apply_grep_context(
         self,
@@ -1292,14 +1321,20 @@ class FilesystemBackend(BackendProtocol):
 
         Returns:
             `GlobResult` with matching files. `truncated` is `True` (and
-            `matches` is partial) when the walk exceeded its wall-clock budget.
+            `matches` is partial) when the walk exceeded its wall-clock budget;
+            `truncation_reason` is then `"budget"`. A pattern the matcher
+            refuses (including one containing `..`) is returned as
+            `GlobResult(error=..., matches=None)`, never raised.
         """
-        # Detect traversal on the raw pattern (including a leading `/` anchor)
-        # before compilation. Do not strip the leading `/` here: the matcher
-        # uses it for search-root anchoring (`/*.py` → top-level only).
-        if self.virtual_mode and ".." in Path(pattern.lstrip("/")).parts:
-            msg = "Path traversal not allowed in glob pattern"
-            raise ValueError(msg)
+        # Compile before touching the filesystem: a refused pattern -- brace
+        # expansion past its limit, or a `..` segment -- is a property of the
+        # pattern alone, and reporting it here keeps it distinguishable from the
+        # mid-walk aborts handled far below. `..` rejection lives in the shared
+        # matcher so every backend agrees; see `compile_grep_include_glob`.
+        try:
+            matches_pattern = compile_grep_include_glob(pattern)
+        except InvalidGlobPatternError as e:
+            return GlobResult(error=str(e), matches=None)
 
         try:
             search_path = self.cwd if path is None or path == "/" else self._resolve_path(path)
@@ -1323,12 +1358,6 @@ class FilesystemBackend(BackendProtocol):
         # ourselves -- which is deliberately *not* `rglob` semantics: bare
         # patterns are basename-scoped and dotfiles need an explicit leading `.`.
         try:
-            # Compiled inside the try so a pattern `wcmatch` refuses (e.g. brace
-            # expansion past its limit, which raises `PatternLimitException`)
-            # returns a `GlobResult(error=...)` instead of raising to a direct
-            # caller. Most malformed patterns (`*.{py`, `[a-`) do not raise at
-            # all -- they compile and simply match nothing.
-            matches_pattern = compile_recursive_glob(pattern)
             for matched_path in search_path.rglob("*"):
                 if time.monotonic() > deadline:
                     logger.warning(
@@ -1393,9 +1422,10 @@ class FilesystemBackend(BackendProtocol):
                     except OSError:
                         results.append({"path": virt, "is_dir": False})
         except (OSError, RuntimeError, ValueError) as e:
-            # The pattern failed to compile, or `rglob()` raised mid-iteration.
-            # Return whatever was accumulated but as an error so callers don't
-            # trust it as complete.
+            # `rglob()` raised mid-iteration. Return whatever was accumulated but
+            # as an error so callers don't trust it as complete. Pattern refusals
+            # are handled before the walk starts, so "aborted partway" is now
+            # only ever said about a genuine mid-walk failure.
             display_path = path if path is not None else "<default>"
             msg = f"Glob of '{display_path}' aborted partway: {e}"
             logger.warning("%s", msg, exc_info=True)
@@ -1403,7 +1433,11 @@ class FilesystemBackend(BackendProtocol):
             return GlobResult(error=msg, matches=results)
 
         results.sort(key=lambda x: x.get("path", ""))
-        return GlobResult(matches=results, truncated=truncated)
+        return GlobResult(
+            matches=results,
+            truncated=truncated,
+            truncation_reason="budget" if truncated else None,
+        )
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the filesystem.

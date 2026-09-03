@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepagents-code"
-version = "0.1.59"
+version = "0.1.65"
 description = "Terminal coding agent built on the Deep Agents SDK - works with any model, with persistent memory, customizable skills, subagents, and approval controls."
 readme = "README.md"
 license = { text = "MIT" }
@@ -27,26 +27,29 @@ classifiers = [
 ]
 dependencies = [
     # Framework
-    "deepagents==0.7.8",
-    "langchain>=1.3.16,<2.0.0",
+    "deepagents==0.7.13",
+    "langchain>=1.4.0,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
     # Client-server architecture
-    "langgraph-sdk>=0.4.3,<1.0.0",
+    "langgraph-sdk>=0.4.4,<1.0.0",
     "langgraph-cli[inmem]>=0.4.31,<1.0.0",
-    "langgraph-runtime-inmem>=0.32.6,<1.0.0",
+    "langgraph-runtime-inmem>=0.33.3,<1.0.0",
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.6.1,<2.0.0",
-    "langchain-google-genai>=4.3.4,<5.0.0",
+    "langchain-anthropic>=1.7.1,<2.0.0",
+    "langchain-google-genai>=4.4.0,<5.0.0",
     "langchain-openai>=1.6.0,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
 
     # UI/Terminal
     # Textual 8.2.8 handles colon-separated Kitty associated text.
     # Textualize/textual#6378 remains unresolved; its Alt-key workaround and
-    # the remaining Kitty fixes live in `_textual_patches.py`.
+    # the remaining Kitty fixes live in `_textual_patches.py`. The upper bound
+    # also protects `tui/widgets/diff.py`, which reproduces part of
+    # `Content._wrap_and_format` and the compositor's offset metadata contract
+    # to repeat a diff row's gutter on wrapped lines.
     "textual>=8.2.8,<9.0.0",
     "textual-autocomplete>=4.0.6,<5.0.0",
     "textual-speedups>=0.2.1,<1.0.0",
@@ -55,7 +58,7 @@ dependencies = [
     "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
-    "langsmith[sandbox]>=0.11.1",
+    "langsmith[sandbox]>=0.12.1",
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
@@ -68,7 +71,7 @@ dependencies = [
     # compatibility promise, and this range spans every 0.1.x patch, so re-verify
     # both against `cost_tracking._build_price_overrides` and
     # `cost_tracking._find_override_model` when widening it.
-    "genai-prices>=0.1.4,<0.2.0",
+    "genai-prices>=0.1.6,<0.2.0",
 
     # Clipboard
     "pyperclip>=1.11.0,<2.0.0",
@@ -104,17 +107,17 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.6.1,<2.0.0"]
-baseten = ["langchain-baseten>=0.2.3,<1.0.0"]
-bedrock = ["langchain-aws>=1.7.2,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.7.1,<2.0.0"]
+baseten = ["langchain-baseten>=0.2.4,<1.0.0"]
+bedrock = ["langchain-aws>=1.7.5,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]
 deepseek = ["langchain-deepseek>=1.1.0,<2.0.0"]
-fireworks = ["langchain-fireworks>=1.5.2,<2.0.0"]
-google-genai = ["langchain-google-genai>=4.3.4,<5.0.0"]
+fireworks = ["langchain-fireworks>=1.6.1,<2.0.0"]
+google-genai = ["langchain-google-genai>=4.4.0,<5.0.0"]
 groq = ["langchain-groq>=1.1.3,<2.0.0"]
 huggingface = ["langchain-huggingface>=1.2.2,<2.0.0"]
 ibm = ["langchain-ibm>=1.1.0,<2.0.0"]
-litellm = ["langchain-litellm>=0.7.0,<2.0.0"]
+litellm = ["langchain-litellm>=0.7.1,<2.0.0"]
 meta = ["langchain-meta>=0.5.0,<2.0.0"]
 mistralai = ["langchain-mistralai>=1.1.6,<2.0.0"]
 nvidia = [
@@ -124,7 +127,7 @@ nvidia = [
 ollama = ["langchain-ollama>=1.1.0,<2.0.0"]
 openai = ["langchain-openai>=1.6.0,<2.0.0"]
 openrouter = ["langchain-openrouter>=0.2.8,<2.0.0"]
-perplexity = ["langchain-perplexity>=1.4.0,<2.0.0"]
+perplexity = ["langchain-perplexity>=1.4.1,<2.0.0"]
 together = ["langchain-together>=0.4.0,<2.0.0"]
 vertex = ["langchain-google-vertexai>=3.2.4,<4.0.0"]
 xai = ["langchain-xai>=1.3.0,<2.0.0"]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from datetime import UTC
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
@@ -14,6 +15,7 @@ from textual.containers import Container
 from textual.widgets import Input, OptionList, RadioButton, RadioSet, Static
 
 from deepagents_code import auth_store, model_config
+from deepagents_code._paths import PATHS
 from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.auth import (
     _ENDPOINT_BY_REGION,
@@ -62,12 +64,20 @@ class _AuthHostApp(App[None]):
 
     def __init__(self) -> None:
         super().__init__()
+        self._environment_mutation_lock = asyncio.Lock()
         self.prompt_result: AuthResult | None = None
         self.prompt_dismissed = False
         self.credential_saved_count = 0
         self.credential_deleted_count = 0
         self.last_saved_provider: str | None = None
         self.last_deleted_provider: str | None = None
+
+    async def _reload_settings_from_environment_serialized(self) -> list[str]:
+        """Use the production reload core while modeling its app-level lock."""
+        from deepagents_code.app import DeepAgentsApp
+
+        async with self._environment_mutation_lock:
+            return await DeepAgentsApp._reload_settings_from_environment()
 
     def compose(self) -> ComposeResult:
         """Render a placeholder root."""
@@ -212,11 +222,15 @@ class TestAuthPromptScreen:
         """Only providers with no self-serve key page may skip `PROVIDER_API_KEY_URLS`.
 
         `azure_openai` keys live on a per-resource page (special-cased in the
-        instructions) and `google_vertexai` uses application-default
+        instructions), while both Vertex providers use application-default
         credentials rather than an API-key page. Any other omission is an
         oversight that should fail here rather than ship a generic docs link.
         """
-        no_self_serve_key_page = {"azure_openai", "google_vertexai"}
+        no_self_serve_key_page = {
+            "azure_openai",
+            "google_anthropic_vertex",
+            "google_vertexai",
+        }
         missing = set(model_config.PROVIDER_API_KEY_ENV) - set(PROVIDER_API_KEY_URLS)
         assert missing == no_self_serve_key_page
 
@@ -1351,6 +1365,109 @@ api_key_url = "javascript:alert(1)"
             assert isinstance(app.screen, AuthPromptScreen)
         assert any("No credentials detected" in msg for msg, _ in notices)
 
+    async def test_ctrl_r_reload_offloads_remote_refresh(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stalled managed-config fetch leaves the event loop responsive."""
+        started = threading.Event()
+        release = threading.Event()
+
+        def blocked_reload() -> list[str]:
+            started.set()
+            assert release.wait(timeout=1)
+            return []
+
+        monkeypatch.setattr(
+            "deepagents_code.config.credentials.reload_from_environment",
+            blocked_reload,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            reload_task = asyncio.create_task(screen.action_reload_env())
+            started_in_time = await asyncio.wait_for(
+                asyncio.to_thread(started.wait),
+                timeout=0.5,
+            )
+            assert started_in_time
+            assert not reload_task.done()
+            release.set()
+            await reload_task
+
+    async def test_ctrl_r_reload_waits_for_environment_mutation_lock(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An auth reload cannot overlap another shared environment mutation."""
+        reload_started = threading.Event()
+
+        def reload_from_environment() -> list[str]:
+            reload_started.set()
+            return []
+
+        monkeypatch.setattr(
+            "deepagents_code.config.credentials.reload_from_environment",
+            reload_from_environment,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            screen = cast("AuthPromptScreen", app.screen)
+            async with app._environment_mutation_lock:
+                reload_task = asyncio.create_task(screen.action_reload_env())
+                await asyncio.sleep(0)
+                assert not reload_started.is_set()
+            await reload_task
+
+        assert reload_started.is_set()
+
+    async def test_ctrl_r_reload_surfaces_managed_policy_block(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A retained policy generation cannot be reported as reloaded."""
+        from deepagents_code.config import MANAGED_RELOAD_BLOCKED_PREFIX
+
+        blocked = (
+            f"{MANAGED_RELOAD_BLOCKED_PREFIX}remote managed config could not "
+            "be refreshed"
+        )
+        notices: list[tuple[str, str | None]] = []
+
+        def capture_notify(
+            message: str, *_args: object, severity: str | None = None, **_kwargs: object
+        ) -> None:
+            notices.append((str(message), severity))
+
+        monkeypatch.setattr(
+            "deepagents_code.config.credentials.reload_from_environment",
+            lambda: [blocked],
+        )
+        cache_cleared = False
+
+        def clear_caches() -> None:
+            nonlocal cache_cleared
+            cache_cleared = True
+
+        monkeypatch.setattr(
+            "deepagents_code.tui.widgets.auth.clear_caches",
+            clear_caches,
+        )
+        app = _AuthHostApp()
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", capture_notify)
+            app.show_prompt("anthropic", "ANTHROPIC_API_KEY")
+            await pilot.pause()
+            await pilot.press("ctrl+r")
+            await pilot.pause()
+            assert app.prompt_dismissed is False
+            assert isinstance(app.screen, AuthPromptScreen)
+
+        assert cache_cleared is False
+        assert (blocked, "error") in notices
+        assert not any(message == "Environment reloaded." for message, _ in notices)
+
     async def test_ctrl_r_reload_when_not_blocking_stays_open_and_toasts(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1417,7 +1534,7 @@ api_key_url = "javascript:alert(1)"
                 raise ValueError(msg)
 
             monkeypatch.setattr(
-                "deepagents_code.config.settings.reload_from_environment", _boom
+                "deepagents_code.config.credentials.reload_from_environment", _boom
             )
             await pilot.press("ctrl+r")
             await pilot.pause()
@@ -1501,7 +1618,7 @@ api_key_url = "javascript:alert(1)"
             content = str(help_line.content)
         assert "Ctrl+R reload" in content
 
-    async def test_advanced_copy_flags_reload_and_relaunch_caveat(self) -> None:
+    async def test_advanced_copy_flags_reload_and_restart_caveat(self) -> None:
         """Advanced env-var copy points at Ctrl+R and the separate-shell caveat."""
         app = _AuthHostApp()
         async with app.run_test() as pilot:
@@ -1511,7 +1628,7 @@ api_key_url = "javascript:alert(1)"
                 app.screen.query_one("#auth-prompt-key-meta", Static).content
             )
         assert "Ctrl+R" in key_meta
-        assert "relaunch" in key_meta
+        assert "New shell exports require restarting the app" in key_meta
 
     async def test_ctrl_d_opens_confirm_then_deletes(self) -> None:
         """Ctrl+D opens the confirmation modal; Enter completes the delete."""
@@ -1795,30 +1912,22 @@ api_key_url = "javascript:alert(1)"
             assert glyphs.warning not in title_text
             assert glyphs.checkmark not in title_text
 
-    async def test_helper_text_describes_precedence(self) -> None:
-        """Helper text names both env vars and their order vs the stored key.
-
-        A stored key sits between the plain var (which it beats) and the
-        `DEEPAGENTS_CODE_`-prefixed var (which beats it). The meta line must
-        convey that ordering, not imply the three are interchangeable.
-        """
+    async def test_helper_text_describes_precedence_and_reload_location(self) -> None:
+        """Helper text names env precedence, dotenv paths, and the reload scope."""
         app = _AuthHostApp()
         async with app.run_test() as pilot:
             app.show_prompt("openai", "OPENAI_API_KEY")
             await pilot.pause()
             meta = app.screen.query_one("#auth-prompt-key-meta", Static)
             text = str(meta.content)
-            assert "dcode stores" not in text
-            assert (
-                "Alternatively, environment variables can be used in place "
-                "of the key stored above." in text
-            )
             assert "DEEPAGENTS_CODE_OPENAI_API_KEY" in text
-            assert "dcode-only key" in text
-            assert "highest priority" in text
+            assert "dcode only, highest priority" in text
             assert "OPENAI_API_KEY" in text
-            assert "share a key with other provider SDK tools" in text
-            assert "used only when no scoped or stored key exists" in text
+            assert "shared, lowest priority" in text
+            dotenv_display = PATHS.display(PATHS.profile.dotenv_file)
+            assert f"project .env or {dotenv_display}" in text
+            assert "Ctrl+R in this dialog to reload" in text
+            assert "New shell exports require restarting the app" in text
             assert "Configuration docs" in text
 
     async def test_base_url_hint_names_endpoint_var(

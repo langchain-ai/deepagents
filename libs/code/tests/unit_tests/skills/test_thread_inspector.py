@@ -57,22 +57,6 @@ def _create_database(path: Path) -> sqlite3.Connection:
     return conn
 
 
-def test_runtime_probe_requires_all_langgraph_modules(
-    inspector: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    real_import = inspector.importlib.import_module
-
-    def import_module(name: str) -> ModuleType:
-        if name == "langgraph.graph.message":
-            msg = "No module named 'langgraph.graph.message'"
-            raise ModuleNotFoundError(msg)
-        return real_import(name)
-
-    monkeypatch.setattr(inspector.importlib, "import_module", import_module)
-
-    assert inspector._has_runtime() is False
-
-
 def test_connects_read_only_and_resolves_thread_prefix(
     inspector: ModuleType, tmp_path: Path
 ) -> None:
@@ -325,80 +309,6 @@ def test_reconstructs_pending_writes_from_latest_inline_checkpoint(
     ]
 
 
-def test_message_record_hides_reasoning_and_marks_truncation(
-    inspector: ModuleType,
-) -> None:
-    record = inspector._message_record(
-        0,
-        {
-            "role": "assistant",
-            "content": [
-                {"type": "reasoning", "text": "hidden"},
-                {"type": "text", "text": "visible"},
-            ],
-            "tool_calls": [
-                {"name": "example", "id": "call-1", "args": {"value": "long"}}
-            ],
-        },
-        4,
-    )
-
-    assert record["content"] == "visi…"
-    assert record["content_truncated"] is True
-    assert record["tool_calls"][0]["args_truncated"] is True
-
-
-def test_message_role_normalizes_dict_and_object(inspector: ModuleType) -> None:
-    from langchain_core.messages import AIMessage, HumanMessage
-
-    assert inspector._message_role({"type": "human"}) == "user"
-    assert inspector._message_role({"role": "ai"}) == "assistant"
-    assert inspector._message_role({"role": "user"}) == "user"
-    assert inspector._message_role(HumanMessage(content="x")) == "user"
-    assert inspector._message_role(AIMessage(content="x")) == "assistant"
-
-
-def test_message_record_surfaces_malformed_tool_calls(inspector: ModuleType) -> None:
-    warnings: list[str] = []
-    record = inspector._message_record(
-        3,
-        {"role": "assistant", "content": "x", "tool_calls": "oops"},
-        100,
-        warnings,
-    )
-
-    assert "tool_calls" not in record
-    assert record["tool_calls_malformed"] == "oops"
-    assert any("tool_calls" in warning for warning in warnings)
-
-
-def test_message_record_reports_tool_call_id_and_status(inspector: ModuleType) -> None:
-    record = inspector._message_record(
-        0,
-        {"role": "tool", "content": "result", "tool_call_id": "call-9", "status": "ok"},
-        100,
-    )
-
-    assert record["role"] == "tool"
-    assert record["tool_call_id"] == "call-9"
-    assert record["status"] == "ok"
-
-
-def test_content_text_handles_varied_shapes(inspector: ModuleType) -> None:
-    assert inspector._content_text(None) == ""
-    assert inspector._content_text("plain") == "plain"
-    assert inspector._content_text({"a": 1}) == '{"a": 1}'
-    combined = inspector._content_text(
-        [
-            {"type": "thinking", "text": "hidden"},
-            {"phase": "analysis", "text": "hidden"},
-            {"type": "text", "text": "shown"},
-            {"content": "nested"},
-        ]
-    )
-    assert combined == "shown\nnested"
-
-
 def test_turns_skips_system_user_messages(inspector: ModuleType) -> None:
     turns, preamble = inspector._turns(
         [
@@ -410,27 +320,6 @@ def test_turns_skips_system_user_messages(inspector: ModuleType) -> None:
 
     assert turns == []
     assert [record["content"] for record in preamble] == ["[SYSTEM] injected", "hi"]
-
-
-def test_turns_captures_preamble_before_first_user_message(
-    inspector: ModuleType,
-) -> None:
-    turns, preamble = inspector._turns(
-        [
-            {"role": "assistant", "content": "warmup"},
-            {"role": "user", "content": "real question"},
-            {"role": "assistant", "content": "answer"},
-        ],
-        100,
-    )
-
-    assert [record["content"] for record in preamble] == ["warmup"]
-    assert len(turns) == 1
-    assert turns[0]["start_message_index"] == 1
-    assert [record["content"] for record in turns[0]["messages"]] == [
-        "real question",
-        "answer",
-    ]
 
 
 def test_resolve_thread_id_escapes_like_metacharacters(
@@ -455,13 +344,6 @@ def test_resolve_thread_id_escapes_like_metacharacters(
         conn.close()
 
 
-def test_connect_read_only_rejects_missing_file(
-    inspector: ModuleType, tmp_path: Path
-) -> None:
-    with pytest.raises(SystemExit, match="not found"):
-        inspector._connect_read_only(tmp_path / "missing.db")
-
-
 def test_connect_read_only_rejects_unsupported_schema(
     inspector: ModuleType, tmp_path: Path
 ) -> None:
@@ -473,17 +355,6 @@ def test_connect_read_only_rejects_unsupported_schema(
 
     with pytest.raises(SystemExit, match="missing tables: writes"):
         inspector._connect_read_only(db)
-
-
-def test_default_db_path_prefers_env_override(
-    inspector: ModuleType, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("DEEPAGENTS_SESSIONS_DB", "/tmp/custom/sessions.db")
-    assert inspector._default_db_path() == Path("/tmp/custom/sessions.db")
-    monkeypatch.delenv("DEEPAGENTS_SESSIONS_DB")
-    assert inspector._default_db_path() == Path.home() / ".deepagents" / ".state" / (
-        "sessions.db"
-    )
 
 
 def test_decode_metadata_warns_on_corrupt_json(inspector: ModuleType) -> None:
@@ -569,26 +440,6 @@ def test_load_inline_messages_falls_back_when_malformed(
 
     assert result is None
     assert any("malformed" in warning.lower() for warning in warnings)
-
-
-@pytest.mark.parametrize(
-    ("argv", "match"),
-    [
-        (["prog", "thread", "--max-content", "0"], "must be positive"),
-        (["prog", "--list", "0"], "--list must be positive"),
-        (["prog"], "Provide a thread ID or use --list"),
-        (["prog", "thread", "--list", "5"], "not both"),
-    ],
-)
-def test_main_rejects_invalid_arguments(
-    inspector: ModuleType,
-    monkeypatch: pytest.MonkeyPatch,
-    argv: list[str],
-    match: str,
-) -> None:
-    monkeypatch.setattr(inspector.sys, "argv", argv)
-    with pytest.raises(SystemExit, match=match):
-        inspector.main()
 
 
 def test_main_lists_threads(

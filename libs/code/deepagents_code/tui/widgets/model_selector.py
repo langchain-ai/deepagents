@@ -13,6 +13,7 @@ from textual.content import Content
 from textual.css.query import NoMatches
 from textual.events import (
     Click,  # noqa: TC002 - needed at runtime for Textual event dispatch
+    MouseMove,  # noqa: TC002 - needed at runtime for Textual event dispatch
 )
 from textual.fuzzy import Matcher
 from textual.message import Message
@@ -26,11 +27,14 @@ if TYPE_CHECKING:
     from textual.timer import Timer
 
 from deepagents_code import _env_vars, theme
+from deepagents_code._paths import PATHS
 from deepagents_code.auth_display import format_auth_indicator
 from deepagents_code.config import Glyphs, get_glyphs, is_ascii_mode
 from deepagents_code.model_config import (
     CODEX_PROVIDER,
+    MANAGED_CONFIG_SOURCE,
     ModelConfig,
+    ModelNotAllowedError,
     ModelProfileEntry,
     ModelSpec,
     ProviderAuthState,
@@ -45,6 +49,7 @@ from deepagents_code.model_config import (
     save_auto_classifier_model,
     save_default_model,
 )
+from deepagents_code.tui.widgets._copy_spans import copy_span_style, copy_span_target
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +84,7 @@ _RECOMMENDED_MODELS: dict[str, str] = {
     "baseten:nvidia/NVIDIA-Nemotron-3-Ultra-550B-A55B": "Nemotron 3 Ultra 550B A55B",
     "baseten:zai-org/GLM-5.2": "GLM 5.2",
     "baseten:zai-org/GLM-5.2-Fast": "GLM 5.2 Fast",
+    "baseten:zai-org/GLM-5.3-Flash": "GLM 5.3 Flash",
     "fireworks:accounts/fireworks/models/deepseek-v4-flash-0731": (
         "DeepSeek V4 Flash 0731"
     ),
@@ -155,7 +161,8 @@ class DefaultModelScope(NamedTuple):
             Must be non-empty and read correctly in both positions.
         hint: Footer hint text following `'Ctrl+S '`.
         load: Reads the currently stored spec, for the `(default)` marker.
-        save: Persists a spec, returning `False` on I/O failure.
+        save: Persists a spec, returning `False` on I/O failure and raising
+            `ModelNotAllowedError` when `models.allowed` excludes the spec.
         clear: Removes the stored spec, returning `False` on I/O failure.
         override_env_var: Environment variable that outranks the stored key at
             launch, if any. When it is set, a successful Ctrl+S warns that the
@@ -305,6 +312,36 @@ class ModelOption(Static):
         """
         event.stop()
         self.post_message(self.Clicked(self.model_spec, self.provider, self.index))
+
+
+class CurrentModelTitle(Static):
+    """Selector title whose current-model span copies on click."""
+
+    def on_click(self, event: Click) -> None:
+        """Copy the current model when its title span is clicked."""
+        target = copy_span_target(event.style)
+        if target is None:
+            return
+        event.stop()
+        text, label = target
+        from deepagents_code.clipboard import copy_text_with_feedback
+
+        copy_text_with_feedback(
+            self.app,
+            text,
+            failure_noun="selection",
+            success_message=f"{label} copied",
+        )
+
+    def on_mouse_move(self, event: MouseMove) -> None:
+        """Show a pointer over the copyable model span."""
+        self.styles.pointer = (
+            "pointer" if copy_span_target(event.style) is not None else "default"
+        )
+
+    def on_leave(self) -> None:
+        """Reset the pointer when it leaves the title."""
+        self.styles.pointer = "default"
 
 
 class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
@@ -470,6 +507,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         title: str | None = None,
         description: str | Content | None = None,
         default_scope: DefaultModelScope | None,
+        check_provider_requirements: bool = True,
         result_callback: Callable[[tuple[str, str] | None], None] | None = None,
     ) -> None:
         """Initialize the ModelSelectorScreen.
@@ -500,6 +538,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 Ctrl+S and drop its footer hint — for pickers whose choice has
                 no persistent config key (the `/goal model` and `/rubric model`
                 graders) and for onboarding, which advertises no Ctrl+S.
+            check_provider_requirements: Whether to require local provider packages
+                and credentials before returning a selection.
             result_callback: Optional callback for selector results when the
                 screen is displayed without a `push_screen` result callback.
         """
@@ -517,6 +557,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         self._title = title
         self._description = description
         self._default_scope = default_scope
+        self._check_provider_requirements = check_provider_requirements
         self._result_callback = result_callback
         # Standard /model defaults to the curated recommended subset so users
         # face less decision fatigue; onboarding (`curated=True`) already
@@ -588,11 +629,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     def _help_text(self) -> str:
         """Build the footer help text.
 
-        Curated/onboarding mode omits the Ctrl+S, Ctrl+R, and Ctrl+N hints.
-        Escape stays bound but is left off the hint line — modal dismissal via
-        Escape is conventional, and advertising it would only lengthen an
-        already-wrapping line. Shift+Tab is likewise bound (`action_move_up`,
-        routed by `_SupportsReverseNav`) but omitted: this modal binds Tab to
+        Curated/onboarding mode omits the Ctrl+S, Ctrl+R, Ctrl+N, and Escape
+        hints. Standard mode advertises Escape as `Esc close`. Shift+Tab is
+        likewise bound (`action_move_up`, routed by `_SupportsReverseNav`) but
+        omitted: this modal binds Tab to
         autocomplete, so the shared "Tab/Shift+Tab navigate" phrasing from
         `tui.key_hints` would misdescribe Tab here. In standard mode the full
         line exceeds the modal width, so the help `Static` is sized to grow
@@ -623,7 +663,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             names_hint = "Ctrl+N names" if self._show_specs else "Ctrl+N IDs"
             if self._default_scope is not None:
                 parts.append(f"Ctrl+S {self._default_scope.hint}")
-            parts.extend(("Ctrl+R recommended", names_hint))
+            parts.extend(("Ctrl+R recommended", names_hint, "Esc close"))
         sep = f" {glyphs.bullet} "
         return sep.join(parts)
 
@@ -655,17 +695,28 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             Widgets for the model selector UI.
         """
         with Vertical():
-            # Title with current model in provider:model format
             if self._title:
-                title = self._title
-            elif self._current_model and self._current_provider:
-                current_spec = f"{self._current_provider}:{self._current_model}"
-                title = f"Select Model (current: {current_spec})"
+                title: str | Content = self._title
+            elif self._current_spec:
+                title = Content.assemble(
+                    "Select Model (current: ",
+                    (self._current_spec, copy_span_style(self._current_spec, "Model")),
+                    ")",
+                )
             elif self._current_model:
-                title = f"Select Model (current: {self._current_model})"
+                title = Content.assemble(
+                    "Select Model (current: ",
+                    (
+                        self._current_model,
+                        copy_span_style(self._current_model, "Model"),
+                    ),
+                    ")",
+                )
             else:
                 title = "Select Model"
-            yield Static(title, classes="model-selector-title")
+            yield CurrentModelTitle(
+                title, classes="model-selector-title", id="model-selector-title"
+            )
             if self._description:
                 yield Static(
                     self._description,
@@ -702,6 +753,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         include_uninstalled: bool = True,
         include_recent: bool = True,
         recommended_models: Mapping[str, str] | None = None,
+        current_spec: str | None = None,
         default_scope: DefaultModelScope | None,
     ) -> _ModelData:
         """Gather model discovery data synchronously.
@@ -725,6 +777,8 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 "Recent" entry the user never chose.
             recommended_models: Recommendation set whose missing provider models
                 should be surfaced. `None` uses the standard model shortlist.
+            current_spec: Active `provider:model` spec to keep in the list even
+                when discovery and recommendations do not include it.
             default_scope: Preference whose stored spec is read for the
                 `(default)` marker, stripped of surrounding whitespace so it can
                 match a row. `None` yields no marker.
@@ -761,7 +815,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 else recommended_models
             )
             for spec in sorted(recommendations):
-                if spec in existing_specs:
+                if spec in existing_specs or not config.is_model_allowed(spec):
                     continue
                 provider = spec.split(":", 1)[0]
                 try:
@@ -797,6 +851,14 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             all_models.extend(installed_recommended)
             all_models.extend(uninstalled_recommended)
 
+        if (
+            current_spec
+            and config.is_model_allowed(current_spec)
+            and all(spec != current_spec for spec, _ in all_models)
+        ):
+            provider = current_spec.split(":", 1)[0]
+            all_models.append((current_spec, provider))
+
         profiles = get_model_profiles(cli_override=cli_override)
         recent_specs = load_recent_models() if include_recent else []
         stored_default = default_scope.load() if default_scope is not None else None
@@ -809,6 +871,18 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
             # degrades to "nothing stored", matching the launch warning that
             # ignores a blank value.
             stored_default = stored_default.strip() or None
+        if stored_default is not None and not config.is_model_allowed(stored_default):
+            # Drop the marker: the stored spec cannot be used, so rendering
+            # `(default)` on it would advertise a model that fails to build.
+            # Log the drop -- the key stays in config.toml, and because the
+            # blocked spec has no row, the Ctrl+S toggle-off branch that would
+            # clear it is unreachable from here.
+            logger.warning(
+                "Ignoring stored default %r in the model selector: outside "
+                "models.allowed. Remove it from [models] to stop it lingering.",
+                stored_default,
+            )
+            stored_default = None
         return _ModelData(
             all_models,
             stored_default,
@@ -823,9 +897,10 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
     ) -> list[tuple[str, str]]:
         """Apply the active subset filter (onboarding or recommended-only).
 
-        Recently-used specs are unioned in even when the recommended-only
-        toggle is on, so personal usage always wins over curation. Onboarding
-        intentionally keeps a tight curated subset and skips this union.
+        Recently-used and currently active specs are unioned in even when the
+        recommended-only toggle is on, so personal usage always wins over
+        curation. Onboarding intentionally keeps a tight curated subset and
+        skips this union.
 
         Args:
             all_models: Full list of `(provider:model, provider)` pairs.
@@ -847,18 +922,19 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 recommended_models=self._recommended_models,
             )
             curated_specs = {spec for spec, _ in curated}
+            personal_specs = (
+                set(self._recent_specs) if self._include_recent_models else set()
+            )
+            if self._current_spec is not None:
+                personal_specs.add(self._current_spec)
             # Order follows all_models (insertion), not MRU; _update_display
             # rebuilds visual order by iterating self._recent_specs directly.
-            recent_extra = (
-                [
-                    (spec, provider)
-                    for spec, provider in all_models
-                    if spec in self._recent_specs and spec not in curated_specs
-                ]
-                if self._include_recent_models
-                else []
-            )
-            return [*recent_extra, *curated]
+            personal_extra = [
+                (spec, provider)
+                for spec, provider in all_models
+                if spec in personal_specs and spec not in curated_specs
+            ]
+            return [*personal_extra, *curated]
         return list(all_models)
 
     @staticmethod
@@ -914,6 +990,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 include_uninstalled=True,
                 include_recent=self._include_recent_models and not self._curated,
                 recommended_models=self._recommended_models,
+                current_spec=self._current_spec,
                 default_scope=self._default_scope,
             )
         except Exception:
@@ -1190,10 +1267,50 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
 
         if not self._filtered_models:
             if not self._loaded:
-                empty_content: Content = Content.styled("Loading models…", "dim")
+                empty_content: Content = Content.styled(
+                    f"Loading models{get_glyphs().ellipsis}", "dim"
+                )
             else:
                 typed = self._filter_text.strip()
-                if typed and ":" in typed:
+                policy = ModelConfig.load()
+                # Blame the policy only when the user typed something that
+                # resolves to a real model and the policy rejects it. `typed`
+                # is filter text, so an empty box or a substring ("clade",
+                # "anthropic") canonicalizes to nothing -- attributing those to
+                # the administrator would misdiagnose a typo, and an empty
+                # filter would make this branch fire for every allowlist.
+                # Canonicalizing also judges a supported bare name the way
+                # `create_model` will judge it.
+                canonical = policy.canonical_model_spec(typed) if typed else None
+                blocked_spec = canonical is not None and not policy.is_model_allowed(
+                    canonical
+                )
+                if blocked_spec:
+                    owner = (
+                        "administrator-managed"
+                        if policy.allowed_models_source == MANAGED_CONFIG_SOURCE
+                        else "configured"
+                    )
+                    allowed = ", ".join(policy.allowed_models or ())
+                    message = f"{typed} is not allowed by the {owner} models.allowed"
+                    empty_content = Content.styled(
+                        f"{message} policy. Allowed: {allowed}"
+                        if allowed
+                        else f"{message} policy, which allows no models",
+                        "dim",
+                    )
+                elif policy.allowed_models is not None and not typed:
+                    # No filter and nothing to show: the policy emptied the
+                    # list, and the allowed specs may not be discoverable, so
+                    # name them -- otherwise the only way in is blind typing.
+                    allowed = ", ".join(policy.allowed_models)
+                    empty_content = Content.styled(
+                        f"No discoverable models. models.allowed permits: {allowed}"
+                        if allowed
+                        else "models.allowed permits no models",
+                        "dim",
+                    )
+                elif typed and ":" in typed:
                     empty_content = Content.assemble(
                         ("No matching models — press ", "dim"),
                         ("Enter", "bold"),
@@ -1895,6 +2012,21 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         filter_input = self.query_one("#model-filter", Input)
         custom_input = filter_input.value.strip()
 
+        blocked = (
+            ModelConfig.load().policy_error(custom_input, canonicalize=True)
+            if custom_input
+            else None
+        )
+        if blocked is not None:
+            # Returning silently would read as a dead keybinding. `create_model`
+            # would reject this spec anyway; saying so here saves a round trip.
+            # `canonicalize` keeps this preflight in step with that gate: a bare
+            # name whose provider can be inferred is matched in the same
+            # canonical form, so an allowed model is not rejected here merely
+            # for lacking a `provider:` prefix.
+            self.notify(str(blocked), severity="error", timeout=8)
+            return
+
         if custom_input and ":" in custom_input:
             provider = custom_input.split(":", 1)[0]
             self._select_with_auth_check(custom_input, provider)
@@ -1910,7 +2042,7 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         on the selector and refresh the credential indicator so the user can
         try again or pick a different provider.
         """
-        if not provider:
+        if not provider or not self._check_provider_requirements:
             self._dismiss_with_result((model_spec, provider))
             return
 
@@ -2146,9 +2278,13 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
         # and a `[models]` section of the wrong shape — the accurate diagnosis
         # only reaches the log — so the remedy names both possibilities rather
         # than sending the user to check permissions that are already correct.
+        # A policy refusal is *not* in that set: the writers raise
+        # `ModelNotAllowedError` for it, handled separately below, so this text
+        # never has to account for `models.allowed`.
         write_remedy = (
-            "Could not update ~/.deepagents/config.toml. It may be unwritable "
-            "(check permissions for ~/.deepagents/) or malformed; see the log "
+            f"Could not update {PATHS.display(PATHS.profile.config_file)}. It may "
+            "be unwritable (check permissions for "
+            f"{PATHS.display(PATHS.profile.root)}) or malformed; see the log "
             "for the specific error."
         )
 
@@ -2161,7 +2297,16 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                 self._restart_help_restore_timer()
             else:
                 _fail(f"Failed to clear {noun}", write_remedy)
-        elif await asyncio.to_thread(scope.save, model_spec):
+        else:
+            try:
+                saved = await asyncio.to_thread(scope.save, model_spec)
+            except ModelNotAllowedError as exc:
+                # Not an I/O failure, so `write_remedy` would misdiagnose it.
+                _fail(f"Cannot store {noun}", str(exc), persistent=False)
+                return
+            if not saved:
+                _fail(f"Failed to save {noun}", write_remedy)
+                return
             self._default_spec = model_spec
             self.call_after_refresh(self._update_display)
             help_widget.update(
@@ -2188,8 +2333,6 @@ class ModelSelectorScreen(ModalScreen[tuple[str, str] | None]):
                     timeout=10,
                     markup=False,
                 )
-        else:
-            _fail(f"Failed to save {noun}", write_remedy)
 
     def _stop_help_restore_timer(self) -> None:
         """Stop the pending footer-restore timer, if any, and drop the handle."""

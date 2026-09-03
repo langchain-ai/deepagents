@@ -148,7 +148,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         """
         super().__init__()
         self._server_name = server_name
-        self._status = f"Starting OAuth login for {server_name}…"
+        self._status = f"Starting OAuth login for {server_name}{get_glyphs().ellipsis}"
         self._title_widget: Static | None = None
         self._status_widget: Static | None = None
         self._link_widget: Static | None = None
@@ -358,7 +358,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
                     (glyphs.cursor, "dim"),
                 ),
             )
-            self._set_help("Enter to show URL · Esc to cancel")
+            self._set_help(f"Enter to show URL {glyphs.separator} Esc to cancel")
             return
         prefix = (
             f"Having trouble? Hide manual authorization URL {glyphs.arrow_down}\n"
@@ -372,7 +372,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
             ),
         )
         if self._authorize_url_opened_in_browser:
-            self._set_help("Enter to hide URL · Esc to cancel")
+            self._set_help(f"Enter to hide URL {glyphs.separator} Esc to cancel")
         else:
             self._set_help("Esc to cancel")
 
@@ -381,7 +381,7 @@ class MCPLoginScreen(ModalScreen[LoginOutcome]):
         self._set_status(
             f"We opened your browser to connect {self._server_name}.\n"
             "Complete authorization there to continue.\n\n"
-            f"Status: {frame} Waiting…",
+            f"Status: {frame} Waiting{get_glyphs().ellipsis}",
         )
 
     def _set_status(self, message: str) -> None:

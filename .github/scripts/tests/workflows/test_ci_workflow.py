@@ -11,7 +11,6 @@ the strict step's bypass runs against a stubbed `gh` in
 
 from __future__ import annotations
 
-import json
 import re
 import subprocess
 import sys
@@ -86,6 +85,7 @@ def _starts_with(value: Any, prefix: str) -> bool:
 _CONTEXT_PATHS = sorted(
     (
         "github.event.pull_request.title",
+        "inputs.working-directory",
         "github.event_name",
         "github.head_ref",
         "runner.os",
@@ -118,11 +118,13 @@ def _context(
     head_ref: str | None = None,
     title: str | None = None,
     runner_os: str = "Linux",
+    working_directory: str = "libs/deepagents",
 ) -> dict[str, Any]:
     return {
         "github.event_name": event_name,
         "github.head_ref": head_ref,
         "github.event.pull_request.title": title,
+        "inputs.working-directory": working_directory,
         "runner.os": runner_os,
     }
 
@@ -168,16 +170,74 @@ SELECTION_CASES = [
         ),
         None,
     ),
+    (
+        "non-SDK package PR",
+        _context(
+            event_name="pull_request",
+            head_ref="mdrxy/ci/soft-timeout-ripgrep",
+            title="fix(code): tighten grep bounds",
+            working_directory="libs/code",
+        ),
+        None,
+    ),
+    (
+        "non-SDK package push",
+        _context(event_name="push", working_directory="libs/code"),
+        None,
+    ),
 ]
 
 
-def test_deepagents_code_collects_coverage_on_python_3_14() -> None:
-    """Keep all supported runtimes while collecting coverage on Python 3.14."""
-    workflow = _load_workflow(CI_WORKFLOW)
-    config = workflow["jobs"]["test-code"]["with"]
+def test_ci_success_builds_named_results_from_needs_object() -> None:
+    """The gate needs job names; the wildcard `needs.*.result` drops them.
 
-    assert json.loads(config["python-versions"]) == ["3.12", "3.13", "3.14"]
-    assert config["coverage-python-version"] == "3.14"
+    `toJSON(needs.*.result)` yields a bare array of result strings, so the
+    talon waiver (which keys off job names) must instead receive the full
+    `needs` object and extract each entry's `result`. Pin both halves so a
+    refactor cannot silently reintroduce the nameless wildcard.
+    """
+    workflow = _load_workflow(CI_WORKFLOW)
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+
+    assert step["env"]["NEEDS"] == "${{ toJSON(needs) }}"
+    assert "needs.*.result" not in step["env"]["NEEDS"]
+    assert 'entry["result"]' in step["run"]
+    assert 'job != "changes"' in step["run"]
+    # The advisory job reads the two talon job results by name, which only
+    # works if it needs exactly those jobs (plus `changes` for the filter).
+    advisory = workflow["jobs"]["talon-failure-advisory"]
+    assert sorted(advisory["needs"]) == ["changes", "lint-talon", "test-talon"]
+    assert "talon-failure-advisory" not in workflow["jobs"]["ci_success"]["needs"]
+
+
+def test_ci_success_runs_gate_script_from_trusted_base_ref() -> None:
+    """The gate script must not come from the untrusted PR checkout.
+
+    On pull_request runs `actions/checkout` defaults to the PR merge commit,
+    so executing the helper from the default checkout would let a PR author
+    rewrite the gate to always pass. Pin the base-ref checkout, its
+    credential-less configuration, and that the run step invokes the base
+    copy (falling back to the PR copy only during the bootstrap window when
+    the script is not yet on the base branch).
+    """
+    workflow = _load_workflow(CI_WORKFLOW)
+    steps = workflow["jobs"]["ci_success"]["steps"]
+
+    base = _find_step(
+        workflow, job="ci_success", name="📋 Checkout gate script from trusted base ref"
+    )
+    assert base["with"]["ref"] == "${{ github.base_ref || github.sha }}"
+    assert base["with"]["path"] == ".ci-gate-base"
+    assert base["with"]["persist-credentials"] is False
+    assert ".github/scripts/checks/ci_gate.py" in base["with"]["sparse-checkout"]
+
+    step = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    # The base copy is preferred; the PR copy is only a bootstrap fallback.
+    assert ".ci-gate-base" in step["run"]
+    assert step["run"].index(".ci-gate-base") < step["run"].index(".ci-gate-pr")
+    # No step may execute the helper from the default (untrusted) checkout.
+    for s in steps:
+        assert "python3 .github/scripts/checks/ci_gate.py" not in s.get("run", "")
 
 
 @pytest.mark.parametrize(
@@ -488,10 +548,10 @@ def test_strict_ripgrep_install_bypass(
 def test_ripgrep_bypass_step_runs_only_where_the_strict_step_does() -> None:
     """The label step must not annotate legs that have no strict install.
 
-    Its `if:` is the intersection of `pull_request` and the strict step's own
-    condition. Widen it and every ordinary PR collects a per-leg `::error::`
-    about a check that is not enforced there; narrow it and a release PR
-    silently loses the bypass.
+    Its `if:` is the SDK package's `pull_request` intersection with the strict
+    step's own condition. Widen it and every ordinary PR collects a per-leg
+    `::error::` about a check that is not enforced there; narrow it and a release
+    PR silently loses the bypass.
     """
     workflow = _load_workflow(TEST_WORKFLOW)
     resolve = _find_step(workflow, job="build", name=RESOLVE_STEP)
@@ -499,6 +559,7 @@ def test_ripgrep_bypass_step_runs_only_where_the_strict_step_does() -> None:
 
     condition = " ".join(resolve["if"].split())
     assert condition == (
+        "inputs.working-directory == 'libs/deepagents' && "
         "runner.os == 'Linux' && github.event_name == 'pull_request' && "
         "(startsWith(github.head_ref, 'release-please--') || "
         "startsWith(github.event.pull_request.title, 'release('))"

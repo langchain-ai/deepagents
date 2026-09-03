@@ -7,7 +7,6 @@ This document describes the release process for packages in the Deep Agents mono
 | Package | Path | Component | PyPI |
 | ------- | ---- | --------- | ---- |
 | `deepagents` (SDK) | `libs/deepagents` | `deepagents` | [`deepagents`](https://pypi.org/project/deepagents/) |
-| `deepagents-cli` | `libs/cli` | `deepagents-cli` | [`deepagents-cli`](https://pypi.org/project/deepagents-cli/) |
 | `deepagents-acp` | `libs/acp` | `deepagents-acp` | [`deepagents-acp`](https://pypi.org/project/deepagents-acp/) |
 | `deepagents-code` | `libs/code` | `deepagents-code` | [`deepagents-code`](https://pypi.org/project/deepagents-code/) |
 | `deepagents-talon` | `libs/talon` | `deepagents-talon` | [`deepagents-talon`](https://pypi.org/project/deepagents-talon/) |
@@ -61,7 +60,7 @@ Keep the release PR in draft while changes are still accumulating. When it is re
 3. After reviewing & finalizing, comment `@release-bot apply`. The bot updates that package's `CHANGELOG.md` (e.g. `libs/code/CHANGELOG.md` for `deepagents-code`) and mirrors the notes to the PR body.
 4. Merge normally after the `curated release notes` CI check passes.
 
-Run `@release-bot draft` to regenerate the draft if the automatic run fails or new changes cause release-please to add changelog entries to the release PR. If release-please updates the PR after the notes were applied, the check will fail until you run `draft` and `apply` again.
+Run `@release-bot draft` to regenerate the draft in two cases. The automatic run failed. Or commits added to `main` after drafting touch that release PR's package directory. Each new draft records its `main` baseline, so a release-please refresh caused only by changes outside the package does not invalidate the prose. If that unrelated refresh overwrites notes that were already applied, the check asks you to run `@release-bot apply` again; re-drafting is not required. The bot also asks for a re-draft when it cannot prove what changed: a very large or rewritten `main` history is treated as unknown.
 
 Re-drafting rewrites the original notes comment in place, which GitHub does not surface in the timeline. So that a regenerated draft is not missed, the bot follows an in-place rewrite with a short comment linking back to the refreshed notes — one per re-draft. A first-time draft posts no such pointer, since a brand-new comment is already visible.
 
@@ -119,11 +118,11 @@ A commit creates or updates a release PR for a package only when release-please 
 
 | Commit Type                    | Standard (≥ 1.0) | Pre-1.0 (current) | Example                                  |
 | ------------------------------ | ----------------- | ------------------ | ---------------------------------------- |
-| `fix:`                         | Patch (0.0.x)     | Patch (0.0.x)      | `fix(cli): resolve config loading issue` |
+| `fix:`                         | Patch (0.0.x)     | Patch (0.0.x)      | `fix(sdk): resolve config loading issue` |
 | `perf:`                        | Patch (0.0.x)     | Patch (0.0.x)      | `perf(sdk): reduce graph compile time`   |
-| `revert:`                      | Patch (0.0.x)     | Patch (0.0.x)      | `revert(cli): undo config change`        |
-| `feat:`                        | Minor (0.x.0)     | Patch (0.0.x)      | `feat(cli): add new export command`      |
-| `feat!:`                       | Major (x.0.0)     | Minor (0.x.0)      | `feat(cli)!: redesign config format`     |
+| `revert:`                      | Patch (0.0.x)     | Patch (0.0.x)      | `revert(sdk): undo config change`        |
+| `feat:`                        | Minor (0.x.0)     | Patch (0.0.x)      | `feat(sdk): add new export command`      |
+| `feat!:`                       | Major (x.0.0)     | Minor (0.x.0)      | `feat(sdk)!: redesign config format`     |
 
 ### Changelog Inclusion
 
@@ -168,9 +167,9 @@ All commits must follow [Conventional Commits](https://www.conventionalcommits.o
 ### Examples
 
 ```bash
-fix(cli): resolve type hinting issue
-feat(cli): add new chat completion feature
-feat(cli)!: redesign configuration format
+fix(sdk): resolve type hinting issue
+feat(sdk): add new chat completion feature
+feat(sdk)!: redesign configuration format
 ```
 
 ### Breaking Changes
@@ -180,7 +179,7 @@ Mark a change as breaking using either form supported by Conventional Commits �
 1. **Bang notation** — append `!` after the scope.
 
    ```text
-   feat(cli)!: redesign configuration format
+   feat(sdk)!: redesign configuration format
    ```
 
 2. **`BREAKING CHANGE:` footer** — include a footer (separated from the body by a blank line). The token must be uppercase; lowercase `breaking change:` is ignored. `BREAKING-CHANGE:` (hyphenated) is also accepted as a synonym.
@@ -216,7 +215,6 @@ Tracks the current version of each package. Automatically updated by release-ple
 
 ```json
 {
-  "libs/cli": "0.0.35",
   "libs/deepagents": "0.5.1",
   "libs/acp": "0.0.5",
   "libs/talon": "0.0.1",
@@ -242,7 +240,7 @@ Do **not** add a new managed package to the manifest at `0.0.1` unless `0.0.1` h
 
 The [release-please workflow (`.github/workflows/release-please.yml`)](https://github.com/langchain-ai/deepagents/blob/main/.github/workflows/release-please.yml) detects merged release PRs by checking two conditions on the merge commit:
 
-1. The package's `CHANGELOG.md` was modified (e.g., `libs/cli/CHANGELOG.md` for the CLI)
+1. The package's `CHANGELOG.md` was modified (e.g., `libs/deepagents/CHANGELOG.md` for the SDK)
 2. The commit message matches the `release(<component>): <version>` pattern
 
 Both must be true. release-please always satisfies both when merging a release PR — a manual `CHANGELOG.md` edit alone will not trigger a release.
@@ -284,7 +282,7 @@ Step 3 can be skipped in the situations below. Skipping it holds up only the ref
 
 ### Lockfile Updates
 
-When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles.
+When release-please creates or updates a release PR, the `update-lockfiles` job automatically regenerates `uv.lock` files since release-please updates `pyproject.toml` versions but doesn't regenerate lockfiles. A lockfile-only commit generated on a release branch after an unrelated `main` change does not invalidate that package's curated-note draft. This carve-out covers the release branch only. On `main`, every path under the package counts, a lockfile included.
 
 ### Release Pipeline
 
@@ -932,10 +930,12 @@ The `pre-release-checks` job runs after the package is built but before anything
 
 **Steps:**
 
-1. **Look at the workflow logs** to see why it failed. Pre-release checks install the built package in a clean environment and run:
+1. **Look at the workflow logs** to see why it failed. Pre-release checks run on every Python version allowed by the package's `requires-python`, install the built package in a clean environment, and run:
    - `python -c "import <pkg>"` — does the package even import?
    - `make test` — do the unit tests pass against the built wheel?
    - `make integration_test` (if defined) — do the integration tests pass?
+
+   A failure on only one matrix leg usually indicates a version-specific dependency or compatibility problem rather than a broken wheel on every interpreter.
 
 2. **Open a `hotfix(<scope>): <description>` PR with the fix.** Merge it to `main` on top of the release-please commit. **Leave `pyproject.toml`'s version exactly as the release-please PR set it.**
 
@@ -979,7 +979,7 @@ This is a **GitHub UI quirk** caused by force pushes/rebasing, not actual commit
 
 **The actual PR commits** are only:
 
-- The release commit (e.g., `release(deepagents): 0.5.1` or `release(deepagents-cli): 0.0.35`)
+- The release commit (e.g., `release(deepagents): 0.5.1` or `release(deepagents-code): 0.1.61`)
 - The lockfile update commit (e.g., `chore: update lockfiles`)
 
 Other commits shown are just the base that the PR branch was rebased onto. This is normal behavior and doesn't indicate unauthorized access.

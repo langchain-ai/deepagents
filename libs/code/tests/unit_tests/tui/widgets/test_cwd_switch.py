@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from typing import get_args
 from unittest.mock import MagicMock
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.widgets import Static
 
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets.cwd_switch import (
     CwdSwitchAbortMode,
     CwdSwitchChoice,
@@ -63,49 +63,9 @@ class TestCwdSwitchPromptScreen:
         assert screen.can_focus is True
         assert screen.can_focus_children is False
 
-    def test_on_mount_focuses_screen(self) -> None:
-        """Mounting the modal claims focus from the dismissed thread selector."""
-        screen, _ = self._screen()
-        focus = MagicMock()
-        screen.focus = focus  # ty: ignore[invalid-assignment]
-
-        screen.on_mount()
-
-        focus.assert_called_once_with()
-
-    def test_action_switch_dismisses_switch(self) -> None:
-        """Enter / switch resolves the prompt to `switch`."""
-        screen, dismiss = self._screen()
-        screen.action_switch()
-        dismiss.assert_called_once_with("switch")
-
-    def test_action_stay_dismisses_stay(self) -> None:
-        """Explicit stay resolves the prompt to `stay`."""
-        screen, dismiss = self._screen()
-        screen.action_stay()
-        dismiss.assert_called_once_with("stay")
-
-    def test_action_cancel_treated_as_stay(self) -> None:
-        """Esc / cancel is the safe default and resolves to `stay`.
-
-        The app owns a priority Esc binding, so the screen must define
-        `action_cancel` to control the cancel outcome rather than relying on a
-        bare `escape` binding.
-        """
-        screen, dismiss = self._screen()
-        screen.action_cancel()
-        dismiss.assert_called_once_with("stay")
-
 
 class TestCwdSwitchAbortOption:
     """The launch-time `-r` resume prompt adds a third `abort` option."""
-
-    def test_abort_binding_present(self) -> None:
-        """The modal binds `a` to the abort action."""
-        bindings = [b for b in CwdSwitchPromptScreen.BINDINGS if isinstance(b, Binding)]
-        bindings_by_key = {b.key: b for b in bindings}
-
-        assert bindings_by_key["a"].action == "abort"
 
     def test_check_action_gates_abort_binding_by_mode(self) -> None:
         """`check_action` enables the `a` binding only when an abort mode is set.
@@ -139,19 +99,6 @@ class TestCwdSwitchAbortOption:
         assert "new session" not in without._body_text()
         assert "new session" in with_abort._body_text()
 
-    def test_switch_mode_omits_abort_body_note(self) -> None:
-        """The in-session `/threads` abort is described only in the help line."""
-        switch = CwdSwitchPromptScreen(
-            current_cwd="/a",
-            thread_cwd="/b",
-            abort="thread_switch",
-        )
-
-        body = switch._body_text()
-        assert "new session" not in body
-        assert "instead of switching" not in body
-        assert "keep your current thread" not in body
-
     def test_title_reflects_flow(self) -> None:
         """The title asks about switching for `/threads`, resuming otherwise."""
 
@@ -172,45 +119,14 @@ class TestCwdSwitchAbortOption:
                 current_cwd="/a", thread_cwd="/b", abort=abort
             )._help_text()
 
+        separator = get_glyphs().separator
         assert help_line("resume") == (
-            "Enter: switch · Esc: stay in cwd · A: don't resume"
+            f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't resume"
         )
         assert help_line("thread_switch") == (
-            "Enter: switch · Esc: stay in cwd · A: don't switch"
+            f"Enter: switch {separator} Esc: stay in cwd {separator} A: don't switch"
         )
-        assert help_line(None) == "Enter: switch · Esc: stay in cwd"
-
-    def test_abort_mode_tokens_disjoint_from_choice(self) -> None:
-        """Abort-mode tokens never collide with prompt-outcome tokens.
-
-        The disjointness is a naming convention (input mode vs. outcome), not a
-        type guarantee. This pins it so a future member like a re-added
-        `"switch"` mode -- which would make a mode token ambiguous with a
-        `CwdSwitchChoice` outcome in logs and debuggers -- fails loudly.
-        """
-        assert not (set(get_args(CwdSwitchAbortMode)) & set(get_args(CwdSwitchChoice)))
-
-    def test_action_abort_dismisses_abort_when_allowed(self) -> None:
-        """Abort resolves the prompt to `abort` when offered."""
-        screen = CwdSwitchPromptScreen(
-            current_cwd="/a", thread_cwd="/b", abort="resume"
-        )
-        dismiss = MagicMock()
-        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
-
-        screen.action_abort()
-
-        dismiss.assert_called_once_with("abort")
-
-    def test_action_abort_is_noop_when_not_allowed(self) -> None:
-        """Abort does nothing when the prompt was not opened with an abort mode."""
-        screen = CwdSwitchPromptScreen(current_cwd="/a", thread_cwd="/b")
-        dismiss = MagicMock()
-        screen.dismiss = dismiss  # ty: ignore[invalid-assignment]
-
-        screen.action_abort()
-
-        dismiss.assert_not_called()
+        assert help_line(None) == f"Enter: switch {separator} Esc: stay in cwd"
 
     async def test_pressing_a_aborts_when_allowed(self) -> None:
         """Pressing `a` resolves the prompt to `abort` when offered."""

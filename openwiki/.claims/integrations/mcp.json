@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:0364e5e7d4844dba3f196cdd036b450daeb66820de125f8b100ab0380f431fd4",
+  "claims": [
+    {
+      "id": "claim_d5aa81de837946b19d18c6953cbc5d84",
+      "statement": "`mcp_auth.login`, invoked by `dcode mcp login <server>`, performs discovery-based OAuth login for remote `http` and `sse` servers even without `auth: oauth`, rejects stdio, resolves environment references, invokes provider-policy login and a one-shot handshake, and preserves an existing stored credential if re-authorization aborts.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_auth.py#L2153-L2250",
+          "version": "repo-lines-v1:sha256:ccd10f1d3b24a431aa0f9aadf9fde7300b3ce969261602008194d16be95d66f4:eyJzZWxlY3RlZExpbmVDb3VudCI6OTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYzM2U0MWJhZTRmNGIxOTdhZTBiOWNhMDI0MDk3OTlkZGFiNTUzY2IxZGE1YWZlZjY2OWQwMTY1MWQ5MWQwODEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhlMDZkZTBkYjgzNDQyOWEyYWVkYWU5Mjk5MDQ0NDU3MmY1NzMwNzYzMTk2MjY5ZDIwOGRmYzQzNjM2Y2IyM2UiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjZhMjhmMzA0MGRmYmViNjhjYzk0NjA4NDdiODVkYjU5ZDNlMGFkNzA5Nzk5NzFhNzM0YzQ5NWEyMTBiOWViN2QiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjowLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImUzYjBjNDQyOThmYzFjMTQ5YWZiZjRjODk5NmZiOTI0MjdhZTQxZTQ2NDliOTM0Y2E0OTU5OTFiNzg1MmI4NTUifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_auth.py#L3720-L3788",
+          "version": "repo-lines-v1:sha256:f26eb32af9a92450435b381d7dc5ee1346c5edf3817848d7d650ad05d3642d62:eyJzZWxlY3RlZExpbmVDb3VudCI6NjksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY2YjEzZTcxY2FiZjc1NjBhNzcyODc4MTE1MTMyNDFkYzRlYzViOGFhZjhlOTIwNTE5ODIyMmRmMzg1NzRkYTEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU1MDMyZTk2NGQwOTMyMzUxZTVkMTg1MjY5MjgxYjE3MWEzYTA5YjA4YjI4NmU2NjFlYTQ3MDMyM2M4MmViNGQiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJiYmQ5MjNmZTU1NjE5NDM4YmJhZGU4NTg5ODUwNWNiZWFmMDU0ZGI1ODczNDRmYjFkNTRmZDZlNDlkYTNjODciLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImM3MzY3YjU3NDIxZGE4N2VmMDE5MGQxMmJjYWEzNTg4YTczZDA2MDE1YTZlMTIwNjFhMzY2MzFkNWVkODZhMTAifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_86a887062fff48df891e910a0ed0499c",
+      "statement": "Validation permits `auth: oauth` only for HTTP/SSE servers and rejects a configuration that combines it with a static `Authorization` header.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_mcp_tools.py#L256-L295",
+          "version": "repo-lines-v1:sha256:809717fad155ab381e6981c273f82339120cb9fec6cafb40f2acf5b9c1e9fa15:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU4YjM4YWU1NTcyNTQyZTFjM2U0ZGUwMjk5YjdiMzllMGI3NDllZGJlOGZlZmVhYjMyNjE0OTkzMzBhM2ZmZGQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkMTMxMTdkZTkwOGRhNDk5YzY2NGYzY2ViOTQyZWUwMTI5NGRkNTYxMTUwZTY3N2QxOWRkODRhNThhYmM1YjkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6Ijc3MjA4MjdlNmM0ZDZjZGZjM2JiNWI1ODNjN2I4ZjIyNGRjN2FhYWNjZGY3YTFiYTliMTY1NTU3NDU3NzY2NmIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImQzM2UwZmM3ZTU1NzI1NmY2NjZmOGIxMzA3NzM1NDNiOGM3Njc0OWJmOGMxNzIyNDdhN2Q4NWJiNGM3ZDk3MTMifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_8a46c1708586462c8c965d48cd8ae656",
+      "statement": "The UI-agnostic login resolver reports explicit-load, no-config, no-usable-config, unknown-server, and invalid-server-config outcomes as typed error kinds; the CLI maps only no-config to exit code 2 and other resolution errors to exit code 1.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/client/commands/mcp.py#L118-L121",
+          "version": "repo-lines-v1:sha256:2970e4a5a9bbb41898672bb739958f5d062a8ea0f20d2cfe56aef901403b6f60:eyJzZWxlY3RlZExpbmVDb3VudCI6NCwiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMWYyMTA4MDg1NGM2NWMwMWNiZmUyMGZjNDUwNmNhMjUxMTYwYmNmMDQ3NGI5ZTJjNjk2ZThlYTA0N2EyNmNiZSIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiZTYzYTFiZWYyYzg0MGFhZmQ1MmE2MmNiMWM2ZDBhMTg4MzkxZmQ5YTRkNjlmNDRlYTc5M2Y0NzI2NjE0MDY0MSIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjMsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiMjE4N2JiYjRhOGM0MmE5N2MzMTE1YjhlNTEyNzg0YTdkZjcyYzUxMWU5NjU5NzNjOTA1ODRmMmVhMmM4MjEyZiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiODkyNzdjMjM1NGMyYzI0MDMzN2YwNGE2NDc1NGRjMDU3YmViOGUxN2EzZjkwY2E2ODUxODZjNzIwODk4ODgzMyJ9"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/client/commands/mcp.py#L246-L264",
+          "version": "repo-lines-v1:sha256:3fe6235d55fc65459e92f993a03948e19d832a46802ed5fed7853549b9c0081a:eyJzZWxlY3RlZExpbmVDb3VudCI6MTksImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFmMjEwODA4NTRjNjVjMDFjYmZlMjBmYzQ1MDZjYTI1MTE2MGJjZjA0NzRiOWUyYzY5NmU4ZWEwNDdhMjZjYmUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImIzMDg2NmUxYmNjNWFiNzZlM2VmNTkwMTJkMGFkMzlhNjg3YWJlMDAyM2I0MzhhY2IxMTMwYTE4ODI1ZTgxOTMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNhOGQzNDNmNzRmZDMxNzhlYWRhMGRiMjI1MGQ3ZmEwOGU2MjA4ZjkwYjFkMzFkOGU3YzNhMzQ0MWRiNmYzN2EiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjFkNTNlMjU0MjljODBlOWIxMWRhMzNmNzJkMzExMTM5MzIzNzBhNTFkZDQwMjIzMjlkODBhYmJlNzY5ZjM4N2UifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_login_service.py",
+          "version": "repo-file-v1:sha256:950ba3dcabcac5631d67d82728f35194c3a2f3a6ff8308a2da1e96cc74c4ff1c"
+        }
+      ]
+    },
+    {
+      "id": "claim_db0cd80b67b64a0fbf1c72673b84e21b",
+      "statement": "For auto-discovered login targets, `resolve_mcp_config` applies project trust filtering and returns skipped project paths plus policy, legacy, malformed-approval, and load-error diagnostics as structured result fields; an explicit config is instead loaded by itself.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/mcp_login_service.py",
+          "version": "repo-file-v1:sha256:950ba3dcabcac5631d67d82728f35194c3a2f3a6ff8308a2da1e96cc74c4ff1c"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-08-27T11:19:20.720Z"
+  }
+}

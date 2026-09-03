@@ -39,9 +39,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       deepagents: ${{ steps.filter.outputs.deepagents }}
-      cli: ${{ steps.filter.outputs.cli }}
       code: ${{ steps.filter.outputs.code }}
       talon: ${{ steps.filter.outputs.talon }}
+      # `talon-src` tracks only libs/talon/** so the `ci_success` waiver and
+      # the advisory job can tell "PR touches talon sources" apart from
+      # "talon CI runs" (the broad `talon` filter above also matches
+      # libs/code and libs/deepagents because talon editable-installs them).
+      talon-src: ${{ steps.filter.outputs.talon-src }}
       evals: ${{ steps.filter.outputs.evals }}
       acp: ${{ steps.filter.outputs.acp }}
       daytona: ${{ steps.filter.outputs.daytona }}
@@ -56,7 +60,7 @@ jobs:
           fetch-depth: 0
 
       - name: "🔍 Check for changes"
-        uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4
         id: filter
         with:
           # Each package filter includes workflow/action paths so that CI
@@ -79,13 +83,6 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
-            cli:
-              - 'libs/cli/**'
-              - 'libs/deepagents/**'
-              - '.github/workflows/ci.yml'
-              - '.github/workflows/_lint.yml'
-              - '.github/workflows/_test.yml'
-              - '.github/actions/**'
             code:
               - 'libs/code/**'
               - 'libs/deepagents/**'
@@ -101,6 +98,13 @@ jobs:
               - '.github/workflows/_lint.yml'
               - '.github/workflows/_test.yml'
               - '.github/actions/**'
+            # The broad `talon` filter above decides whether talon CI RUNS;
+            # this narrow one decides whether the PR TOUCHES talon sources.
+            # `ci_success` and the talon-failure-advisory job key off this
+            # output, so libs/code PRs (which match the broad filter via
+            # 'libs/code/**') get the talon failure waiver.
+            talon-src:
+              - 'libs/talon/**'
             evals:
               - 'libs/evals/**'
               - 'libs/deepagents/**'
@@ -169,15 +173,6 @@ jobs:
     uses: ./.github/workflows/_lint.yml
     with:
       working-directory: "libs/deepagents"
-      python-version: "3.11"
-
-  lint-cli:
-    name: "🧹 Lint cli"
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_lint.yml
-    with:
-      working-directory: "libs/cli"
       python-version: "3.11"
 
   lint-code:
@@ -271,17 +266,6 @@ jobs:
       working-directory: "libs/deepagents"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
-      coverage-python-version: "3.12"
-
-  test-cli:
-    name: "🧪 Test cli"
-    needs: changes
-    if: needs.changes.outputs.cli == 'true' || github.event_name == 'push'
-    uses: ./.github/workflows/_test.yml
-    with:
-      working-directory: "libs/cli"
-      python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-code:
     name: "🧪 Test deepagents-code"
@@ -291,7 +275,6 @@ jobs:
     with:
       working-directory: "libs/code"
       python-versions: '["3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.14"
 
   test-talon:
     name: "🧪 Test deepagents-talon"
@@ -301,7 +284,6 @@ jobs:
     with:
       working-directory: "libs/talon"
       python-versions: '["3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-evals:
     name: "🧪 Test evals"
@@ -311,7 +293,6 @@ jobs:
     with:
       working-directory: "libs/evals"
       python-versions: '["3.12", "3.13"]'
-      coverage-python-version: "3.12"
 
   test-acp:
     name: "🧪 Test acp"
@@ -321,7 +302,6 @@ jobs:
     with:
       working-directory: "libs/acp"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-daytona:
     name: "🧪 Test daytona"
@@ -331,7 +311,6 @@ jobs:
     with:
       working-directory: "libs/partners/daytona"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-modal:
     name: "🧪 Test modal"
@@ -341,7 +320,6 @@ jobs:
     with:
       working-directory: "libs/partners/modal"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-runloop:
     name: "🧪 Test runloop"
@@ -351,7 +329,6 @@ jobs:
     with:
       working-directory: "libs/partners/runloop"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-vercel:
     name: "🧪 Test vercel"
@@ -361,7 +338,6 @@ jobs:
     with:
       working-directory: "libs/partners/vercel"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-quickjs:
     name: "🧪 Test quickjs"
@@ -371,7 +347,6 @@ jobs:
     with:
       working-directory: "libs/partners/quickjs"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.11"
 
   # Catch SDK -> quickjs prompt-snapshot drift: when the deepagents SDK
   # changes but the quickjs partner is untouched, the full test-quickjs suite
@@ -526,13 +501,117 @@ jobs:
       - name: "🔍 Check workflow helper scripts"
         run: python -m pytest .github/scripts/tests -v
 
+  # Advisory-only job: never fails the workflow and is deliberately NOT in
+  # `ci_success.needs`, so its own result cannot gate anything. It runs on
+  # PRs where the `talon-src` filter output is not 'true' — i.e. the PR does
+  # not touch libs/talon, so the `ci_success` talon waiver may fire (see the
+  # comment block there). It posts or updates a sticky PR comment recording
+  # the waived failures; once the talon jobs pass again it deletes the
+  # comment. Mirrors the sticky-comment pattern in
+  # release_fanout_bypass_warn.yml.
+  talon-failure-advisory:
+    name: "⚠️ talon failure advisory"
+    needs: [changes, lint-talon, test-talon]
+    if: always() && github.event_name == 'pull_request' && needs.changes.outputs.talon-src != 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      pull-requests: write
+    # Serialize per-PR so rapid pushes cannot create duplicate stickies.
+    concurrency:
+      group: talon-ci-advisory-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    steps:
+      - name: "Post, update, or delete the talon advisory comment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const prNumber = context.payload.pull_request?.number;
+            if (!prNumber) {
+              core.warning('No PR number in payload; skipping talon advisory comment.');
+              return;
+            }
+            const STICKY_MARKER = '<!-- talon-ci-advisory -->';
+
+            async function findStickyComment() {
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                owner, repo, issue_number: prNumber, per_page: 100,
+              });
+              return comments.find(c => c.body && c.body.startsWith(STICKY_MARKER));
+            }
+
+            const jobNames = ['lint-talon', 'test-talon'];
+            const jobResults = {
+              'lint-talon': '${{ needs.lint-talon.result }}',
+              'test-talon': '${{ needs.test-talon.result }}',
+            };
+            const failed = jobNames.filter(j => jobResults[j] === 'failure');
+
+            async function removeSticky() {
+              try {
+                const existing = await findStickyComment();
+                if (existing) {
+                  await github.rest.issues.deleteComment({
+                    owner, repo, comment_id: existing.id,
+                  });
+                  console.log('talon jobs green (or not run) — deleted advisory comment');
+                }
+              } catch (e) {
+                core.warning(`Could not clean up talon advisory comment for PR #${prNumber}: ${e.message}`);
+              }
+            }
+
+            // Waiver condition no longer holds: talon passed or was skipped.
+            if (failed.length === 0) {
+              await removeSticky();
+              return;
+            }
+
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const body = [
+              STICKY_MARKER,
+              '⚠️ **talon CI failure(s) were waived for this PR.**',
+              '',
+              `Failed job(s): ${failed.map(j => `\`${j}\``).join(', ')} ([workflow run](${runUrl}))`,
+              '',
+              "**Why:** this PR doesn't touch `libs/talon`, so talon breakage does not block merge per repo policy. talon editable-installs `deepagents-code`, so its CI runs on every libs/code PR and can be broken by libs/code changes.",
+              '',
+              '**Required follow-up:** the breakage must be fixed in a separate `fix(talon): ...` PR — talon is red at HEAD until it lands. Please file or self-assign that fix, or confirm a maintainer is tracking it.',
+            ].join('\n');
+
+            try {
+              const existing = await findStickyComment();
+              if (existing) {
+                if (existing.body !== body) {
+                  await github.rest.issues.updateComment({
+                    owner, repo, comment_id: existing.id, body,
+                  });
+                  console.log('Updated talon advisory comment');
+                } else {
+                  console.log('talon advisory comment already up to date');
+                }
+              } else {
+                await github.rest.issues.createComment({
+                  owner, repo, issue_number: prNumber, body,
+                });
+                console.log('Posted talon advisory comment');
+              }
+            } catch (commentErr) {
+              core.warning(`Could not post talon advisory comment (fork PR token, rate limit, or transient API error): ${commentErr.message}`);
+              await core.summary
+                .addHeading('talon CI failure(s) waived; advisory comment could not be posted')
+                .addRaw('Paste the following into the PR as a comment:')
+                .addCodeBlock(body, 'markdown')
+                .write();
+            }
+
   # Final status check - ensures all jobs passed
   ci_success:
     name: "✅ CI Success"
     needs:
       - changes
       - lint-deepagents
-      - lint-cli
       - lint-code
       - lint-talon
       - lint-evals
@@ -543,7 +622,6 @@ jobs:
       - lint-vercel
       - lint-quickjs
       - test-deepagents
-      - test-cli
       - test-code
       - test-talon
       - test-evals
@@ -559,16 +637,107 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     steps:
+      # talon editable-installs deepagents-code (`libs/talon/pyproject.toml`,
+      # [tool.uv.sources]), so the `talon` path filter above watches
+      # libs/code/** and every libs/code PR runs lint-talon/test-talon. A
+      # libs/code change can therefore break talon CI. The maintainers accept
+      # merging such PRs with talon red at HEAD: the talon fix lands as its
+      # own `fix(talon): ...` PR instead of forcing a combined PR (which would
+      # also fan release-please out across both packages' changelogs). The
+      # waiver keys off the narrow `talon-src` filter output (libs/talon/**
+      # only), NOT the broad `talon` one that also matches libs/code and
+      # libs/deepagents — keying off `talon` would make every libs/code PR
+      # ineligible for its own waiver. On pull_request runs where the
+      # `talon-src` filter output is not 'true', `failure` results from
+      # lint-talon/test-talon are waived; `cancelled` results and every other
+      # job still block, and push / merge_group runs stay fully strict so a
+      # broken talon stays visible on main, where every job runs
+      # unconditionally. The waiver logic lives in
+      # .github/scripts/checks/ci_gate.py (unit-tested under
+      # .github/scripts/tests/); talon CI still RUNS on these PRs — only its
+      # blocking effect changes, and the talon-failure-advisory job posts a
+      # sticky comment when the waiver fires.
+      #
+      # The gate script is executed from the PR's BASE ref, not the PR
+      # checkout: on pull_request runs `actions/checkout` defaults to the
+      # (untrusted) PR merge commit, so a PR that edited ci_gate.py could
+      # make the required check pass regardless of real job results. Pinning
+      # to `github.base_ref` keeps the decision logic maintainer-controlled.
+      # `github.base_ref` is empty on push/merge_group, so `||` falls back to
+      # the commit that triggered the run.
+      - name: "📋 Checkout gate script from trusted base ref"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref || github.sha }}
+          path: .ci-gate-base
+          sparse-checkout: |
+            .github/scripts/checks/ci_gate.py
+          persist-credentials: false
+
+      # Bootstrap window: ci_gate.py does not exist on main until this change
+      # lands, so the base-ref checkout above is empty on the PR that
+      # introduces it. Only for that window, check out the PR's own copy as a
+      # fallback. Once the script is on the base branch, the base-ref copy is
+      # always used and this second checkout never changes what runs.
+      - name: "📋 Checkout PR gate script (bootstrap fallback)"
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .ci-gate-pr
+          sparse-checkout: |
+            .github/scripts/checks/ci_gate.py
+          persist-credentials: false
+
       - name: "🎉 All Checks Passed"
         env:
           EVENT_NAME: ${{ github.event_name }}
+          # Full needs context: the wildcard `toJSON(needs.*.result)` form
+          # loses job names (it yields a bare array of result strings), so
+          # the name -> result map is rebuilt from each entry below. Skipped
+          # jobs are filtered out so the gate only judges jobs that ran.
+          NEEDS: ${{ toJSON(needs) }}
+          TALON_CHANGED: ${{ needs.changes.outputs.talon-src }}
         run: |
+          set -euo pipefail
           # Get all job results (excluding 'changes' which always succeeds)
-          results='${{ toJSON(needs.*.result) }}'
+          results="$(printf '%s' "$NEEDS" | python3 -c '
+          import json
+          import sys
+
+          needs = json.loads(sys.argv[1])
+          results = {
+              job: entry["result"]
+              for job, entry in needs.items()
+              if job != "changes" and entry["result"] != "skipped"
+          }
+          json.dump(results, sys.stdout)
+          ' "$NEEDS")"
           echo "Job results: $results"
 
-          if echo "$results" | grep -q '"failure"'; then
-            echo "Some jobs failed"
+          gate_script=".ci-gate-base/.github/scripts/checks/ci_gate.py"
+          if [ ! -f "$gate_script" ]; then
+            # Bootstrap only: the script is not on the base branch yet.
+            gate_script=".ci-gate-pr/.github/scripts/checks/ci_gate.py"
+            echo "::warning::ci_gate.py not found on base ref; running the PR's copy (bootstrap window)."
+          fi
+
+          gate="$(python3 "$gate_script" \
+            --event "$EVENT_NAME" \
+            --talon "$TALON_CHANGED" \
+            --results "$results")"
+          echo "Gate decision: $gate"
+
+          waived="$(printf '%s' "$gate" | python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["waived"]))' "$gate")"
+          if [ -n "$waived" ]; then
+            while IFS= read -r job; do
+              echo "::warning::⚠️ Waiving failing talon check: $job=failure (PR does not touch libs/talon; talon breakage is advisory here). Follow-up: fix talon in a separate fix(talon): ... PR."
+            done <<< "$waived"
+          fi
+
+          failed="$(printf '%s' "$gate" | python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["failed"]))' "$gate")"
+          if [ -n "$failed" ]; then
+            echo "Some jobs failed:"
+            echo "$failed"
             exit 1
           fi
 
@@ -578,8 +747,10 @@ jobs:
           # On PRs and merge_group runs, a cancellation is almost always a
           # human action or a real problem, so keep the gate strict.
           if [ "$EVENT_NAME" != "push" ]; then
-            if echo "$results" | grep -q '"cancelled"'; then
-              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs)"
+            cancelled="$(printf '%s' "$gate" | python3 -c 'import json, sys; print("\n".join(json.loads(sys.argv[1])["cancelled"]))' "$gate")"
+            if [ -n "$cancelled" ]; then
+              echo "Some jobs were cancelled (not allowed on $EVENT_NAME runs):"
+              echo "$cancelled"
               exit 1
             fi
           fi

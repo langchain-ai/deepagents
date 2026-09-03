@@ -34,7 +34,7 @@ Use memory when the knowledge is:
 - Something to always keep in mind
 - A simple rule or pattern
 
-**Global** (`~/.deepagents/agent/AGENTS.md`): Universal preferences across all projects
+**Global** (`$DEEPAGENTS_HOME/agent/AGENTS.md`): Universal preferences across all projects
 **Project** (`.deepagents/AGENTS.md`): Project-specific conventions and decisions
 
 ### -> Skill for reusable workflows and methodologies
@@ -53,7 +53,7 @@ If we established best practices around a workflow or process, capture them in a
 **Example:** If we discussed best practices for code review, create a `code-review` skill that encodes those practices into a reusable workflow.
 
 ### Skill Location
-`~/.deepagents/agent/skills/<skill-name>/SKILL.md`
+`$DEEPAGENTS_HOME/agent/skills/<skill-name>/SKILL.md`
 
 ### Skill Structure
 ```

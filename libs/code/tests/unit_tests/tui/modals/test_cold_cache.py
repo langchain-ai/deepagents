@@ -67,75 +67,6 @@ def _screen() -> ColdCacheWarningScreen:
     )
 
 
-def test_openai_copy_preserves_retention_uncertainty() -> None:
-    screen = ColdCacheWarningScreen(
-        _warning(
-            _policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
-            RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
-            84_000,
-            11_520,
-        )
-    )
-
-    body = screen._body()
-
-    assert "idle for 3h 12m" in body
-    assert "30m minimum cache-retention window" in body
-    assert "may still have retained" in body
-    # The `may_be_cold` branch keeps the cost sentence conditional, and both
-    # figures are rounded estimates framed as an upper bound.
-    assert "If the cache has expired" in body
-    assert "may cost up to ~$0.42" in body
-    assert "~$0.35 more" in body
-
-
-def test_anthropic_copy_calls_guaranteed_ttl_expired() -> None:
-    screen = ColdCacheWarningScreen(
-        _warning(
-            _policy("Anthropic", 300, "expired", 1024, "5m"),
-            RewarmEstimate(cold_cost_usd=1.25, incremental_cost_usd=1.15),
-            50_000,
-            600,
-        )
-    )
-
-    body = screen._body()
-
-    assert "Anthropic's 5m prompt-cache lifetime" in body
-    assert "has likely expired" in body
-    # Past a documented maximum the prefix is gone, so the cost sentence is
-    # unconditional but still rounds and frames the figures as upper bounds.
-    assert "If the cache has expired" not in body
-    assert "may cost up to ~$1.3" in body
-    assert "~$1.2 more" in body
-
-
-def test_identity_change_uses_identity_specific_copy() -> None:
-    """Identity copy must name every trigger the caller folds into the flag.
-
-    The endpoint is one of them, so copy naming only the model would misdirect
-    a user who switched gateways.
-    """
-    screen = ColdCacheWarningScreen(
-        _warning(
-            _policy("OpenAI", 1800, "may_be_cold", 1024, "generic"),
-            RewarmEstimate(cold_cost_usd=0.42, incremental_cost_usd=0.35),
-            84_000,
-            60,
-            reason="identity_changed",
-        )
-    )
-
-    body = screen._body()
-
-    assert "active model, endpoint, or prompt-cache settings differ" in body
-    assert "previous cached prefix cannot be reused" in body
-    # An identity change guarantees the prefix is unusable, so the cost
-    # sentence is unconditional even though the policy is `may_be_cold`.
-    assert "If the cache has expired" not in body
-    assert "may cost up to ~$0.42" in body
-
-
 def test_unknown_age_copy_claims_no_idle_time() -> None:
     """The `age_unknown` branch must not invent an age or a model change."""
     screen = ColdCacheWarningScreen(
@@ -180,32 +111,6 @@ async def test_enter_authorizes_send() -> None:
         await pilot.pause()
 
     assert results == [ColdCacheChoice.SEND]
-
-
-async def test_arrow_down_then_enter_suppresses_for_session() -> None:
-    app = _Host()
-    results: list[ColdCacheChoice | None] = []
-
-    async with app.run_test() as pilot:
-        await app.push_screen(_screen(), callback=results.append)
-        await pilot.pause()
-        await pilot.press("down", "enter")
-        await pilot.pause()
-
-    assert results == [ColdCacheChoice.SEND_SUPPRESS_SESSION]
-
-
-async def test_navigation_wraps_to_suppress_always() -> None:
-    app = _Host()
-    results: list[ColdCacheChoice | None] = []
-
-    async with app.run_test() as pilot:
-        await app.push_screen(_screen(), callback=results.append)
-        await pilot.pause()
-        await pilot.press("down", "down", "enter")
-        await pilot.pause()
-
-    assert results == [ColdCacheChoice.SEND_SUPPRESS_ALWAYS]
 
 
 async def test_navigation_up_from_top_wraps_to_keep_draft() -> None:

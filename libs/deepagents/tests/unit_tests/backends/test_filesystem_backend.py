@@ -1924,6 +1924,29 @@ class TestGrepPythonFallbackTimeout:
         assert partial_error is None
         assert results.get("/cr.txt") == [(1, "hit me")]
 
+    def test_grep_returns_error_for_refused_include_glob(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A `..` include glob becomes `GrepResult.error`, never a raise.
+
+        The shared matcher raises `InvalidGlobPatternError` on traversal and the
+        Python fallback compiles the glob outside any error handling, so `grep`
+        validates the glob before choosing a search path. The check holds with
+        and without ripgrep.
+        """
+        (tmp_path / "f.txt").write_text("needle\n")
+        be = FilesystemBackend(root_dir=str(tmp_path), virtual_mode=True)
+        monkeypatch.setattr(be, "_ripgrep_search", lambda *_args, **_kwargs: (None, False))
+        for forced_fallback in (True, False):
+            if not forced_fallback:
+                monkeypatch.undo()
+            result = be.grep("needle", path="/", glob="../*.py")
+            assert result.matches == []
+            assert result.error is not None
+            assert "Path traversal" in result.error
+
     def test_grep_fallback_treats_pattern_literally(
         self,
         tmp_path: Path,

@@ -698,40 +698,45 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     )
 
 
+def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
+    """Resolve current workspace policy and reject drift from its binding.
+
+    Returns:
+        The current server configuration resolved for the workspace.
+    """
+    config = ServerConfig.from_env()
+    current_config = config.resolve_workspace(binding.cwd, binding.project_root)
+    bound_policy = binding.workspace_config()
+    project_policy = current_config.to_project_workspace_policy()
+    if any(bound_policy.get(key) != value for key, value in project_policy.items()):
+        reason = (
+            "the project's resolved policy differs from the policy recorded "
+            "when this workspace was bound"
+        )
+        conflict = WorkspaceConflictError.from_reason(reason)
+        raise conflict
+    if current_config.workspace_fingerprint() != binding.config_fingerprint:
+        reason = "the server configuration changed after this workspace was bound"
+        conflict = WorkspaceConflictError.from_reason(reason)
+        raise conflict
+    return current_config
+
+
 async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     """Build or reuse a runtime from the persisted workspace resource policy.
 
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
+    _resolve_bound_workspace_config(binding)
     cached = _cached_workspace_runtime(binding)
     if cached is not None:
         return cached
     async with _workspace_runtime_lock:
+        current_config = _resolve_bound_workspace_config(binding)
         cached = _cached_workspace_runtime(binding)
         if cached is not None:
             return cached
-        config = ServerConfig.from_env()
-        current_config = config.resolve_workspace(
-            binding.cwd,
-            binding.project_root,
-        )
-        bound_policy = binding.workspace_config()
-        if any(
-            bound_policy.get(key)
-            != current_config.to_project_workspace_policy().get(key)
-            for key in current_config.to_project_workspace_policy()
-        ):
-            reason = (
-                "the project's resolved policy differs from the policy recorded "
-                "when this workspace was bound"
-            )
-            conflict = WorkspaceConflictError.from_reason(reason)
-            raise conflict
-        if current_config.workspace_fingerprint() != binding.config_fingerprint:
-            reason = "the server configuration changed after this workspace was bound"
-            conflict = WorkspaceConflictError.from_reason(reason)
-            raise conflict
         _claim_sandbox_workspace(current_config.sandbox_type, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),

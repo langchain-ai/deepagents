@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import os
 import sys
@@ -515,6 +516,37 @@ class TestWorkspaceRuntime:
             await module._workspace_runtime(binding)
 
         make.assert_not_awaited()
+
+    async def test_cached_runtime_rejects_project_policy_divergence(
+        self, tmp_path
+    ) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        project = tmp_path / "project"
+        bound_config = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=True,
+        )
+        binding = _bind(bound_config, project)
+        runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=bound_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        changed = dataclasses.replace(bound_config, trust_project_mcp=False)
+        with (
+            patch.object(ServerConfig, "from_env", return_value=changed),
+            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_awaited_once()
 
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
         from deepagents_code.workspace import WorkspaceConflictError

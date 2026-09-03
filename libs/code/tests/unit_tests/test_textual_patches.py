@@ -15,10 +15,13 @@ from textual._time import get_time
 from textual._xterm_parser import XTermParser
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
+from textual.content import Content
 from textual.geometry import Offset
+from textual.selection import Selection
 from textual.widgets import Markdown, Static
 
 from deepagents_code import _textual_patches  # triggers patch
+from deepagents_code.tui.widgets.diff import _DiffRowStatic
 
 
 def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
@@ -32,6 +35,14 @@ def _keys_for(sequence: str, *, alt: bool) -> list[tuple[str, str | None]]:
 class SelectableTextApp(App[None]):
     def compose(self) -> ComposeResult:
         yield Static("alpha beta gamma", id="msg")
+
+
+class SelectableDiffApp(App[None]):
+    def compose(self) -> ComposeResult:
+        yield _DiffRowStatic(
+            Content(" 1 - removed word"), prefix_len=5, id="diff-before"
+        )
+        yield _DiffRowStatic(Content(" 1 + added word"), prefix_len=5, id="diff-row")
 
 
 class SelectableMarkdownApp(App[None]):
@@ -289,6 +300,90 @@ class TestPatchedSequenceToKeyEvents:
         normally.
         """
         assert _keys_for(sequence, alt=False) == expected
+
+
+class TestGutterClampWatcher:
+    """Diff gutters stay outside selections from every selection-map update."""
+
+    async def test_triple_click_selects_source_without_gutter(self) -> None:
+        """Widget select-all must be clamped after its direct map assignment."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.triple_click("#diff-row", offset=(7, 0))
+
+            assert screen.selections[row] == Selection(Offset(5, 0), None)
+            assert screen.get_selected_text() == "added word"
+
+    @pytest.mark.parametrize("x", [1, 3], ids=["line-number", "marker"])
+    async def test_double_click_gutter_selects_nothing(self, x: int) -> None:
+        """Word selection must not copy either non-whitespace gutter token."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.double_click("#diff-row", offset=(x, 0))
+
+            assert row not in screen.selections
+            assert screen.get_selected_text() is None
+
+    async def test_double_click_source_word_remains_selected(self) -> None:
+        """Clamping must preserve word bounds that already start in source text."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.double_click("#diff-row", offset=(7, 0))
+
+            assert screen.selections[row] == Selection(Offset(5, 0), Offset(10, 0))
+            assert screen.get_selected_text() == "added"
+
+    async def test_drag_across_rows_clamps_each_gutter(self) -> None:
+        """A multi-row drag must retain source text without either gutter."""
+        async with SelectableDiffApp().run_test() as pilot:
+            screen = pilot.app.screen
+            before = pilot.app.query_one("#diff-before", _DiffRowStatic)
+            after = pilot.app.query_one("#diff-row", _DiffRowStatic)
+
+            await pilot.mouse_down("#diff-before", offset=(1, 0))
+            await pilot.mouse_up("#diff-row", offset=(10, 0))
+
+            assert screen.selections == {
+                before: Selection(Offset(5, 0), None),
+                after: Selection(Offset(5, 0), Offset(10, 0)),
+            }
+            assert screen.get_selected_text() == "removed word\nadded"
+
+    async def test_dropping_the_only_selection_does_not_raise(self) -> None:
+        """The watcher can delete its only entry while clamping the map in place."""
+        async with SelectableTextApp().run_test() as pilot:
+            screen = pilot.app.screen
+            row = _DiffRowStatic(Content(" 1 + added"), prefix_len=5)
+            screen.selections = {  # ty: ignore[invalid-assignment]
+                row: Selection(Offset(2, 0), Offset(4, 0))
+            }
+
+            await pilot.pause()
+
+            assert row not in screen.selections
+
+    async def test_dropping_first_of_two_selections_does_not_raise(self) -> None:
+        """Deleting one entry must not disturb a later row that is retained."""
+        async with SelectableTextApp().run_test() as pilot:
+            screen = pilot.app.screen
+            dropped = _DiffRowStatic(Content(" 1 + added"), prefix_len=5)
+            kept = _DiffRowStatic(Content(" 2 + kept"), prefix_len=5)
+            screen.selections = {  # ty: ignore[invalid-assignment]
+                dropped: Selection(Offset(2, 0), Offset(4, 0)),
+                kept: Selection(Offset(0, 0), Offset(7, 0)),
+            }
+
+            await pilot.pause()
+
+            assert screen.selections == {
+                kept: Selection(Offset(5, 0), Offset(7, 0)),
+            }
 
 
 def test_app_imports_textual_patches_for_side_effect() -> None:

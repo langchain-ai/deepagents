@@ -120,7 +120,7 @@ def _should_collapse_chat_paste(text: str) -> bool:
     return detect_mode_prefix(text) is None and should_collapse_paste(text)
 
 
-_PASTE_COLLAPSED_TOAST = "Large paste collapsed. Paste again to expand it inline."
+_PASTE_COLLAPSED_TOAST = "Large paste collapsed. Paste again to expand."
 """Toast shown when a paste collapses into a `[Pasted text #N]` placeholder.
 
 Emitted only for a new collapse, not when a repeat paste expands an existing
@@ -2676,8 +2676,8 @@ class ChatInput(Vertical):
         Returns:
             `True` when the value was written, `False` when the text area is
             unavailable and the value could not be set. Callers that surface a
-            "restored"/"moved to input" toast should gate it on this so the
-            toast never claims a write that did not happen.
+            "moved to input" toast should gate it on this so the toast never
+            claims a write that did not happen.
         """
         if not self._text_area:
             return False

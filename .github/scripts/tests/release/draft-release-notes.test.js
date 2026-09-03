@@ -112,6 +112,27 @@ test('provider requests use fixed endpoints and keep source text in the body', (
   }
 });
 
+test('maintainer instructions join the user message as subordinate guidance', () => {
+  // No Instructions header: the user message is just the source prompt.
+  const plain = 'Package: code\nVersion: 1.0.0\n\nchangelog body';
+  assert.ok(!draft.userPrompt(plain).includes('maintainer also asked'));
+
+  // An Instructions header is lifted out of the untrusted body and appended as
+  // maintainer guidance, after the source, still inside the user message.
+  const withInstructions = 'Package: code\nVersion: 1.0.0\nInstructions: keep it short\n\nchangelog body';
+  const prompt = draft.userPrompt(withInstructions);
+  assert.match(prompt, /release maintainer also asked/);
+  assert.match(prompt, /keep it short/);
+  assert.ok(prompt.indexOf('<release-note-source>') < prompt.indexOf('maintainer also asked'));
+  // The system prompt, not the maintainer line, stays authoritative.
+  assert.match(prompt, /only where it does not conflict with the system instructions/);
+
+  // A changelog line that starts with "Instructions:" is data, not the header:
+  // only the header block (before the first blank line) is consulted.
+  const bodyCollision = 'Package: code\nVersion: 1.0.0\n\nInstructions: not a header\nmore text';
+  assert.ok(!draft.userPrompt(bodyCollision).includes('maintainer also asked'));
+});
+
 test('provider requests embed the structured-output schema in each provider contract', () => {
   // Built independently of the source, so the assertions verify the documented
   // wire shape rather than re-encoding whatever the code happens to produce.

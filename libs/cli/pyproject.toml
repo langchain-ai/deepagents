@@ -175,6 +175,10 @@ omit = ["tests/*"]
 
 [tool.pytest.ini_options]
 timeout = 30  # Default timeout for all tests (can be overridden per-test)
+filterwarnings = [
+    # Unexpected warnings fail the run; see "Warnings are errors" in AGENTS.md.
+    "error",
+]
 
 addopts = "--strict-markers --strict-config --durations=5"
 asyncio_mode = "auto"

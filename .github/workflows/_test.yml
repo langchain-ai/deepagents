@@ -34,8 +34,14 @@ on:
         default: ""
         description: "Runner OS of the coverage leg; empty defaults to the primary 'os' input"
 
+# `pull-requests: read` lets the reusable workflow read live PR labels for the
+# warnings bypass below; a called workflow can only narrow the caller's token,
+# never widen it. The bypass reads the issues labels endpoint, which accepts
+# either `issues: read` or `pull-requests: read` -- so unlike `release-please.yml`
+# (which grants `issues: read` for the same call), no `issues` grant is needed.
 permissions:
   contents: read
+  pull-requests: read
 
 env:
   UV_NO_SYNC: "true"
@@ -115,6 +121,47 @@ jobs:
         shell: bash
         run: sudo apt-get update && sudo apt-get install -y ripgrep
 
+      # Maintainer escape hatch: a PR labeled `bypass-warnings-check` runs
+      # pytest with `-W default`, demoting the ini `filterwarnings` policy
+      # (including the package-level "error" entry) for that run. Per-test
+      # `@pytest.mark.filterwarnings` marks are applied after command-line
+      # filters, so those still take effect. Labels are read from the live
+      # GitHub API rather than `github.event.pull_request.labels` because
+      # re-running a job replays the original event payload, which would miss
+      # a label added after the fact. `push` and `merge_group` runs have no PR
+      # label context and always enforce warnings-as-errors.
+      - name: "🏷️ Resolve warnings bypass"
+        id: warnings
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -eu
+          # `per_page=100` rather than `--paginate`: an issue caps at 100 labels,
+          # and `--paginate` streams each page as it arrives, so a failure on a
+          # later page would leave earlier pages in $LABELS while the nonzero exit
+          # is discarded -- i.e. it could bypass on the strength of a failed call.
+          # A single request makes the exit status an honest all-or-nothing signal.
+          rc=0
+          LABELS="$(gh api "repos/$REPO/issues/$PR/labels?per_page=100" --jq '.[].name')" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            # Fail closed, but loudly: a silent fall-through here is
+            # indistinguishable from "label absent", so a maintainer would apply
+            # the label, re-run, and watch it fail again with no explanation.
+            echo "::error::Could not read labels for PR #$PR (gh api exit $rc); warnings-as-errors will be ENFORCED. The bypass label cannot take effect until this is resolved."
+            echo "flag=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if printf '%s\n' "$LABELS" | grep -Fxq "bypass-warnings-check"; then
+            echo "flag=-W default" >> "$GITHUB_OUTPUT"
+            echo "::warning::'bypass-warnings-check' label present — test warnings will not fail this run"
+          else
+            echo "flag=" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: "🧪 Run Unit Tests"
         if: runner.os != 'Windows'
         shell: bash
@@ -124,12 +171,15 @@ jobs:
           PY_OS: ${{ matrix.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          # A command-line `-W` filter outranks every ini `filterwarnings`
+          # entry, so the bypass also demotes intentional `error:` filters.
+          WARNINGS_FLAG: ${{ steps.warnings.outputs.flag }}
         run: |
           if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
-            make test PYTEST_EXTRA=-q
+            make test PYTEST_EXTRA="-q $WARNINGS_FLAG"
           else
             echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
-            make test COV_ARGS= PYTEST_EXTRA=-q
+            make test COV_ARGS= PYTEST_EXTRA="-q $WARNINGS_FLAG"
           fi
 
       # Windows cannot run `make test` because `LocalShellBackend` requires POSIX
@@ -146,12 +196,14 @@ jobs:
           PY_OS: ${{ matrix.os }}
           COV_PY: ${{ inputs.coverage-python-version }}
           COV_OS: ${{ inputs.coverage-os || inputs.os }}
+          # See the POSIX step: the command-line bypass outranks ini filters.
+          WARNINGS_FLAG: ${{ steps.warnings.outputs.flag }}
         run: |
           if [ -n "$COV_PY" ] && [ "$PY" = "$COV_PY" ] && [ "$PY_OS" = "$COV_OS" ]; then
-            uv run --group test pytest -n auto -vvv tests/unit_tests/ --cov=deepagents --cov-report=term-missing
+            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG tests/unit_tests/ --cov=deepagents --cov-report=term-missing
           else
             echo "Coverage disabled for Python $PY / $PY_OS (target=$COV_PY / $COV_OS)"
-            uv run --group test pytest -n auto -vvv tests/unit_tests/
+            uv run --group test pytest -n auto -vvv $WARNINGS_FLAG tests/unit_tests/
           fi
 
       - name: "🧹 Verify Clean Working Directory"

@@ -393,21 +393,20 @@ class TestReset:
             assert panel._phase_order == []
             assert panel._counts() == (0, 0)
 
-    async def test_panel_persists_until_next_workflow(self) -> None:
+    async def test_panel_clears_on_next_turn(self) -> None:
         async with PanelApp().run_test() as pilot:
             panel = pilot.app.query_one("#panel", SubagentPanel)
             panel.on_subagent_event(_start("a", "E1"))
             panel.on_subagent_event(_complete("a", "E1"))
             await pilot.pause()
             assert panel.has_class("-visible")
-            # A new turn begins but spawns no subagents — results persist.
             panel.prepare_turn()
             await pilot.pause()
-            assert panel.has_class("-visible")
-            assert panel._phase_order == ["E1"]
-            # The next workflow's first subagent clears the prior fan-out.
+            assert not panel.has_class("-visible")
+            assert panel._phase_order == []
             panel.on_subagent_event(_start("b", "E2"))
             await pilot.pause()
+            assert panel.has_class("-visible")
             assert panel._phase_order == ["E2"]
             assert panel._find_record("a") is None
 

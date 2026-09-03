@@ -397,7 +397,6 @@ class TestDeepAgentsCLIEndToEnd:
                 model=model,
                 assistant_id="test-agent",
                 tools=[sample_tool],
-                checkpointer=InMemorySaver(),
             )
 
             # Invoke the agent

@@ -216,6 +216,141 @@ class TestRecursiveDeletePermissions:
         assert "Deleted" in result
         assert not (tmp_path / "work" / "a.txt").exists()
 
+    def test_exact_file_delete_allowed_under_workspace_isolation(self, tmp_path):
+        """Regression for #5113.
+
+        An earlier, more specific allow rule must win for an exact-file
+        delete, even with a later catch-all deny -- the same first-match-wins
+        ordering `write_file`/`edit_file` already use.
+        """
+        backend = self._fs_backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/a.txt"}, rules, backend=backend)
+
+        assert "Deleted" in result
+        assert not (tmp_path / "work" / "a.txt").exists()
+
+    def test_recursive_delete_still_blocked_under_workspace_isolation(self, tmp_path):
+        """The catch-all deny still protects an actual recursive delete.
+
+        Unlike the exact-file case above, `/work` has descendants not
+        covered by the narrower allow rule, so the all-or-nothing check
+        still applies.
+        """
+        backend = self._fs_backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/logs/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "a.txt").exists()
+
+    def test_empty_directory_delete_still_uses_conservative_ancestor_check(self, tmp_path):
+        """Only plain files get first-match-wins ordering.
+
+        An empty directory still goes through the conservative check, so a
+        narrower allow further down in declaration order doesn't override a
+        catch-all deny. Unlike `test_exact_file_delete_allowed_under_workspace_isolation`,
+        `/work/empty` is a directory (albeit with no children), so it's
+        resolved the same way a directory with children would be.
+        """
+        backend = self._fs_backend(tmp_path)
+        (tmp_path / "work" / "empty").mkdir()
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/empty"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+        assert (tmp_path / "work" / "empty").exists()
+
+    def test_exact_file_delete_allowed_under_workspace_isolation_on_flat_backend(self):
+        """Regression for flat/virtual backends.
+
+        `StoreBackend`, `StateBackend`, and `ContextHubBackend` return
+        `entries=[], error=None` for both exact files and empty directories, so the
+        leaf check must not rely on a `not_a_directory` error.
+        """
+        backend = _make_backend({"/work/a.txt": "a"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/a.txt"}, rules, backend=backend)
+
+        assert "Deleted" in result
+
+    def test_flat_backend_exact_key_with_nested_descendant_still_blocked(self):
+        """Regression for flat backends with overlapping keys.
+
+        An exact-match key and nested keys can coexist, so an exact file at
+        `/work/item` must not be treated as a leaf if `ls("/work/item")` also reports
+        descendants.
+        """
+        backend = _make_backend({"/work/item": "a", "/work/item/secrets/key": "secret"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item/secrets/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = _invoke_with_permissions(tool, {"file_path": "/work/item"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+
+    async def test_exact_file_delete_allowed_under_workspace_isolation_on_flat_backend_async(self):
+        """Async counterpart of `test_exact_file_delete_allowed_under_workspace_isolation_on_flat_backend`."""
+        backend = _make_backend({"/work/a.txt": "a"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = await _ainvoke_with_permissions(tool, {"file_path": "/work/a.txt"}, rules, backend=backend)
+
+        assert "Deleted" in result
+
+    async def test_flat_backend_exact_key_with_nested_descendant_still_blocked_async(self):
+        """Async counterpart of `test_flat_backend_exact_key_with_nested_descendant_still_blocked`."""
+        backend = _make_backend({"/work/item": "a", "/work/item/secrets/key": "secret"})
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/work/item/secrets/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = await _ainvoke_with_permissions(tool, {"file_path": "/work/item"}, rules, backend=backend)
+
+        assert "permission denied for write" in result
+
+    async def test_exact_file_delete_allowed_under_workspace_isolation_async(self, tmp_path):
+        backend = self._fs_backend(tmp_path)
+        rules = [
+            FilesystemPermission(operations=["read", "write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["read", "write"], paths=["/**"], mode="deny"),
+        ]
+        tool = next(t for t in FilesystemMiddleware(backend=backend).tools if t.name == "delete")
+
+        result = await _ainvoke_with_permissions(tool, {"file_path": "/work/a.txt"}, rules, backend=backend)
+
+        assert "Deleted" in result
+        assert not (tmp_path / "work" / "a.txt").exists()
+
     async def test_recursive_delete_refused_async(self, tmp_path):
         backend = self._fs_backend(tmp_path)
         rules = [FilesystemPermission(operations=["write"], paths=["/work/secrets/**"], mode="deny")]
@@ -345,6 +480,47 @@ class TestFindDeleteDenyPatterns:
     def test_multiple_rule_aggregation(self, rule_paths, target, expected):
         rules = [_deny(*paths) for paths in rule_paths]
         assert _find_delete_deny_patterns(rules, target) == expected
+
+
+class TestFindDeleteDenyPatternsExactFile:
+    """`has_descendants=False` resolves the target via first-match-wins ordering.
+
+    Regression coverage for #5113: with no subtree to protect, a confirmed
+    leaf is resolved exactly like `write_file`/`edit_file` -- the first
+    matching rule (in declaration order) wins -- instead of the conservative
+    any-overlapping-deny-blocks check used for recursive deletes.
+    """
+
+    def test_earlier_allow_wins_over_later_catch_all_deny(self):
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+        ]
+        assert _find_delete_deny_patterns(rules, "/work/a.txt", has_descendants=False) == []
+
+    def test_deny_still_blocks_when_it_matches_first(self):
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+            FilesystemPermission(operations=["write"], paths=["/work/**"], mode="allow"),
+        ]
+        assert _find_delete_deny_patterns(rules, "/work/a.txt", has_descendants=False) == ["/**"]
+
+    def test_default_has_descendants_preserves_conservative_behavior(self):
+        # Without an explicit has_descendants=False, callers keep the
+        # pre-existing conservative recursive-delete overlap check.
+        rules = [
+            FilesystemPermission(operations=["write"], paths=["/work/**"], mode="allow"),
+            FilesystemPermission(operations=["write"], paths=["/**"], mode="deny"),
+        ]
+        assert _find_delete_deny_patterns(rules, "/work/a.txt") == ["/**"]
+
+    def test_non_matching_rule_allows(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/other/**"], mode="deny")]
+        assert _find_delete_deny_patterns(rules, "/work/a.txt", has_descendants=False) == []
+
+    def test_interrupt_rule_is_not_a_denial(self):
+        rules = [FilesystemPermission(operations=["write"], paths=["/work/**"], mode="interrupt")]
+        assert _find_delete_deny_patterns(rules, "/work/a.txt", has_descendants=False) == []
 
 
 class TestFilesystemPermission:

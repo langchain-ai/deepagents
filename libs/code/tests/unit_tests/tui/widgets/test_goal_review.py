@@ -195,8 +195,11 @@ class TestGoalReviewMenu:
                 "message": "include docs and migration notes",
             }
 
-    async def test_text_editor_help_advertises_external_editor(self) -> None:
-        """Both goal-review text modes should advertise the Ctrl+X editor."""
+    async def test_text_editor_help_names_configured_editor(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both goal-review text modes should name the configured editor."""
+        monkeypatch.setenv("VISUAL", "nvim")
         app = _GoalReviewTestApp()
 
         async with app.run_test() as pilot:
@@ -205,10 +208,25 @@ class TestGoalReviewMenu:
             help_widget = menu.query_one(".goal-review-help", Static)
 
             menu.action_edit()
-            assert "Ctrl+X external editor" in str(help_widget.content)
+            assert "Ctrl+X edit in nvim" in str(help_widget.content)
 
             menu.action_cancel()
             menu.action_reject_with_message()
+            assert "Ctrl+X edit in nvim" in str(help_widget.content)
+
+    async def test_text_editor_help_uses_generic_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv("VISUAL", raising=False)
+        monkeypatch.delenv("EDITOR", raising=False)
+        app = _GoalReviewTestApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            menu = app.query_one("#goal-review", GoalReviewMenu)
+            help_widget = menu.query_one(".goal-review-help", Static)
+
+            menu.action_edit()
             assert "Ctrl+X external editor" in str(help_widget.content)
 
     async def test_newline_hint_uses_terminal_shortcut(

@@ -2200,6 +2200,7 @@ def create_cli_agent(
     enable_interpreter: bool = False,
     rubric_model: str | BaseChatModel | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | BaseChatModel | None = None,
     recursion_limit: int | None = None,
     checkpointer: BaseCheckpointSaver | None = None,
     mcp_server_info: list[MCPServerInfo] | None = None,
@@ -2325,6 +2326,16 @@ def create_cli_agent(
         rubric_max_iterations: Explicit grader iterations per rubric attempt
             before the agent terminates with `'max_iterations_reached'`; `None`
             uses the SDK default.
+        auto_classifier_model: Model the Auto approval classifier reviews with.
+
+            A `'provider:model'` string or `BaseChatModel`.
+
+            When `None`, `DEEPAGENTS_CODE_AUTO_CLASSIFIER_MODEL` is consulted,
+            then `[models].auto_classifier`, and the main `model` is reused when
+            both are unset. A blank string is *not* the same as `None`: it means
+            "inherit the main model" directly and, unlike `None`, does not
+            consult the env var or `config.toml`. Only meaningful when
+            `auto_mode_enabled` is `True`.
         recursion_limit: Explicit LangGraph `recursion_limit` (graph step budget)
             for the main agent. When `None`, it is resolved from the
             `DEEPAGENTS_CODE_RECURSION_LIMIT` env var, `[runtime].recursion_limit`
@@ -2463,21 +2474,17 @@ def create_cli_agent(
         # Server-owned hooks must wrap subagent tools too; otherwise Pre/Post
         # ToolUse only fire on the parent graph. Disable Stop so finishing a
         # subagent does not emit the main-agent Stop event (SubagentStop still
-        # fires from the parent wrap around `task`). Hooks v2 stays off unless
-        # experimental mode is on.
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+        # fires from the parent wrap around `task`).
+        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-        if is_env_truthy(EXPERIMENTAL):
-            from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-
-            hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-            middleware.append(
-                ServerHooksMiddleware(
-                    cwd=hooks_cwd,
-                    emit_stop=False,
-                    mcp_tools=mcp_tools,
-                )
+        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+        middleware.append(
+            ServerHooksMiddleware(
+                cwd=hooks_cwd,
+                emit_stop=False,
+                mcp_tools=mcp_tools,
             )
+        )
         # Subagents share the on-disk filesystem backend and can edit the user
         # AGENTS.md, so they get the same managed onboarding-name block guard as
         # the main agent. Gated on memory because the block only exists when
@@ -2844,13 +2851,25 @@ def create_cli_agent(
     compaction_middleware = _create_cli_compaction_middleware(model, composite_backend)
     if auto_mode_config is not None and resolved_interrupt_on is not None:
         from deepagents_code.auto_mode import AutoModeHITLMiddleware
+        from deepagents_code.config import resolve_auto_classifier_model
+        from deepagents_code.config_manifest import resolve_auto_classifier_timeout
 
         trusted_root, narrow_allow_list = auto_mode_config
+        # An explicit argument wins; otherwise the env var / `config.toml`
+        # preference is read here, where agent construction already runs off the
+        # blockbuster-guarded server loop (see `server_graph._make_graph`).
+        classifier_model = (
+            auto_classifier_model
+            if auto_classifier_model is not None
+            else resolve_auto_classifier_model()
+        )
         agent_middleware.append(
             AutoModeHITLMiddleware(
                 resolved_interrupt_on,
                 worktree_root=trusted_root,
                 shell_allow_list=narrow_allow_list,
+                classifier_model=classifier_model,
+                classifier_timeout_seconds=resolve_auto_classifier_timeout(),
                 trusted_ask_user_tool=trusted_ask_user_tool,
                 trusted_compaction_tool=compaction_middleware.tools[0],
             )
@@ -2862,19 +2881,13 @@ def create_cli_agent(
         agent_middleware.append(AsyncApprovalHITLMiddleware(resolved_interrupt_on))
 
     # Server-owned Hooks v2 lifecycle events (Pre/Post tool, Stop, subagent).
-    # Mounted only in experimental mode; when mounted, also gated at runtime by
-    # `hooks_server_events` on the per-run context so idle sessions without
-    # configured handlers pay no interrupt round-trip. Appended after the HITL
-    # middleware so `PreToolUse` resolves before approval routing.
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+    # Gated at runtime by `hooks_server_events` on the per-run context so idle
+    # sessions without configured handlers pay no interrupt round-trip. Appended
+    # after the HITL middleware so `PreToolUse` resolves before approval routing.
+    from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
 
-    if is_env_truthy(EXPERIMENTAL):
-        from deepagents_code.hooks.server_middleware import ServerHooksMiddleware
-
-        hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
-        agent_middleware.append(
-            ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools)
-        )
+    hooks_cwd = Path(effective_cwd) if effective_cwd is not None else Path.cwd()
+    agent_middleware.append(ServerHooksMiddleware(cwd=hooks_cwd, mcp_tools=mcp_tools))
 
     if fs_tools is not None:
         # `fs_tools` is an explicit allowlist here (`--allow-fs-tools all` and an

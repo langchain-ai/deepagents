@@ -1,0 +1,218 @@
+# Auto-bump of the exact `deepagents==X.Y.Z` pin in `libs/code/pyproject.toml`.
+#
+# `deepagents-code` publishes with an exact SDK pin (see `check_sdk_pin.yml`
+# and the release workflow's pin gate), so every time the workspace SDK
+# version in `libs/deepagents/pyproject.toml` moves ahead of the pin, someone
+# has to bump it by hand before the next Code release. This workflow opens
+# that bump PR automatically.
+#
+# Triggering:
+# - `release.yml` dispatches this workflow via `workflow_dispatch` from its
+#   `bump-code-sdk-pin` job after a `deepagents` release has been published
+#   to PyPI. Running post-publish (rather than on the version-commit push to
+#   `main`) guarantees the new SDK is installable from PyPI, so CI on the
+#   auto-opened PR can resolve `deepagents==X.Y.Z`.
+# - It can also be run manually from the Actions UI / `gh` CLI (e.g. to
+#   recover after a failed dispatch, or to bump the pin for an unreleased
+#   workspace version).
+#
+# Notes:
+# - A pin *ahead* of the workspace version (intentional prerelease
+#   coordination) is respected: the job only acts when the pin is strictly
+#   behind the workspace SDK version.
+# - The commit regenerates `libs/code/uv.lock` so the pre-commit lock check
+#   stays green on the PR.
+# - The PR title is `chore(deps):` on purpose. A bump-worthy type touching
+#   files inside the managed `libs/code` package would make release-please
+#   open a separate `release(deepagents-code)` PR (multi-component fan-out).
+# - The PR is created with the Org Membership App installation token rather
+#   than `GITHUB_TOKEN`: `GITHUB_TOKEN`-authored PRs do not trigger
+#   `pull_request` workflows, so the required checks would never run.
+# - Idempotent: if a PR for the target version already exists (or the pin is
+#   already current), the workflow exits without creating a duplicate.
+
+name: "Bump Code SDK pin"
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bump-code-sdk-pin
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    name: "Open PR if the Code SDK pin is stale"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python and uv
+        uses: "./.github/actions/uv_setup"
+        with:
+          enable-cache: "false"
+
+      - name: Resolve workspace SDK version and current Code pin
+        id: versions
+        run: |
+          set -euo pipefail
+          sdk_pyproject="libs/deepagents/pyproject.toml"
+          code_pyproject="libs/code/pyproject.toml"
+
+          sdk_version=$(grep -m1 -E '^version = "' "$sdk_pyproject" | sed -E 's/version = "([^"]+)"/\1/')
+
+          code_pin=$(grep -m1 -oE '"deepagents==[^"]+"' "$code_pyproject" | sed -E 's/"deepagents==([^"]+)"/\1/')
+          semver='^[0-9]+\.[0-9]+\.[0-9]+([a-zA-Z0-9.+-]*)?$'
+          if [[ ! "$sdk_version" =~ $semver ]]; then
+            echo "::error::Could not parse SDK version from $sdk_pyproject (got '$sdk_version')"
+            exit 1
+          fi
+          if [[ ! "$code_pin" =~ $semver ]]; then
+            echo "::error::Could not parse Code SDK pin from $code_pyproject (got '$code_pin')"
+            exit 1
+          fi
+
+          stale=$(CODE_PIN="$code_pin" SDK_VERSION="$sdk_version" uv run --no-project --with packaging python - <<'PY'
+          import os
+          import sys
+
+          from packaging.version import Version
+
+          stale = Version(os.environ["CODE_PIN"]) < Version(os.environ["SDK_VERSION"])
+          sys.stdout.write("true" if stale else "false")
+          PY
+          )
+
+          echo "sdk_version=$sdk_version" >> "$GITHUB_OUTPUT"
+          echo "code_pin=$code_pin" >> "$GITHUB_OUTPUT"
+          echo "stale=$stale" >> "$GITHUB_OUTPUT"
+          echo "branch=chore/bump-code-sdk-pin-$sdk_version" >> "$GITHUB_OUTPUT"
+          echo "SDK version: $sdk_version"
+          echo "Code pin:    $code_pin"
+          echo "Stale:       $stale"
+
+      - name: Log if nothing to do
+        # The actual skip is implemented by the `if:` guards on every
+        # subsequent step; this step only emits a log line so the run
+        # history shows why no PR was opened.
+        if: steps.versions.outputs.stale != 'true'
+        run: echo "Code SDK pin is not behind the workspace SDK version; nothing to do."
+
+      - name: Skip if PR already open for this version
+        id: existing
+        if: steps.versions.outputs.stale == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+        run: |
+          set -euo pipefail
+          existing_json=$(gh pr list --head "$BRANCH" --state open --json number,url)
+          count=$(printf '%s' "$existing_json" | jq 'length')
+          echo "count=$count" >> "$GITHUB_OUTPUT"
+          if [ "$count" -gt 0 ]; then
+            pr_url=$(printf '%s' "$existing_json" | jq -r '.[0].url')
+            echo "Open PR already exists for $BRANCH; skipping."
+            echo "::notice::Open SDK pin bump PR already exists: $pr_url"
+          fi
+
+      - name: Generate GitHub App token
+        id: app-token
+        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3
+        with:
+          client-id: ${{ vars.ORG_MEMBERSHIP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.ORG_MEMBERSHIP_APP_PRIVATE_KEY }}
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Open pin bump PR
+        if: steps.versions.outputs.stale == 'true' && steps.existing.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          SDK_VERSION: ${{ steps.versions.outputs.sdk_version }}
+          CODE_PIN: ${{ steps.versions.outputs.code_pin }}
+          BRANCH: ${{ steps.versions.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          code_pyproject="libs/code/pyproject.toml"
+          lockfile="libs/code/uv.lock"
+
+          # Update only the exact-pin dependency line. The quoted
+          # `deepagents==` match cannot touch the unquoted
+          # `[tool.uv.sources]` path entry. `grep -c` returns 1 on no-match
+          # and 2 on read errors; capture the exit code separately so
+          # `set -e` doesn't swallow either case.
+          pattern="\"deepagents==${CODE_PIN}\""
+          replacement="\"deepagents==${SDK_VERSION}\""
+          set +e
+          before=$(grep -cF "$pattern" "$code_pyproject")
+          before_rc=$?
+          set -e
+          if [ "$before_rc" -gt 1 ]; then
+            echo "::error::grep read error on $code_pyproject (exit=$before_rc)"
+            exit 1
+          fi
+          if [ "$before" -ne 1 ]; then
+            echo "::error::Expected exactly 1 '$pattern' in $code_pyproject, found $before"
+            exit 1
+          fi
+          sed -i -E "s/\"deepagents==[^\"]+\"/$replacement/" "$code_pyproject"
+          after=$(grep -cF "$replacement" "$code_pyproject")
+          if [ "$after" -ne 1 ]; then
+            echo "::error::Expected exactly 1 '$replacement' after sed, found $after"
+            exit 1
+          fi
+
+          # Regenerate the lockfile alongside the manifest change so the
+          # pre-commit lock check passes on the PR.
+          uv lock --directory libs/code --python 3.12
+          if ! git ls-files --error-unmatch "$lockfile" >/dev/null 2>&1; then
+            echo "::error::Expected $lockfile to exist after uv lock"
+            exit 1
+          fi
+          if git diff --quiet "$code_pyproject" "$lockfile"; then
+            echo "No changes after edit; bailing out (pin=$CODE_PIN, sdk=$SDK_VERSION)."
+            exit 1
+          fi
+
+          # Reuse-or-recreate orphan branch from a prior run that pushed
+          # but failed before `gh pr create` (no open PR sits on it).
+          # The delete can race a concurrent run (manual workflow_dispatch
+          # firing while a push-triggered run is mid-flight, since the
+          # concurrency group does not cancel-in-progress); fall through
+          # with a warning so a losing race does not kill an otherwise-clean
+          # job mid-state.
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::warning::Branch $BRANCH exists on origin without an open PR; deleting before recreating."
+            if ! git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" --delete "$BRANCH"; then
+              echo "::warning::Delete of $BRANCH failed (concurrent run, or branch already gone); the subsequent push will surface any real conflict."
+            fi
+          fi
+
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add "$code_pyproject" "$lockfile"
+          git commit -m "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "$BRANCH:$BRANCH"
+
+          body_file="$(mktemp)"
+          {
+            printf 'Bumps the exact `deepagents` pin in `libs/code/pyproject.toml` from `%s` to `%s` (current workspace SDK version) and regenerates `libs/code/uv.lock`.\n\n' "$CODE_PIN" "$SDK_VERSION"
+            printf 'Opened automatically by `bump_code_sdk_pin.yml` after a commit on `main` changed the SDK version. Merge this before the next `deepagents-code` release so the SDK pin check goes green.\n'
+          } > "$body_file"
+
+          pr_url=$(gh pr create \
+            --head "$BRANCH" \
+            --base "$DEFAULT_BRANCH" \
+            --title "chore(deps): bump deepagents pin in deepagents-code to $SDK_VERSION" \
+            --body-file "$body_file")
+          echo "Opened SDK pin bump PR: $pr_url"
+          echo "::notice::Opened SDK pin bump PR: $pr_url"

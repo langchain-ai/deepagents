@@ -2,6 +2,12 @@
 
 Legacy documents are converted by the loader so lifecycle call sites dispatch
 only canonical events and do not duplicate old dotted-event hooks.
+
+`_LEGACY_EVENT_MAP` is the authoritative list of legacy events migrated into
+Hooks v2. Events absent from it (e.g. `permission.request`, `tool.use`,
+`tool.result`) are dropped from the migrated configuration only; they continue
+to fire through the legacy dispatcher (`deepagents_code.hooks.legacy`) until
+the legacy system is removed.
 """
 
 from __future__ import annotations

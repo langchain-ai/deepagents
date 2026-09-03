@@ -9,11 +9,15 @@ import os
 import shlex
 import shutil
 import signal
+import stat
+import subprocess
 import sys
 import tempfile
+import threading
 import time
 import tomllib
-from collections.abc import Mapping, Sequence  # noqa: TC003
+from collections.abc import Iterator, Mapping, Sequence  # noqa: TC003
+from contextlib import contextmanager
 from itertools import starmap
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, mock_open, patch
@@ -101,6 +105,7 @@ from deepagents_code.update_check import (
     should_defer_startup_auto_update_for_resume,
     should_notify_update,
     should_skip_startup_auto_update_after_failure,
+    update_install_lock,
     upgrade_command,
     upgrade_install_command,
 )
@@ -1966,6 +1971,117 @@ class TestDetectShadowedDcode:
         assert shadow.shadowing_bin == stale_shim
         assert shadow.upgraded_bin_dir == uv_bin.resolve()
 
+    def test_returns_none_for_convenience_symlink_to_upgraded_shim(
+        self, tmp_path
+    ) -> None:
+        """A symlink outside uv's bin dir pointing at uv's own shim is no shadow.
+
+        Users (and package managers) re-expose uv's shim from another bin dir on
+        PATH. The directory comparison alone flags that as a conflict, but the
+        launch it produces runs the upgraded entry point, so there is nothing to
+        fix — and reporting it made the caller skip the post-upgrade restart.
+        """
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        tool_internal_bin = tmp_path / "tools" / "deepagents-code" / "bin"
+        tool_internal_bin.mkdir(parents=True)
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        for name in ("dcode", "deepagents-code"):
+            real_entry_point = tool_internal_bin / name
+            real_entry_point.write_text("")
+            (uv_bin / name).symlink_to(real_entry_point)
+            (other_bin / name).symlink_to(real_entry_point)
+
+        def _which(name: str) -> str | None:
+            candidate = other_bin / name
+            return str(candidate) if candidate.exists() else None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+        ):
+            assert detect_shadowed_dcode() is None
+
+    def test_returns_none_for_windows_convenience_symlink_to_upgraded_shim(
+        self, tmp_path
+    ) -> None:
+        """A `.cmd` alias to uv's `.exe` shim is not a Windows PATH shadow."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        upgraded_shim = uv_bin / "dcode.exe"
+        upgraded_shim.write_text("")
+        alias = other_bin / "dcode.cmd"
+        alias.symlink_to(upgraded_shim)
+
+        def _which(name: str) -> str | None:
+            return str(alias) if name == "dcode" else None
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(
+                os.environ,
+                {"UV_TOOL_BIN_DIR": str(uv_bin), "PATHEXT": ".exe;.cmd"},
+            ),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+            patch("shutil.which", side_effect=_which),
+        ):
+            assert detect_shadowed_dcode() is None
+
+    def test_reports_shadow_when_resolution_cannot_be_verified(self, tmp_path) -> None:
+        """An unresolvable PATH entry falls back to reporting the shadow.
+
+        `Path.resolve` is non-strict, so a missing target does not raise — an
+        `OSError` here means something abnormal (`ELOOP`, `EACCES` on a path
+        component), which no realistic fixture produces. Patch it directly: the
+        fallback direction is the point. Suppressing the warning on an
+        unverifiable alias could strand the user on an old binary with no
+        explanation, while a false positive only costs an extra notice.
+        """
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        other_bin = tmp_path / "usr-local-bin"
+        other_bin.mkdir()
+        stale = other_bin / "dcode"
+        stale.write_text("")
+
+        def _which(name: str) -> str | None:
+            return str(stale) if name == "dcode" else None
+
+        real_resolve = Path.resolve
+
+        def _resolve(self: Path, strict: bool = False) -> Path:
+            # Fail only for the shadowing entry point. Failing every `resolve`
+            # would also break `_uv_tool_bin_dir`, which bails out earlier and
+            # would make this pass for the wrong reason.
+            if self == stale:
+                msg = "too many levels of symlinks"
+                raise OSError(msg)
+            return real_resolve(self, strict)
+
+        with (
+            patch(
+                "deepagents_code.update_check.detect_install_method",
+                return_value="uv",
+            ),
+            patch.dict(os.environ, {"UV_TOOL_BIN_DIR": str(uv_bin)}),
+            patch("shutil.which", side_effect=_which),
+            patch.object(Path, "resolve", _resolve),
+        ):
+            shadow = detect_shadowed_dcode()
+
+        assert shadow is not None
+        assert shadow.shadowing_bin == stale
+
     def test_returns_none_when_no_dcode_on_path(self, tmp_path) -> None:
         """Without any `dcode` on PATH there's nothing to be shadowed by."""
         uv_bin = tmp_path / "uv-bin"
@@ -2036,6 +2152,50 @@ class TestDetectShadowedDcode:
         assert command.replace("\n", "\n  ") in rendered
         assert "hash -r" in rendered
         assert "rm " not in rendered
+
+    def test_upgraded_bin_resolves_windows_shim_not_shadow_suffix(
+        self, tmp_path
+    ) -> None:
+        """The direct restart target uses uv's `.exe`, not a stale `.cmd`."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        upgraded_shim = uv_bin / "dcode.exe"
+        upgraded_shim.write_text("")
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode.cmd",
+            upgraded_bin_dir=uv_bin,
+            entry_point="dcode",
+        )
+
+        with (
+            patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+        ):
+            assert shadow.upgraded_bin == upgraded_shim
+
+    def test_upgraded_bin_does_not_search_current_directory_on_windows(
+        self, tmp_path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project-local shim cannot become the auto-update restart target."""
+        uv_bin = tmp_path / "uv-bin"
+        uv_bin.mkdir()
+        project = tmp_path / "project"
+        project.mkdir()
+        project_shim = project / "dcode.exe"
+        project_shim.write_text("")
+        shadow = ShadowedDcode(
+            shadowing_bin=tmp_path / "old-bin" / "dcode.cmd",
+            upgraded_bin_dir=uv_bin,
+            entry_point="dcode",
+        )
+        monkeypatch.chdir(project)
+
+        with (
+            patch.dict(os.environ, {"PATHEXT": ".exe;.cmd"}),
+            patch("deepagents_code.update_check._is_windows", return_value=True),
+        ):
+            assert shadow.upgraded_bin == uv_bin / "dcode"
+        assert shadow.upgraded_bin != project_shim
 
     def test_warning_text_quotes_fix_command_path(self, tmp_path) -> None:
         """The suggested PATH command must be safe to copy with odd paths."""
@@ -3117,6 +3277,272 @@ class TestUpdateLogs:
         assert supported is False
         assert reason is not None
         assert "aren't supported for this install" in reason
+
+
+class TestUpdateInstallLock:
+    """Cross-process serialization of dcode self-upgrades."""
+
+    @pytest.fixture
+    def lock_file(self, tmp_path):
+        """Override UPDATE_LOCK_FILE to use a temporary path."""
+        path = tmp_path / "state" / "update.lock"
+        with patch("deepagents_code.update_check.UPDATE_LOCK_FILE", path):
+            yield path
+
+    @staticmethod
+    @contextmanager
+    def _lock_held_by_subprocess(path: Path) -> Iterator[None]:
+        """Hold `path` locked in another process for the body's duration.
+
+        Exercises the real cross-process exclusion rather than asserting on a
+        patched filelock: the child takes a plain `FileLock` on the same path,
+        the way a second `dcode` install would. A context manager so both pipes
+        and the child are always cleaned up — a leaked `stdout` raises
+        `ResourceWarning`, which `filterwarnings = ["error"]` turns into a
+        failure on whichever unrelated test happens to trigger the collection.
+        """
+        script = (
+            "import sys\n"
+            "from filelock import FileLock\n"
+            "with FileLock(sys.argv[1], timeout=30):\n"
+            "    print('held', flush=True)\n"
+            "    sys.stdin.readline()\n"
+        )
+        with subprocess.Popen(
+            [sys.executable, "-c", script, str(path)],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            text=True,
+        ) as proc:
+            assert proc.stdin is not None
+            assert proc.stdout is not None
+            try:
+                ready = proc.stdout.readline()
+                assert ready.strip() == "held", "helper never acquired the lock"
+                yield
+            finally:
+                # Closing stdin ends the child's `readline`, which releases the
+                # lock. `kill` on the way out covers a child wedged before it
+                # ever read, so a failure here cannot hang the suite.
+                try:
+                    proc.stdin.close()
+                    proc.wait(timeout=30)
+                except (OSError, subprocess.TimeoutExpired):
+                    proc.kill()
+                    proc.wait(timeout=30)
+
+    def test_holder_is_granted_the_lock(self, lock_file) -> None:  # noqa: ARG002
+        """The first caller may install."""
+        with update_install_lock() as holding:
+            assert holding is True
+
+    def test_lock_is_released_on_exit(self, lock_file) -> None:  # noqa: ARG002
+        """A completed install leaves the lock free for the next one."""
+        with update_install_lock() as first:
+            assert first is True
+        with update_install_lock() as second:
+            assert second is True
+
+    def test_lock_is_released_after_an_exception(self, lock_file) -> None:  # noqa: ARG002
+        """A failed install must not wedge every later update attempt."""
+        msg = "install blew up"
+
+        def _fail_while_holding() -> None:
+            with update_install_lock() as holding:
+                assert holding is True
+                raise RuntimeError(msg)
+
+        with pytest.raises(RuntimeError, match=msg):
+            _fail_while_holding()
+
+        with update_install_lock() as retried:
+            assert retried is True
+
+    def test_lock_is_not_reentrant(self, lock_file) -> None:  # noqa: ARG002
+        """Re-entering must be refused, not silently granted.
+
+        The lock is a plain `threading.Lock` rather than an `RLock` precisely so
+        this is refused; swapping in an `RLock` would let one process start a
+        second install on top of a running one.
+        """
+        with update_install_lock() as outer:
+            assert outer is True
+            with update_install_lock() as inner:
+                assert inner is False
+
+    def test_second_thread_is_refused(self, lock_file) -> None:  # noqa: ARG002
+        """Two threads in one dcode process must not both install.
+
+        The file lock alone would not catch this: `update_install_lock` builds
+        its `FileLock` with `thread_local=False`, so a second thread would be
+        handed the same underlying lock. `_UPDATE_INSTALL_THREAD_LOCK` is what
+        refuses it.
+        """
+        second_thread_result: list[bool] = []
+        release_holder = threading.Event()
+        holder_ready = threading.Event()
+
+        def _hold() -> None:
+            with update_install_lock() as holding:
+                assert holding is True
+                holder_ready.set()
+                release_holder.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold)
+        holder.start()
+        try:
+            assert holder_ready.wait(timeout=30), "holder thread never acquired"
+            with update_install_lock() as holding:
+                second_thread_result.append(holding)
+        finally:
+            release_holder.set()
+            holder.join(timeout=30)
+
+        assert second_thread_result == [False]
+
+    def test_other_process_is_refused_while_lock_is_held(self, lock_file) -> None:
+        """A genuinely concurrent dcode process is excluded."""
+        with self._lock_held_by_subprocess(lock_file), update_install_lock() as holding:
+            assert holding is False
+
+    def test_lock_is_available_once_other_process_exits(self, lock_file) -> None:
+        """The winner's install does not lock this machine out afterwards."""
+        with self._lock_held_by_subprocess(lock_file):
+            pass
+
+        with update_install_lock() as holding:
+            assert holding is True
+
+    def test_lock_file_lands_in_the_state_directory(self) -> None:
+        """The production path is a state-dir sibling, not a temp file.
+
+        Checked in a subprocess because the autouse state-dir fixture patches
+        `UPDATE_LOCK_FILE` for every test in this suite, so the real value is
+        otherwise never asserted anywhere — and a lock file that resolved
+        somewhere per-process would exclude nothing.
+        """
+        probe = (
+            "from deepagents_code.update_check import "
+            "DEFAULT_STATE_DIR, UPDATE_LOCK_FILE\n"
+            "print(UPDATE_LOCK_FILE == DEFAULT_STATE_DIR / 'update.lock')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=True,
+        )
+
+        assert result.stdout.strip() == "True"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_lock_directory_is_owner_only(self, tmp_path) -> None:
+        """A world-writable state dir would let any local user wedge updates."""
+        lock_path = tmp_path / "state" / "update.lock"
+        with (
+            patch("deepagents_code.update_check.UPDATE_LOCK_FILE", lock_path),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert stat.S_IMODE(lock_path.parent.stat().st_mode) == 0o700
+
+    def test_unusable_lock_directory_fails_open(self, tmp_path, caplog) -> None:
+        """An unwritable state dir must not disable updates permanently."""
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        with (
+            patch(
+                "deepagents_code.update_check.UPDATE_LOCK_FILE",
+                blocker / "update.lock",
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "could not create" in caplog.text
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_unchmodable_directory_still_locks(self, lock_file, caplog) -> None:
+        """A `chmod` refusal is a hardening failure, not a locking failure.
+
+        CIFS/exFAT mounts routinely refuse `chmod` while locking works fine.
+        Treating that as unusable would fail open on every launch forever.
+        """
+        with (
+            patch.object(Path, "chmod", side_effect=PermissionError("read-only")),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "Could not restrict permissions" in caplog.text
+        # The lock was genuinely taken, so a concurrent holder is still refused.
+        with self._lock_held_by_subprocess(lock_file), update_install_lock() as second:
+            assert second is False
+
+    def test_unacquirable_lock_fails_open(self, lock_file, caplog) -> None:  # noqa: ARG002
+        """`flock` refused by the OS must not disable updates permanently.
+
+        The realistic trigger — an NFS/SMB home directory, or a lock file left
+        root-owned by a `sudo dcode` — is permanent, so failing closed would
+        mean this machine never self-updates again. Distinct from the `Timeout`
+        branch directly above it in the source, which must keep yielding
+        `False`.
+        """
+        with (
+            patch(
+                "filelock.FileLock.acquire",
+                side_effect=PermissionError("flock refused"),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "could not acquire" in caplog.text
+
+    def test_failed_release_is_logged_and_does_not_propagate(
+        self,
+        lock_file,  # noqa: ARG002
+        caplog,
+    ) -> None:
+        """A release failure must not mask the install's own outcome.
+
+        It must still be logged: `UnixFileLock._release` drops its fd handle
+        before unlocking, so a raising `flock` leaks an fd that still holds the
+        lock, and every later attempt in the session reports a phantom
+        concurrent install. Without the log that is undiagnosable.
+        """
+        with (
+            patch(
+                "filelock.FileLock.release",
+                side_effect=OSError("unlock failed"),
+            ),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "Failed to release the update lock" in caplog.text
+
+    def test_missing_filelock_fails_open(self, lock_file, caplog) -> None:  # noqa: ARG002
+        """A clobbered `site-packages` must not raise out of the lock.
+
+        A self-upgrade replaces the environment this process imports from, so
+        this is the one function that has to survive it. Callers treat any
+        exception here as an update failure.
+        """
+        with (
+            patch.dict(sys.modules, {"filelock": None}),
+            caplog.at_level(logging.WARNING, logger="deepagents_code.update_check"),
+            update_install_lock() as holding,
+        ):
+            assert holding is True
+
+        assert "filelock is unavailable" in caplog.text
 
 
 class TestUpgradeInstallCommand:

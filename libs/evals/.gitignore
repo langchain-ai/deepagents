@@ -1,0 +1,3 @@
+# Pinned upstream DRBench checkout, fetched on demand by the adapter to generate the
+# task dataset (see harbor_adapters/drbench/adapter.py).
+harbor_adapters/drbench/.upstream/

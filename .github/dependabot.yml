@@ -51,6 +51,13 @@ updates:
       - dependency-name: "langchain-quickjs"
       - dependency-name: "langchain-runloop"
       - dependency-name: "langchain-vercel-sandbox"
+      # Bumped daily by `bump_genai_prices.yml` instead. Without this, the
+      # monthly sweep opens a competing PR for the same lock entry — and
+      # `versioning-strategy: increase` would widen the range in
+      # `libs/code/pyproject.toml`, which that workflow deliberately leaves
+      # alone. Dependabot cannot run one dependency on a different cadence
+      # within a directory, hence the split (tried and reverted in 6355d1af).
+      - dependency-name: "genai-prices"
     groups:
       minor-and-patch:
         patterns: ["*"]

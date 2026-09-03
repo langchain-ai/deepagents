@@ -3,9 +3,15 @@
 from __future__ import annotations
 
 import difflib
+import logging
 from typing import TYPE_CHECKING, Any
 
-from deepagents_code.file_ops import build_approval_preview, format_display_path
+from deepagents_code.diff_utils import split_diff_lines
+from deepagents_code.file_ops import (
+    build_approval_preview,
+    format_display_path,
+    is_sensitive_file_path,
+)
 from deepagents_code.tui.widgets.tool_widgets import (
     EditFileApprovalWidget,
     GenericApprovalWidget,
@@ -15,6 +21,8 @@ from deepagents_code.tui.widgets.tool_widgets import (
 
 if TYPE_CHECKING:
     from deepagents_code.tui.widgets.tool_widgets import ToolApprovalWidget
+
+logger = logging.getLogger(__name__)
 
 
 class ToolRenderer:
@@ -98,9 +106,17 @@ class DeleteFileRenderer(ToolRenderer):
         if preview.diff:
             return EditFileApprovalWidget, {
                 "file_path": format_display_path(path),
-                "diff_lines": preview.diff.splitlines(),
+                # `split_diff_lines`, not `splitlines()`: the diff was joined
+                # with `"\n"`, and splitting on every boundary `splitlines()`
+                # recognizes would cut a deleted line into an unmarked tail
+                # fragment shown as neutral metadata.
+                "diff_lines": split_diff_lines(preview.diff),
                 "old_string": "",
                 "new_string": "",
+                # The preview body is clipped at 100 lines; these counts are
+                # not. Without them the prompt for deleting a 5,000-line file
+                # reads "-96".
+                "stats": preview.stats,
             }
         data: dict[str, Any] = {"file_path": format_display_path(path)}
         details = [
@@ -119,17 +135,87 @@ class EditFileRenderer(ToolRenderer):
     @staticmethod
     def get_approval_widget(  # noqa: D102  # Protocol method — docstring on base class
         tool_args: dict[str, Any],
-        assistant_id: str | None = None,  # noqa: ARG004
+        assistant_id: str | None = None,
     ) -> tuple[type[ToolApprovalWidget], dict[str, Any]]:
         file_path = tool_args.get("file_path", "")
-        old_string = format_display_content(tool_args.get("old_string", ""))
-        new_string = format_display_content(tool_args.get("new_string", ""))
+        old_arg = tool_args.get("old_string", "")
+        new_arg = tool_args.get("new_string", "")
 
-        # Generate unified diff
+        # Non-string args (e.g. a model passing a dict) have no meaningful file
+        # replacement to preview — fall through to the fragment diff, whose
+        # `format_display_content` coercion is what keeps them displayable.
+        if isinstance(old_arg, str) and isinstance(new_arg, str):
+            # The preview reads the file back at approval time, so a diff here
+            # describes the current file state, not the state the model read.
+            # That is the desired behavior on this surface: when the two have
+            # drifted, `preview.diff` is `None` and the fallback fragment diff
+            # below shows the requested swap rather than numbers that no longer
+            # describe anything that will happen.
+            preview = build_approval_preview(
+                "edit_file",
+                {
+                    "file_path": file_path,
+                    "old_string": old_arg,
+                    "new_string": new_arg,
+                    "replace_all": bool(tool_args.get("replace_all")),
+                },
+                assistant_id=assistant_id,
+            )
+            if (
+                preview is not None
+                and preview.diff is not None
+                # Requiring the sources keeps the type checker's guarantee:
+                # a future producer setting `diff` without them must fail
+                # here, not silently skip highlighting (empty code exits
+                # `_highlighted_rows` before its drift warning).
+                and preview.before is not None
+                and preview.after is not None
+            ):
+                return EditFileApprovalWidget, {
+                    "file_path": format_display_path(file_path),
+                    "diff_lines": split_diff_lines(preview.diff),
+                    # Highlight from the full before/after sources, not the
+                    # fragments: the renderer locates rows by hunk line number,
+                    # which this diff numbers in the file, so a fragment would
+                    # leave changed rows deeper in the file plain and match
+                    # low-line edits against the wrong fragment line.
+                    "old_string": preview.before,
+                    "new_string": preview.after,
+                    "stats": preview.stats,
+                    "show_numbers": True,
+                }
+            if preview is not None and preview.error:
+                # The edit is known not to apply — e.g. `old_string` no longer
+                # matches, or matches 40 times under `replace_all=False`.
+                # Rendering the fragment diff here would show a confident swap
+                # that the tool then rejects after approval.
+                return GenericApprovalWidget, {
+                    "file_path": format_display_path(file_path),
+                    "error": preview.error,
+                }
+            if preview is not None and not is_sensitive_file_path(file_path):
+                # A diffless, errorless preview for a file the user will see a
+                # fragment diff for: oversized (skipped on the message pump)
+                # or an empty/no-op edit. The fragment fallback is the right
+                # render, but the preview's silence must not hide which.
+                logger.debug(
+                    "edit_file preview produced no diff for %s; "
+                    "falling back to the fragment diff",
+                    file_path,
+                )
+
+        old_string = format_display_content(old_arg)
+        new_string = format_display_content(new_arg)
+
+        # Fallback: generate a unified diff from the replacement fragments
+        # alone, when the file cannot be read at approval time (sandbox-backed
+        # session, unreadable path) or the preview was skipped. Its line
+        # numbers are fragment-relative, so the widget hides the gutter — see
+        # `EditFileApprovalWidget.compose`.
         diff_lines = EditFileRenderer._generate_diff(old_string, new_string)
 
         data = {
-            "file_path": file_path,
+            "file_path": format_display_path(file_path),
             "diff_lines": diff_lines,
             "old_string": old_string,
             "new_string": new_string,
@@ -146,8 +232,13 @@ class EditFileRenderer(ToolRenderer):
         if not old_string and not new_string:
             return []
 
-        old_lines = old_string.split("\n") if old_string else []
-        new_lines = new_string.split("\n") if new_string else []
+        # `splitlines()`, matching `compute_unified_diff` and the source split in
+        # `_highlight_source_prefix`. Splitting on `"\n"` alone leaves `\r`,
+        # U+2028 and the rest inside a diff line, so the highlighter — which
+        # splits on all of them — lines up against a different set of lines and
+        # reports every row as drifted.
+        old_lines = old_string.splitlines() if old_string else []
+        new_lines = new_string.splitlines() if new_string else []
 
         # Generate unified diff
         diff = difflib.unified_diff(

@@ -175,6 +175,106 @@ def test_context_lite_tasks_pin_the_recalibrated_candidate():
         "cb-cloud-4",
     ]
 
+def test_research_category_points_at_the_drbench_dataset():
+    assert up.CATEGORY_MAP["research"] == {
+        "dataset": "",
+        "dataset_path": "datasets/drbench-evals",
+        "agent_impl": "bare",
+        "fan_out": True,
+        # Pinned, not inherited: upstream's task images are arm64-only and served by the
+        # local docker sandbox, and one runner cannot hold two concurrent app stacks.
+        "runner": "ubuntu-24.04-arm",
+        "sandbox_env": "docker",
+        "concurrency": 1,
+    }
+
+
+def test_only_research_pins_its_runtime():
+    # Every other category must inherit the dispatch inputs, or a mixed run would silently
+    # move autonomous/conversation onto a runner they have never been validated on.
+    for category, entry in up.CATEGORY_MAP.items():
+        pinned = {key for key in up._CATEGORY_OVERRIDES if key in entry}
+        assert pinned == (set(up._CATEGORY_OVERRIDES) if category == "research" else set()), (
+            f"{category} pins {sorted(pinned)}"
+        )
+
+
+def test_flat_matrix_entries_always_carry_the_override_keys():
+    # The workflow reads `matrix.<key> || inputs.<key>`. A missing key makes that expression
+    # evaluate against an undefined matrix value, so every entry carries all three.
+    entries = up.build_flat_matrix(
+        model="anthropic:claude-opus-5",
+        categories=["autonomous", "research"],
+        tasks_by_cat={"autonomous": ["a1"], "research": ["DR0001"]},
+    )
+    by_cat = {e["category"]: e for e in entries}
+    for key in up._CATEGORY_OVERRIDES:
+        assert key in by_cat["autonomous"] and key in by_cat["research"]
+    assert by_cat["autonomous"]["runner"] == ""
+    assert by_cat["autonomous"]["sandbox_env"] == ""
+    assert by_cat["autonomous"]["concurrency"] == ""
+    assert by_cat["research"]["runner"] == "ubuntu-24.04-arm"
+    assert by_cat["research"]["sandbox_env"] == "docker"
+    assert by_cat["research"]["concurrency"] == 1
+
+def test_local_dataset_categories_exist_on_disk():
+    # A CATEGORY_MAP dataset_path that does not exist would fail only mid-run, after the
+    # matrix has already fanned out, so pin it here.
+    from pathlib import Path
+
+    repo_root = Path(up.__file__).resolve().parents[3]
+    for category, entry in up.CATEGORY_MAP.items():
+        path = entry["dataset_path"]
+        if not path:
+            continue
+        dataset_dir = repo_root / "libs" / "evals" / path
+        assert (dataset_dir / "dataset.toml").is_file(), f"{category}: {dataset_dir}"
+
+def test_lite_task_ids_exist_in_their_local_dataset():
+    # Lite runs pass these as `--include-task-name`; a stale id silently narrows the run
+    # (or empties a shard) instead of failing, so check them against the real task list.
+    import json
+    from pathlib import Path
+
+    import lite_tasks
+
+    # Datasets whose task directories are generated from an upstream pin rather than
+    # committed declare their authoritative id list here: their directory holds no task
+    # until it is built, so there is nothing on disk for this job to look at.
+    generated_task_lists = {
+        "datasets/drbench-evals": "harbor_adapters/drbench/vendor/subsets/val.jsonl",
+    }
+
+    repo_root = Path(up.__file__).resolve().parents[3]
+    for category, entry in up.CATEGORY_MAP.items():
+        path = entry["dataset_path"]
+        if not path:
+            continue
+        expected = lite_tasks.LITE_TASKS.get(category, [])
+        subset = generated_task_lists.get(path)
+        if subset:
+            known = {
+                json.loads(line)["task_id"]
+                for line in (repo_root / "libs" / "evals" / subset)
+                .read_text(encoding="utf-8")
+                .splitlines()
+                if line.strip()
+            }
+            for task_id in expected:
+                assert task_id in known, f"{category}: {task_id}"
+            continue
+        dataset_dir = repo_root / "libs" / "evals" / path
+        for task_id in expected:
+            assert (dataset_dir / task_id / "task.toml").is_file(), f"{category}: {task_id}"
+
+def test_every_category_has_a_lite_subset():
+    # `include_tasks` returns '' for an unlisted category, which makes a lite run
+    # silently execute the FULL dataset rather than the low-cost slice.
+    import lite_tasks
+
+    missing = [c for c in up.CATEGORY_MAP if not lite_tasks.LITE_TASKS.get(c)]
+    assert missing == []
+
 def test_main_rejects_invalid_concurrency(tmp_path, monkeypatch):
     monkeypatch.setenv("UNIFIED_MODELS", "anthropic:opus")
     monkeypatch.setenv("UNIFIED_CATEGORIES", "context")
@@ -679,3 +779,126 @@ def test_main_emits_experiments_map(tmp_path, monkeypatch):
     assert name in experiments
     # expected = tasks-in-category * rollouts (the count the collector waits for).
     assert experiments[name] == len(lite_tasks.LITE_TASKS["context"]) * 2
+
+def test_research_lite_is_exactly_upstreams_minival_subset():
+    # The `research` lite profile claims to be DRBench's own MinEval set. The paper names
+    # that subset but never lists its ids, so upstream's `minival.jsonl` (vendored) is the
+    # only authoritative source. Without this the claim is just a comment.
+    import json
+    from pathlib import Path
+
+    import lite_tasks
+
+    repo_root = Path(up.__file__).resolve().parents[3]
+    minival = (
+        repo_root
+        / "libs/evals/harbor_adapters/drbench/vendor/subsets/minival.jsonl"
+    )
+    upstream = [
+        json.loads(line)["task_id"]
+        for line in minival.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert len(upstream) == 15
+    assert lite_tasks.LITE_TASKS["research"] == upstream
+
+def test_research_full_extends_lite_and_matches_the_benchmark_split():
+    # `full` for research is a 30-task proportional sample, not the whole 100. Two
+    # properties make it defensible, and both must survive a dataset regeneration:
+    #   - lite is a strict subset, so lite and full runs share comparable data points
+    #   - its difficulty ratio equals the full corpus's (20:23:57 -> 6:7:17 at n=30)
+    import collections
+    import json
+    from pathlib import Path
+
+    import lite_tasks
+
+    full = lite_tasks.FULL_TASKS["research"]
+    lite = lite_tasks.LITE_TASKS["research"]
+    assert len(full) == 30
+    assert len(set(full)) == 30, "duplicate ids"
+    assert set(lite) <= set(full)
+
+    # Read the committed label record rather than a task config: no task directory is
+    # committed any more (they are generated from a pinned upstream commit), and this
+    # suite must stay offline.
+    labels_path = (
+        Path(up.__file__).resolve().parents[3]
+        / "libs/evals/harbor_adapters/drbench/vendor/task_labels.json"
+    )
+    labels = json.loads(labels_path.read_text(encoding="utf-8"))["labels"]
+
+    def info(task_id: str) -> dict:
+        return labels[task_id]
+
+    def industry(raw: object) -> str:
+        text = str(raw).lower()
+        if "retail" in text:
+            return "retail"
+        return "healthcare" if "health" in text else "automotive"
+
+    difficulty = collections.Counter(info(t).get("difficulty") for t in full)
+    assert dict(difficulty) == {"easy": 6, "medium": 7, "hard": 17}
+    # Same ratio as the whole corpus, which is what makes 30 tasks a fair estimate of it.
+    whole = collections.Counter(entry.get("difficulty") for entry in labels.values())
+    assert dict(whole) == {"easy": 20, "medium": 23, "hard": 57}
+    for level in ("easy", "medium", "hard"):
+        assert difficulty[level] == round(whole[level] / 100 * 30)
+
+    assert dict(collections.Counter(industry(info(t).get("industry")) for t in full)) == {
+        "retail": 10,
+        "healthcare": 10,
+        "automotive": 10,
+    }
+
+def test_research_full_task_ids_all_exist():
+    # Checked against upstream's own task list rather than the dataset directory: no task
+    # directory is committed (they are generated from a pinned upstream commit), so the
+    # directory is empty in any job that has not built it.
+    import json
+    from pathlib import Path
+
+    import lite_tasks
+
+    val = (
+        Path(up.__file__).resolve().parents[3]
+        / "libs/evals/harbor_adapters/drbench/vendor/subsets/val.jsonl"
+    )
+    known = {
+        json.loads(line)["task_id"]
+        for line in val.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+    assert len(known) == 100
+    for task_id in lite_tasks.FULL_TASKS["research"]:
+        assert task_id in known, task_id
+
+def test_cap_full_profile_only_narrows_declared_categories():
+    enumerated = {
+        "research": ["DR0001", "DR0002", "DR0003"],
+        "context": ["cb-cloud-1", "cb-cloud-2"],
+    }
+    capped = up.cap_full_profile(enumerated, {"research": ["DR0003", "DR0001"]})
+
+    # Declared order wins, so the run order is reviewable from the registry.
+    assert capped["research"] == ["DR0003", "DR0001"]
+    # A category with no entry keeps the whole enumerated dataset.
+    assert capped["context"] == ["cb-cloud-1", "cb-cloud-2"]
+
+def test_cap_full_profile_rejects_a_stale_registry_id():
+    # Silently dropping a renamed task would change the denominator of a published score
+    # without anyone noticing, so a stale id has to fail the run.
+    import pytest
+
+    with pytest.raises(SystemExit, match=r"FULL_TASKS\['research'\].*DR9999"):
+        up.cap_full_profile(
+            {"research": ["DR0001"]}, {"research": ["DR0001", "DR9999"]}
+        )
+
+def test_cap_full_profile_defaults_to_the_real_registry():
+    import lite_tasks
+
+    declared = lite_tasks.FULL_TASKS["research"]
+    # Feed it more than the registry declares; the cap must reduce to exactly the registry.
+    enumerated = {"research": [f"DR{n:04d}" for n in range(1, 101)]}
+    assert up.cap_full_profile(enumerated)["research"] == declared

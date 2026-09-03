@@ -51,6 +51,7 @@ if TYPE_CHECKING:
     )
     from deepagents_code.hooks.runtime import HooksRuntime
     from deepagents_code.hooks.transcript import TranscriptRecorder
+    from deepagents_code.plugins.models import PluginInstance
 
 
 logger = logging.getLogger(__name__)
@@ -133,10 +134,6 @@ class HooksManager:
         trust: WorkspaceTrust | None = None,
     ) -> HooksManager:
         """Load hook configuration and return a ready manager.
-
-        Hooks v2 is in progress, so it stays off unless
-        `DEEPAGENTS_CODE_EXPERIMENTAL` is truthy; without it the manager is
-        inert and no hook (client- or server-owned) fires.
 
         Never raises: a failed load yields an inert manager whose lifecycle
         methods are all no-ops.
@@ -236,8 +233,10 @@ class HooksManager:
         service = self._service
         return service is not None and service.has_handlers(event)
 
-    async def reload(self, *, cwd: Path) -> None:
-        """Rebuild the runtime after the session working directory changes.
+    async def reload(
+        self, *, cwd: Path, plugins: tuple[PluginInstance, ...] | None = None
+    ) -> None:
+        """Rebuild the runtime after configuration or working-directory changes.
 
         Workspace trust is re-resolved for `cwd`, so moving from a trusted
         project into an untrusted one drops project hooks instead of carrying
@@ -249,6 +248,7 @@ class HooksManager:
 
         Args:
             cwd: New session working directory.
+            plugins: Already-discovered plugins, or `None` to discover them.
         """
         import asyncio
 
@@ -257,6 +257,7 @@ class HooksManager:
             cwd,
             trust=self.trust,
             presenter=self.presenter,
+            plugins=plugins,
         )
         self._service = self._build_service()
         _present_load_diagnostics(self._runtime)
@@ -595,6 +596,7 @@ def _load_runtime(
     *,
     trust: WorkspaceTrust,
     presenter: HookPresenter,
+    plugins: tuple[PluginInstance, ...] | None = None,
 ) -> HooksRuntime | None:
     """Resolve workspace trust for `cwd` and load a runtime under it.
 
@@ -605,22 +607,46 @@ def _load_runtime(
         cwd: Session working directory.
         trust: Policy deciding whether project hooks may load.
         presenter: The manager's presenter, shared with the new runtime.
+        plugins: Already-discovered plugins, or `None` to discover them.
 
     Returns:
-        The loaded runtime, `None` when configuration could not be loaded, and
-        `None` whenever `DEEPAGENTS_CODE_EXPERIMENTAL` is not truthy.
+        The loaded runtime, or `None` when configuration could not be loaded.
     """
-    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
     from deepagents_code.hooks.runtime import HooksRuntime
+    from deepagents_code.plugins.adapters.hooks import discover_plugin_hook_sources
+    from deepagents_code.project_utils import ProjectContext
 
-    if not is_env_truthy(EXPERIMENTAL):
-        return None
     try:
-        return HooksRuntime.create(
+        project_context = ProjectContext.from_user_cwd(cwd)
+        plugin_sources, plugin_diagnostics = discover_plugin_hook_sources(
+            project_dir=project_context.project_root or project_context.user_cwd,
+            plugins=plugins,
+        )
+        runtime = HooksRuntime.create(
             cwd=cwd,
             workspace_trusted=trust.allows(cwd),
             presenter=presenter,
+            plugin_sources=plugin_sources,
+            plugin_diagnostics=plugin_diagnostics,
         )
+        if runtime.project_hooks_loaded and (
+            runtime.project_hooks_fingerprint is None
+            or not trust.allows(
+                cwd,
+                project_hooks_fingerprint=runtime.project_hooks_fingerprint,
+            )
+        ):
+            logger.warning(
+                "Project hooks changed while loading; reloading without project hooks"
+            )
+            runtime = HooksRuntime.create(
+                cwd=cwd,
+                workspace_trusted=False,
+                presenter=presenter,
+                plugin_sources=plugin_sources,
+                plugin_diagnostics=plugin_diagnostics,
+            )
     except Exception:
         logger.exception("Failed to load hook configuration; hooks disabled")
         return None
+    return runtime

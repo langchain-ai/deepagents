@@ -26,6 +26,9 @@ GUI_WAIT_FLAG: dict[str, str] = {
 VIM_EDITORS = {"vi", "vim", "nvim"}
 """Set of vim-family editor base names that receive the `-i NONE` flag."""
 
+EDITOR_DISPLAY_NAME_MAX_LENGTH = 20
+"""Maximum editor name length that remains readable in compact hints."""
+
 
 class ExternalEditorError(RuntimeError):
     """Raised when an external editor cannot be opened or read."""
@@ -47,6 +50,39 @@ def resolve_editor() -> list[str] | None:
         return ["vi"]
     tokens = shlex.split(editor)
     return tokens or None
+
+
+def editor_display_name() -> str | None:
+    """Return a safe configured editor name for user-facing hints.
+
+    Returns:
+        The configured editor executable's short name, or `None` when no editor
+            is configured or its name is unsuitable for compact terminal output.
+    """
+    editor = os.environ.get("VISUAL") or os.environ.get("EDITOR")
+    if not editor:
+        return None
+    try:
+        tokens = shlex.split(editor)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    name = Path(tokens[0]).stem
+    allowed_punctuation = "._+-"
+    if (
+        not name
+        or len(name) > EDITOR_DISPLAY_NAME_MAX_LENGTH
+        or not any(character.isascii() and character.isalnum() for character in name)
+        or any(
+            not character.isascii()
+            or not (character.isalnum() or character in allowed_punctuation)
+            for character in name
+        )
+    ):
+        return None
+    return name
 
 
 def _prepare_command(cmd: list[str], filepath: str) -> list[str]:

@@ -2896,6 +2896,7 @@ class TestFilesystemMiddleware:
         assert "Hello world\nLine 2" in result.content
         assert "succeeded" in result.content
         assert "exit code 0" in result.content
+        assert result.artifact == {"exit_code": 0}
 
     def test_execute_tool_output_formatting_with_failure(self):
         """Test execute tool formats failure output correctly."""
@@ -2932,6 +2933,78 @@ class TestFilesystemMiddleware:
         assert "Error: command not found" in result.content
         assert "failed" in result.content
         assert "exit code 127" in result.content
+        assert result.artifact == {"exit_code": 127}
+
+    def test_execute_tool_omits_artifact_exit_code_when_unknown(self):
+        """Test execute tool omits `exit_code` when the backend reports none."""
+
+        # Backends may leave exit_code unset, and the capture-offload parse falls
+        # back to None when the wrapper's meta line is unreadable. None must not be
+        # published as a value: it is falsy like a successful 0 but unequal to it, so
+        # both `!= 0` and `if not exit_code` would misclassify it.
+        class UnknownExitCodeMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                return ExecuteResponse(output="some output")
+
+            @property
+            def id(self):
+                return "unknown-exit-code-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_unknown_ec",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=UnknownExitCodeMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+        result = execute_tool.invoke({"command": "echo test", "runtime": rt})
+
+        # The content omits the status line entirely for an unknown exit code, so the
+        # artifact must not imply one either.
+        assert "exit code" not in result.content
+        assert result.artifact == {}
+
+    def test_execute_tool_error_paths_carry_no_artifact(self):
+        """Test execute tool returns no artifact when no command ran."""
+
+        # Errors raised before the command runs have no exit code to report, so
+        # `artifact` stays None. Consumers must therefore guard rather than index --
+        # inventing a sentinel exit code here would be indistinguishable from a real
+        # command that exited with it.
+        class ErrorPathMockSandboxBackend(SandboxBackendProtocol, StateBackend):
+            def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
+                msg = "bad parameter"
+                raise ValueError(msg)
+
+            @property
+            def id(self):
+                return "error-path-mock-sandbox-backend"
+
+        rt = ToolRuntime(
+            state=FilesystemState(messages=[], files={}),
+            context=None,
+            tool_call_id="test_err_artifact",
+            store=InMemoryStore(),
+            stream_writer=lambda _: None,
+            config={},
+        )
+
+        middleware = FilesystemMiddleware(backend=ErrorPathMockSandboxBackend())
+        execute_tool = next(tool for tool in middleware.tools if tool.name == "execute")
+
+        # Validation error: rejected before the backend is reached.
+        rejected = execute_tool.invoke({"command": "echo test", "timeout": -1, "runtime": rt})
+        assert rejected.status == "error"
+        assert rejected.artifact is None
+
+        # Backend raised: the command was attempted but produced no exit code.
+        raised = execute_tool.invoke({"command": "echo test", "runtime": rt})
+        assert raised.status == "error"
+        assert raised.artifact is None
 
     def test_execute_tool_output_formatting_with_truncation(self):
         """Test execute tool formats truncated output correctly."""

@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import tempfile
 import threading
 from contextlib import contextmanager, suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
@@ -337,6 +338,21 @@ def project_root_for(cwd: Path | str) -> Path:
     return context.project_root or context.user_cwd
 
 
+def _project_hooks_fingerprint(project_root: Path) -> str | None:
+    """Return a content fingerprint for a workspace's project hooks file."""
+    from deepagents_code.hooks.loading import project_hooks_path
+
+    try:
+        content = project_hooks_path(project_root).read_bytes()
+    except OSError:
+        logger.warning(
+            "Could not fingerprint project hooks for session trust",
+            exc_info=True,
+        )
+        return None
+    return hashlib.sha256(content).hexdigest()
+
+
 @dataclass(frozen=True, slots=True)
 class WorkspaceTrust:
     """Decides whether project-scoped hooks may run in a given directory.
@@ -350,12 +366,8 @@ class WorkspaceTrust:
     every reload; nothing upstream needs to hold or reinterpret the decision.
     """
 
-    session_grants: frozenset[str] = frozenset()
-    """Canonical workspace roots trusted for this session only.
-
-    Populated from an explicit CLI grant or an in-session `allow once` choice,
-    neither of which is persisted to the trust store.
-    """
+    session_grants: frozenset[tuple[str, str]] = frozenset()
+    """Canonical workspace roots and hook fingerprints trusted for this session."""
 
     consult_store: bool = True
     """Whether persisted trust may satisfy the policy.
@@ -397,10 +409,8 @@ class WorkspaceTrust:
             A policy that grants `cwd`'s workspace root for this session and
             defers to the persisted store everywhere else.
         """
-        return cls(
-            session_grants=cls._grants_for(cwd) if granted else frozenset(),
-            store_path=store_path,
-        )
+        policy = cls(store_path=store_path)
+        return policy.with_session_grant(cwd) if granted else policy
 
     @classmethod
     def explicit_only(
@@ -426,45 +436,91 @@ class WorkspaceTrust:
             A policy that allows `cwd`'s workspace root only when `granted`, and
             allows nothing otherwise.
         """
-        return cls(
-            session_grants=cls._grants_for(cwd) if granted else frozenset(),
-            consult_store=False,
-            store_path=store_path,
-        )
+        policy = cls(consult_store=False, store_path=store_path)
+        return policy.with_session_grant(cwd) if granted else policy
 
-    @staticmethod
-    def _grants_for(cwd: Path | str) -> frozenset[str]:
+    def with_session_grant(self, cwd: Path | str) -> WorkspaceTrust:
+        """Return a policy with a content-bound session grant for `cwd`.
+
+        Args:
+            cwd: Directory whose workspace should be granted.
+
+        Returns:
+            A replacement policy preserving persisted-store posture. Fingerprint
+            failures leave the workspace ungranted.
+        """
         try:
-            return frozenset({_project_key(project_root_for(cwd))})
+            root = project_root_for(cwd)
         except (OSError, ValueError):
             logger.warning(
                 "Could not resolve workspace root for session hook trust",
                 exc_info=True,
             )
-            return frozenset()
+            return self
+        fingerprint = _project_hooks_fingerprint(root)
+        if fingerprint is None:
+            return self.without_session_grant(root)
+        grants = dict(self.session_grants)
+        grants[_project_key(root)] = fingerprint
+        return replace(self, session_grants=frozenset(grants.items()))
 
-    def allows(self, cwd: Path | str) -> bool:
+    def without_session_grant(self, cwd: Path | str) -> WorkspaceTrust:
+        """Return a policy without any session grant for `cwd`.
+
+        Args:
+            cwd: Directory whose workspace grant should be removed.
+
+        Returns:
+            A replacement policy preserving persisted-store posture.
+        """
+        try:
+            key = _project_key(project_root_for(cwd))
+        except (OSError, ValueError):
+            logger.warning(
+                "Could not resolve workspace root while revoking session hook trust",
+                exc_info=True,
+            )
+            return self
+        grants = dict(self.session_grants)
+        grants.pop(key, None)
+        return replace(self, session_grants=frozenset(grants.items()))
+
+    def allows(
+        self,
+        cwd: Path | str,
+        *,
+        project_hooks_fingerprint: str | None = None,
+    ) -> bool:
         """Return whether project hooks may run for a working directory.
 
         Args:
             cwd: Directory to resolve trust for.
+            project_hooks_fingerprint: Fingerprint of project-hook bytes already
+                loaded from `cwd`. When omitted, the file is read to resolve a
+                prospective load.
 
         Returns:
-            `True` when the enclosing workspace root was granted for this
-            session, or is recorded in the trust store and `consult_store` is
-            set. Unresolvable directories fail closed.
+            `True` when the enclosing workspace root has an unchanged session
+            grant, or is recorded in the trust store and `consult_store` is set.
+            Unresolvable directories fail closed.
         """
         try:
             root = project_root_for(cwd)
         except (OSError, ValueError):
-            # The raised exception carries the offending path; don't restate it.
             logger.warning(
                 "Could not resolve workspace root; treating project hooks as untrusted",
                 exc_info=True,
             )
             return False
-        if _project_key(root) in self.session_grants:
-            return True
+        granted_fingerprint = dict(self.session_grants).get(_project_key(root))
+        if granted_fingerprint is not None:
+            current_fingerprint = (
+                project_hooks_fingerprint
+                if project_hooks_fingerprint is not None
+                else _project_hooks_fingerprint(root)
+            )
+            if granted_fingerprint == current_fingerprint:
+                return True
         if not self.consult_store:
             return False
         return is_project_hooks_trusted(root, store_path=self.store_path)

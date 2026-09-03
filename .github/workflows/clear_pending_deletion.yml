@@ -1,0 +1,139 @@
+# Remove the "pending-deletion" label as soon as a PR gains "do-not-close",
+# and minimize the stale auto-close warning comment that was posted with it.
+#
+# .github/scripts/labeling/close-old-prs.js already strips the label when it
+# notices a bypassed PR, but that script runs on a daily schedule; this
+# workflow clears the stale state immediately instead of leaving a "pending
+# deletion" warning on a PR a maintainer has just marked exempt.
+#
+# pull_request_target is required here: for PRs opened from forks, a plain
+# pull_request workflow receives a read-only GITHUB_TOKEN regardless of who
+# applied the label, so issues.removeLabel would 403 and pending-deletion
+# would linger on exactly the external PRs this automation targets. (That
+# downgrade is the default behavior; it does not apply when "Send write tokens
+# to workflows from pull requests" is enabled for the org.)
+#
+# No app token is passed to the github-script step below, so it runs with the
+# default GITHUB_TOKEN and the resulting `unlabeled` event does NOT re-trigger
+# other workflows: GitHub does not trigger new workflow runs from actions
+# performed by the default GITHUB_TOKEN (with narrow exceptions like
+# workflow_dispatch). That suppression is load-bearing here, not incidental: a
+# dozen workflows in this directory listen for `unlabeled` on PRs — including
+# sync_priority_labels.yml, which adds and removes labels itself and so could
+# feed a label edit back into this workflow's own `labeled` trigger. Grep for
+# `unlabeled` rather than trusting a list here. Swapping in an app token would
+# arm all of them at once.
+
+name: Clear pending-deletion on do-not-close
+
+on:
+  # pull_request_target is safe here: we never check out or execute the PR's
+  # code — only read the event payload and manage labels and comments.
+  # NEVER CHECK OUT UNTRUSTED CODE FROM A PR's HEAD IN A pull_request_target JOB.
+  # Doing so would allow attackers to execute arbitrary code in the context of your repository.
+  pull_request_target:
+    types: [labeled]
+
+permissions:
+  contents: read
+
+# One `labeled` event per application, and the work is idempotent, so this is
+# only a guard against a maintainer toggling the label repeatedly.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  remove-pending-deletion:
+    if: >-
+      github.event.label.name == 'do-not-close' &&
+      contains(github.event.pull_request.labels.*.name, 'pending-deletion')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # A job-level `permissions` block replaces the workflow-level one outright
+    # rather than merging with it, so `contents: read` has to be repeated here
+    # or the checkout below has no read access. `issues: write` mirrors
+    # close_old_prs.yml, which runs this same script: the shared helper calls
+    # issues.listComments and then the minimizeComment GraphQL mutation on an
+    # issue comment.
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+
+    steps:
+      # Checked out only so the script step can require the shared
+      # minimizeMarkerComment helper from close-old-prs.js.
+      #
+      # `ref` is pinned rather than left to default. Under pull_request_target
+      # GITHUB_REF is the PR's *base* branch, not the repository default branch
+      # (they coincide only for PRs targeting main), so a PR opened against a
+      # release or maintenance branch would load that branch's copy of
+      # close-old-prs.js — possibly one predating minimizeMarkerComment, or
+      # lacking it entirely. Either way this is a repo-controlled ref, never the
+      # PR's head, which is what keeps pull_request_target safe here.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Remove pending-deletion label
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          # `labeled` fires exactly once per label application, so unlike the
+          # daily sweep in close-old-prs.js there is no next run to pick up a
+          # transient failure. Retry 429/5xx; the action's default
+          # retry-exempt-status-codes still leaves 403/404 alone.
+          retries: 3
+          script: |
+            const { owner, repo } = context.repo;
+            const issue_number = context.payload.pull_request.number;
+
+            // Take the label name from the script rather than repeating the
+            // literal, so the removal below cannot drift from what the daily
+            // sweep applies. The `if:` expression above still hardcodes both
+            // names because workflow expressions cannot reference JS; a test in
+            // close-old-prs.test.js pins those literals to these constants.
+            const {
+              minimizeMarkerComment,
+              DEFAULT_PENDING_DELETION_LABEL: pendingDeletionLabel,
+            } = require('./.github/scripts/labeling/close-old-prs.js');
+
+            console.log(
+              `PR #${issue_number} gained do-not-close — removing ${pendingDeletionLabel}`,
+            );
+
+            try {
+              await github.rest.issues.removeLabel({
+                owner,
+                repo,
+                issue_number,
+                name: pendingDeletionLabel,
+              });
+            } catch (e) {
+              if (e.status !== 404) throw e;
+              // The job's `if:` already saw pending-deletion in the event
+              // payload, so a 404 here means a genuine race: the daily
+              // close_old_prs sweep, or a maintainer, got there first. (Before
+              // the constant above was shared, a drifted label name produced an
+              // identical 404 and turned this workflow into a permanent no-op —
+              // hence a warning rather than a routine log line.)
+              core.warning(
+                `removeLabel returned 404 for '${pendingDeletionLabel}' on PR ` +
+                `#${issue_number}; the label was present in the event payload, ` +
+                `so something else removed it first: ${e.message}`,
+              );
+            }
+
+            // The label is only half of what a maintainer sees: close-old-prs.js
+            // posts a warning comment alongside it that claims the PR will be
+            // auto-closed. Minimize it so the PR does not keep advertising a
+            // fate that no longer applies. Best-effort — the label removal
+            // above is the load-bearing part.
+            //
+            // Shared with the daily script, which calls the same helper from
+            // refreshLabelsUnlessBypassed when do-not-close lands between
+            // posting the warning and applying the label. In that race the PR
+            // never carries pending-deletion, so this workflow's `if:` is never
+            // met — which is why that branch minimizes the warning itself
+            // instead of waiting for this workflow.
+            await minimizeMarkerComment({ github, core, owner, repo, issueNumber: issue_number });

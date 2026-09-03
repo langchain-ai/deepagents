@@ -539,6 +539,66 @@ class TestReloadFromEnvironment:
             os.environ.get("DEEPAGENTS_CODE_DISABLED_PROJECT_MCP_SERVERS") == "blocked"
         )
 
+    def test_project_dotenv_cannot_set_auto_classifier_model(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A committed project `.env` must not choose the Auto classifier model.
+
+        The classifier authorizes gated tool calls in Auto mode, so a cloned repo
+        that could set this would silently downgrade the review — including its
+        resistance to prompt injection in the untrusted text it reads. Picking
+        the classifier stays a user-level decision (THREAT_MODEL T14).
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            f"{_env_vars.AUTO_CLASSIFIER_MODEL}=openai:weak-model\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        for key in (_env_vars.AUTO_CLASSIFIER_MODEL, "OPENAI_API_KEY"):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert _env_vars.AUTO_CLASSIFIER_MODEL not in os.environ
+        # A normal project var is unaffected — only the classifier key is gated.
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_global_dotenv_can_set_auto_classifier_model(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The global `~/.deepagents/.env` MAY choose the Auto classifier model.
+
+        Positive counterpart to
+        `test_project_dotenv_cannot_set_auto_classifier_model`: the deny is
+        scoped to the *project* `.env`, so a regression that gates the key
+        unconditionally would break the user's own configuration path.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text(
+            f"{_env_vars.AUTO_CLASSIFIER_MODEL}=anthropic:claude-haiku-4-5\n"
+        )
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        monkeypatch.setattr(
+            "deepagents_code.config._find_dotenv_from_start_path",
+            lambda _: None,
+        )
+        monkeypatch.delenv(_env_vars.AUTO_CLASSIFIER_MODEL, raising=False)
+
+        isolated = tmp_path / "no_project_env"
+        isolated.mkdir()
+        _load_dotenv(start_path=isolated)
+
+        assert (
+            os.environ.get(_env_vars.AUTO_CLASSIFIER_MODEL)
+            == "anthropic:claude-haiku-4-5"
+        )
+
     def test_preview_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
@@ -2032,6 +2092,8 @@ class TestReloadPluginsViaReload:
         from deepagents_code.tui.widgets.messages import AppMessage
 
         app = DeepAgentsApp()
+        reload_hooks = AsyncMock()
+        monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
         async with app.run_test() as pilot:
             await pilot.pause()
 
@@ -2053,6 +2115,7 @@ class TestReloadPluginsViaReload:
             # no plugin summary line was emitted.
             assert "Configuration reloaded." in text
             assert "Plugins:" not in text
+            reload_hooks.assert_awaited_once_with(plugins=())
 
     @pytest.mark.parametrize(
         ("restarted", "expected_ids"),
@@ -2073,6 +2136,8 @@ class TestReloadPluginsViaReload:
 
         plugin = MagicMock(plugin_id="new@tools")
         app = DeepAgentsApp()
+        order: list[str] = []
+        reload_hooks = AsyncMock(side_effect=lambda **_kwargs: order.append("hooks"))
         async with app.run_test() as pilot:
             await pilot.pause()
             app._session_plugin_ids = frozenset({"old@tools"})
@@ -2083,9 +2148,11 @@ class TestReloadPluginsViaReload:
                 return True
 
             async def _fake_restart() -> bool:  # noqa: RUF029
+                order.append("restart")
                 return restarted
 
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
+            monkeypatch.setattr(app, "_reload_hooks", reload_hooks)
             monkeypatch.setattr(app, "_restart_server_manual", _fake_restart)
             monkeypatch.setattr(app, "_discard_queue", lambda: None)
             monkeypatch.setattr(
@@ -2101,3 +2168,4 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             assert app._session_plugin_ids == expected_ids
+            assert order == ["hooks", "restart"]

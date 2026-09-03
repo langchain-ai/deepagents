@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import logging
 import os
 import re
@@ -24,10 +25,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from langchain_core.language_models import BaseChatModel
+    from langchain_core.tools import BaseTool
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_WORKDIR = Path("/app")
 _MAX_ASSISTANT_ID_LENGTH = 64
 _ASSISTANT_ID_HASH_LENGTH = 12
 _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
@@ -36,6 +37,10 @@ _INVALID_ASSISTANT_ID_RUN = re.compile(r"[^A-Za-z0-9_-]+")
 # to precisely the same specs. Matching case-insensitively here would re-bump
 # reasoning for a spec dcode does not classify as GLM — the divergence we avoid.
 _GLM_5_2_MODEL_SPECS = frozenset(_GLM_5P2_MODEL_SPECS)
+
+# Bounds on the gated `web_search` tool (see `_web_search_tool`).
+_WEB_SEARCH_MAX_RESULTS = 10
+_WEB_SEARCH_MAX_CHARS = 20_000
 
 _SHELL_ENV_DENYLIST = frozenset(
     {
@@ -169,7 +174,7 @@ def _build_model(configurable: dict[str, object]) -> BaseChatModel:
 def _workdir(configurable: dict[str, object]) -> Path:
     value = configurable.get("cwd")
     if value is None:
-        return _DEFAULT_WORKDIR
+        return Path.cwd()
     if not isinstance(value, str | Path):
         msg = "`configurable.cwd` must be a string path"
         raise TypeError(msg)
@@ -308,9 +313,16 @@ def make_graph(config: dict[str, object] | None = None) -> object:
         # route `get_system_prompt` through `get_default_working_dir(sandbox_type)`,
         # which raises `ValueError` for any provider not in dcode's sandbox registry
         # (e.g. "harbor", which is not a registered provider).
+        # `web_search` on the same terms as the bare graph. Without it the deep-research
+        # tasks are unwinnable as written: every DRBench prompt tells the agent to research
+        # the open web, and part of each task's ground truth exists only there. The
+        # research preflight hard-fails on a missing TAVILY_API_KEY for exactly this
+        # reason, which would have been defeated by handing dcode the key and not the tool.
+        search_tool = _web_search_tool()
         graph, _backend = create_cli_agent(
             model=model,
             assistant_id=assistant_id,
+            tools=[search_tool] if search_tool is not None else None,
             sandbox=None,
             interactive=False,
             auto_approve=True,
@@ -321,6 +333,83 @@ def make_graph(config: dict[str, object] | None = None) -> object:
             cwd=_workdir(configurable),
         )
     return graph
+
+
+def _tavily_search(query: str, max_results: int) -> dict[str, Any]:
+    """Run one Tavily search and return its raw response.
+
+    The single point where this module touches the network, so tests substitute this
+    rather than the `tavily` module.
+
+    Args:
+        query: Search query.
+        max_results: Number of results to request.
+
+    Returns:
+        Tavily's response payload.
+    """
+    # Imported lazily, not at module scope: this module is imported for every category,
+    # and only the deep-research tasks need tavily. A top-level import would make the
+    # whole graph module fail to load without it.
+    from tavily import TavilyClient  # noqa: PLC0415
+
+    # The key is read from the environment per call and never returned to the model.
+    client = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+    return client.search(query, max_results=max_results)
+
+
+def _web_search_tool() -> BaseTool | None:
+    """Return a Tavily-backed `web_search` tool, or `None` when it is unavailable.
+
+    Gated on `TAVILY_API_KEY` so the bare agent's tool list is unchanged for tasks
+    whose environment does not forward the key. Only the deep-research dataset
+    needs open-web search — its ground truth includes external facts that exist
+    nowhere in the task corpus — and those tasks are the only ones the eval
+    workflow grants the key to.
+
+    Returns:
+        A LangChain tool, or `None` if the key is unset or `tavily-python` is absent.
+    """
+    if not os.environ.get("TAVILY_API_KEY"):
+        return None
+    if importlib.util.find_spec("tavily") is None:
+        logger.warning("TAVILY_API_KEY is set but tavily-python is unavailable")
+        return None
+    from langchain_core.tools import tool  # noqa: PLC0415
+
+    @tool
+    def web_search(query: str, max_results: int = 5) -> str:
+        """Search the web for current or public information.
+
+        Args:
+            query: The search query. Be specific.
+            max_results: Number of results to return, capped at 10.
+
+        Returns:
+            Ranked results as title, URL, and extract.
+        """
+        capped = max(1, min(int(max_results), _WEB_SEARCH_MAX_RESULTS))
+        try:
+            response = _tavily_search(query, capped)
+        except Exception as exc:  # noqa: BLE001 - a failed search must not end the run
+            return f"web_search failed: {type(exc).__name__}: {exc}"
+
+        blocks = [
+            f"## {hit.get('title', '')}\n{hit.get('url', '')}\n\n{hit.get('content', '')}"
+            for hit in response.get("results", [])
+        ]
+        if not blocks:
+            return f"No results for {query!r}."
+        rendered = "\n\n".join(blocks)
+        # Bound the payload so one search cannot crowd out the agent's context.
+        if len(rendered) > _WEB_SEARCH_MAX_CHARS:
+            rendered = (
+                rendered[:_WEB_SEARCH_MAX_CHARS]
+                + f"\n\n[truncated at {_WEB_SEARCH_MAX_CHARS} characters]"
+            )
+        return rendered
+
+    return web_search
 
 
 def make_bare_graph(config: dict[str, object] | None = None) -> object:
@@ -354,9 +443,11 @@ def make_bare_graph(config: dict[str, object] | None = None) -> object:
     # No `system_prompt`: keep the bare agent on `create_deep_agent`'s
     # prompt-free default. The sandbox workdir is already enforced by the shell
     # backend's `root_dir`.
+    search_tool = _web_search_tool()
     return create_deep_agent(
         model=model,
         backend=backend,
+        tools=[search_tool] if search_tool is not None else None,
     )
 
 

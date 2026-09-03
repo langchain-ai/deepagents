@@ -5,12 +5,42 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+from contextlib import asynccontextmanager
+from inspect import signature
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from deepagents_acp.server import AgentServerACP
 
 from deepagents_code.main import _preload_session_mcp_server_info, cli_main
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Callable, Generator
+
+
+@pytest.fixture(autouse=True)
+def test_acp_checkpointer() -> Generator[SimpleNamespace]:
+    checkpointer = SimpleNamespace(setup=AsyncMock(return_value=None))
+
+    @asynccontextmanager
+    async def get_checkpointer() -> AsyncIterator[SimpleNamespace]:
+        yield checkpointer
+
+    with patch("deepagents_code.sessions.get_checkpointer", get_checkpointer):
+        yield checkpointer
+
+
+def _build_agent_server(server: object) -> Callable[..., object]:
+    """Stand in for `AgentServerACP`, exercising the agent factory it is handed."""
+
+    def build(agent_factory: Callable[..., object], **kwargs: object) -> object:
+        signature(AgentServerACP).bind(agent_factory, **kwargs)
+        agent_factory(SimpleNamespace(cwd="/tmp", model=None))
+        return server
+
+    return build
 
 
 def _make_acp_args(**overrides: object) -> argparse.Namespace:
@@ -23,13 +53,39 @@ def _make_acp_args(**overrides: object) -> argparse.Namespace:
         mcp_config=None,
         no_mcp=False,
         trust_project_mcp=False,
+        auto_classifier_model=None,
     )
     for key, value in overrides.items():
         setattr(args, key, value)
     return args
 
 
-def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
+def test_acp_mode_rejects_auto_classifier_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """ACP must reject an authorization setting it cannot apply."""
+    args = _make_acp_args(auto_classifier_model="openai:gpt-5.5-mini")
+
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["deepagents", "--acp", "--auto-classifier-model", "openai:gpt-5.5-mini"],
+        ),
+        patch("deepagents_code.main.parse_args", return_value=args),
+        patch("deepagents_code.main._resolve_agent_arg") as resolve_agent,
+        pytest.raises(SystemExit) as exc_info,
+    ):
+        cli_main()
+
+    assert exc_info.value.code == 2
+    assert "--auto-classifier-model is only supported" in capsys.readouterr().err
+    resolve_agent.assert_not_called()
+
+
+def test_acp_mode_loads_tools_and_mcp_and_runs_server(
+    test_acp_checkpointer: SimpleNamespace,
+) -> None:
     """`--acp` should build the ACP agent with web tools and MCP tools."""
     args = _make_acp_args(
         model_params='{"temperature": 0.2}',
@@ -115,7 +171,8 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
         ) as mock_create_agent,
         patch(
-            "deepagents_acp.server.AgentServerACP", return_value=server
+            "deepagents_acp.server.AgentServerACP",
+            side_effect=_build_agent_server(server),
         ) as mock_server_cls,
         patch("acp.run_agent", run_agent),
         pytest.raises(SystemExit) as exc_info,
@@ -136,17 +193,24 @@ def test_acp_mode_loads_tools_and_mcp_and_runs_server() -> None:
         additional_configs=plugin_configs,
     )
     discover_plugin_mcp.assert_called_once_with(project_dir=acp_project_root)
-    model_result.apply_to_settings.assert_called_once_with()
+    assert model_result.apply_to_settings.call_count == 2
     mock_create_agent.assert_called_once()
     call_kwargs = mock_create_agent.call_args.kwargs
     assert call_kwargs["model"] is model_obj
     assert call_kwargs["assistant_id"] == "agent"
     assert call_kwargs["tools"] == [fetch_tool, thread_tool, search_tool, mcp_tool]
     assert call_kwargs["mcp_server_info"] is mcp_server_info
-    assert call_kwargs["checkpointer"] is not None
+    assert call_kwargs["checkpointer"] is test_acp_checkpointer
+    assert call_kwargs["cwd"] == "/tmp"
+    assert call_kwargs["project_context"] is acp_project_context
     assert call_kwargs["memory_auto_save"] is False
     mock_memory_auto_save.assert_called_once_with()
-    mock_server_cls.assert_called_once_with("graph")
+    test_acp_checkpointer.setup.assert_awaited_once_with()
+    assert mock_server_cls.call_args.kwargs["models"][0] == {
+        "value": "anthropic:claude-sonnet-4-6",
+        "name": "anthropic:claude-sonnet-4-6",
+    }
+    assert mock_server_cls.call_args.kwargs["load_sessions"] is True
     run_agent.assert_awaited_once_with(server)
     mcp_manager.cleanup.assert_awaited_once_with()
 
@@ -187,7 +251,10 @@ def test_acp_mode_omits_web_search_without_tavily() -> None:
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
         ) as mock_create_agent,
-        patch("deepagents_acp.server.AgentServerACP", return_value=server),
+        patch(
+            "deepagents_acp.server.AgentServerACP",
+            side_effect=_build_agent_server(server),
+        ),
         patch("acp.run_agent", run_agent),
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -236,7 +303,10 @@ def test_acp_mode_forwards_allow_fs_tools() -> None:
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
         ) as mock_create_agent,
-        patch("deepagents_acp.server.AgentServerACP", return_value=server),
+        patch(
+            "deepagents_acp.server.AgentServerACP",
+            side_effect=_build_agent_server(server),
+        ),
         patch("acp.run_agent", run_agent),
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -278,7 +348,10 @@ def test_acp_mode_forwards_none_allow_fs_tools_by_default() -> None:
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
         ) as mock_create_agent,
-        patch("deepagents_acp.server.AgentServerACP", return_value=object()),
+        patch(
+            "deepagents_acp.server.AgentServerACP",
+            side_effect=_build_agent_server(object()),
+        ),
         patch("acp.run_agent", run_agent),
         pytest.raises(SystemExit) as exc_info,
     ):
@@ -321,7 +394,10 @@ def test_acp_mode_forwards_recursion_limit() -> None:
         patch(
             "deepagents_code.agent.create_cli_agent", return_value=("graph", object())
         ) as mock_create_agent,
-        patch("deepagents_acp.server.AgentServerACP", return_value=object()),
+        patch(
+            "deepagents_acp.server.AgentServerACP",
+            side_effect=_build_agent_server(object()),
+        ),
         patch("acp.run_agent", run_agent),
         pytest.raises(SystemExit) as exc_info,
     ):

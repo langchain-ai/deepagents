@@ -656,8 +656,10 @@ class TestRecordMessageUsage:
         record_message_usage(uncached, self._chunk(1_000, 100), recorded_requests={})
 
         # Cache reads are cheaper than ordinary input, so losing the detail in
-        # the merge would silently overprice the request.
+        # the merge would silently overprice the request or status metric.
         assert stats.total_cost_usd < uncached.total_cost_usd
+        assert stats.cache_read_tokens == 800
+        assert stats.cache_write_tokens == 0
 
     def test_reports_message_delta_and_running_request_tokens(self) -> None:
         """Pricing needs a delta while context display needs the running total."""

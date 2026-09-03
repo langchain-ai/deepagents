@@ -313,6 +313,7 @@ async def start_server_and_get_agent(
     allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -348,6 +349,8 @@ async def start_server_and_get_agent(
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        auto_classifier_model: Auto classifier model spec; `None` resolves from
+            env / `config.toml` and then reuses the main model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
         mcp_config_path: Path to MCP config.
@@ -400,6 +403,7 @@ async def start_server_and_get_agent(
         allow_fs_tools=allow_fs_tools,
         rubric_model=rubric_model,
         rubric_max_iterations=rubric_max_iterations,
+        auto_classifier_model=auto_classifier_model,
         recursion_limit=recursion_limit,
         mcp_config_path=mcp_config_path,
         no_mcp=no_mcp,
@@ -483,6 +487,7 @@ async def server_session(
     allow_fs_tools: list[FsToolName] | None = None,
     rubric_model: str | None = None,
     rubric_max_iterations: int | None = None,
+    auto_classifier_model: str | None = None,
     recursion_limit: int | None = None,
     mcp_config_path: str | None = None,
     no_mcp: bool = False,
@@ -521,6 +526,8 @@ async def server_session(
         rubric_model: Grader model spec; `None` reuses the main model.
         rubric_max_iterations: Explicit grader iterations per rubric attempt;
             `None` uses the SDK default.
+        auto_classifier_model: Auto classifier model spec; `None` resolves from
+            env / `config.toml` and then reuses the main model.
         recursion_limit: Explicit main-agent `recursion_limit`; `None` resolves
             from env / `config.toml` / default at agent-build time.
         mcp_config_path: Path to MCP config.
@@ -558,6 +565,7 @@ async def server_session(
             allow_fs_tools=allow_fs_tools,
             rubric_model=rubric_model,
             rubric_max_iterations=rubric_max_iterations,
+            auto_classifier_model=auto_classifier_model,
             recursion_limit=recursion_limit,
             mcp_config_path=mcp_config_path,
             no_mcp=no_mcp,

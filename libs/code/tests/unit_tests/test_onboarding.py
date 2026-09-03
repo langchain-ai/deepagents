@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from deepagents_code._env_vars import DEBUG_ONBOARDING
+import pytest
+
+from deepagents_code._env_vars import ONBOARDING
 from deepagents_code.onboarding import (
     GOAL_AUTO_ACCEPT_PROMPT_MARKER_FILENAME,
     ONBOARDING_MARKER_FILENAME,
@@ -24,11 +26,9 @@ from deepagents_code.onboarding import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
-
 
 class TestOnboardingState:
-    """Tests for the onboarding completion marker and debug override."""
+    """Tests for the onboarding completion marker and env override."""
 
     def test_missing_marker_runs_onboarding(self, tmp_path) -> None:
         """Onboarding should run before the marker exists."""
@@ -41,16 +41,43 @@ class TestOnboardingState:
         assert has_completed_onboarding(tmp_path) is True
         assert should_run_onboarding(tmp_path) is False
 
-    def test_debug_override_runs_even_with_marker(
+    def test_truthy_override_runs_even_with_marker(
         self,
         tmp_path,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        """Debug override should force onboarding every startup."""
+        """A truthy override should force onboarding every startup."""
         onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
-        monkeypatch.setenv(DEBUG_ONBOARDING, "1")
+        monkeypatch.setenv(ONBOARDING, "1")
 
         assert should_run_onboarding(tmp_path) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+    def test_falsy_override_skips_onboarding_without_marker(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+        value: str,
+    ) -> None:
+        """A falsy override should skip onboarding on a fresh install."""
+        monkeypatch.setenv(ONBOARDING, value)
+
+        assert should_run_onboarding(tmp_path) is False
+        assert has_completed_onboarding(tmp_path) is False
+
+    def test_unrecognized_override_falls_back_to_marker(
+        self,
+        tmp_path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unparseable override should leave the marker in charge."""
+        monkeypatch.setenv(ONBOARDING, "maybe")
+
+        assert should_run_onboarding(tmp_path) is True
+
+        onboarding_marker_path(tmp_path).write_text("1\n", encoding="utf-8")
+
+        assert should_run_onboarding(tmp_path) is False
 
     def test_mark_onboarding_complete_creates_marker(self, tmp_path) -> None:
         """Completion should create the marker under the state directory."""

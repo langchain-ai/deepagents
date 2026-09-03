@@ -5,9 +5,6 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
-import pytest
-
-from deepagents_code._env_vars import EXPERIMENTAL
 from deepagents_code.approval_mode import ApprovalMode
 from deepagents_code.hooks.manager import HookSessionIdentity, HooksManager
 from deepagents_code.hooks.models.domain import PermissionEffect
@@ -15,13 +12,9 @@ from deepagents_code.hooks.models.domain import PermissionEffect
 if TYPE_CHECKING:
     from pathlib import Path
 
+    import pytest
+
     from deepagents_code.hooks.presenter import HookNoticeSeverity, HookPresenter
-
-
-@pytest.fixture(autouse=True)
-def _enable_hooks_v2(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Hooks v2 only loads in experimental mode, which these tests exercise."""
-    monkeypatch.setenv(EXPERIMENTAL, "1")
 
 
 def _write_project_hooks(root: Path) -> Path:

@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+# Branch-name check for pre-push: enforce the repo branch naming convention
+#   <github-username>/<scope>/<short-description>
+# on branches pushed to this repo. See the "Branch naming" section of AGENTS.md.
+#
+# This script runs as a pre-commit `pre-push` hook (see .pre-commit-config.yaml),
+# so it is installed by the usual `pre-commit install --install-hooks` setup —
+# no separate `core.hooksPath` wiring (which would shadow the other installed
+# hooks). Under pre-commit, the pushed branch arrives as
+# `PRE_COMMIT_REMOTE_BRANCH` (pre-commit does not forward the raw pre-push
+# stdin). The script also accepts direct git pre-push invocation with the
+# standard "<local ref> <local sha> <remote ref> <remote sha>" lines on stdin.
+#
+# KNOWN GAPS in the pre-commit route (the tradeoff for not using
+# `core.hooksPath`). pre-commit's pre-push driver decides what to report before
+# any hook runs, so the script cannot see around these:
+#
+#   1. Multi-ref pushes are only partially checked. `_pre_push_ns`
+#      (pre_commit/commands/hook_impl.py, as of pre-commit 4.x) skips deletions
+#      and refs the remote already has, then returns on the first ref that does
+#      have new commits — so `PRE_COMMIT_REMOTE_BRANCH` names exactly one
+#      branch, and which one depends on stdin order rather than the order you
+#      named them. `git push origin a b` and `git push --all` validate one of
+#      them, not necessarily the first.
+#   2. A push with no new commits runs no hooks at all. If the pushed ref points
+#      only at commits the remote already has (e.g. branching off `main` and
+#      pushing immediately), `_pre_push_ns` finds nothing to push and pre-commit
+#      returns early, silently — no output at all — without invoking this hook.
+#      `always_run: true` does not change that; the hook-running code is never
+#      reached.
+#
+# Both are covered by .github/workflows/branch_name_check.yml, which sees the
+# real head ref regardless. Under direct git invocation (`core.hooksPath` or a
+# hand-installed .git/hooks/pre-push) neither gap applies — the stdin loop below
+# validates every ref.
+#
+# This is a local convenience only — it can be skipped with `git push --no-verify`
+# (or the standard `SKIP=branch-name git push` for the pre-commit integration).
+# Server-side enforcement lives in .github/workflows/branch_name_check.yml.
+
+set -euo pipefail
+
+# Protected branches and automation branch prefixes that never carry a
+# <github-username>/ prefix. The `alpha|beta|rc|dev` prefixes are the release
+# branches mandated by .github/RELEASING.md (e.g. `alpha/deepagents-0-7-0a1`).
+ALLOWED_RE='^(main|master|v[0-9]+\.[0-9]+.*)$'
+ALLOWED_PREFIX_RE='^(release-please--|dependabot/|copilot/|alpha/|beta/|rc/|dev/)'
+
+# Scopes mirror the allowed scopes in .github/workflows/pr_lint.yml plus `docs`,
+# which AGENTS.md lists as a valid branch scope. All three patterns above and
+# below are duplicated in .github/workflows/branch_name_check.yml; the
+# `branch-scopes-sync` pre-commit hook
+# (.github/scripts/checks/check_branch_scopes_sync.py) fails the commit if the
+# copies drift, so edit them together.
+SCOPES_RE='(acp|ci|cli|code|dcode-gha|daytona|deepagents|deepagents-acp|deepagents-cli|deepagents-code|deepagents-talon|deps|deps-dev|docs|evals|examples|harbor|infra|langchain-daytona|langchain-modal|langchain-quickjs|langchain-runloop|langchain-vercel-sandbox|langsmith-sandbox|modal|quickjs|repo|runloop|sdk|talon|vercel)'
+
+# Kebab-case description: lowercase alphanumerics and hyphens, no leading or
+# trailing hyphen. The final group is optional so one-character descriptions are
+# valid.
+DESC_RE='[a-z0-9]([a-z0-9-]*[a-z0-9])?'
+
+# Resolve the expected GitHub login. `github.user` is not set by default; the
+# cleanest fallback is the GitHub login recorded by the GitHub CLI (`gh`), then
+# the local part of the committer email (a common personal convention).
+# `user_source` is reported in the failure message so a wrong guess is
+# diagnosable rather than mysterious.
+#
+# Resolution is lazy and memoized: it runs on the first branch that actually
+# needs a username, so pushing a protected, automation or release branch — none
+# of which carry a username segment — never requires a resolvable login. A
+# contributor with no `github.user`, no `gh` and a `users.noreply.github.com`
+# commit email can still push `main` or `alpha/...`.
+github_user=""
+user_source=""
+user_resolved=0
+
+resolve_github_user() {
+    if [ "$user_resolved" -eq 1 ]; then
+        return 0
+    fi
+    user_resolved=1
+
+    local config_rc=0
+    github_user="$(git config --get github.user)" || config_rc=$?
+    if [ "$config_rc" -gt 1 ]; then
+        echo "error: 'git config --get github.user' failed (exit $config_rc); check your git config." >&2
+        exit 1
+    fi
+    if [ -n "$github_user" ]; then
+        user_source='git config github.user'
+    fi
+
+    if [ -z "$github_user" ]; then
+        if command -v gh >/dev/null 2>&1; then
+            # Report `gh` failures instead of muting them: its own message (e.g.
+            # "run gh auth login") is more actionable than the email guess we
+            # fall back to. Capture stderr separately — `gh` writes its upgrade
+            # notice there on otherwise successful commands, and folding that
+            # into stdout would splice it into the resolved username.
+            local gh_err
+            gh_err="$(mktemp)"
+            if github_user="$(gh api user --jq .login 2>"$gh_err")"; then
+                user_source='gh api user'
+            else
+                echo "note: could not resolve your GitHub login via 'gh': $(head -n 1 "$gh_err")" >&2
+                echo "note: falling back to the local part of your git user.email." >&2
+            fi
+            rm -f "$gh_err"
+        else
+            # Symmetry with the failure branch above: an absent `gh` is just as
+            # much a reason the email guess below may be wrong.
+            echo "note: 'gh' is not installed; falling back to the local part of your git user.email." >&2
+        fi
+    fi
+
+    if [ -z "$github_user" ]; then
+        local email_rc=0
+        local email
+        email="$(git config --get user.email)" || email_rc=$?
+        if [ "$email_rc" -gt 1 ]; then
+            echo "error: 'git config --get user.email' failed (exit $email_rc); check your git config." >&2
+            exit 1
+        fi
+        if [ -n "$email" ] && [ "$email" != "${email%@*}" ]; then
+            github_user="${email%@*}"
+            user_source="local part of user.email ($email)"
+        fi
+    fi
+
+    if [ -z "$github_user" ]; then
+        cat >&2 <<'EOF'
+error: could not determine your GitHub username to validate the branch name.
+Set it with: git config github.user <your-github-login>
+EOF
+        exit 1
+    fi
+
+    # A resolved value that is not a valid GitHub login means a fallback guessed
+    # wrong (e.g. `12345+user` from a noreply address, or `first.last` from a
+    # corporate one). Fail with instructions rather than validating against it.
+    case "$github_user" in
+        *[!A-Za-z0-9-]* | -* | *- | '')
+            cat >&2 <<EOF
+error: resolved GitHub username '$github_user' is not a valid GitHub login.
+       (resolved from: $user_source)
+
+GitHub logins contain only letters, digits and hyphens. Set yours explicitly:
+  git config github.user <your-github-login>
+EOF
+            exit 1
+            ;;
+    esac
+}
+
+fail=0
+
+check_branch() {
+    local branch="$1"
+
+    if [[ "$branch" =~ $ALLOWED_RE ]] || [[ "$branch" =~ $ALLOWED_PREFIX_RE ]]; then
+        return 0
+    fi
+
+    resolve_github_user
+
+    # Split into exactly three segments and compare the username literally.
+    # Interpolating it into a regex would treat any metacharacter in a
+    # mis-resolved login as a pattern, which accepts and rejects the wrong
+    # names in both directions.
+    local user_seg="${branch%%/*}"
+    local rest="${branch#*/}"
+    local scope_seg="${rest%%/*}"
+    local desc_seg="${rest#*/}"
+
+    if [ "$user_seg" != "$branch" ] &&
+        [ "$scope_seg" != "$rest" ] &&
+        [[ "$desc_seg" != */* ]] &&
+        [ "$user_seg" = "$github_user" ] &&
+        [[ "$scope_seg" =~ ^${SCOPES_RE}$ ]] &&
+        [[ "$desc_seg" =~ ^${DESC_RE}$ ]]; then
+        return 0
+    fi
+
+    cat >&2 <<EOF
+error: branch '$branch' does not follow the repo naming convention.
+
+  expected: <github-username>/<scope>/<short-description>
+  example:  ${github_user}/cli/startup-cmd-flag
+
+Your resolved GitHub username is '$github_user', from $user_source
+(override with: git config github.user <login>).
+Scopes: $(echo "$SCOPES_RE" | tr -d '()' | tr '|' ' ')
+(the scopes in pr_lint.yml, plus \`docs\`).
+
+Rename with: git branch -m <new-name>
+Bypass with: git push --no-verify (or SKIP=branch-name git push under pre-commit)
+EOF
+    fail=1
+}
+
+# Number of ref updates this invocation was able to inspect. Zero means the
+# check never ran, which must be an error rather than a silent pass.
+refs_seen=0
+
+if [ -n "${PRE_COMMIT_REMOTE_BRANCH:-}" ]; then
+    # pre-commit pre-push integration; one ref only (see KNOWN GAPS above).
+    refs_seen=1
+    case "$PRE_COMMIT_REMOTE_BRANCH" in
+        refs/heads/*) check_branch "${PRE_COMMIT_REMOTE_BRANCH#refs/heads/}" ;;
+        *) echo "note: skipping branch-name check for non-branch ref '$PRE_COMMIT_REMOTE_BRANCH'." >&2 ;;
+    esac
+elif [ ! -t 0 ]; then
+    # Direct git pre-push invocation: "<local ref> <local sha> <remote ref>
+    # <remote sha>" per line on stdin. The `|| [ -n "$remote_ref" ]` keeps a
+    # final line with no trailing newline, which `read` reports as EOF.
+    while read -r _local_ref local_sha remote_ref _remote_sha || [ -n "$remote_ref" ]; do
+        [ -n "$remote_ref" ] || continue
+        refs_seen=$((refs_seen + 1))
+
+        # A local sha of all zeros is a remote branch deletion: nothing to name.
+        [ "$local_sha" = "0000000000000000000000000000000000000000" ] && continue
+
+        branch="${remote_ref#refs/heads/}"
+        [ "$branch" = "$remote_ref" ] && continue # not a branch push (e.g. a tag)
+
+        check_branch "$branch"
+    done
+fi
+
+if [ "$refs_seen" -eq 0 ]; then
+    cat >&2 <<'EOF'
+error: branch-name check could not determine which branch is being pushed.
+       PRE_COMMIT_REMOTE_BRANCH is unset and no ref updates arrived on stdin.
+
+This check needs the pushed ref, which a bare
+`pre-commit run --hook-stage pre-push` does not supply — it would otherwise
+report a pass without having validated anything.
+
+To exercise the real pre-commit path, pass the ref explicitly:
+  pre-commit run --hook-stage pre-push --remote-name origin \
+    --remote-url "$(git remote get-url origin)" \
+    --remote-branch refs/heads/bad-name \
+    --local-branch "$(git branch --show-current)"
+
+To exercise this script on its own:
+  echo "refs/heads/x $(git rev-parse HEAD) refs/heads/bad-name $(git rev-parse HEAD)" | .githooks/pre-push
+EOF
+    exit 1
+fi
+
+exit "$fail"

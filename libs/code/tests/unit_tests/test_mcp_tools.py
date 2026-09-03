@@ -2955,8 +2955,13 @@ class TestLoadToolsConcurrency:
     async def test_order_preserved_when_later_servers_finish_first(self) -> None:
         """`server_infos` follows config order regardless of completion order."""
         names = ["first", "second", "third"]
-        # Later servers sleep less, so they finish discovery before earlier ones.
-        delays = {"first": 0.09, "second": 0.05, "third": 0.01}
+        # Chain the fakes so each server's discovery waits for the previous
+        # server to finish first: `third` completes before `second` before
+        # `first`. `asyncio.Event` keeps the completion order deterministic;
+        # staggered `asyncio.sleep` delays would leave it at the mercy of
+        # event-loop scheduling on loaded CI runners.
+        finished: dict[str, asyncio.Event] = {name: asyncio.Event() for name in names}
+        next_server = {"first": "second", "second": "third"}
         finish_order: list[str] = []
 
         @asynccontextmanager
@@ -2971,8 +2976,10 @@ class TestLoadToolsConcurrency:
             session.list_tools = AsyncMock(
                 return_value=_make_tool_page([_make_mcp_tool(f"tool_{server}")])
             )
-            await asyncio.sleep(delays[server])
+            if server in next_server:
+                await finished[next_server[server]].wait()
             finish_order.append(server)
+            finished[server].set()
             yield session
 
         with patch("langchain_mcp_adapters.sessions.create_session", _fake):

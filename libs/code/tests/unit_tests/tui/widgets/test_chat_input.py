@@ -5164,7 +5164,7 @@ class TestPasteCollapseIntegration:
             # `[Pasted text #N]` is never interpreted as Textual markup.
             assert calls == [
                 (
-                    chat_input_module._PASTE_COLLAPSED_TOAST,
+                    "Large paste collapsed. Paste again to expand.",
                     {"timeout": 5, "markup": False},
                 )
             ]

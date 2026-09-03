@@ -144,6 +144,14 @@ def show_help() -> None:
         "  --startup-cmd CMD          Shell command to run at startup, before first prompt"  # noqa: E501
     )
     console.print("  -y, --auto-approve         Enable classifier-backed Auto mode")
+    console.print("  --auto-classifier-model MODEL")
+    console.print(
+        "                             Model the Auto classifier reviews actions with"
+    )
+    console.print(
+        "                             Interactive TUI only; defaults to the "
+        "main agent model"
+    )
     console.print(
         "  --yolo                     Run gated actions without review after "
         "acknowledgement"

@@ -340,6 +340,33 @@ class TestCostDisplayCallbacks:
         assert app._session_cost_usd == pytest.approx(1.25)
         assert app._displayed_cost_usd == pytest.approx(1.25)
 
+    def test_cost_threshold_warns_once_per_thread(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.load_config_toml",
+            lambda: {"warnings": {"session_cost_threshold_usd": 1.0}},
+        )
+        app = DeepAgentsApp()
+        notifications: list[str] = []
+        monkeypatch.setattr(
+            app,
+            "notify",
+            lambda message, **_: notifications.append(message),
+        )
+
+        app._set_session_cost(1.0)
+        app._set_session_cost(1.01)
+        app._set_session_cost(2.0)
+
+        assert len(notifications) == 1
+        assert "$1.01" in notifications[0]
+        assert "/offload" in notifications[0]
+        assert "/clear" in notifications[0]
+
+        app._reset_thread_usage(1.5)
+        assert len(notifications) == 2
+
     def test_streamed_estimate_shows_ahead_of_the_server_total(self) -> None:
         """Spend the graph has not reported yet still moves the display."""
         app = DeepAgentsApp()

@@ -29,6 +29,10 @@ if TYPE_CHECKING:
 
     from langchain_core.messages import BaseMessage
 
+    from deepagents_code.hooks.loading import PluginHooksSource
+    from deepagents_code.hooks.models.domain import HookDiagnostic
+    from deepagents_code.json_types import JsonValue
+
 
 @dataclass(frozen=True, slots=True)
 class PreparedHookInvocation:
@@ -63,6 +67,9 @@ class HooksRuntime:
     """
 
     project_hooks_loaded: bool
+    project_hooks_fingerprint: str | None
+    """SHA-256 fingerprint of the exact project-hook bytes in the snapshot."""
+
     presenter: HookPresenter
     fulfillments: HookFulfillmentLedger
 
@@ -75,6 +82,8 @@ class HooksRuntime:
         config_dir: Path | None = None,
         transcript_root: Path | None = None,
         presenter: HookPresenter | None = None,
+        plugin_sources: Sequence[tuple[PluginHooksSource, JsonValue]] = (),
+        plugin_diagnostics: Sequence[HookDiagnostic] = (),
     ) -> HooksRuntime:
         """Load configuration once and freeze a session runtime.
 
@@ -90,6 +99,11 @@ class HooksRuntime:
                 the global transcript store).
             presenter: Shared user-facing presenter. A private one is created
                 when omitted, so output is logged rather than surfaced.
+            plugin_sources: Hook documents contributed by enabled plugins, which
+                the caller discovers so the runtime stays independent of plugin
+                state. Merged last, holding the least authority.
+            plugin_diagnostics: Diagnostics the caller collected while
+                discovering `plugin_sources`.
 
         Returns:
             A runtime ready to execute invocations for this session.
@@ -100,9 +114,12 @@ class HooksRuntime:
             project_root=project_root,
             workspace_trusted=workspace_trusted,
             config_dir=config_dir,
+            documents=plugin_sources,
+            document_diagnostics=plugin_diagnostics,
         )
         snapshot = HooksSnapshot.from_config(
             loaded.config,
+            groups=loaded.groups,
             diagnostics=loaded.diagnostics,
             snapshot_id=loaded.snapshot_id,
         )
@@ -119,6 +136,7 @@ class HooksRuntime:
             cwd=project_context.user_cwd,
             workspace_trusted=workspace_trusted,
             project_hooks_loaded=loaded.project_source_loaded,
+            project_hooks_fingerprint=loaded.project_source_fingerprint,
             presenter=presenter if presenter is not None else HookPresenter(),
             fulfillments=HookFulfillmentLedger(),
         )

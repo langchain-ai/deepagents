@@ -32,6 +32,11 @@ jobs:
         uses: "./.github/actions/uv_setup"
         with:
           python-version: "3.14"
+          # `uv lock --check` never runs `uv sync`, so no cache dir exists,
+          # and setup-uv's post-job save throws on a missing cache path,
+          # failing the job. (`ignore-nothing-to-cache` would fix this too,
+          # but `uv_setup` doesn't forward it.)
+          enable-cache: "false"
 
       - name: "🔍 Check changed lockfiles"
         run: |

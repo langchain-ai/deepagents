@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, TypeAlias
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -37,7 +37,17 @@ from deepagents_code.config import (
     get_glyphs,
     is_ascii_mode,
 )
-from deepagents_code.file_ops import is_sensitive_file_path
+from deepagents_code.diff_utils import (
+    DiffStats,
+    count_diff_change_lines,
+    is_truncation_marker,
+    split_diff_lines,
+)
+from deepagents_code.file_ops import (
+    DiffOutcome,
+    display_caveat,
+    is_sensitive_file_path,
+)
 from deepagents_code.formatting import format_duration
 from deepagents_code.input import EMAIL_PREFIX_PATTERN, INPUT_HIGHLIGHT_PATTERN
 from deepagents_code.tool_display import (
@@ -57,11 +67,15 @@ from deepagents_code.tui.widgets._links import (
     open_checked_url_async,
     open_style_link,
 )
-from deepagents_code.tui.widgets.diff import compose_diff_lines
+from deepagents_code.tui.widgets.diff import (
+    compose_diff_lines,
+    format_diff_stats,
+    highlight_source_prefixes,
+)
 from deepagents_code.unicode_security import render_with_unicode_markers
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Mapping, Sequence
 
     from rich.console import (
         Console as RichConsole,
@@ -77,6 +91,15 @@ if TYPE_CHECKING:
 
     from deepagents_code.input import MediaTracker
     from deepagents_code.theme import ThemeColors
+
+    _SummaryCall: TypeAlias = tuple[str, Mapping[str, Any]]
+    """One tool call as the summary code sees it: `(raw tool name, parsed args)`."""
+
+    _SummaryCacheKey: TypeAlias = tuple[tuple[str, str | None], ...]
+    """Opaque identity of a summary line's inputs — compare only for equality."""
+
+    _LiveSummaryKey: TypeAlias = tuple[_SummaryCacheKey, _SummaryCacheKey]
+    """The `(completed, pending)` key pair behind a cached live summary line."""
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +186,19 @@ _COLLAPSE_OUTPUT_BY_DEFAULT: set[str] = {
     "grep",
     "glob",
 }
+
+
+_TOOL_SUPERSEDED_BY_DIFF = "edit_file"
+"""The one tool whose successful row is replaced by the `DiffMessage` after it.
+
+The row self-hides via `mark_superseded_by_diff`, and only ever behind a diff
+that can actually stand in for it — the adapter requires a non-empty body and a
+`shown` outcome. `DiffOutcome` explains why the other outcomes cannot.
+
+Ask `ToolCallMessage.can_be_superseded` rather than comparing against this
+constant — the adapter checks a tool name from a different source, and the two
+must not drift.
+"""
 
 
 # Tools whose collapsed body is always the formatter's compact preview, no
@@ -1349,8 +1385,9 @@ _TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS = "-tool-awaiting-approval-accessory"
 """Marker class hiding a tool's accessories while an approval prompt replaces it.
 
 Deliberately distinct from `_TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS`: a footer can
-be hidden for both reasons at once, and releasing one reason must not un-hide a
-footer still hidden by the other. Merging the two into a single class would make
+be hidden for more than one reason at once, and releasing one reason must not
+un-hide a footer still hidden by another. Merging reasons into a single class
+would make
 `ToolGroupSummary._release_collapsible` reveal a footer whose tool is still
 hidden behind an approval prompt.
 
@@ -1359,6 +1396,14 @@ permanently outranks the CSS cascade, so assigning it here would strand the
 footer against the user's `/timestamps` preference forever. Styled in
 `app.tcss`, which relies on rule order to win the specificity tie against that
 preference's own class.
+"""
+
+_TOOL_SUPERSEDED_ACCESSORY_CLASS = "-tool-superseded-accessory"
+"""Hides a row's decorations when its diff has taken the row's place.
+
+A third, independent hide reason. See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS`
+for why each reason gets its own class (they must release independently) and
+why it is applied with `set_class` rather than `display`.
 """
 
 
@@ -1570,6 +1615,9 @@ class ToolCallMessage(Vertical):
         # Transcript decorations that must follow approval visibility without
         # losing their independent user-controlled visibility state.
         self._visibility_accessories: list[Widget] = []
+        self._diff_superseded: bool = False
+        self._self_hidden: bool = False
+        self._has_display_caveat: bool = False
 
     def compose(self) -> ComposeResult:
         """Compose the tool call message layout.
@@ -1663,6 +1711,10 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
+        # `to_widget` sets `_diff_superseded` before mount, but not every
+        # `_restore_deferred_state` branch applies visibility. Applied here so
+        # hiding does not depend on which branch a tool takes.
+        self._apply_own_visibility()
 
     def _restore_deferred_state(self) -> None:
         """Restore state from deferred values (used when hydrating from data)."""
@@ -1925,6 +1977,11 @@ class ToolCallMessage(Vertical):
         elapsed = time() - self._start_time if self._start_time is not None else None
         self._stop_animation()
         self._status = "success"
+        # This call owns `_output`, so any caveat a previous completion put
+        # there is gone. Clearing here keeps the flag from outliving the
+        # sentence it describes and leaving the row unfoldable for no visible
+        # reason; `set_success_with_caveat` re-sets it after delegating here.
+        self._has_display_caveat = False
         self._duration = (
             elapsed
             if self._tool_name in _TIMED_SUCCESS_TOOLS and elapsed is not None
@@ -1964,17 +2021,16 @@ class ToolCallMessage(Vertical):
 
         When the call produces visible output it speaks for itself and the
         status stays hidden; otherwise show a "Success!" marker so a completed
-        call (e.g. `edit_file`) isn't left without any outcome indicator.
+        call isn't left without any outcome indicator. A row already marked as
+        replaced by a mounted diff hides entirely.
         """
         if self._status_widget is None:
             return
         self._status_widget.remove_class("pending")
-        if (
-            self._tool_name != "edit_file"
-            and self._format_output(
-                self._output, is_preview=False
-            ).content.plain.strip()
-        ):
+        if self._superseded_by_diff:
+            self._apply_own_visibility()
+            return
+        if self._format_output(self._output, is_preview=False).content.plain.strip():
             self._status_widget.remove_class("success")
             self._status_widget.display = False
             return
@@ -1983,6 +2039,47 @@ class ToolCallMessage(Vertical):
         self._status_widget.add_class("success")
         self._status_widget.update(Content.styled(f"{glyph} Success!", colors.success))
         self._status_widget.display = True
+
+    @staticmethod
+    def can_be_superseded(tool_name: str | None) -> bool:
+        """Return whether a diff may stand in for this tool's row.
+
+        The public form of the `_TOOL_SUPERSEDED_BY_DIFF` check, so the adapter
+        does not reach for a private constant to ask the same question from a
+        different name source. `mark_superseded_by_diff` still enforces it — this
+        only lets a caller avoid tripping the warning.
+
+        Args:
+            tool_name: Raw name of the tool that produced the row.
+
+        Returns:
+            Whether a mounted `DiffMessage` may hide the row.
+        """
+        return tool_name == _TOOL_SUPERSEDED_BY_DIFF
+
+    def mark_superseded_by_diff(self) -> None:
+        """Hide a successful file-tool row after its diff has mounted.
+
+        Rejects any tool other than `_TOOL_SUPERSEDED_BY_DIFF`, leaving the row
+        visible and logging at warning — so this is not safe to call
+        speculatively. That guard is load-bearing rather than defensive:
+        `MessageStore.to_widget` routes a stored flag through this method
+        precisely to inherit it, so rehydration cannot hide a row the live path
+        would have left visible.
+        """
+        if self._tool_name != _TOOL_SUPERSEDED_BY_DIFF:
+            # A broken invariant, not a routine skip: the caller decided this row
+            # was superseded from a *different* name source (the adapter gates on
+            # `record.tool_name`), so a divergence leaves an empty-bodied diff
+            # rendering "no changes" beside a row that stayed visible.
+            logger.warning(
+                "mark_superseded_by_diff called on %r; only %r may be superseded",
+                self._tool_name,
+                _TOOL_SUPERSEDED_BY_DIFF,
+            )
+            return
+        self._diff_superseded = True
+        self._apply_own_visibility()
 
     def set_error(self, error: str) -> None:
         """Mark the tool call as failed.
@@ -2015,6 +2112,9 @@ class ToolCallMessage(Vertical):
         self._stop_animation()
         self._status = "error"
         self._apply_status_class("error")
+        # Not a no-op: `_superseded_by_diff` is gated on success, so this is what
+        # reveals a row that was hidden behind a diff before its status flipped.
+        self._apply_own_visibility()
         # For shell commands, prepend the full command so users can see what failed
         command = self._args.get("command") if self._tool_name == "execute" else None
         if command and isinstance(command, str) and command.strip():
@@ -2100,8 +2200,7 @@ class ToolCallMessage(Vertical):
         is restored via `clear_awaiting_approval` once the user decides.
         """
         self._awaiting_approval = True
-        self.display = False
-        self._sync_approval_accessories()
+        self._apply_own_visibility()
 
     def clear_awaiting_approval(self) -> None:
         """Restore the tool call after `set_awaiting_approval`.
@@ -2112,8 +2211,7 @@ class ToolCallMessage(Vertical):
         if not self._awaiting_approval:
             return
         self._awaiting_approval = False
-        self.display = True
-        self._sync_approval_accessories()
+        self._apply_own_visibility()
 
     def _register_visibility_accessories(self, *accessories: Widget) -> None:
         """Link transcript decorations whose visibility follows this tool.
@@ -2124,20 +2222,59 @@ class ToolCallMessage(Vertical):
         for accessory in accessories:
             if accessory not in self._visibility_accessories:
                 self._visibility_accessories.append(accessory)
-        self._sync_approval_accessories()
+        self._sync_own_hide_accessories()
 
-    def _sync_approval_accessories(self) -> None:
-        """Mirror this row's approval hiding onto its linked decorations.
+    @property
+    def has_own_hide_reason(self) -> bool:
+        """Whether this row hides itself, regardless of any group collapse.
 
-        Drives both directions, so it is safe to call unconditionally from
-        `set_awaiting_approval` and `clear_awaiting_approval`. Uses `set_class`
-        rather than `display` so an accessory keeps its own visibility class
-        (e.g. the `/timestamps` preference) and returns to it afterwards.
+        Group code must consult this before revealing a row: the two mechanisms
+        are independent, so an unconditional `display = True` would reveal a row
+        that is hiding for its own reasons.
+        """
+        return self._awaiting_approval or self._superseded_by_diff
+
+    def _apply_own_visibility(self) -> None:
+        """Apply self-hide reasons without disturbing group visibility.
+
+        Only touches `display` when a self-hide reason applies or is being
+        released — a row with no self-hide history is left exactly as the group
+        set it. Releasing is the narrower guarantee: it restores `display` to
+        `True` unconditionally, so a row that was *both* group-collapsed and
+        self-hidden would reveal itself into a collapsed group. Not reachable
+        today (the one supersedable tool is group-excluded, and rows awaiting
+        approval are evicted rather than folded), but a new hide reason that can
+        coexist with a group must consult the group's state here.
+
+        The other direction is `has_own_hide_reason`, which group code checks
+        before revealing — and which this reads, so the set of hide reasons is
+        defined in exactly one place and a new one cannot be honoured by the
+        group checks while being ignored here.
+        """
+        if self.has_own_hide_reason:
+            self.display = False
+            self._self_hidden = True
+        elif self._self_hidden:
+            self.display = True
+            self._self_hidden = False
+        self._sync_own_hide_accessories()
+
+    def _sync_own_hide_accessories(self) -> None:
+        """Mirror this row's hide reasons onto linked decorations.
+
+        Tests each reason individually rather than reading `has_own_hide_reason`:
+        each carries its own class so the reasons release independently, which the
+        aggregate cannot express. A new hide reason needs a class and an entry
+        here as well as a term in `has_own_hide_reason`.
         """
         for accessory in self._visibility_accessories:
             accessory.set_class(
                 self._awaiting_approval,
                 _TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS,
+            )
+            accessory.set_class(
+                self._superseded_by_diff,
+                _TOOL_SUPERSEDED_ACCESSORY_CLASS,
             )
 
     def toggle_output(self) -> None:
@@ -3467,9 +3604,91 @@ class ToolCallMessage(Vertical):
         return dict(self._args)
 
     @property
+    def summary_call(self) -> _SummaryCall:
+        """This row as `(tool name, args)` for the group summary line.
+
+        Unlike `args` this does not copy: the group rebuilds its cache key from
+        every member on each spinner tick, so a copy per member per tick buys
+        nothing the caller uses. Safe because the `Mapping` return type is
+        read-only and this widget never mutates `_args` after construction — the
+        dict is the caller's, though, so do not widen this to a caller that
+        mutates.
+        """
+        return (self._tool_name, self._args)
+
+    @property
     def is_success(self) -> bool:
         """Whether the tool completed successfully."""
         return self._status == "success"
+
+    @property
+    def _superseded_by_diff(self) -> bool:
+        """Whether this row hides because its `DiffMessage` says it all.
+
+        Gated on success so a row whose status later flips to error is revealed
+        again: `_diff_superseded` stays set, this goes `False`, and `set_error`
+        re-applies visibility for exactly that reason. Without the conjunct a
+        failure would be hidden behind a diff of the change it did not make.
+        """
+        return self.is_success and self._diff_superseded
+
+    @property
+    def has_display_caveat(self) -> bool:
+        """Whether this row's output leads with a caveat that must stay visible.
+
+        A caveat is the user's only account of a change the transcript cannot
+        render, and it is carried inside this row's output. A groupable tool
+        (`write_file`, `delete`) is folded at mount, and the collapsed summary
+        line is built from tool names and arguments, never from tool output — so
+        without this the caveat is folded away and destroying a 5,000-line file
+        whose contents could not be read renders as `▸ Deleted 1 file`, exactly
+        like destroying an empty one.
+
+        Read by the group code alongside `is_failed`: a caveated row is not a
+        failure, but it has the same claim on staying on screen.
+        """
+        return self._has_display_caveat
+
+    def set_success_with_caveat(self, caveat: str, output: str) -> bool:
+        """Complete this row successfully, leading with a caveat if there is one.
+
+        The live path's single entry point, because the flag and the prose it
+        describes must not be settable apart: a flag without the sentence leaves
+        a row unfoldable for no visible reason, and — the costly direction — the
+        sentence without the flag lets the change's only account be folded into
+        a group summary.
+
+        Not routed through `set_error`: a display problem is not a tool failure.
+        That would stamp the row "Error", overwrite the tool's success message,
+        and make a completed operation count toward every failure surface, so a
+        user would retry an edit that already applied. Prepended rather than
+        appended so the caveat survives the collapsed output preview.
+
+        Args:
+            caveat: The caveat to lead with, or empty when there is none.
+            output: The tool's own output.
+
+        Returns:
+            Whether a caveat was applied, for callers tracking whether any
+            surface carried it.
+        """
+        self.set_success("\n\n".join(part for part in (caveat, output) if part))
+        self._has_display_caveat = bool(caveat)
+        return bool(caveat)
+
+    def _mark_display_caveat(self) -> None:
+        """Restore the display-caveat flag on a rehydrated row.
+
+        For `MessageData.to_widget` only, where the output carrying the caveat
+        is restored separately through `_deferred_output`. On the live path use
+        `set_success_with_caveat`, which sets both together.
+
+        Private so it is not available as a public way to set the flag alone:
+        the store already restores this widget's other private state, and a
+        caller outside that path wanting the flag without the sentence is the
+        split `set_success_with_caveat` exists to prevent.
+        """
+        self._has_display_caveat = True
 
     @property
     def is_failed(self) -> bool:
@@ -3719,22 +3938,224 @@ _TOOL_SUMMARY_PHRASES: dict[str, tuple[str, str, str, str]] = {
     "task": ("Running", "Ran", "agent", "agents"),
 }
 
+# category -> tool-arg names naming the thing the call acts on, in fallback
+# order. Only categories whose summary noun is a durable object belong here:
+# their counts claim "N distinct things", so repeat calls on one target must
+# collapse (see `_tally_categories`).
+#
+# Every other category is absent on purpose. "shell", "js", "task", and "search"
+# count attempts, not objects — running one command or grepping one pattern twice
+# is genuinely two pieces of work. "web_search" phrases its own repeats
+# ("Searched the web 2 times") and "todos" carries no count at all. "ls" is
+# excluded because a listing is a snapshot, not a durable object: a group spans a
+# whole step, so an intervening write can make the second listing of one
+# directory show different contents.
+_TOOL_SUMMARY_TARGET_ARGS: dict[str, tuple[str, ...]] = {
+    "read": ("file_path", "path"),
+    "write": ("file_path", "path"),
+    "edit": ("file_path", "path"),
+    "delete": ("file_path", "path"),
+    "fetch": ("url",),
+}
+
+_PATH_TARGET_CATEGORIES = frozenset({"read", "write", "edit", "delete"})
+"""Categories from `_TOOL_SUMMARY_TARGET_ARGS` whose target is a filesystem path.
+
+Only these are normalized before comparison. Path rules are wrong for a URL:
+`http://x/a//b`, `http://x/a/` and `http://x/a` would each be judged the same
+target as a URL the server can answer differently. That undercounts, which this
+code must never do. Any category added here needs a genuine path, and any other
+target is compared exactly.
+"""
+
+
+def _summary_target(tool_name: str, args: Mapping[str, Any]) -> str | None:
+    """Identify the object a call acts on, for repeat-call collapsing.
+
+    Args:
+        tool_name: Raw tool name for the call.
+        args: The call's parsed arguments.
+
+    Returns:
+        An identity for the target, or None when the category counts attempts
+        rather than objects, or the naming argument is missing or not a non-empty
+        string. None means "cannot be judged a repeat", so the call is always
+        counted — an argument list this code cannot read undercounts nothing.
+    """
+    category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
+    arg_names = _TOOL_SUMMARY_TARGET_ARGS.get(category)
+    if arg_names is None:
+        return None
+    for arg_name in arg_names:
+        value = args.get(arg_name)
+        if isinstance(value, str) and value:
+            if category not in _PATH_TARGET_CATEGORIES:
+                # Not a path, so compare it exactly — see
+                # `_PATH_TARGET_CATEGORIES` for why path rules undercount a URL.
+                return f"{category}:{value}"
+            # The category prefix is load-bearing: `_tally_categories` shares one
+            # `seen` set across categories, so identities must be namespaced or
+            # reading and then editing one file would read as a repeat.
+            return f"{category}:{_normalize_path_target(value)}"
+    return None
+
+
+def _normalize_path_target(value: str) -> str:
+    r"""Normalize a path using the filesystem middleware's canonical form.
+
+    Defers to `validate_path` rather than reimplementing it, so the identity is
+    exactly the string the file tools act on and cannot drift from it. Every
+    path the middleware rejects — `..` traversal, a leading `~`, a drive prefix
+    like `C:/` — is returned verbatim: a call that could not have run has no
+    canonical form, and canonicalizing one would fold it into a valid target's
+    tally. `~` and `/~` are different reads and must count as two.
+
+    Args:
+        value: The raw path string as the tool was called with it.
+
+    Returns:
+        The normalized virtual path, or `value` when the middleware rejects it.
+    """
+    from deepagents.backends.utils import validate_path
+
+    try:
+        return validate_path(value)
+    except ValueError:
+        return value
+
+
+# category -> plural noun for the operation, used to report repeat work on one
+# target alongside the target count, e.g. "Edited 1 file (3 edits)".
+#
+# Every mutating category qualifies: each call is an event that changed the tree
+# and owns a diff, so collapsing three edits of one file to a bare "Edited 1
+# file" hides work the reader wants. A group spans a whole step, so one path can
+# genuinely be mutated twice — `delete a.py`, `write_file a.py`, `delete a.py`
+# is two real deletions. "fetch" qualifies too: a repeated fetch of one URL is a
+# deliberate re-request, not pagination, and "Fetched 1 URL" for two requests
+# reads like the second one vanished. Of the categories that name a target, only
+# "read" is absent — a repeat read is usually pagination, where the count is
+# noise, so reads collapse silently.
+#
+# A category here has no effect unless it is also in `_TOOL_SUMMARY_TARGET_ARGS`:
+# without a target, `calls` can never exceed `targets`.
+_REPEAT_COUNT_NOUNS: dict[str, str] = {
+    "edit": "edits",
+    "write": "writes",
+    "delete": "deletions",
+    "fetch": "calls",
+}
+
+
+class _CategoryTally(NamedTuple):
+    """One category's contribution to a summary line."""
+
+    category: str
+    """The summary category being counted."""
+
+    rep_name: str
+    """First raw tool name seen for the category, for fallback phrasing."""
+
+    targets: int
+    """Distinct targets touched. Calls with no identifiable target each count
+    for themselves, so this never drops below the honest minimum."""
+
+    calls: int
+    """Total calls, including repeats on one target. Equals `targets` unless
+    something was touched more than once."""
+
+
+def _tally_categories(
+    calls: Sequence[_SummaryCall],
+) -> list[_CategoryTally]:
+    """Aggregate calls by category, counting distinct targets and total calls.
+
+    Both numbers are needed because the phrasing claims nouns ("Read 2 files")
+    while the work is calls: a file read twice is one file, and an edit made
+    twice is one file but two edits.
+
+    Args:
+        calls: `(raw tool name, parsed args)` for each call, in call order.
+
+    Returns:
+        One tally per category, in first-appearance order.
+    """
+    tallies: dict[str, _CategoryTally] = {}
+    # One set across all categories is safe because `_summary_target` namespaces
+    # every identity by category. That is also why the first-call branch below
+    # may ignore `repeat`: a repeat implies an earlier call in the same category,
+    # which must already have created that category's tally.
+    seen: set[str] = set()
+    for tool_name, args in calls:
+        category = _TOOL_SUMMARY_CATEGORY.get(tool_name, tool_name)
+        target = _summary_target(tool_name, args)
+        repeat = target is not None and target in seen
+        if target is not None:
+            seen.add(target)
+        current = tallies.get(category)
+        if current is None:
+            tallies[category] = _CategoryTally(
+                category=category, rep_name=tool_name, targets=1, calls=1
+            )
+            continue
+        tallies[category] = current._replace(
+            targets=current.targets + (0 if repeat else 1),
+            calls=current.calls + 1,
+        )
+    return list(tallies.values())
+
+
+_DIFF_HEADER_CATEGORIES = frozenset({"write", "edit", "delete"})
+"""Summary categories whose past verb heads a `DiffMessage`.
+
+The file-mutating tools — the only ones that produce a diff to head.
+"""
+
+
+def _diff_header_verb(tool_name: str | None) -> str:
+    """Return the past-tense verb naming the change a diff shows.
+
+    The verb text is shared with the group-summary tables, but eligibility is
+    not: a newly added file tool needs an entry in `_DIFF_HEADER_CATEGORIES` as
+    well, or it heads its diff with no verb at all.
+
+    Args:
+        tool_name: Raw name of the tool that produced the diff.
+
+    Returns:
+        The verb, or empty when the tool does not mutate a file or has no
+        phrasing registered for its category.
+    """
+    category = _TOOL_SUMMARY_CATEGORY.get(tool_name or "", "")
+    if category not in _DIFF_HEADER_CATEGORIES:
+        return ""
+    phrases = _TOOL_SUMMARY_PHRASES.get(category)
+    if phrases is None:
+        # A category listed as diff-eligible but never given phrasing. Losing
+        # the verb beats raising inside `compose` and killing the whole diff.
+        logger.warning("No summary phrasing registered for category %r", category)
+        return ""
+    return phrases[1]
+
+
 _Tense = Literal["present", "past"]
 
 
-def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -> str:
-    """Phrase a single count segment, e.g. "Read 2 files" / "Reading 2 files".
+def _summary_segment(tally: _CategoryTally, tense: _Tense) -> str:
+    """Phrase one category's segment, e.g. "Read 2 files" / "Reading 2 files".
+
+    The lead noun counts distinct targets. When a category in
+    `_REPEAT_COUNT_NOUNS` repeated work on one of them, the operation count
+    trails in parentheses ("Edited 1 file (3 edits)") so neither number is lost.
 
     Args:
-        category: The summary category the tools were bucketed into.
-        count: How many tools fell into this category.
-        tool_name: A representative raw tool name, used to phrase categories
-            that have no dedicated entry in `_TOOL_SUMMARY_PHRASES`.
+        tally: The category's distinct-target and total-call counts.
         tense: Whether to phrase the segment in the present or past tense.
 
     Returns:
-        The phrased segment for this category, count, and tense.
+        The phrased segment for this category and tense.
     """
+    category, tool_name, count = tally.category, tally.rep_name, tally.targets
     if category == "web_search":
         base = "Searching the web" if tense == "present" else "Searched the web"
         return base if count == 1 else f"{base} {count} times"
@@ -3748,40 +4169,39 @@ def _summary_segment(category: str, count: int, tool_name: str, tense: _Tense) -
         present, past, singular, plural = phrase
     verb = present if tense == "present" else past
     noun = singular if count == 1 else plural
-    return f"{verb} {count} {noun}"
+    segment = f"{verb} {count} {noun}"
+    repeat_noun = _REPEAT_COUNT_NOUNS.get(category)
+    if repeat_noun is not None and tally.calls > count:
+        # `calls > count` implies at least two calls, so the noun is always
+        # plural.
+        segment += f" ({tally.calls} {repeat_noun})"
+    return segment
 
 
-def summarize_tool_group(tool_names: list[str], *, tense: _Tense = "past") -> str:
+def summarize_tool_group(
+    calls: Sequence[_SummaryCall], *, tense: _Tense = "past"
+) -> str:
     """Build a one-line summary of a run of tool calls.
 
     Aggregates by category in first-appearance order and lowercases the lead
-    word of every segment after the first, e.g.
-    `["read_file", "read_file", "execute"]` -> "Read 2 files, ran 1 shell command".
+    word of every segment after the first, e.g. two `read_file` calls on
+    different paths plus an `execute` -> "Read 2 files, ran 1 shell command".
+
+    Takes args, not just names, because the counts claim distinct nouns: without
+    the argument naming each call's target, one file read twice is
+    indistinguishable from two files read once.
 
     Args:
-        tool_names: Raw tool names for the run, in call order.
+        calls: `(raw tool name, parsed args)` for each call, in call order.
         tense: Whether to phrase the summary in the present or past tense.
 
     Returns:
         The aggregated one-line summary string in the requested tense.
     """
-    counts: dict[str, int] = {}
-    order: list[str] = []
-    rep_name: dict[str, str] = {}
-    for name in tool_names:
-        category = _TOOL_SUMMARY_CATEGORY.get(name, name)
-        if category not in counts:
-            counts[category] = 0
-            order.append(category)
-            rep_name[category] = name
-        counts[category] += 1
-
-    segments = [
-        _summary_segment(cat, counts[cat], rep_name[cat], tense) for cat in order
-    ]
-    if not segments:
+    tallies = _tally_categories(calls)
+    if not tallies:
         return "Running tools" if tense == "present" else "Ran tools"
-    return _join_segments(segments)
+    return _join_segments([_summary_segment(tally, tense) for tally in tallies])
 
 
 def _join_segments(segments: list[str]) -> str:
@@ -3791,8 +4211,8 @@ def _join_segments(segments: list[str]) -> str:
         segments: Pre-phrased segments in display order.
 
     Returns:
-        The segments joined with ", ", e.g. `["Ran 2 files", "Running 1 agent"]`
-        -> "Ran 2 files, running 1 agent".
+        The segments joined with ", ", e.g. `["Read 2 files", "Running 1 agent"]`
+        -> "Read 2 files, running 1 agent".
     """
     first, *rest = segments
     lowered = [f"{seg[0].lower()}{seg[1:]}" if seg else seg for seg in rest]
@@ -3800,39 +4220,79 @@ def _join_segments(segments: list[str]) -> str:
 
 
 def summarize_live_tool_group(
-    completed_names: list[str], pending_names: list[str]
+    completed_calls: Sequence[_SummaryCall],
+    pending_calls: Sequence[_SummaryCall],
 ) -> str:
     """Summarize an in-flight run, mixing past and present tense.
 
     Completed calls are phrased in the past tense so the work already done in
     the step stays visible, and the still-running calls are phrased in the
-    present tense, e.g. `["execute", "execute"]` completed plus `["task"]`
-    pending -> "Ran 2 shell commands, running 1 agent".
+    present tense, e.g. two completed `execute` calls plus a pending `task` ->
+    "Ran 2 shell commands, running 1 agent".
+
+    Each half is tallied independently, so a file whose second read is still
+    running is counted in both — collapsing across the split would drop it from
+    the present-tense half and the line would stop reporting the step as
+    reading.
 
     Args:
-        completed_names: Raw tool names that have finished successfully, in
-            call order. Failed/rejected calls are evicted before this runs.
-        pending_names: Raw tool names still pending or running, in call order.
+        completed_calls: `(raw tool name, parsed args)` for calls that finished
+            successfully, in call order. Failed/rejected calls are evicted
+            before this runs.
+        pending_calls: `(raw tool name, parsed args)` for calls still pending or
+            running, in call order.
 
     Returns:
-        The combined one-line summary. Empty when neither list has members.
+        The combined one-line summary. Empty when neither half has members.
     """
     segments: list[str] = []
-    if completed_names:
-        segments.append(summarize_tool_group(completed_names, tense="past"))
-    if pending_names:
-        segments.append(summarize_tool_group(pending_names, tense="present"))
+    if completed_calls:
+        segments.append(summarize_tool_group(completed_calls, tense="past"))
+    if pending_calls:
+        segments.append(summarize_tool_group(pending_calls, tense="present"))
     if not segments:
         return ""
     return _join_segments(segments)
 
 
+def _summary_cache_key(
+    calls: Sequence[_SummaryCall],
+) -> _SummaryCacheKey:
+    """Build a cache key capturing everything a summary line depends on.
+
+    The line is a function of each call's `(name, target)`, so the key is too.
+    A names-only key would in fact be sufficient today — every membership
+    mutation, append and eviction alike, clears the cache outright, so two
+    cached states cannot share a name list while differing in targets. Deriving
+    the key from the summarizer's real inputs instead of relying on that
+    argument keeps it correct if grouping ever changes. Over-invalidation is the
+    only cost: reordering calls within a category rebuilds identical text.
+
+    Args:
+        calls: `(raw tool name, parsed args)` for each call, in call order.
+
+    Returns:
+        A hashable key, order-sensitive to match segment ordering.
+    """
+    return tuple((name, _summary_target(name, args)) for name, args in calls)
+
+
 _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS = "-tool-group-collapsed-accessory"
 """Marker class hiding a collapsed group's accessory widgets.
 
-See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS` for why the two hide reasons carry
-separate classes and why neither may be replaced by assigning `display`.
+See `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS` for why each hide reason carries its
+own class and why none may be replaced by assigning `display`.
 """
+
+
+def _hides_itself(widget: Widget) -> bool:
+    """Whether a widget is hiding itself for reasons a group must not override.
+
+    Returns:
+        `True` when the widget tracks its own hide reasons and one applies. Only
+        `ToolCallMessage` does; anything else is governed by its group alone.
+    """
+    return isinstance(widget, ToolCallMessage) and widget.has_own_hide_reason
 
 
 class ToolGroupSummary(Static):
@@ -3844,7 +4304,7 @@ class ToolGroupSummary(Static):
     live, finished calls stay visible in the past tense next to the ones still
     running in the present tense (e.g. "Ran 2 shell commands, running 1 agent…")
     so the work already done in the step doesn't disappear. Failed, rejected,
-    and skipped tools are evicted to standalone rows (see `_evict_failed`) so
+    and skipped tools are evicted to standalone rows (see `_evict_unfoldable`) so
     errors stay visible. Clicking the line or pressing Ctrl+O expands the
     underlying tool rows (and their diffs).
 
@@ -3920,11 +4380,11 @@ class ToolGroupSummary(Static):
         # every spinner tick). None means "recompute on next render".
         self._present_text: str | None = None
         self._past_text: str | None = None
-        # The (completed, pending) tool-name tuples the cached live line was
-        # built from. The line mixes finished (past tense) and running (present
-        # tense) members, so it must be rebuilt whenever a member finishes, not
-        # just when membership grows.
-        self._present_key: tuple[tuple[str, ...], tuple[str, ...]] | None = None
+        # The (completed, pending) `_summary_cache_key` pair the cached live line
+        # was built from. The line mixes finished (past tense) and running
+        # (present tense) members, so it must be rebuilt whenever a member
+        # finishes, not just when membership grows.
+        self._present_key: _LiveSummaryKey | None = None
 
     def on_mount(self) -> None:
         """Apply initial visibility, render, and arm the spinner if live."""
@@ -3957,7 +4417,8 @@ class ToolGroupSummary(Static):
                 follow the tool's visibility via a marker class. Not group
                 members: they take neither `-grouped` nor a `display` flip, so
                 their own visibility class survives the fold. Also linked to
-                the tool's approval hiding.
+                the tool's own hide reasons — approval and diff supersession
+                both — via `has_own_hide_reason`.
         """
         tool.add_class("-grouped")
         self._tools.append(tool)
@@ -3992,7 +4453,7 @@ class ToolGroupSummary(Static):
         past tense as though the tool ran successfully.
         """
         self._accepting_members = False
-        self._evict_failed()
+        self._evict_unfoldable()
         in_progress = self._sync_lifecycle()
         if not self.is_attached:
             return
@@ -4009,10 +4470,11 @@ class ToolGroupSummary(Static):
     def _release_collapsible(self, widget: Widget) -> None:
         """Drop a widget's group linkage and clear its collapsed accessory class.
 
-        Only the *group's* hide reason is released. A tool's own approval
-        linkage (`_visibility_accessories`) intentionally survives, so a
-        revealed pending row still hides its footer when an approval prompt
-        replaces it — see `_TOOL_AWAITING_APPROVAL_ACCESSORY_CLASS`.
+        Only the *group's* hide reason is released. A tool's own linkage
+        (`_visibility_accessories`) intentionally survives, so a revealed row
+        still hides its footer for any of its own hide reasons — an approval
+        prompt replacing it, or a diff superseding it. See `has_own_hide_reason`
+        for the full set.
         """
         if widget in self._collapsible:
             self._collapsible.remove(widget)
@@ -4029,7 +4491,7 @@ class ToolGroupSummary(Static):
         """
         for widget in list(self._collapsible):
             self._release_collapsible(widget)
-            if widget.is_attached:
+            if widget.is_attached and not _hides_itself(widget):
                 widget.display = True
 
     def reveal_pending(self) -> None:
@@ -4040,7 +4502,7 @@ class ToolGroupSummary(Static):
         for tool in pending:
             self._tools.remove(tool)
             self._release_collapsible(tool)
-            if tool.is_attached and not tool._awaiting_approval:
+            if tool.is_attached and not _hides_itself(tool):
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
         in_progress = self._sync_lifecycle()
@@ -4099,15 +4561,23 @@ class ToolGroupSummary(Static):
         self._sync_timer()
         return in_progress
 
-    def _evict_failed(self) -> None:
-        """Un-fold errored/rejected/skipped tools so non-successes stay visible."""
-        failed = [t for t in self._tools if t.is_failed]
+    def _evict_unfoldable(self) -> None:
+        """Un-fold tools the summary line cannot speak for.
+
+        Two reasons qualify. A non-success (errored, rejected, skipped) must stay
+        visible so a failure is not summarized away. So must a success whose
+        output opens with a display caveat: the summary is built from tool names
+        and arguments, never from tool output, so folding one hides the only
+        statement that the change could not be shown — see
+        `ToolCallMessage.has_display_caveat`.
+        """
+        failed = [t for t in self._tools if t.is_failed or t.has_display_caveat]
         if not failed:
             return
         for tool in failed:
             self._tools.remove(tool)
             self._release_collapsible(tool)
-            if tool.is_attached:
+            if tool.is_attached and not _hides_itself(tool):
                 tool.display = True
         self._present_text = self._past_text = self._present_key = None
 
@@ -4129,7 +4599,7 @@ class ToolGroupSummary(Static):
         try:
             self._spinner_pos += 1
             before = len(self._tools)
-            self._evict_failed()
+            self._evict_unfoldable()
             evicted = len(self._tools) != before
             if self._collapsed:
                 # Re-assert hidden state in case a member was shown externally
@@ -4170,9 +4640,14 @@ class ToolGroupSummary(Static):
         and nothing revisits a skipped accessory, so guarding on `is_attached`
         here would leave a late-mounted footer stranded visible over a hidden
         row.
+
+        Expanding the group does not reveal a widget hiding for its own reasons
+        (`_hides_itself`); its accessories still follow the group, since their
+        self-hide reasons carry their own independent classes.
         """
-        if widget.is_attached and widget.display != visible:
-            widget.display = visible
+        target = visible and not _hides_itself(widget)
+        if widget.is_attached and widget.display != target:
+            widget.display = target
         for accessory in self._accessories.get(widget, []):
             accessory.set_class(not visible, _TOOL_GROUP_COLLAPSED_ACCESSORY_CLASS)
 
@@ -4203,9 +4678,11 @@ class ToolGroupSummary(Static):
         if in_progress is None:
             in_progress = self._in_progress()
         if not self._finalized and in_progress:
-            pending = [tool.tool_name for tool in self._tools if tool.is_pending]
-            completed = [tool.tool_name for tool in self._tools if not tool.is_pending]
-            key = (tuple(completed), tuple(pending))
+            # Tallied per bucket, not across both: a file whose second read is
+            # still in flight must stay visible as being read.
+            pending = [t.summary_call for t in self._tools if t.is_pending]
+            completed = [t.summary_call for t in self._tools if not t.is_pending]
+            key = (_summary_cache_key(completed), _summary_cache_key(pending))
             summary_changed = self._present_text is None or key != self._present_key
             if summary_changed:
                 self._present_text = summarize_live_tool_group(completed, pending)
@@ -4224,49 +4701,47 @@ class ToolGroupSummary(Static):
             )
             if self._past_text is None:
                 self._past_text = summarize_tool_group(
-                    [tool.tool_name for tool in self._tools], tense="past"
+                    [tool.summary_call for tool in self._tools], tense="past"
                 )
             self.update(Content(f"{mark} {self._past_text}"), layout=layout)
 
 
 class DiffMessage(Static):
-    """Widget displaying a diff with syntax highlighting."""
+    """Widget displaying a diff with syntax highlighting.
+
+    Two behaviors beyond rendering, both easy to break from `compose` without
+    noticing, and documented per-parameter on `__init__`:
+
+    - Any `outcome` other than `shown` replaces the diff body with a caveat
+      sentence. A body rendered under a lost pre-image would be a whole-file
+      insertion that never happened, so suppression is the honest result rather
+      than a degradation.
+    - A path this session treats as sensitive suppresses the body *and* the
+      counts. Leaking `+40 -3` for a credentials file still describes its
+      contents, so the header cannot survive a redacted body.
+
+    `renders_caveat` reports whether this widget's body states the change could
+    not be shown. The adapter reads it back when deciding whether any surface
+    carried the caveat — conjoined with the mount result, since this says only
+    what the widget would render, not that it reached the screen.
+    """
 
     DEFAULT_CSS = """
     DiffMessage {
         height: auto;
-        padding: 1;
+        padding: 0 1;
         margin: 0 0 1 0;
-        background: $surface;
-        border: solid $primary;
+        background: transparent;
+        border-left: wide $panel;
         pointer: text;
     }
 
     DiffMessage .diff-header {
-        text-style: bold;
         margin-bottom: 1;
     }
-
-    DiffMessage .diff-add {
-        color: $text-success;
-        background: $success-muted;
-    }
-
-    DiffMessage .diff-remove {
-        color: $text-error;
-        background: $error-muted;
-    }
-
-    DiffMessage .diff-context {
-        color: $text-muted;
-    }
-
-    DiffMessage .diff-hunk {
-        color: $secondary;
-        text-style: bold;
-    }
     """
-    """Diff syntax coloring per theme: additions, removals, muted context."""
+    """Deliberately carries no per-line color: the row gutters and the
+    `.diff-line-*` backgrounds supply it."""
 
     def __init__(
         self,
@@ -4274,6 +4749,12 @@ class DiffMessage(Static):
         file_path: str = "",
         *,
         tool_name: str | None = None,
+        before: str = "",
+        after: str = "",
+        stats: DiffStats | None = None,
+        outcome: DiffOutcome = "shown",
+        show_caveat: bool = True,
+        show_numbers: bool = True,
         **kwargs: Any,
     ) -> None:
         """Initialize a diff message.
@@ -4282,12 +4763,63 @@ class DiffMessage(Static):
             diff_content: The unified diff content
             file_path: Path to the file being modified
             tool_name: Name of the file tool that produced the diff
+            before: Source aligned to the diff's old line numbers. Pass the
+                whole file, or a prefix `highlight_source_prefixes` previously
+                produced — which is what `MessageData` round-trips. Stored
+                trimmed, and dropped entirely for a credential path.
+            after: Source aligned to the diff's new line numbers, same contract.
+            stats: Authoritative `(additions, deletions)`, counted before
+                truncation. Always preferred over recounting the diff body;
+                `None` recounts.
+            outcome: What the operation can honestly say about what it changed.
+                Anything but `shown` suppresses the body and replaces it with
+                that outcome's caveat. Taken as the outcome rather than as
+                independent flags because they are not independent: a
+                `stats`-plus-"counts are fiction" pair is representable, and
+                whichever of the two a reader trusts, the other contradicts it.
+            show_caveat: Whether to render the outcome's caveat. Suppresses only
+                the sentence, never the body — an untrusted body stays hidden
+                either way. Pass `False` only when a tool row already on screen
+                carries the identical sentence, which for `edit_file` is
+                guaranteed: it can never be folded into a group, so both would
+                render adjacent. The caller owns that judgement because this
+                widget cannot see what else is mounted.
+            show_numbers: Whether file-relative line numbers may be rendered.
+                Diffs whose numbers are not file-relative remain unnumbered.
+                The caller owns this judgement: a live `edit_file` diff is
+                computed from the full before/after file contents and has
+                file-relative numbers, while a resumed-thread `edit_file`
+                diff is rebuilt from `old_string`/`new_string` fragments and
+                does not.
             **kwargs: Additional arguments passed to parent
         """
         super().__init__(**kwargs)
         self._diff_content = diff_content
         self._file_path = file_path
         self._tool_name = tool_name
+        self._redacted = is_sensitive_file_path(file_path)
+        if self._redacted:
+            self._before = ""
+            self._after = ""
+        else:
+            self._before, self._after = highlight_source_prefixes(
+                diff_content, before, after
+            )
+        self._stats = stats
+        self._outcome = outcome
+        self._show_caveat = show_caveat
+        self._show_numbers = show_numbers
+
+    @property
+    def renders_caveat(self) -> bool:
+        """Whether this widget's body states the change could not be shown.
+
+        Read by the adapter instead of inferring from the record's outcome: the
+        adapter cannot otherwise know whether the mounted widget actually put
+        the caveat on screen, and asserting it did is how a caveat came to be
+        both suppressed and reported as delivered.
+        """
+        return self._outcome != "shown" and self._show_caveat
 
     def compose(self) -> ComposeResult:
         """Compose the diff message layout.
@@ -4295,27 +4827,99 @@ class DiffMessage(Static):
         Yields:
             Widgets displaying the diff header and formatted content.
         """
-        if self._file_path:
-            yield Static(
-                Content.from_markup("[bold]File: $path[/bold]", path=self._file_path),
-                classes="diff-header",
-            )
+        parts: list[str | tuple[str, str] | Content] = []
+        if verb := _diff_header_verb(self._tool_name):
+            parts.append((f"{verb} ", "bold"))
+        parts.append(Content.from_markup("[dim]$path[/dim]", path=self._file_path))
 
-        # Never render the contents of credential files (e.g. `.env`) — the diff
-        # would leak secrets into the terminal UI and scrollback.
-        if is_sensitive_file_path(self._file_path):
+        # Never render the contents or line counts of credential files (e.g.
+        # `.env`) — the diff would leak secrets into the terminal UI and
+        # scrollback, and the counts would describe them.
+        if self._redacted:
+            yield Static(Content.assemble(*parts), classes="diff-header")
+            if self.renders_caveat:
+                # Rendered alongside the redaction notice, not instead of it.
+                # The two say different things: redaction means the diff was
+                # withheld deliberately, the caveat means it could not be
+                # produced at all. Showing only the former tells a reader the
+                # change is known and merely hidden. The caveat names the tool
+                # and nothing else, so it leaks no file content.
+                yield Static(
+                    Content.styled(
+                        display_caveat(self._outcome, self._tool_name or "operation"),
+                        "dim",
+                    )
+                )
             yield Static(
                 Content.styled("Diff hidden — file may contain credentials", "dim")
             )
+        elif self._outcome != "shown":
+            # The body cannot be trusted. Under `untrusted_before` the diff was
+            # computed against a stand-in empty file, so a one-line edit renders
+            # as a whole-file insertion; suppressing only the counts would leave
+            # the body making the same false claim more loudly, so the caveat
+            # replaces it outright.
+            #
+            # Gated on the outcome, not on `renders_caveat`: `show_caveat`
+            # suppresses the sentence when a row already carries it, and must
+            # never be able to bring the untrusted body back.
+            #
+            # The caveat is the shared one, so this widget stands on its own:
+            # the tool row that also carries it can be folded into a group, or
+            # never have mounted at all, and pointing at it would leave the
+            # reader chasing text that is not on screen.
+            yield Static(Content.assemble(*parts), classes="diff-header")
+            if self.renders_caveat:
+                yield Static(
+                    Content.styled(
+                        display_caveat(self._outcome, self._tool_name or "operation"),
+                        "dim",
+                    )
+                )
         else:
-            # Render the diff with per-line Statics (CSS-driven backgrounds)
-            yield from compose_diff_lines(self._diff_content, max_lines=100)
+            stats = self._stats if self._stats is not None else self._recount()
+            if stats is None:
+                parts.append(("  change counts unavailable", "dim"))
+            elif stats.additions or stats.deletions:
+                parts += ["  ", format_diff_stats(stats)]
+            elif not self._diff_content:
+                parts.append(("  no changes", "dim"))
+            header = Content.assemble(*parts)
+            if header.plain:
+                yield Static(header, classes="diff-header")
+            if self._diff_content:
+                yield from compose_diff_lines(
+                    self._diff_content,
+                    max_lines=100,
+                    path=self._file_path,
+                    before=self._before,
+                    after=self._after,
+                    show_numbers=self._show_numbers,
+                )
+
+    def _recount(self) -> DiffStats | None:
+        """Recount the diff body when no authoritative counts were supplied.
+
+        Returns:
+            Counts from the body, or `None` when the body was clipped. A
+            truncated diff is missing lines by construction, so counting it would
+            assert a number that is known to be short and indistinguishable from
+            a correct one. `None` says the counts are unavailable, which is
+            different from — and more honest than — silently showing none.
+        """
+        lines = split_diff_lines(self._diff_content)
+        # Any position, not just the last line, and via the shared predicate:
+        # the renderer marks a truncated row wherever it appears, and the two
+        # must not disagree about whether this body is complete.
+        if any(is_truncation_marker(line) for line in lines):
+            return None
+        return count_diff_change_lines(lines)
 
     def on_mount(self) -> None:
         """Set border style based on charset mode."""
         if is_ascii_mode():
             colors = theme.get_theme_colors(self)
-            self.styles.border = ("ascii", colors.primary)
+            self.styles.border_left = ("ascii", colors.panel)
 
 
 class ErrorMessage(Static):

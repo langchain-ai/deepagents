@@ -225,6 +225,25 @@ Ensure the following:
 - Edge cases and error conditions are tested
 - Tests are deterministic (no flaky tests)
 
+#### Warnings are errors
+
+Every package under `libs/` puts `"error"` first in its pytest `filterwarnings`, so any warning the repo has not explicitly accepted fails the run. The entries after `"error"` are the reviewed allowlist.
+
+- Fix actionable warnings first; an allowlist entry is the last resort, not the default.
+- When one test deliberately emits a warning, scope the exception to it with `@pytest.mark.filterwarnings("ignore:<message>:<category>")` instead of a package-level entry.
+- Reserve package-level entries for categorical or third-party warnings nothing in the repo can act on. Each one needs a justification comment; when the filter is message-scoped, the prefix must be narrow enough to not swallow adjacent warnings.
+- Prefer `default::` over `ignore::` when the category is one that reports failures Python otherwise swallows (`PytestUnhandledThreadExceptionWarning`, `PytestUnraisableExceptionWarning`). `ignore` deletes the report, so an assertion failing inside a worker thread would pass silently; `default` keeps it printed without failing the run.
+- Warning filter specs split on `:`, so end the message prefix before the first colon that appears in the warning text.
+- In `filterwarnings` ini entries the message field is an **unescaped regex** (unlike a command-line `-W`, which escapes it). Escape any `.`, `(`, or `+` you mean literally — an unescaped metacharacter can produce a filter that silently never matches.
+- A filter can be version-specific (e.g. only firing on Python 3.14); a filter that does not match anything is harmless.
+
+Three failure modes to expect: a warning inside a test fails that test, one during import fails collection, and one raised while pytest is *configuring* (typically from a plugin) aborts with `INTERNALERROR` — the last is the hardest to read from CI output. Warnings emitted while pytest loads its plugins, before the ini filters are installed, are not caught at all; do not assume a clean run proves a dependency is warning-free.
+
+Maintainers can apply the `bypass-warnings-check` PR label and re-run failed jobs to run the suite with warnings demoted. This is an escape hatch for landing fixes under time pressure, not a permanent fix: merge queue runs enforce the policy again, so the warning must still be addressed or allowlisted. Two caveats on its reach:
+
+- It applies only to jobs that go through `_test.yml`. The `test-quickjs-sdk-smoke` job in `ci.yml` invokes pytest directly and has no bypass path.
+- Release runs (`release.yml`) always enforce, so a warning that only appears against the built wheel cannot be labeled past.
+
 ### Security and risk assessment
 
 - No `eval()`, `exec()`, or `pickle` on user-controlled input

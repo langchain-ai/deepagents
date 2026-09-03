@@ -58,16 +58,41 @@ def test_aggregate_and_summary(tmp_path: Path):
 
     result = agg.aggregate(tmp_path)
     by_task = result.by_task
-    assert by_task["taskA"] == {"trials": 3, "passed": 1, "errored": 0}
-    assert by_task["taskB"] == {"trials": 3, "passed": 0, "errored": 0}
-    assert by_task["taskC"] == {"trials": 3, "passed": 3, "errored": 0}
+    assert by_task["taskA"] == {
+        "trials": 3,
+        "passed": 1,
+        "errored": 0,
+        "reward_sum": 1.0,
+    }
+    assert by_task["taskB"] == {
+        "trials": 3,
+        "passed": 0,
+        "errored": 0,
+        "reward_sum": 0.0,
+    }
+    assert by_task["taskC"] == {
+        "trials": 3,
+        "passed": 3,
+        "errored": 0,
+        "reward_sum": 3.0,
+    }
     assert result.models == {"m1"}
     assert result.job_ids == {"job1"}
     assert result.empty_shards == set()
     assert result.skipped_files == 0
     assert result.malformed_rewards == 0
 
-    dataset_passk, avg_at_k, totals, per_task = agg.build_summary(by_task, 3)
+    parts = agg.build_summary(by_task, 3)
+    dataset_passk, avg_at_k, totals, per_task = (
+        parts.pass_at_k,
+        parts.avg_at_k,
+        parts.totals,
+        parts.per_task,
+    )
+    # No category passed -> binary scoring, so no macro average is computed. These
+    # fixtures report no component metrics either, so nothing is carried.
+    assert parts.macro_avg_at_k is None
+    assert parts.components is None
     # pass@K (K=3), scalar: mean over tasks of "passed at least once" = (1+0+1)/3.
     assert abs(dataset_passk - (1 + 0 + 1) / 3) < 1e-6
     assert totals == {
@@ -97,13 +122,24 @@ def test_errored_and_missing_count_as_fail(tmp_path: Path):
         tmp_path / "t__2", "taskX", reward=None
     )  # no verifier reward -> fail + errored
     by_task = agg.aggregate(tmp_path).by_task
-    assert by_task["taskX"] == {"trials": 3, "passed": 1, "errored": 2}
+    assert by_task["taskX"] == {
+        "trials": 3,
+        "passed": 1,
+        "errored": 2,
+        # Only the numeric reward contributes; the errored and reward-less trials add 0.
+        "reward_sum": 1.0,
+    }
 
 
 def test_partial_reward_is_not_a_pass(tmp_path: Path):
     _write_trial(tmp_path / "t__0", "taskY", reward=0.5)
     by_task = agg.aggregate(tmp_path).by_task
-    assert by_task["taskY"] == {"trials": 1, "passed": 0, "errored": 0}
+    assert by_task["taskY"] == {
+        "trials": 1,
+        "passed": 0,
+        "errored": 0,
+        "reward_sum": 0.5,
+    }
 
 
 def test_end_to_end_writes_files(tmp_path: Path):
@@ -230,7 +266,12 @@ def test_unreadable_and_non_object_json_are_skipped_and_flag_incomplete(tmp_path
 
     result = agg.aggregate(tmp_path)
     # The good trial still tallies; the two bad files are counted as skipped.
-    assert result.by_task["taskA"] == {"trials": 1, "passed": 1, "errored": 0}
+    assert result.by_task["taskA"] == {
+        "trials": 1,
+        "passed": 1,
+        "errored": 0,
+        "reward_sum": 1.0,
+    }
     assert result.skipped_files == 2
 
     out = tmp_path / "out"
@@ -245,7 +286,13 @@ def test_numeric_string_reward_is_coerced(tmp_path: Path):
     # Harbor could serialize a reward as a string; it must not be a silent fail.
     _write_trial(tmp_path / "t__0", "taskA", reward="1.0")
     result = agg.aggregate(tmp_path)
-    assert result.by_task["taskA"] == {"trials": 1, "passed": 1, "errored": 0}
+    assert result.by_task["taskA"] == {
+        "trials": 1,
+        "passed": 1,
+        "errored": 0,
+        # The coerced string reward contributes to the sum too.
+        "reward_sum": 1.0,
+    }
     assert result.malformed_rewards == 0
 
 
@@ -253,7 +300,13 @@ def test_non_numeric_reward_is_malformed_and_flags_incomplete(tmp_path: Path):
     # A present-but-unparseable reward is counted as errored AND flagged malformed.
     _write_trial(tmp_path / "t__0", "taskA", reward="not-a-number")
     result = agg.aggregate(tmp_path)
-    assert result.by_task["taskA"] == {"trials": 1, "passed": 0, "errored": 1}
+    assert result.by_task["taskA"] == {
+        "trials": 1,
+        "passed": 0,
+        "errored": 1,
+        # An unparseable reward contributes nothing to the sum.
+        "reward_sum": 0.0,
+    }
     assert result.malformed_rewards == 1
 
     out = tmp_path / "out"
@@ -278,14 +331,24 @@ def test_errored_trial_with_reward_counts_as_pass_and_error(tmp_path: Path):
         )
     )
     by_task = agg.aggregate(tmp_path).by_task
-    assert by_task["taskA"] == {"trials": 1, "passed": 1, "errored": 1}
+    assert by_task["taskA"] == {
+        "trials": 1,
+        "passed": 1,
+        "errored": 1,
+        "reward_sum": 1.0,
+    }
 
 
 def test_missing_config_is_handled_gracefully(tmp_path: Path):
     # A trial that failed before config was written: no model, no job_id.
     _write_trial(tmp_path / "t__0", "taskA", reward=1.0, include_config=False)
     result = agg.aggregate(tmp_path)
-    assert result.by_task["taskA"] == {"trials": 1, "passed": 1, "errored": 0}
+    assert result.by_task["taskA"] == {
+        "trials": 1,
+        "passed": 1,
+        "errored": 0,
+        "reward_sum": 1.0,
+    }
     assert result.models == set()
     assert result.job_ids == set()
 
@@ -455,6 +518,180 @@ def test_writes_github_step_summary(tmp_path: Path):
     assert "| avg@1 |" in rendered
 
 
+# --- graded ("continuous") categories -------------------------------------------------
+# `research` (DRBench) emits a harmonic-mean reward in (0, 1] that essentially never
+# reaches 1.0, so a pass rate carries no signal. avg@K becomes the mean reward and an
+# extra macro_avg@K averages per-task means. pass@K keeps its original meaning.
+
+
+def test_continuous_category_is_recognized():
+    assert agg.is_continuous_category("research") is True
+    # Unknown and missing categories must fall back to pass/fail scoring.
+    assert agg.is_continuous_category("context") is False
+    assert agg.is_continuous_category(None) is False
+    assert agg.is_continuous_category("brand-new-category") is False
+
+
+def test_continuous_avg_at_k_is_the_micro_mean_reward(tmp_path: Path):
+    # 2 tasks x 2 rollouts, all four trials present: avg@K = sum / expected_trials.
+    for i, reward in enumerate([0.4, 0.6]):
+        _write_trial(tmp_path / f"a__{i}", "taskA", reward=reward)
+    for i, reward in enumerate([0.1, 0.9]):
+        _write_trial(tmp_path / f"b__{i}", "taskB", reward=reward)
+
+    by_task = agg.aggregate(tmp_path).by_task
+    parts = agg.build_summary(by_task, 2, category="research")
+
+    assert abs(parts.avg_at_k - (0.4 + 0.6 + 0.1 + 0.9) / 4) < 1e-6
+    # Balanced trial counts, so macro and micro coincide here.
+    assert abs(parts.macro_avg_at_k - 0.5) < 1e-6
+    # pass@K is NOT redefined: no trial reached 1.0, so no task passed.
+    assert parts.pass_at_k == 0.0
+    assert parts.totals["passed"] == 0
+    assert {row["task"]: row["mean_reward@2"] for row in parts.per_task} == {
+        "taskA": 0.5,
+        "taskB": 0.5,
+    }
+
+
+def test_continuous_macro_and_micro_differ_when_rollouts_are_missing(tmp_path: Path):
+    # taskA ran both rollouts, taskB only one. avg@K charges taskB's missing rollout
+    # as a zero; macro_avg@K averages only the trials that ran. They must not
+    # coincide, or the test would not prove the two are computed differently.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    _write_trial(tmp_path / "a__1", "taskA", reward=1.0)
+    _write_trial(tmp_path / "b__0", "taskB", reward=0.4)
+
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 2, category="research")
+
+    # avg@K: (1.0 + 1.0 + 0.4) / (2 tasks * 2 rollouts) = 2.4 / 4
+    assert abs(parts.avg_at_k - 2.4 / 4) < 1e-6
+    # macro_avg@K: mean over actual trials = (2.0/2 + 0.4/1) / 2 = (1.0 + 0.4) / 2
+    assert abs(parts.macro_avg_at_k - 0.7) < 1e-6
+    assert parts.avg_at_k != parts.macro_avg_at_k
+    # taskB's own column reflects the one trial it ran, undiluted.
+    assert {row["task"]: row["mean_reward@2"] for row in parts.per_task} == {
+        "taskA": 1.0,
+        "taskB": 0.4,
+    }
+
+
+def test_continuous_macro_equals_micro_on_a_complete_run(tmp_path: Path):
+    # The counterpart to the test above: with every rollout present the two
+    # definitions must agree, so a divergence is a reliable incompleteness signal.
+    for i, reward in enumerate([0.4, 0.6]):
+        _write_trial(tmp_path / f"a__{i}", "taskA", reward=reward)
+    for i, reward in enumerate([0.1, 0.9]):
+        _write_trial(tmp_path / f"b__{i}", "taskB", reward=reward)
+
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 2, category="research")
+    assert abs(parts.avg_at_k - parts.macro_avg_at_k) < 1e-9
+
+
+def test_continuous_pass_at_k_still_reports_a_genuine_perfect_score(tmp_path: Path):
+    # A graded category that DOES score 1.0 must still register as a pass, proving
+    # pass@K was left on its original definition rather than repurposed.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 1, category="research")
+    assert parts.pass_at_k == 1.0
+    assert parts.totals["passed"] == 1
+    assert parts.avg_at_k == 1.0
+
+
+def test_continuous_duplicate_rollouts_cannot_exceed_one(tmp_path: Path):
+    # Three trials where only one rollout was expected. avg@K caps the task's
+    # contribution at K, mirroring how `capped_passed` bounds the binary path, so
+    # duplicated rollouts cannot inflate it past 1.0.
+    for i in range(3):
+        _write_trial(tmp_path / f"a__{i}", "taskA", reward=0.8)
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 1, category="research")
+    assert parts.avg_at_k == 1.0
+    # macro_avg@K averages the trials that ran instead of capping, so it reports the
+    # honest 0.8 rather than being pushed to 1.0 by the duplicates. Both are bounded
+    # by 1.0, by capping and by averaging respectively.
+    assert parts.macro_avg_at_k == 0.8
+    assert parts.per_task[0]["mean_reward@1"] == 0.8
+
+
+def test_continuous_summary_keys_and_step_summary(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=0.25)
+    out = tmp_path / "out"
+    step_file = tmp_path / "step_summary.md"
+    step_file.touch()
+    prev = os.environ.get("GITHUB_STEP_SUMMARY")
+    os.environ["GITHUB_STEP_SUMMARY"] = str(step_file)
+    try:
+        rc = agg.main(
+            [
+                str(tmp_path),
+                "--rollouts",
+                "1",
+                "--category",
+                "research",
+                "--out-dir",
+                str(out),
+            ]
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        else:
+            os.environ["GITHUB_STEP_SUMMARY"] = prev
+    assert rc == 0
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["scoring"] == "continuous"
+    assert summary["avg@1"] == 0.25
+    assert summary["macro_avg@1"] == 0.25
+    assert summary["pass@1"] == 0.0
+
+    rendered = step_file.read_text()
+    assert "mean reward (micro, avg@1)" in rendered
+    assert "mean reward (macro, macro_avg@1)" in rendered
+    # The pass rate is 0.000 by construction for a graded category; showing it would
+    # read as a failed run, so the row must be absent.
+    assert "| pass@1 |" not in rendered
+
+
+def test_binary_category_summary_has_no_macro_key(tmp_path: Path):
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    out = tmp_path / "out"
+    rc = agg.main(
+        [str(tmp_path), "--rollouts", "1", "--category", "context", "--out-dir", str(out)]
+    )
+    assert rc == 0
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["scoring"] == "binary"
+    assert "macro_avg@1" not in summary
+    assert summary["pass@1"] == 1.0
+    assert summary["avg@1"] == 1.0
+
+
+def test_continuous_summary_is_accepted_by_unified_aggregator(tmp_path: Path):
+    # The downstream reader requires pass@K/avg@K to be finite and within [0, 1], and
+    # drops the whole leaf otherwise. Round-trip a graded summary through it.
+    _write_trial(tmp_path / "a__0", "taskA", reward=0.378)
+    _write_trial(tmp_path / "b__0", "taskB", reward=0.5)
+    out = tmp_path / "out"
+    rc = agg.main(
+        [
+            str(tmp_path),
+            "--rollouts",
+            "1",
+            "--category",
+            "research",
+            "--out-dir",
+            str(out),
+        ]
+    )
+    assert rc == 0
+
+    leaf = unified.read_leaf(out, expected_rollouts=1)
+    assert leaf["category"] == "research"
+    assert abs(leaf["avg_at_k"] - (0.378 + 0.5) / 2) < 1e-6
+    assert leaf["pass_at_k"] == 0.0
+
+
 if __name__ == "__main__":
     import inspect
     import tempfile
@@ -608,3 +845,150 @@ def test_main_cli_records_branch(tmp_path):
     )
     summary = json.loads((root / "summary.json").read_text())
     assert summary["branch"] == "main"
+
+
+# --- score components ------------------------------------------------------------------
+# A graded verifier reports the metrics behind its reward as siblings of `reward`. They used
+# to be discarded, so a scorecard could only show the combined number.
+
+
+def _write_trial_with_components(dirpath, task, reward, components, **kw):
+    dirpath.mkdir(parents=True, exist_ok=True)
+    result = {
+        "task_name": task,
+        "verifier_result": {"rewards": {"reward": reward, **components}},
+        "exception_info": None,
+        "config": {"agent": {"model_name": "m1"}, "job_id": "job1"},
+    }
+    (dirpath / "result.json").write_text(json.dumps(result))
+
+
+def test_components_are_averaged_over_expected_trials(tmp_path: Path):
+    _write_trial_with_components(
+        tmp_path / "a__0", "taskA", 0.5, {"factuality": 0.8, "insights_recall": 0.2}
+    )
+    _write_trial_with_components(
+        tmp_path / "b__0", "taskB", 0.3, {"factuality": 0.4, "insights_recall": 0.6}
+    )
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 1, category="research")
+
+    # Same denominator as avg@K, so a missing rollout is charged identically.
+    assert parts.components == {"factuality": 0.6, "insights_recall": 0.4}
+
+
+def test_components_do_not_change_the_headline(tmp_path: Path):
+    # Purely additive: carrying components must not perturb avg@K.
+    _write_trial_with_components(tmp_path / "a__0", "taskA", 0.5, {"factuality": 0.9})
+    with_components = agg.build_summary(
+        agg.aggregate(tmp_path).by_task, 1, category="research"
+    )
+    _write_trial(tmp_path / "b__0", "taskB", reward=0.5)
+    assert with_components.avg_at_k == 0.5
+
+
+def test_a_missing_rollout_lowers_a_component(tmp_path: Path):
+    _write_trial_with_components(tmp_path / "a__0", "taskA", 0.5, {"factuality": 0.8})
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 2, category="research")
+    # One of two expected rollouts ran, so the component is halved just as avg@K is.
+    assert parts.components == {"factuality": 0.4}
+
+
+def test_duplicate_rollouts_cannot_push_a_component_above_one(tmp_path: Path):
+    for i in range(3):
+        _write_trial_with_components(tmp_path / f"a__{i}", "taskA", 0.8, {"factuality": 0.9})
+    parts = agg.build_summary(agg.aggregate(tmp_path).by_task, 1, category="research")
+    assert parts.components == {"factuality": 1.0}
+
+
+def test_a_pass_fail_category_reports_no_components(tmp_path: Path):
+    # Its verifier emits no siblings, so nothing changes for it -- including `by_task`.
+    _write_trial(tmp_path / "a__0", "taskA", reward=1.0)
+    result = agg.aggregate(tmp_path)
+    assert result.by_task["taskA"] == {
+        "trials": 1,
+        "passed": 1,
+        "errored": 0,
+        "reward_sum": 1.0,
+    }
+    assert agg.build_summary(result.by_task, 1).components is None
+
+
+def test_unsafe_component_names_are_rejected():
+    # These land in markdown table cells and JSON keys, and the reward file is written
+    # inside a sandbox that ran an agent's task. A pipe or backtick would break the table.
+    for name in (
+        "has space",
+        "pipe|name",
+        "back`tick",
+        "Upper",
+        "1leading",
+        "trailing-dash",
+        "x" * 65,
+        "",
+        123,
+    ):
+        assert agg.component_name_is_safe(name) is False, name
+
+
+def test_safe_component_names_are_accepted():
+    for name in ("factuality", "insights_recall", "a", "a1_b2"):
+        assert agg.component_name_is_safe(name) is True, name
+
+
+def test_out_of_range_component_values_are_dropped():
+    # Dropped rather than coerced: a nonsense number must not reach a published scorecard.
+    for value in (1.5, -0.1, float("nan"), float("inf"), "abc", None, {}):
+        result = {"verifier_result": {"rewards": {"reward": 0.5, "factuality": value}}}
+        assert agg.trial_components(result) == {}, value
+
+
+def test_component_values_accept_a_numeric_string():
+    result = {"verifier_result": {"rewards": {"reward": 0.5, "factuality": "0.75"}}}
+    assert agg.trial_components(result) == {"factuality": 0.75}
+
+
+def test_component_count_is_capped():
+    rewards = {"reward": 0.5}
+    rewards.update({f"m{i}": 0.5 for i in range(40)})
+    kept = agg.trial_components({"verifier_result": {"rewards": rewards}})
+    assert len(kept) == agg._MAX_COMPONENTS
+
+
+def test_components_reach_the_summary_and_step_summary(tmp_path: Path):
+    _write_trial_with_components(
+        tmp_path / "a__0", "taskA", 0.4, {"factuality": 0.6, "pipe|bad": 0.9}
+    )
+    out = tmp_path / "out"
+    step = tmp_path / "step.md"
+    step.touch()
+    prev = os.environ.get("GITHUB_STEP_SUMMARY")
+    os.environ["GITHUB_STEP_SUMMARY"] = str(step)
+    try:
+        agg.main(
+            [str(tmp_path), "--rollouts", "1", "--category", "research", "--out-dir", str(out)]
+        )
+    finally:
+        if prev is None:
+            os.environ.pop("GITHUB_STEP_SUMMARY", None)
+        else:
+            os.environ["GITHUB_STEP_SUMMARY"] = prev
+
+    summary = json.loads((out / "summary.json").read_text())
+    assert summary["components"] == {"factuality": 0.6}
+    assert "pipe|bad" not in summary["components"]
+
+    rendered = step.read_text()
+    assert "| factuality | 0.600 |" in rendered
+    # The caveat has to be present, or a reader recombining the components and getting a
+    # different number reads it as an arithmetic bug.
+    assert "do **not** recombine" in rendered
+
+
+def test_component_summary_round_trips_through_the_unified_reader(tmp_path: Path):
+    _write_trial_with_components(tmp_path / "a__0", "taskA", 0.4, {"factuality": 0.6})
+    out = tmp_path / "out"
+    agg.main(
+        [str(tmp_path), "--rollouts", "1", "--category", "research", "--out-dir", str(out)]
+    )
+    leaf = unified.read_leaf(out, expected_rollouts=1)
+    assert leaf["components"] == {"factuality": 0.6}

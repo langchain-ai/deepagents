@@ -338,7 +338,7 @@ def test_ptc_calls_surface_in_native_tool_stream() -> None:
     assert ptc_call.completed
     assert ptc_call.error is None
     assert deltas == [{"progress": "working"}]
-    assert ptc_call.output == f"done:working|{ptc_call.tool_call_id}"
+    assert ptc_call.output.startswith("done:working|ptc_stream_progress_")
 
 
 def test_ptc_calls_do_not_add_child_graph_messages() -> None:

@@ -236,9 +236,9 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     return {"input": _strip_undefined(raw)}
 
 
-def _synth_tool_call_id() -> str:
-    """Mint a UUID tool_call_id for a PTC-driven tool invocation."""
-    return str(uuid.uuid4())
+def _synth_tool_call_id(tool_name: str) -> str:
+    """Mint a synthetic tool_call_id for a PTC-driven tool invocation."""
+    return f"ptc_{tool_name}_{uuid.uuid4().hex[:8]}"
 
 
 def _inject_tool_args_for_ptc(
@@ -630,7 +630,7 @@ class _ThreadREPL:
                     if outer_runtime is not None
                     else None
                 ),
-                run_id=(uuid.UUID(tool_call_id) if tool_call_id is not None else None),
+                run_id=uuid.uuid4(),
                 config=outer_runtime.config if outer_runtime is not None else None,
                 tool_call_id=(
                     tool_call_id if _tool_uses_injected_tool_call_id(tool) else None
@@ -678,7 +678,7 @@ class _ThreadREPL:
             )
             self._ptc_state = state
             payload = _normalize_tool_input(raw_input)
-            call_id = _synth_tool_call_id()
+            call_id = _synth_tool_call_id(tool.name)
             # Inject runtime/state/store ourselves. The bridge uses `arun`
             # rather than the tool-call envelope path so the result can be
             # unwrapped back to native JS-visible values after the standard

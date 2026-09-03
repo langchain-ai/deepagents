@@ -5,6 +5,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,6 +19,8 @@ LOCALTIME_PATH = Path("/etc/localtime")
 
 TIMEZONE_PATH = Path("/etc/timezone")
 """File naming the host zone on Debian-derived hosts."""
+
+logger = logging.getLogger(__name__)
 
 _ZONEINFO_MARKER = "zoneinfo/"
 
@@ -67,8 +70,17 @@ def system_timezone_name(
     only an abbreviation such as `EDT`, which carries no future daylight-saving
     rules, so the name is recovered from the host's own configuration instead:
     the `TZ` environment variable, then the `/etc/localtime` symlink target,
-    then `/etc/timezone`. Each candidate is validated, so a host configured with
-    a name Talon cannot schedule against falls through to the next source.
+    then `/etc/timezone`.
+
+    A present `TZ` decides the answer on its own, because it governs the clock
+    `datetime.astimezone()` reports. Naming a zone from a filesystem source
+    while `TZ` says otherwise would describe a different wall clock than the
+    process actually runs on, so an unusable `TZ` yields `None` rather than a
+    disagreeing name -- the caller can still read a correct offset from
+    `astimezone()`, just without a name.
+
+    Sources are consulted in order and the first validated candidate wins, so a
+    lower-priority file is never read once a higher-priority source resolved.
 
     Args:
         env: Environment mapping to read `TZ` from. Defaults to `os.environ`.
@@ -79,20 +91,28 @@ def system_timezone_name(
         Validated IANA timezone name, or `None` if no source resolved.
     """
     values = os.environ if env is None else env
-    candidates = (
-        _candidate_from_env(values),
-        _candidate_from_localtime(localtime_path),
-        _candidate_from_timezone_file(timezone_path),
-    )
-    for candidate in candidates:
-        if candidate is None:
-            continue
-        try:
-            resolve_zone(candidate)
-        except TimeZoneError:
-            continue
-        return candidate
+    if "TZ" in values:
+        name = _candidate_from_env(values)
+        if name is None:
+            # POSIX treats a present but empty TZ as UTC.
+            return "UTC"
+        return name if _is_usable(name) else None
+    link = _candidate_from_localtime(localtime_path)
+    if link is not None and _is_usable(link):
+        return link
+    stored = _candidate_from_timezone_file(timezone_path)
+    if stored is not None and _is_usable(stored):
+        return stored
     return None
+
+
+def _is_usable(name: str) -> bool:
+    try:
+        resolve_zone(name)
+    except TimeZoneError:
+        logger.debug("Ignoring unusable host timezone name %r", name, exc_info=True)
+        return False
+    return True
 
 
 def _candidate_from_env(env: Mapping[str, str]) -> str | None:
@@ -106,6 +126,7 @@ def _candidate_from_localtime(path: Path) -> str | None:
             return None
         target = str(path.readlink())
     except OSError:
+        logger.debug("Could not read host timezone from %s", path, exc_info=True)
         return None
     return _key_from_localtime_target(target)
 
@@ -113,7 +134,10 @@ def _candidate_from_localtime(path: Path) -> str | None:
 def _candidate_from_timezone_file(path: Path) -> str | None:
     try:
         return path.read_text(encoding="utf-8").strip() or None
-    except OSError:
+    except (OSError, ValueError):
+        # A missing file and an undecodable one are both "no answer here".
+        # UnicodeDecodeError is a ValueError, not an OSError.
+        logger.debug("Could not read host timezone from %s", path, exc_info=True)
         return None
 
 

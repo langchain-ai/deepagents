@@ -61,7 +61,10 @@ def test_system_timezone_strips_posix_colon_prefix(tmp_path) -> None:
     assert name == "America/New_York"
 
 
-def test_system_timezone_falls_through_unusable_env_value(tmp_path) -> None:
+def test_unusable_env_value_yields_no_name_rather_than_a_disagreeing_one(tmp_path) -> None:
+    # TZ governs the clock astimezone() reports, so naming Europe/Berlin from
+    # the symlink here would describe a wall clock the process is not running
+    # on. No name is the honest answer; the caller still gets a real offset.
     link = _link(tmp_path, "/usr/share/zoneinfo/Europe/Berlin")
 
     name = system_timezone_name(
@@ -69,6 +72,44 @@ def test_system_timezone_falls_through_unusable_env_value(tmp_path) -> None:
         localtime_path=link,
         timezone_path=tmp_path / "missing",
     )
+
+    assert name is None
+
+
+def test_present_but_empty_env_value_is_utc(tmp_path) -> None:
+    # POSIX: TZ="" means UTC, and that is what astimezone() reports.
+    link = _link(tmp_path, "/usr/share/zoneinfo/Europe/Berlin")
+
+    name = system_timezone_name(
+        env={"TZ": ""},
+        localtime_path=link,
+        timezone_path=tmp_path / "missing",
+    )
+
+    assert name == "UTC"
+
+
+def test_undecodable_timezone_file_is_not_fatal(tmp_path) -> None:
+    path = tmp_path / "timezone"
+    path.write_bytes(b"\xff\xfe not utf-8")
+
+    name = system_timezone_name(
+        env={},
+        localtime_path=tmp_path / "missing",
+        timezone_path=path,
+    )
+
+    assert name is None
+
+
+def test_undecodable_timezone_file_never_read_when_symlink_resolves(tmp_path) -> None:
+    # UnicodeDecodeError is a ValueError, so an eagerly-read corrupt file used
+    # to blow up detection even when a higher-priority source was fine.
+    link = _link(tmp_path, "/usr/share/zoneinfo/Europe/Berlin")
+    path = tmp_path / "timezone"
+    path.write_bytes(b"\xff\xfe not utf-8")
+
+    name = system_timezone_name(env={}, localtime_path=link, timezone_path=path)
 
     assert name == "Europe/Berlin"
 

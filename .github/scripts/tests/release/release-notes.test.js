@@ -731,7 +731,7 @@ test('prepare apply rejects a draft from a rewritten release branch with unchang
 
   await assert.rejects(
     releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: rewrittenHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
-    /Release PR was rewritten after drafting; run @release-bot draft before apply/,
+    /The release PR was rewritten after drafting; run @release-bot draft before apply/,
   );
 });
 
@@ -798,7 +798,7 @@ test('prepare apply requires a new scoped draft when main changed the package', 
       stateFile: path.join(workspace.root, 'state.json'),
       ...BOT_AUTH,
     }),
-    /draft no longer covers current deepagents-code changes on main; run @release-bot draft before apply/,
+    /main has new libs\/code changes since this draft; run @release-bot draft before apply/,
   );
 });
 
@@ -1439,6 +1439,10 @@ test('required check fails when the applied draft is not based on the latest ove
   const core = makeCore();
   await releaseNotes.checkCuratedState({ github, context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } }, core, number: 123, ...BOT_AUTH });
   assert.match(core.failed, /not based on the latest curated draft/);
+  // This is a legacy draft, so the coverage failure is release-branch ancestry.
+  // main never moved here; it must not be blamed for the staleness.
+  assert.match(core.failed, /the release branch was rewritten after drafting/);
+  assert.doesNotMatch(core.failed, /main has new/);
 });
 
 test('required check fails when the applied commit is not an ancestor of the head', async () => {

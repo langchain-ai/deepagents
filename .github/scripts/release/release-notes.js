@@ -904,8 +904,8 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
   if (!override.comment.updated_at) throw new Error('Curated release-note draft is missing its GitHub revision');
   if (!(await draftCoversCurrentPackage({ github, owner, repo, override, pr, packagePath: target.packagePath }))) {
     const reason = override.metadata['release-main-head']
-      ? `The draft no longer covers current ${component} changes on main`
-      : 'Release PR was rewritten after drafting';
+      ? `main has new ${target.packagePath} changes since this draft`
+      : 'The release PR was rewritten after drafting';
     throw new Error(`${reason}; run ${COMMAND_MENTION} draft before apply`);
   }
 
@@ -1361,7 +1361,15 @@ async function checkCuratedState({
   if (appliedMetadata['override-comment-id'] !== String(override.comment.id)) failures.push('applied metadata references an older override comment');
   if (appliedMetadata['override-comment-updated-at'] !== override.comment.updated_at) failures.push('the curated override was revised after apply');
   if (!overrideHeadingValid) failures.push('the generated release heading in the curated override changed');
-  if (!draftCoversPackage) failures.push(`the draft does not cover the current ${target.packagePath} state on main`);
+  // draftCoversCurrentPackage answers a different question per draft kind: a
+  // package delta on main for scoped drafts, release-branch ancestry for legacy
+  // ones. Name the cause that actually applies; a force-pushed legacy branch
+  // moves no main commit at all.
+  if (!draftCoversPackage) {
+    failures.push(override.metadata['release-main-head']
+      ? `main has new ${target.packagePath} changes since this draft`
+      : 'the release branch was rewritten after drafting');
+  }
   if (!override.metadata['release-main-head'] && !(await isDescendant(
     github,
     owner,

@@ -307,6 +307,35 @@ class TestWorkspaceDotenvEnvironment:
             fail()
         assert active_environment() is os.environ
 
+    def test_windows_dotenv_keys_follow_case_insensitive_precedence(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Lowercase dotenv names normalize and cannot replace shell values."""
+        import deepagents_code.config as config_mod
+        import deepagents_code.config_manifest as manifest
+
+        (tmp_path / ".env").write_text("openai_api_key=dotenv-key\n")
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
+
+        from_dotenv = config_mod._dotenv_environment(
+            start_path=tmp_path,
+            environ={},
+        )
+        from_shell = config_mod._dotenv_environment(
+            start_path=tmp_path,
+            environ={"OPENAI_API_KEY": "shell-key"},
+        )
+
+        assert from_dotenv["OPENAI_API_KEY"] == "dotenv-key"
+        assert "openai_api_key" not in from_dotenv
+        assert from_shell["OPENAI_API_KEY"] == "shell-key"
+
     def test_preview_interpolates_prior_dotenv_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

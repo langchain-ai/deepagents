@@ -437,6 +437,15 @@ def use_environment(environ: Mapping[str, str] | None) -> Iterator[None]:
         _active_environment.reset(token)
 
 
+def _environment_key(key: str) -> str:
+    """Normalize an environment key using the host platform's semantics.
+
+    Returns:
+        Uppercase key on Windows, otherwise the original key.
+    """
+    return key.upper() if sys.platform == "win32" else key
+
+
 def _dotenv_values_from(
     dotenv_path: Path,
     environ: Mapping[str, str],
@@ -455,7 +464,8 @@ def _dotenv_values_from(
         interpolate=False,
     ).dict()
     resolved: dict[str, str | None] = {}
-    for key, value in parsed.items():
+    for parsed_key, value in parsed.items():
+        key = _environment_key(parsed_key)
         if value is None:
             resolved[key] = None
             continue
@@ -477,7 +487,7 @@ def _dotenv_environment(
     Returns:
         A new effective environment mapping.
     """
-    env = dict(environ)
+    env = {_environment_key(key): value for key, value in environ.items()}
 
     def apply_dotenv(dotenv_path: Path | None, *, is_project: bool) -> None:
         if dotenv_path is None:

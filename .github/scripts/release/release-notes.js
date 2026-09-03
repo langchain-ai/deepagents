@@ -51,9 +51,8 @@ const FEEDBACK_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
 // These field sets are a strict, bidirectional contract with overrideBody/
 // appliedBody: parseMetadata rejects a comment missing any required field or
-// carrying a field not listed. `release-main-head` is optional only so drafts
-// created before package-scoped freshness was introduced remain usable; every
-// new draft records it. Keep these in lockstep with the body writers.
+// carrying a field outside the allowed set. Keep these in lockstep with the body
+// writers.
 const OVERRIDE_FIELDS = new Set([
   'package',
   'version',
@@ -62,7 +61,9 @@ const OVERRIDE_FIELDS = new Set([
   'changelog-fingerprint',
   'state',
 ]);
-const OVERRIDE_OPTIONAL_FIELDS = new Set(['release-main-head']);
+// Optional only so drafts created before package-scoped freshness remain usable;
+// every new draft records `release-main-head`.
+const OVERRIDE_ALLOWED_FIELDS = new Set([...OVERRIDE_FIELDS, 'release-main-head']);
 const APPLIED_FIELDS = new Set([
   'package',
   'version',
@@ -263,9 +264,33 @@ function changelogFingerprint(section) {
   return sha256(text.slice(text.indexOf('\n') + 1));
 }
 
+function sectionHeading(section) {
+  return section.split('\n')[0];
+}
+
 function withHeading(section, heading) {
   const text = canonical(section);
   return `${heading}${text.slice(text.indexOf('\n'))}`;
+}
+
+// The single definition of "what the changelog and PR body must contain". Both
+// the writer (prepareApply) and the verifier (checkCuratedState) call it, so the
+// bytes one writes are by construction the bytes the other expects. A scoped
+// draft accepts release-please's current generated heading, since a branch
+// refresh for an unrelated main commit may restyle the date or comparison URL
+// without touching the curated prose.
+function curatedSectionFor(override, currentHeading) {
+  return override.mainHead ? withHeading(override.section, currentHeading) : override.section;
+}
+
+// Names the cause behind a draftCoversCurrentPackage miss. The helper answers a
+// different question per draft kind — a package delta on main for scoped drafts,
+// release-branch ancestry for legacy ones — so the reason is produced here, once,
+// rather than reconstructed by each caller.
+function staleDraftReason(override, packagePath) {
+  return override.mainHead
+    ? `main has new ${packagePath} changes since this draft`
+    : 'the release branch was rewritten after drafting';
 }
 
 function extractPreviewSection(document, version) {
@@ -293,7 +318,7 @@ function replacePreviewSection(document, version, replacement) {
 // line, duplicate key, or missing field yields null (untrusted). Callers treat
 // null as "not a valid bot comment", so loosening this weakens the trust
 // boundary. See OVERRIDE_FIELDS/APPLIED_FIELDS.
-function parseMetadata(body, marker, requiredFields, optionalFields = new Set()) {
+function parseMetadata(body, marker, requiredFields, allowedFields = requiredFields) {
   const text = normalize(body ?? '');
   const prefix = `<!-- ${marker}\n`;
   if (!text.startsWith(prefix)) return null;
@@ -302,7 +327,6 @@ function parseMetadata(body, marker, requiredFields, optionalFields = new Set())
   if (close < 0) return null;
   const metadataText = text.slice(prefix.length, close);
   const metadata = {};
-  const allowedFields = new Set([...requiredFields, ...optionalFields]);
   for (const line of metadataText.split('\n')) {
     const match = /^([a-z0-9-]+): (.+)$/.exec(line);
     if (!match || !allowedFields.has(match[1]) || metadata[match[1]] !== undefined) return null;
@@ -315,7 +339,7 @@ function parseMetadata(body, marker, requiredFields, optionalFields = new Set())
 }
 
 function parseOverrideComment(comment) {
-  const parsed = parseMetadata(comment.body, OVERRIDE_MARKER, OVERRIDE_FIELDS, OVERRIDE_OPTIONAL_FIELDS);
+  const parsed = parseMetadata(comment.body, OVERRIDE_MARKER, OVERRIDE_FIELDS, OVERRIDE_ALLOWED_FIELDS);
   if (!parsed || parsed.metadata.state !== 'draft') return null;
   const start = parsed.remainder.indexOf(CONTENT_START);
   const end = parsed.remainder.indexOf(CONTENT_END);
@@ -335,7 +359,11 @@ function parseOverrideComment(comment) {
     }
     throw error;
   }
-  return { comment, metadata: parsed.metadata, section };
+  // Resolve the scoped-vs-legacy discriminant once, here, so no consumer has to
+  // re-probe the raw metadata key: a draft carrying a main baseline is scoped to
+  // its package delta, one without it predates that scoping.
+  const mainHead = parsed.metadata['release-main-head'] ?? null;
+  return { comment, metadata: parsed.metadata, section, mainHead };
 }
 
 function parseAppliedComment(comment) {
@@ -788,7 +816,7 @@ async function prepareDraft({ github, owner, repo, number, expectedHead, runnerT
     head: pr.head.sha,
     mainHead: pr.base.sha,
     fingerprint,
-    heading: section.split('\n')[0],
+    heading: sectionHeading(section),
     instructions: guidance,
   });
   return { work, input, output, state };
@@ -908,29 +936,22 @@ async function prepareApply({ github, owner, repo, number, expectedHead, changel
   if (!override) throw new Error('No valid bot-authored curated release-note draft exists');
   if (!override.comment.updated_at) throw new Error('Curated release-note draft is missing its GitHub revision');
   if (!(await draftCoversCurrentPackage({ github, owner, repo, override, pr, packagePath: target.packagePath }))) {
-    const reason = override.metadata['release-main-head']
-      ? `main has new ${target.packagePath} changes since this draft`
-      : 'The release PR was rewritten after drafting';
-    throw new Error(`${reason}; run ${COMMAND_MENTION} draft before apply`);
+    throw new Error(
+      `${staleDraftReason(override, target.packagePath)}; run ${COMMAND_MENTION} draft before apply`,
+    );
   }
 
   const changelog = await fetchChangelog(github, owner, repo, pr.head.sha, target.changelogPath);
   const currentSection = extractVersionSection(changelog, version);
-  const currentHeading = currentSection.split('\n')[0];
-  const overrideHeading = override.section.split('\n')[0];
-  if (sha256(overrideHeading) !== override.metadata['release-heading-hash']) {
+  const currentHeading = sectionHeading(currentSection);
+  const overrideHeading = sectionHeading(override.section);
+  // A legacy draft must still match the generated heading byte for byte; only a
+  // scoped draft tolerates release-please restyling it (see curatedSectionFor).
+  if (sha256(overrideHeading) !== override.metadata['release-heading-hash']
+    || (!override.mainHead && overrideHeading !== currentHeading)) {
     throw new Error('Keep the generated release version heading unchanged');
   }
-  // release-please may update the date/comparison URL in the generated heading
-  // while refreshing a branch for an unrelated main commit. Preserve that current
-  // generated heading without making the maintainer regenerate unchanged prose.
-  const scopedDraft = Boolean(override.metadata['release-main-head']);
-  if (!scopedDraft && overrideHeading !== currentHeading) {
-    throw new Error('Keep the generated release version heading unchanged');
-  }
-  const curatedSection = scopedDraft
-    ? withHeading(override.section, currentHeading)
-    : override.section;
+  const curatedSection = curatedSectionFor(override, currentHeading);
   const alreadyApplied = currentSection === curatedSection;
   if (!alreadyApplied && changelogFingerprint(currentSection) !== override.metadata['changelog-fingerprint']) {
     throw new Error(`New generated release entries appeared; run ${COMMAND_MENTION} draft before apply`);
@@ -975,8 +996,7 @@ async function validateApplySnapshot({ github, owner, repo, state, login, id, ex
     // the same reason expectedHead does. Bind it to the same flag: before the
     // push it guards the prepare/commit window, after the push a main advance
     // is not grounds to withhold the metadata for a commit that already landed.
-    (checkPrHead && pr.base?.sha !== state.baseHead) ||
-    (checkPrHead && pr.head.sha !== expectedHead) ||
+    (checkPrHead && (pr.base?.sha !== state.baseHead || pr.head.sha !== expectedHead)) ||
     exactSha256(pr.body ?? '') !== state.originalBodyHash
   ) {
     throw new Error('Release PR changed while apply was preparing; refusing to publish stale metadata');
@@ -1143,7 +1163,7 @@ function comparisonLeavesPackageUnchanged(comparison, packagePath) {
 // changes the notes being curated. Legacy drafts have no main baseline, so retain
 // the prior ancestry check until they are regenerated.
 async function draftCoversCurrentPackage({ github, owner, repo, override, pr, packagePath }) {
-  const draftMainHead = override.metadata['release-main-head'];
+  const draftMainHead = override.mainHead;
   if (!draftMainHead) {
     return isDescendant(github, owner, repo, override.metadata['release-pr-head'], pr.head.sha);
   }
@@ -1235,8 +1255,7 @@ async function checkCuratedState({
     core.setFailed(`The ${component} release PR title does not match the required \`release(${component}): <version>\` title`);
     return { status: 'invalid-title' };
   }
-  const target = targetForComponent(component);
-  const { changelogPath } = target;
+  const { changelogPath, packagePath } = targetForComponent(component);
 
   const labelNames = value => (value.labels ?? [])
     .map(label => typeof label === 'string' ? label : label.name)
@@ -1316,27 +1335,25 @@ async function checkCuratedState({
     return { status: 'missing', component, version };
   }
 
-  const changelog = await fetchChangelog(github, owner, repo, pr.head.sha, changelogPath);
+  // Independent round-trips: the comparison needs only the override and the PR,
+  // both settled above, so it must not queue behind the changelog fetch.
+  const [changelog, draftCoversPackage] = await Promise.all([
+    fetchChangelog(github, owner, repo, pr.head.sha, changelogPath),
+    draftCoversCurrentPackage({ github, owner, repo, override, pr, packagePath }),
+  ]);
   const currentSection = extractVersionSection(changelog, version);
   const currentFingerprint = changelogFingerprint(currentSection);
-  const currentHeading = currentSection.split('\n')[0];
-  const overrideHeading = override.section.split('\n')[0];
+  const currentHeading = sectionHeading(currentSection);
+  const overrideHeading = sectionHeading(override.section);
   const overrideHeadingValid = sha256(overrideHeading) === override.metadata['release-heading-hash'];
-  const scopedDraft = Boolean(override.metadata['release-main-head']);
-  const legacyHeadingChanged = !scopedDraft
+  const legacyHeadingChanged = !override.mainHead
     && currentSection !== override.section
     && overrideHeading !== currentHeading;
-  const expectedSection = scopedDraft
-    ? withHeading(override.section, currentHeading)
-    : override.section;
-  const draftCoversPackage = await draftCoversCurrentPackage({
-    github,
-    owner,
-    repo,
-    override,
-    pr,
-    packagePath: target.packagePath,
-  });
+  const expectedSection = curatedSectionFor(override, currentHeading);
+  // The one definition of "a re-draft is required", shared by the unapplied and
+  // applied branches below so they cannot prescribe different remedies for the
+  // same state.
+  const draftMetadataChanged = !overrideHeadingValid || legacyHeadingChanged || !draftCoversPackage;
   // True when the generated changelog has drifted from the curated override.
   // Reused for the new-entries warning below and for the missing-vs-unapplied
   // split in the !applied branch.
@@ -1380,7 +1397,6 @@ async function checkCuratedState({
   };
   if (!applied) {
     await maybeWarnNewEntries();
-    const draftMetadataChanged = !overrideHeadingValid || legacyHeadingChanged || !draftCoversPackage;
     if (generatedEntriesChanged || draftMetadataChanged) {
       core.setFailed(`Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply before merging`);
       return { status: 'missing', component, version };
@@ -1393,24 +1409,13 @@ async function checkCuratedState({
 
   const appliedMetadata = applied.metadata;
   const failures = [];
-  let draftRequired = generatedEntriesChanged
-    || !overrideHeadingValid
-    || legacyHeadingChanged
-    || !draftCoversPackage;
+  let draftRequired = generatedEntriesChanged || draftMetadataChanged;
 
   if (appliedMetadata['override-comment-id'] !== String(override.comment.id)) failures.push('applied metadata references an older override comment');
   if (appliedMetadata['override-comment-updated-at'] !== override.comment.updated_at) failures.push('the curated override was revised after apply');
   if (!overrideHeadingValid) failures.push('the generated release heading in the curated override changed');
-  // draftCoversCurrentPackage answers a different question per draft kind: a
-  // package delta on main for scoped drafts, release-branch ancestry for legacy
-  // ones. Name the cause that actually applies; a force-pushed legacy branch
-  // moves no main commit at all.
-  if (!draftCoversPackage) {
-    failures.push(override.metadata['release-main-head']
-      ? `main has new ${target.packagePath} changes since this draft`
-      : 'the release branch was rewritten after drafting');
-  }
-  if (!override.metadata['release-main-head'] && !(await isDescendant(
+  if (!draftCoversPackage) failures.push(staleDraftReason(override, packagePath));
+  if (!override.mainHead && !(await isDescendant(
     github,
     owner,
     repo,
@@ -1467,11 +1472,11 @@ async function checkCuratedState({
     // Prefix the target so the annotation GitHub surfaces from setFailed names the
     // package and version being gated; bare reason strings are ambiguous across the
     // many open release PRs this check covers.
-    const release = `for ${component} ${version}`;
+    const target = `for ${component} ${version}`;
     const remediation = draftRequired
       ? `Run ${COMMAND_MENTION} draft and then ${COMMAND_MENTION} apply.`
       : `Run ${COMMAND_MENTION} apply.`;
-    core.setFailed(`${release}: ${failures.join('; ')}. ${remediation}`);
+    core.setFailed(`${target}: ${failures.join('; ')}. ${remediation}`);
     return { status: 'failed', failures, component, version };
   }
   core.info(`Curated release notes are current for ${component} ${version}`);

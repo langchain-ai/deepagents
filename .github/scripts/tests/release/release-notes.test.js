@@ -174,13 +174,12 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
             ? comparison(params)
             : { status: comparison, files: changedFiles };
           // Fixtures that only pin status/files still have to satisfy the
-          // truncation guard, so default them to a complete commit list. An
+          // truncation guard, so default them to a complete one-commit list. An
           // explicit total_commits/commits in the fixture wins.
-          const count = Math.max(1, (raw.files ?? []).length);
           return {
             data: {
-              total_commits: count,
-              commits: Array.from({ length: count }, (_, index) => ({ sha: `commit-${index}` })),
+              total_commits: 1,
+              commits: [{ sha: 'commit-0' }],
               ...raw,
             },
           };
@@ -789,7 +788,7 @@ test('prepare apply rejects a draft from a rewritten release branch with unchang
 
   await assert.rejects(
     releaseNotes.prepareApply({ github, owner: 'langchain-ai', repo: 'deepagents', number: 123, expectedHead: rewrittenHead, changelogFile: workspace.file, stateFile: path.join(workspace.root, 'state.json'), ...BOT_AUTH }),
-    /The release PR was rewritten after drafting; run @release-bot draft before apply/,
+    /the release branch was rewritten after drafting; run @release-bot draft before apply/,
   );
 });
 

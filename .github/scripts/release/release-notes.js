@@ -16,6 +16,7 @@ const DEFAULT_CHANGELOG = 'CHANGELOG.md';
 const COMPONENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BYPASS_LABEL = 'release: dangerously skip curated notes';
 const COMMAND_MENTION = '@release-bot';
+const WORKFLOW_BOT_LOGIN = 'github-actions[bot]';
 const OVERRIDE_MARKER = 'release-notes-override';
 const APPLIED_MARKER = 'release-notes-applied';
 // GitHub's compare response lists at most 300 changed files and does not
@@ -1195,16 +1196,54 @@ async function draftCoversCurrentPackage({ github, owner, repo, override, pr, pa
   return comparisonLeavesPackageUnchanged(response.data, packagePath);
 }
 
+// A changed head/fingerprint needs a fresh timeline entry, but older notices no
+// longer need to compete for attention. Preserve them as an audit trail and mark
+// them outdated through GitHub's Hide API. The author checks are load-bearing:
+// contributor-authored copies of the marker must never become mutation targets.
 async function warnForNewEntries({ github, owner, repo, number, comments, head, fingerprint }) {
   const marker = `${STALE_MARKER}\nhead: ${head}\nchangelog-fingerprint: ${fingerprint}\n-->`;
-  if (comments.some(comment => (comment.body ?? '').startsWith(marker))) return;
-  await createComment(
-    github,
-    owner,
-    repo,
-    number,
-    `${marker}\nNew generated release entries appeared; please re-run \`${COMMAND_MENTION} draft\` and then \`${COMMAND_MENTION} apply\`.`,
+  const warnings = comments.filter(comment =>
+    comment.user?.login === WORKFLOW_BOT_LOGIN &&
+    comment.user?.type === 'Bot' &&
+    (comment.body ?? '').startsWith(`${STALE_MARKER}\n`),
   );
+  let current = warnings.find(comment => (comment.body ?? '').startsWith(marker));
+  if (!current) {
+    const response = await createComment(github, owner, repo, number, newEntriesWarningBody(marker));
+    current = response.data;
+  }
+  const newest = [...warnings, current]
+    .sort((left, right) => Number(right.id) - Number(left.id))[0];
+  for (const warning of warnings) {
+    if (warning.id !== newest.id) await minimizeComment(github, warning);
+  }
+}
+
+function newEntriesWarningBody(marker) {
+  return [
+    marker,
+    'New generated release entries appeared; please re-run:',
+    '',
+    '```',
+    `${COMMAND_MENTION} draft`,
+    '```',
+    '',
+    'and then:',
+    '',
+    '```',
+    `${COMMAND_MENTION} apply`,
+    '```',
+  ].join('\n');
+}
+
+async function minimizeComment(github, comment) {
+  await github.graphql(`
+    mutation($id: ID!) {
+      minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
+        minimizedComment { isMinimized }
+      }
+    }
+  `, { id: comment.node_id });
 }
 
 // Surface (logs only) bot-authored comments that carry a curated-notes marker
@@ -1393,7 +1432,7 @@ async function checkCuratedState({
         }
       }
     }
-    core.warning(`Could not post the new-entries warning comment: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    core.warning(`Could not update the new-entries warning comments: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   };
   if (!applied) {
     await maybeWarnNewEntries();

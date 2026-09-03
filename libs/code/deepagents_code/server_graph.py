@@ -269,10 +269,24 @@ async def _make_graphs(
         if config.cwd is not None
         else None
     )
-    workspace_env = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
-    workspace_credentials = Credentials.snapshot_from_environment(
-        start_path=workspace_path,
-        environ=workspace_env,
+
+    # Offload the workspace environment snapshot off the event loop. Dotenv
+    # discovery walks parent directories (`Path.resolve()`, `is_file()`) and
+    # reads up to three files, and `snapshot_from_environment` adds
+    # `find_project_root()` -> `Path.cwd()` — all of which `blockbuster`
+    # rejects when invoked directly from the server loop (see issue #5043),
+    # for the same reason as the offload in `_make_graphs_in_environment`.
+    def _resolve_workspace_environment() -> tuple[
+        Mapping[str, str], CredentialsSnapshot
+    ]:
+        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        return environ, Credentials.snapshot_from_environment(
+            start_path=workspace_path,
+            environ=environ,
+        )
+
+    workspace_env, workspace_credentials = await asyncio.to_thread(
+        _resolve_workspace_environment
     )
 
     with use_environment(workspace_env):

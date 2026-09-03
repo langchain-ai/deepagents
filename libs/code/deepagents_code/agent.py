@@ -111,7 +111,7 @@ from deepagents_code.config import (
     get_default_coding_instructions,
     get_glyphs,
     get_langsmith_project_name,
-    restore_user_tracing_api_keys,
+    restore_user_langsmith_env,
     restore_user_tracing_env,
     runtime_state,
 )
@@ -2948,19 +2948,12 @@ def create_cli_agent(
         # ========== LOCAL MODE ==========
         root_dir = effective_cwd if effective_cwd is not None else Path.cwd()
         if enable_shell:
-            # Create environment for shell commands.
-            # Restore the user's original LANGSMITH_PROJECT so their code traces
-            # separately. When they had none, drop the agent's override (the
-            # `deepagents-code` default applied at bootstrap) entirely so shell
-            # commands don't inherit it.
+            # Create environment for shell commands, restoring the launch and
+            # project-dotenv LangSmith settings instead of agent-only credentials.
             shell_env = os.environ.copy()
             shell_env["GIT_TERMINAL_PROMPT"] = "0"
-            if credentials.user_langchain_project is not None:
-                shell_env["LANGSMITH_PROJECT"] = credentials.user_langchain_project
-            else:
-                shell_env.pop("LANGSMITH_PROJECT", None)
             restore_user_tracing_env(shell_env)
-            restore_user_tracing_api_keys(shell_env)
+            restore_user_langsmith_env(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)
@@ -2969,11 +2962,8 @@ def create_cli_agent(
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
             # `inherit_env=False`: `shell_env` is already a complete, curated
-            # copy of `os.environ`. Inheriting again would re-copy `os.environ`
-            # and resurrect the popped carrier var, leaking it into `execute`.
-            # `restore_user_tracing_api_keys` above depends on this too: flipping
-            # to `inherit_env=True` would re-copy the agent's overridden
-            # `LANGSMITH_API_KEY` and undo the restore, leaking it into `execute`.
+            # copy of `os.environ`. Inheriting again would resurrect the popped
+            # carrier and agent-only LangSmith credentials in `execute`.
             backend = LocalShellBackend(
                 root_dir=root_dir,
                 virtual_mode=False,

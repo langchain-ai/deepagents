@@ -27,7 +27,11 @@ from deepagents_code._paths import (
     PATHS,
     export_profile_env,
 )
-from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
+from deepagents_code.config import (
+    _INHERITED_PYTHONPATH_ENV,
+    _USER_LANGSMITH_ENV_CARRIER,
+    _encode_user_langsmith_env,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -405,9 +409,10 @@ def _build_server_env() -> dict[str, str]:
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"
 
-    # Capture a launch-time PYTHONPATH before stripping it. Never trust an
-    # inherited carrier var: pop it first, then set it only from the real value.
+    # Capture a launch-time PYTHONPATH before stripping it. Never trust inherited
+    # carrier vars: overwrite them only from bootstrap state in this process.
     env.pop(_INHERITED_PYTHONPATH_ENV, None)
+    env.pop(_USER_LANGSMITH_ENV_CARRIER, None)
     inherited_pythonpath = os.environ.get("PYTHONPATH")
 
     for key in (
@@ -421,6 +426,7 @@ def _build_server_env() -> dict[str, str]:
 
     if inherited_pythonpath is not None:
         env[_INHERITED_PYTHONPATH_ENV] = inherited_pythonpath
+    env[_USER_LANGSMITH_ENV_CARRIER] = _encode_user_langsmith_env()
     return env
 
 
@@ -454,6 +460,7 @@ def _server_env_with_overrides(
             PATHS.profile.root,
         )
     export_profile_env(env)
+    env[_USER_LANGSMITH_ENV_CARRIER] = _encode_user_langsmith_env()
     return env
 
 

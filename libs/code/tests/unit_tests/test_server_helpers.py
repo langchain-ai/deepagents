@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from deepagents_code._paths import PATHS
 from deepagents_code.agent import _apply_inherited_pythonpath
 from deepagents_code.client.launch.server import (
@@ -14,7 +16,10 @@ from deepagents_code.client.launch.server import (
     _build_server_env,
     _server_env_with_overrides,
 )
-from deepagents_code.config import _INHERITED_PYTHONPATH_ENV
+from deepagents_code.config import (
+    _INHERITED_PYTHONPATH_ENV,
+    _USER_LANGSMITH_ENV_CARRIER,
+)
 
 
 class TestBuildServerCmd:
@@ -92,6 +97,52 @@ class TestBuildServerEnv:
             env = _build_server_env()
         assert env[_INHERITED_PYTHONPATH_ENV] == ""
 
+    def test_requires_captured_langsmith_environment(self) -> None:
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
+        try:
+            with pytest.raises(
+                RuntimeError,
+                match="User LangSmith environment was not captured",
+            ):
+                _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+    def test_overwrites_untrusted_langsmith_carrier(self) -> None:
+        import json
+
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env["LANGSMITH_PROFILE"] = "oauth"
+        try:
+            with patch.dict(
+                os.environ,
+                {_USER_LANGSMITH_ENV_CARRIER: '{"LANGSMITH_API_KEY":"evil"}'},
+            ):
+                env = _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+        assert json.loads(env[_USER_LANGSMITH_ENV_CARRIER])["user"] == {
+            **dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
+            "LANGSMITH_PROFILE": "oauth",
+        }
+
 
 class TestPythonpathRelayRoundTrip:
     def test_launch_pythonpath_round_trips_to_execute_env(self) -> None:
@@ -123,3 +174,30 @@ class TestServerEnvProfilePinning:
     def test_persistent_override_cannot_move_the_profile(self) -> None:
         env = _server_env_with_overrides({"DEEPAGENTS_HOME": "/tmp/evil"}, {})
         assert env["DEEPAGENTS_HOME"] == str(PATHS.profile.root)
+
+    def test_scoped_override_cannot_replace_langsmith_carrier(self) -> None:
+        import json
+
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env["LANGSMITH_PROFILE"] = "oauth"
+        try:
+            env = _server_env_with_overrides(
+                {},
+                {_USER_LANGSMITH_ENV_CARRIER: '{"LANGSMITH_API_KEY":"evil"}'},
+            )
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+        user = json.loads(env[_USER_LANGSMITH_ENV_CARRIER])["user"]
+        assert user["LANGSMITH_PROFILE"] == "oauth"
+        assert user["LANGSMITH_API_KEY"] is None

@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import sys
 import warnings
 from collections.abc import Iterator, Mapping
@@ -2599,6 +2600,26 @@ class TestCreateCliAgentProjectContext:
         mock_agent.with_config.return_value = mock_agent
         mock_backend = Mock()
         monkeypatch.setenv("LANGSMITH_PROJECT", "deepagents-code")
+        if "DEEPAGENTS_USER_LANGSMITH_ENV" not in os.environ:
+            import json
+
+            values = dict.fromkeys(
+                (
+                    "LANGSMITH_API_KEY",
+                    "LANGCHAIN_API_KEY",
+                    "LANGSMITH_PROJECT",
+                    "LANGSMITH_ENDPOINT",
+                    "LANGCHAIN_ENDPOINT",
+                    "LANGSMITH_WORKSPACE_ID",
+                    "LANGSMITH_PROFILE",
+                    "LANGSMITH_CONFIG_FILE",
+                )
+            )
+            values["LANGSMITH_PROJECT"] = user_langchain_project
+            monkeypatch.setenv(
+                "DEEPAGENTS_USER_LANGSMITH_ENV",
+                json.dumps({"launch": dict(values), "user": values}),
+            )
 
         fake_model = _make_fake_chat_model()
         with (
@@ -2674,30 +2695,25 @@ class TestCreateCliAgentProjectContext:
 
         assert mock_shell.call_args.kwargs["env"]["LANGSMITH_PROJECT"] == user_project
 
-    def test_project_context_restores_user_shell_langsmith_api_key(
+    def test_project_context_restores_user_shell_langsmith_environment(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """The shell env is routed through `restore_user_tracing_api_keys`.
+        """The local shell gets user selectors without agent-only credentials."""
+        import json
 
-        Guards the wiring in `create_cli_agent`'s local-shell branch: the env
-        handed to `LocalShellBackend` must carry the caller's original
-        `LANGSMITH_API_KEY` (the agent's in-process override reverted) and must
-        drop a key the caller never set. Removing the restore call regresses
-        both assertions, catching the exact key leak the restore prevents.
-        """
         import deepagents_code.config as config_mod
 
         original_done = config_mod._bootstrap_state.done
-        original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
-        # Simulate a completed bootstrap: the caller had their own LANGSMITH key
-        # (since overridden in-process) and never set a LANGCHAIN key.
         monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_agent_override")
-        monkeypatch.setenv("LANGCHAIN_API_KEY", "lc_agent_override")
-        config_mod._bootstrap_state.original_tracing_api_keys = {
-            "LANGSMITH_API_KEY": "lsv2_user_original",
-            "LANGCHAIN_API_KEY": None,
-        }
-        # Guard the seeded snapshot against an incidental bootstrap run.
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://agent.example.com")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        values["LANGSMITH_PROFILE"] = "oauth"
+        values["LANGSMITH_CONFIG_FILE"] = "/tmp/langsmith.json"
+        monkeypatch.setenv(
+            config_mod._USER_LANGSMITH_ENV_CARRIER,
+            json.dumps({"launch": dict.fromkeys(values), "user": values}),
+        )
         config_mod._bootstrap_state.done = True
 
         try:
@@ -2705,13 +2721,15 @@ class TestCreateCliAgentProjectContext:
                 monkeypatch, tmp_path, user_langchain_project=None
             )
             env = mock_shell.call_args.kwargs["env"]
-            # The caller's own key is restored, not the agent's override.
-            assert env["LANGSMITH_API_KEY"] == "lsv2_user_original"
-            # A key the caller never set is dropped, not leaked.
-            assert "LANGCHAIN_API_KEY" not in env
         finally:
             config_mod._bootstrap_state.done = original_done
-            config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
+
+        assert "LANGSMITH_API_KEY" not in env
+        assert "LANGSMITH_ENDPOINT" not in env
+        assert "DEEPAGENTS_CODE_LANGSMITH_API_KEY" not in env
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
+        assert env["LANGSMITH_PROFILE"] == "oauth"
+        assert env["LANGSMITH_CONFIG_FILE"] == "/tmp/langsmith.json"
 
     def test_cwd_sets_local_filesystem_root_dir_without_shell(
         self, tmp_path: Path

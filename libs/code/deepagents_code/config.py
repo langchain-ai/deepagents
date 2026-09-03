@@ -99,6 +99,12 @@ class _BootstrapState:
     tracing flags (`original_tracing_env`).
     """
 
+    launch_langsmith_env: dict[str, str | None] = dataclass_field(default_factory=dict)
+    """LangSmith values inherited from the user's launch environment."""
+
+    user_langsmith_env: dict[str, str | None] = dataclass_field(default_factory=dict)
+    """Launch and project-dotenv LangSmith values intended for user commands."""
+
 
 _bootstrap_state = _BootstrapState()
 """State captured and mutated by lazy bootstrap."""
@@ -125,6 +131,21 @@ during startup. The launch-time value is instead carried in this var and
 re-applied only to the approval-gated shell backend's `execute` subprocesses by
 `agent._apply_inherited_pythonpath`.
 """
+
+_USER_LANGSMITH_ENV_CARRIER = "DEEPAGENTS_USER_LANGSMITH_ENV"
+"""Private client-to-server carrier for user-command LangSmith settings."""
+
+_USER_LANGSMITH_ENV_VARS = (
+    "LANGSMITH_API_KEY",
+    "LANGCHAIN_API_KEY",
+    "LANGSMITH_PROJECT",
+    "LANGSMITH_ENDPOINT",
+    "LANGCHAIN_ENDPOINT",
+    "LANGSMITH_WORKSPACE_ID",
+    "LANGSMITH_PROFILE",
+    "LANGSMITH_CONFIG_FILE",
+)
+"""LangSmith CLI selectors restored for approval-gated user commands."""
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -162,6 +183,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "WINDIR",
         READ_PROJECT_DOTENV,
         _INHERITED_PYTHONPATH_ENV,
+        _USER_LANGSMITH_ENV_CARRIER,
     }
 )
 """Environment keys that no `.env` file may inject.
@@ -516,7 +538,10 @@ def _resolve_env_var_from(env: dict[str, str], name: str) -> str | None:
 
 
 def _load_dotenv(
-    *, start_path: Path | None = None, refresh_loaded: bool = False
+    *,
+    start_path: Path | None = None,
+    refresh_loaded: bool = False,
+    capture_user_langsmith: bool = False,
 ) -> bool:
     """Load environment variables from project and global `.env` files.
 
@@ -545,6 +570,8 @@ def _load_dotenv(
         refresh_loaded: Remove values previously injected by this loader before
             applying the current project/global dotenv stack. Values modified
             after loading are preserved.
+        capture_user_langsmith: Save launch and project-dotenv LangSmith values
+            before global defaults are loaded.
 
     Returns:
         `True` when at least one dotenv file was loaded, `False` otherwise.
@@ -646,6 +673,11 @@ def _load_dotenv(
             "Skipping project dotenv at %s: startup.read_project_dotenv is false",
             start_path or "cwd",
         )
+
+    if capture_user_langsmith:
+        _bootstrap_state.user_langsmith_env = {
+            var: os.environ.get(var) for var in _USER_LANGSMITH_ENV_VARS
+        }
 
     # 2. Global (~/.deepagents/.env) — fills in any vars not already set by
     # the shell or the project dotenv.
@@ -1101,6 +1133,88 @@ def restore_user_tracing_api_keys(env: dict[str, str]) -> None:
             env[var] = value
 
 
+def _validate_user_langsmith_env(value: object) -> dict[str, str | None] | None:
+    """Validate one complete LangSmith selector mapping from the carrier.
+
+    Returns:
+        The typed mapping when valid, otherwise `None`.
+    """
+    if not isinstance(value, dict) or value.keys() != set(_USER_LANGSMITH_ENV_VARS):
+        return None
+    mapping = cast("dict[str, object]", value)
+    result: dict[str, str | None] = {}
+    for key in _USER_LANGSMITH_ENV_VARS:
+        item = mapping[key]
+        if item is not None and not isinstance(item, str):
+            return None
+        result[key] = item
+    return result
+
+
+def _decode_user_langsmith_env(
+    encoded: str,
+) -> tuple[dict[str, str | None], dict[str, str | None]] | None:
+    """Decode launch and user-command LangSmith mappings from the carrier.
+
+    Returns:
+        The launch/user pair when valid, otherwise `None`.
+    """
+    try:
+        decoded = json.loads(encoded)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(decoded, dict) or decoded.keys() != {"launch", "user"}:
+        return None
+    launch = _validate_user_langsmith_env(decoded["launch"])
+    user = _validate_user_langsmith_env(decoded["user"])
+    return (launch, user) if launch is not None and user is not None else None
+
+
+def _encode_user_langsmith_env() -> str:
+    """Encode the trusted user-command LangSmith environment for the server.
+
+    Returns:
+        Compact JSON containing launch and user-command selector mappings.
+
+    Raises:
+        RuntimeError: If bootstrap did not capture every supported selector.
+    """
+    for values in (
+        _bootstrap_state.launch_langsmith_env,
+        _bootstrap_state.user_langsmith_env,
+    ):
+        if _validate_user_langsmith_env(values) is None:
+            msg = "User LangSmith environment was not captured during bootstrap"
+            raise RuntimeError(msg)
+    return json.dumps(
+        {
+            "launch": _bootstrap_state.launch_langsmith_env,
+            "user": _bootstrap_state.user_langsmith_env,
+        },
+        separators=(",", ":"),
+    )
+
+
+def restore_user_langsmith_env(env: dict[str, str]) -> None:
+    """Restore launch and project-dotenv LangSmith settings for user commands."""
+    encoded = env.pop(_USER_LANGSMITH_ENV_CARRIER, None)
+    values = _bootstrap_state.user_langsmith_env
+    if encoded is not None:
+        decoded = _decode_user_langsmith_env(encoded)
+        if decoded is None:
+            logger.warning("Ignoring invalid user LangSmith environment carrier")
+        else:
+            _, values = decoded
+
+    for var in _USER_LANGSMITH_ENV_VARS:
+        env.pop(f"DEEPAGENTS_CODE_{var}", None)
+        value = values.get(var)
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = value
+
+
 def _disable_orphaned_tracing() -> None:
     """Disable LangSmith tracing when enabled without a usable API key.
 
@@ -1364,7 +1478,16 @@ def _ensure_bootstrap() -> None:
 
             ctx = _get_server_project_context()
             _bootstrap_state.start_path = ctx.user_cwd if ctx else None
-            _load_dotenv(start_path=_bootstrap_state.start_path)
+            _bootstrap_state.launch_langsmith_env = {
+                var: os.environ.get(var) for var in _USER_LANGSMITH_ENV_VARS
+            }
+            _bootstrap_state.user_langsmith_env = dict(
+                _bootstrap_state.launch_langsmith_env
+            )
+            _load_dotenv(
+                start_path=_bootstrap_state.start_path,
+                capture_user_langsmith=True,
+            )
 
             # `configure_debug_logging` already ran at import, before the `.env`
             # above was loaded. Re-run it so a `DEEPAGENTS_CODE_DEBUG` set only in
@@ -3587,7 +3710,24 @@ class Credentials:
         previous = {field: getattr(active, field) for field in _RELOADABLE_FIELDS}
         previous.update(_remembered_resolver_reload_values())
         _resolver_with_reload_overrides()
-        _load_dotenv(start_path=start_path, refresh_loaded=True)
+        encoded = os.environ.get(_USER_LANGSMITH_ENV_CARRIER)
+        if encoded is not None:
+            carried = _decode_user_langsmith_env(encoded)
+            if carried is not None:
+                launch, _ = carried
+                _bootstrap_state.launch_langsmith_env = launch
+        for var, value in _bootstrap_state.launch_langsmith_env.items():
+            if value is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = value
+        _load_dotenv(
+            start_path=start_path,
+            refresh_loaded=True,
+            capture_user_langsmith=True,
+        )
+        os.environ[_USER_LANGSMITH_ENV_CARRIER] = _encode_user_langsmith_env()
+        apply_stored_langsmith_auth()
         refreshed, blocked = self._reload_values(
             start_path=start_path,
             env=dict(os.environ),

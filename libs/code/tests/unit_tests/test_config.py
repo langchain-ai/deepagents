@@ -1,5 +1,6 @@
 """Tests for config module including project discovery utilities."""
 
+import json
 import logging
 import subprocess
 import sys
@@ -174,10 +175,17 @@ class TestRuntimeDotenvReload:
         )
         config_mod._dotenv_loaded_values.clear()
         original_ls = config_mod._bootstrap_state.original_langsmith_project
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
 
         try:
             # User never set LANGSMITH_PROJECT; tracing is active with a key.
             config_mod._bootstrap_state.original_langsmith_project = None
+            config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+                config_mod._USER_LANGSMITH_ENV_VARS
+            )
+            config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_API_KEY"] = (
+                "lsv2_test"
+            )
             monkeypatch.setenv("LANGSMITH_TRACING", "true")
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
             monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
@@ -193,6 +201,7 @@ class TestRuntimeDotenvReload:
             assert os.environ["LANGSMITH_PROJECT"] == LANGSMITH_PROJECT_DEFAULT
         finally:
             config_mod._bootstrap_state.original_langsmith_project = original_ls
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
             config_mod._dotenv_loaded_values.clear()
 
 
@@ -3817,6 +3826,108 @@ class TestDetectProvider:
             assert detect_provider("gpt-5.5") == "openai"
         finally:
             credentials.anthropic_api_key = None
+
+
+class TestUserLangsmithEnvironment:
+    """LangSmith credentials for the agent stay out of user commands."""
+
+    def test_dotenv_snapshot_excludes_global_and_preserves_project(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "LANGSMITH_PROJECT=project-value\n"
+            "LANGSMITH_WORKSPACE_ID=project-workspace\n"
+        )
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "LANGSMITH_API_KEY=global-key\n"
+            "LANGSMITH_PROJECT=global-value\n"
+            "LANGSMITH_PROFILE=global-profile\n"
+        )
+        for var in config_mod._USER_LANGSMITH_ENV_VARS:
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://launch.example.com")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = {
+            var: os.environ.get(var) for var in config_mod._USER_LANGSMITH_ENV_VARS
+        }
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            with patch.dict(os.environ, os.environ.copy(), clear=True):
+                config_mod._load_dotenv(
+                    start_path=project,
+                    capture_user_langsmith=True,
+                )
+
+                assert os.environ["LANGSMITH_API_KEY"] == "global-key"
+            assert config_mod._bootstrap_state.user_langsmith_env == {
+                "LANGSMITH_API_KEY": None,
+                "LANGCHAIN_API_KEY": None,
+                "LANGSMITH_PROJECT": "project-value",
+                "LANGSMITH_ENDPOINT": "https://launch.example.com",
+                "LANGCHAIN_ENDPOINT": None,
+                "LANGSMITH_WORKSPACE_ID": "project-workspace",
+                "LANGSMITH_PROFILE": None,
+                "LANGSMITH_CONFIG_FILE": None,
+            }
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
+
+    def test_restore_drops_agent_values_and_prefixed_settings(self) -> None:
+        import deepagents_code.config as config_mod
+
+        original = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        env = {
+            "LANGSMITH_API_KEY": "stored-key",
+            "LANGSMITH_ENDPOINT": "https://stored.example.com",
+            "LANGSMITH_PROJECT": "stored-project",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "prefixed-key",
+            "DEEPAGENTS_CODE_LANGSMITH_PROFILE": "prefixed-profile",
+        }
+
+        try:
+            config_mod.restore_user_langsmith_env(env)
+        finally:
+            config_mod._bootstrap_state.user_langsmith_env = original
+
+        assert not any(
+            var in env or f"DEEPAGENTS_CODE_{var}" in env
+            for var in config_mod._USER_LANGSMITH_ENV_VARS
+        )
+
+    def test_restore_decodes_server_carrier_and_removes_it(self) -> None:
+        import deepagents_code.config as config_mod
+
+        values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        values["LANGSMITH_PROFILE"] = "oauth"
+        values["LANGSMITH_CONFIG_FILE"] = "/tmp/ls.json"
+        env = {
+            config_mod._USER_LANGSMITH_ENV_CARRIER: json.dumps(
+                {"launch": dict.fromkeys(values), "user": values}
+            ),
+            "LANGSMITH_API_KEY": "agent-key",
+        }
+
+        config_mod.restore_user_langsmith_env(env)
+
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
+        assert "LANGSMITH_API_KEY" not in env
+        assert env["LANGSMITH_PROFILE"] == "oauth"
+        assert env["LANGSMITH_CONFIG_FILE"] == "/tmp/ls.json"
 
 
 class TestLazySingletons:

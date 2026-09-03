@@ -3785,6 +3785,14 @@ def get_langsmith_project_name() -> str | None:
         return None
 
     environ = active_environment()
+    if _active_environment.get() is not None:
+        from deepagents_code._env_vars import LANGSMITH_PROJECT
+
+        return (
+            _resolve_env_var_from(dict(environ), LANGSMITH_PROJECT)
+            or environ.get("LANGSMITH_PROJECT")
+            or LANGSMITH_PROJECT_DEFAULT
+        )
     return (
         _get_credentials().deepagents_langchain_project
         or environ.get("LANGSMITH_PROJECT")

@@ -2399,7 +2399,12 @@ def get_skill_sources(
     user_claude_skills_dir = get_user_claude_skills_dir()
     if user_claude_skills_dir is not None and user_claude_skills_dir.exists():
         sources.append((str(user_claude_skills_dir), "User Claude"))
-    project_claude_skills_dir = get_project_claude_skills_dir(credentials.project_root)
+    project_claude_root = (
+        project_context.project_root
+        if project_context is not None
+        else credentials.project_root
+    )
+    project_claude_skills_dir = get_project_claude_skills_dir(project_claude_root)
     if project_claude_skills_dir:
         sources.append((str(project_claude_skills_dir), "Project Claude"))
 

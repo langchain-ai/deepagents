@@ -166,6 +166,7 @@ def _patch_agent_paths(
     project_agent_skills_dir: Path | None = None,
     user_claude_skills_dir: Path | None = None,
     project_claude_skills_dir: Path | None = None,
+    expected_project_claude_root: Path | None = None,
     project_agent_md_paths: tuple[Path, ...] = (),
     user_agents_dir: Path | None = None,
     project_agents_dir: Path | None = None,
@@ -195,7 +196,12 @@ def _patch_agent_paths(
         ),
         patch(
             "deepagents_code.agent.get_project_claude_skills_dir",
-            return_value=project_claude_skills_dir,
+            side_effect=lambda root: (
+                project_claude_skills_dir
+                if expected_project_claude_root is None
+                or root == expected_project_claude_root
+                else None
+            ),
         ),
         patch(
             "deepagents_code.agent.get_user_agent_md_path",
@@ -2427,6 +2433,8 @@ class TestCreateCliAgentProjectContext:
         project_skills_dir.mkdir(parents=True)
         project_agent_skills_dir = project_root / ".agents" / "skills"
         project_agent_skills_dir.mkdir(parents=True)
+        project_claude_skills_dir = project_root / ".claude" / "skills"
+        project_claude_skills_dir.mkdir(parents=True)
         project_agents_dir = project_root / ".deepagents" / "agents"
         project_agents_dir.mkdir(parents=True)
         project_context = ProjectContext.from_user_cwd(user_cwd)
@@ -2474,6 +2482,8 @@ class TestCreateCliAgentProjectContext:
                 agent_dir=agent_dir,
                 skills_dir=user_skills_dir,
                 user_agent_skills_dir=user_agent_skills_dir,
+                project_claude_skills_dir=project_claude_skills_dir,
+                expected_project_claude_root=project_root,
                 user_agents_dir=tmp_path / "agents",
             ),
             patch("deepagents_code.agent.PluginSkillsMiddleware", FakeSkillsMiddleware),
@@ -2497,6 +2507,7 @@ class TestCreateCliAgentProjectContext:
         source_paths = [s[0] if isinstance(s, tuple) else s for s in sources]
         assert str(project_skills_dir) in source_paths
         assert str(project_agent_skills_dir) in source_paths
+        assert str(project_claude_skills_dir) in source_paths
         mock_list.assert_called_once_with(
             user_agents_dir=tmp_path / "agents",
             project_agents_dir=project_agents_dir,

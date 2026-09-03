@@ -6,6 +6,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import mimetypes
@@ -311,7 +312,12 @@ class _TelegramTransport:
                 timeout=self.timeout,
             ) as response:
                 payload = json.loads(response.read().decode())
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as error:
             msg = f"Telegram Bot API request failed: {method}"
             raise _TelegramError(msg) from error
         return _validate_response(payload)

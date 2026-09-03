@@ -31,6 +31,8 @@ from deepagents.middleware.subagents import (
     SUBAGENT_RESPONSE_FORMAT_CONFIG_KEY,
     SubAgentMiddleware,
     _build_task_tool,
+    _is_forked_compiled_subagent,
+    _is_forked_subagent,
     create_sub_agent,
 )
 from tests.unit_tests.chat_model import GenericFakeChatModel
@@ -150,6 +152,21 @@ class TestSubagentMiddlewareInit:
 
         with pytest.raises(ValueError, match="invalid mode 'dynamic'"):
             SubAgentMiddleware(backend=StateBackend(), subagents=[invalid_spec])
+
+    @pytest.mark.parametrize("mode", ["isolated", "handoff"])
+    def test_accepts_isolated_subagent_mode(self, mode: str) -> None:
+        """`handoff` is a legacy alias for `isolated`; neither forks the parent."""
+        spec: Any = {
+            "name": "worker",
+            "description": "Does work.",
+            "runnable": RunnableLambda(lambda _state: {"messages": [AIMessage(content="done")]}),
+            "mode": mode,
+        }
+
+        SubAgentMiddleware(backend=StateBackend(), subagents=[spec])
+
+        assert not _is_forked_subagent(spec)
+        assert not _is_forked_compiled_subagent(spec)
 
     def test_forked_subagent_appends_its_own_system_prompt(self) -> None:
         """A fork's `system_prompt` is appended to the inherited one, not a replacement."""
@@ -976,7 +993,7 @@ class TestSubagentMiddlewareInit:
                 ],
             )
 
-    def test_handoff_subagent_receives_only_task_description(self) -> None:
+    def test_isolated_subagent_receives_only_task_description(self) -> None:
         captured: dict[str, object] = {}
 
         class _Runnable:

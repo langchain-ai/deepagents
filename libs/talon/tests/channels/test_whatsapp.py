@@ -22,6 +22,7 @@ from deepagents_talon.channels.whatsapp import (
     WhatsAppChannelConfig,
     _bridge_script_path,
     _BridgeTransport,
+    _parse_message,
     _WhatsAppBridgeError,
 )
 from deepagents_talon.config import TalonConfig
@@ -264,7 +265,29 @@ def test_config_accepts_open_exposure_with_acknowledgement(tmp_path: Path) -> No
     assert whatsapp.exposure.mode == ExposureMode.OPEN
 
 
-async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("reply_metadata", "expected_status"),
+    [
+        ({"quotedParticipant": "quoted-user@lid"}, "resolved"),
+        ({"replyContextStatus": "lookup_failed"}, "lookup_failed"),
+        ({"replyContextStatus": "untrusted-value"}, "not_reply"),
+    ],
+)
+def test_channel_normalizes_reply_context_status(
+    reply_metadata: dict[str, object],
+    expected_status: str,
+) -> None:
+    message = _parse_message({"text": "message", "chat_id": "chat", **reply_metadata})
+
+    assert message.metadata["reply_context_status"] == expected_status
+
+
+async def test_channel_polls_and_dispatches_allowed_messages(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    quoted_participant = "quoted-user@s.whatsapp.net"
+    quoted_message_id = "false_chat@lid_ABC"
     transport = RecordingTransport(
         messages=[
             {
@@ -273,6 +296,9 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
                 "user_id": "operator",
                 "message_id": "message-1",
                 "message_type": "chat",
+                "quotedMessageId": quoted_message_id,
+                "quotedParticipant": quoted_participant,
+                "replyContextStatus": "resolved",
             },
             {
                 "text": "blocked",
@@ -299,12 +325,21 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
 
     channel.set_message_handler(record)
 
-    await channel.start()
-    await asyncio.sleep(0)
-    await channel.stop()
+    with caplog.at_level(logging.DEBUG, logger="deepagents_talon.channels.whatsapp"):
+        await channel.start()
+        await asyncio.sleep(0)
+        await channel.stop()
 
     assert [message.text for message in received] == ["allowed"]
     assert received[0].metadata["provider"] == "whatsapp"
+    assert received[0].metadata["quoted_message_id"] == quoted_message_id
+    assert received[0].metadata["quoted_participant"] == quoted_participant
+    assert received[0].metadata["reply_context_status"] == "resolved"
+    assert '"quoted_message_id_present": true' in caplog.text
+    assert '"quoted_participant_present": true' in caplog.text
+    assert '"reply_context_status": "resolved"' in caplog.text
+    assert quoted_message_id not in caplog.text
+    assert quoted_participant not in caplog.text
 
 
 async def test_channel_rejects_truthy_non_boolean_self_markers(tmp_path: Path) -> None:
@@ -859,8 +894,82 @@ async def test_channel_forwards_bridge_output_to_logs(
     assert "WhatsApp bridge: Scan this QR code to pair WhatsApp:" in caplog.text
 
 
+async def test_restart_clears_exited_bridge_before_starting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExitedProcess:
+        returncode = 1
+
+        def terminate(self) -> None:
+            msg = "an exited process must not be terminated"
+            raise AssertionError(msg)
+
+    channel = WhatsAppChannel(WhatsAppChannelConfig(session_dir=tmp_path))
+    channel._process = cast("asyncio.subprocess.Process", ExitedProcess())
+    started = False
+
+    async def start_bridge() -> None:
+        nonlocal started
+        started = True
+        assert channel._process is None
+
+    monkeypatch.setattr(channel, "_start_bridge", start_bridge)
+
+    await channel._restart_bridge()
+
+    assert started
+
+
 def test_bridge_script_is_packaged() -> None:
     assert _bridge_script_path().name == "bridge.js"
     assert _bridge_script_path().is_file()
     assert _bridge_script_path().with_name("id_compat.js").is_file()
     assert _bridge_script_path().with_name("package-lock.json").is_file()
+
+
+async def test_transport_wraps_connection_interruptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        msg = "connection lost during sleep"
+        raise ConnectionResetError(msg)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = _BridgeTransport(base_url="http://127.0.0.1:3000", timeout=1)
+
+    with pytest.raises(_WhatsAppBridgeError, match="request failed") as exc_info:
+        await transport.get("/health")
+
+    assert isinstance(exc_info.value.__cause__, ConnectionResetError)
+
+
+async def test_health_watchdog_retries_failed_bridge_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableTransport:
+        async def get(self, path: str) -> object:
+            assert path == "/health"
+            msg = "bridge unavailable"
+            raise _WhatsAppBridgeError(msg)
+
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, health_interval_seconds=0),
+        transport=cast("_BridgeTransport", UnavailableTransport()),
+    )
+    restart_attempts = 0
+
+    async def restart_bridge() -> None:
+        nonlocal restart_attempts
+        restart_attempts += 1
+        if restart_attempts == 1:
+            msg = "restart interrupted"
+            raise _WhatsAppBridgeError(msg)
+        channel._stopped.set()
+
+    monkeypatch.setattr(channel, "_restart_bridge", restart_bridge)
+
+    await channel._watch_health()
+
+    assert restart_attempts == 2

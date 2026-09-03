@@ -12,6 +12,7 @@ const {
   createCompatibleClientClass,
   isSelfChat,
   normalizeMessage,
+  quotedMessageContext,
   serializedId,
   widString,
 } = require("./id_compat");
@@ -209,6 +210,7 @@ async function enqueueMessage(message, fromSelf) {
   const chatName = (chat && chat.name) || data.chatName || chatId;
   const isGroup =
     chat && typeof chat.isGroup === "boolean" ? chat.isGroup : chatId.endsWith("@g.us");
+  const quote = await quotedMessageContext(message);
 
   const entry = {
     text: message.body || "",
@@ -249,7 +251,12 @@ async function enqueueMessage(message, fromSelf) {
     selfChat,
     mentionedIds: normalizeIds(message.mentionedIds || []),
     botIds,
-    quotedParticipant: await quotedParticipant(message),
+    quoted_participant: quote.participant,
+    quotedParticipant: quote.participant,
+    quoted_message_id: quote.messageId,
+    quotedMessageId: quote.messageId,
+    reply_context_status: quote.status,
+    replyContextStatus: quote.status,
     raw_message: {
       from: messageFrom,
       to: messageTo,
@@ -342,18 +349,6 @@ async function safeGetContact(message) {
     return await message.getContact();
   } catch (_error) {
     console.log("[bridge] getContact failed (non-fatal)");
-    return null;
-  }
-}
-
-async function quotedParticipant(message) {
-  if (!message.hasQuotedMsg) {
-    return null;
-  }
-  try {
-    const quoted = await message.getQuotedMessage();
-    return quoted.author || quoted.from || null;
-  } catch (_error) {
     return null;
   }
 }

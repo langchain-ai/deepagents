@@ -65,6 +65,10 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._env_vars import (
+    FORKED_SUBAGENTS,
+    is_env_truthy,
+)
 from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
@@ -2614,7 +2618,7 @@ def create_cli_agent(
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = list(tools or [])
     if extension_registry is not None:
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+        from deepagents_code._env_vars import EXPERIMENTAL
 
         if not is_env_truthy(EXPERIMENTAL):
             extension_registry = None
@@ -2834,6 +2838,8 @@ def create_cli_agent(
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
             "middleware": _subagent_cli_middleware(has_explicit_model=False),
         }
+        if is_env_truthy(FORKED_SUBAGENTS, default=True):
+            general_purpose_subagent["mode"] = "fork"
         if resolved_interrupt_on is not None:
             general_purpose_subagent["interrupt_on"] = {}
         custom_subagents.append(general_purpose_subagent)
@@ -3444,19 +3450,25 @@ def create_cli_agent(
         from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
 
         agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
-    agent = create_deep_agent(
-        model=model,
-        system_prompt=system_prompt,
-        tools=tools,
-        backend=composite_backend,
-        middleware=agent_middleware,
-        interrupt_on=interrupt_on,
-        context_schema=CLIContextSchema,
-        checkpointer=checkpointer,
-        store=store,
-        subagents=all_subagents or None,
-        name=_sanitize_agent_message_name(assistant_id),
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The feature `forked subagents` is in beta",
+            category=Warning,
+        )
+        agent = create_deep_agent(
+            model=model,
+            system_prompt=system_prompt,
+            tools=tools,
+            backend=composite_backend,
+            middleware=agent_middleware,
+            interrupt_on=interrupt_on,
+            context_schema=CLIContextSchema,
+            checkpointer=checkpointer,
+            store=store,
+            subagents=all_subagents or None,
+            name=_sanitize_agent_message_name(assistant_id),
+        )
     if effective_recursion_limit is not None:
         # `Pregel.with_config` uses `merge_configs`, which discards a value equal
         # to LangGraph's environment-derived default. Replace the copied graph's

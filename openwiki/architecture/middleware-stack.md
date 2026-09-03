@@ -1,11 +1,11 @@
 ---
 type: architecture
 title: Middleware Stack
-description: How create_deep_agent composes base scaffolding, caller, and profile/tail middleware into the final request-shaping stack, and how middleware differs from plain tools.
-tags: [middleware, deepagents, create_deep_agent, harness-profile, subagents, request-shaping]
+description: How create_deep_agent assembles, filters, and hands off ordered middleware stacks for the main agent and its subagents. Covers extension placement, protected exclusions, tool visibility, and isolated versus forked delegation boundaries.
+tags: [middleware, deepagents, agent-construction, harness-profile, subagents, tool-surface]
 verified:
-  - by: openwiki/0.4.0
-    at: 2026-08-26T21:35:57.774Z
+  - by: openwiki/0.4.2
+    at: 2026-09-03T08:05:39.427Z
 sources:
   - id: openwiki-source-68ae2141dbec1e0915410ac3
     resource: repo://libs/ARCHITECTURE.md
@@ -17,157 +17,125 @@ sources:
     resource: repo://libs/deepagents/deepagents/middleware/__init__.py
   - id: openwiki-source-7a16b9a53a07e882b7305459
     resource: repo://libs/deepagents/deepagents/middleware/_prompt_caching.py
-generated: {by: "openwiki/0.4.0", at: "2026-08-26T21:35:57.774Z"}
+  - id: openwiki-source-8b1aaf77fc0430fd00711a73
+    resource: repo://libs/deepagents/deepagents/middleware/_tool_exclusion.py
+  - id: openwiki-source-e51c4102234507d1529a2440
+    resource: repo://libs/deepagents/deepagents/middleware/async_subagents.py
+  - id: openwiki-source-114a1c7a58992fa867a94ef0
+    resource: repo://libs/deepagents/deepagents/middleware/subagents.py
+  - id: openwiki-source-454da083c2cc29febd156c7e
+    resource: repo://libs/deepagents/tests/unit_tests/middleware/test_subagent_middleware_init.py
+generated: { by: "openwiki/0.4.2", at: "2026-09-03T08:05:39.427Z" }
 ---
 
 # Middleware Stack
 
-Deep Agents is an opinionated harness built on top of LangChain's
-`create_agent()`. It does not introduce a new runtime; instead
-[`create_deep_agent()`](repo://libs/deepagents/deepagents/graph.py) assembles an
-ordered list of `AgentMiddleware` and hands it to `create_agent()`, which builds
-the model/tool loop. Almost everything the harness adds — filesystem tools,
-subagent delegation, summarization, prompt caching, memory injection, human
-approval — is delivered as middleware in that stack. This page explains how the
-stack is composed and why its ordering is deliberate.
+`create_deep_agent()` is an opinionated harness assembler, not a new agent runtime. It resolves the model and applicable `HarnessProfile`, builds ordered `AgentMiddleware` lists, and gives the main list, tools, prompt, schemas, persistence objects, and execution options to LangChain's `create_agent()`. LangChain builds the model/tool loop on LangGraph. For the broader construction/runtime split, see [SDK construction and execution](/openwiki/architecture/sdk-construction-execution.md).
 
-## Middleware vs. a plain `tools=` callable
+Middleware is the extension boundary for behavior that must participate in an LLM request. An `AgentMiddleware` can use `wrap_model_call()` on every request to change the effective tools, system prompt, message history, or typed graph state. A callable in `tools=` instead runs only after the model elects to call it. Caller tools are additive to the built-in suite; use a profile's `excluded_tools` to hide a tool from the model, or replace `FilesystemMiddleware` when the filesystem suite itself must change.
 
-The distinction between middleware and a plain tool is the central reason the
-harness is built the way it is. A callable passed through `tools=` is only
-invoked *after* the model chooses to call it; it cannot see or change the
-request before the model call. Middleware subclasses `AgentMiddleware` and
-overrides hooks such as `wrap_model_call()`, which intercepts *every* LLM
-request before it is sent. That lets middleware rewrite the tool list, inject
-system-prompt context, transform message history, and maintain typed cross-turn
-state — none of which a plain tool can do.
+## Main-agent assembly
 
-Concretely, middleware can filter tools dynamically (for example,
-`FilesystemMiddleware` removing the `execute` tool when the resolved backend
-cannot run shells), inject prompt context on every call (`MemoryMiddleware`,
-`SkillsMiddleware`), transform history (`SummarizationMiddleware`), and persist
-typed state across turns. Caller-supplied `tools=` are additive: they are merged
-into the final tool set but never remove a built-in. See
-[tools & filesystem](repo://openwiki/concepts/tools-filesystem.md) for how the
-visible tool surface is ultimately resolved.
-
-## The three-band model
-
-The assembled stack is best understood as three bands, in order:
-
-1. **Base scaffolding** — the capabilities every deep agent is expected to have.
-2. **Caller middleware** — application-specific middleware spliced into the
-   middle without rebuilding the harness.
-3. **Profile / tail middleware** — behavior that must run *after* the prompt and
-   tool surface are otherwise final: harness-profile extras, tool exclusion,
-   provider prompt caching, memory injection, and human approval.
+The construction order below is significant. Optional members are omitted when their condition is not met.
 
 ```mermaid
 flowchart TD
-    A["Base scaffolding: Skills, Filesystem, SubAgent, Summarization, PatchToolCalls, AsyncSubAgent"] --> B["Caller middleware from middleware= param"]
-    B --> C["Tail: profile extra_middleware, prompt caching, Memory, HumanInTheLoop, ToolExclusion"]
-    C --> D["create_agent builds model and tool loop"]
+    Resolve["Resolve model and harness profile"] --> Core["Build core stack"]
+    Core --> Tail["Add profile extras and cache middleware"]
+    Tail --> Optional["Add memory and human approval when configured"]
+    Optional --> FirstFilter["Filter profile middleware exclusions"]
+    FirstFilter --> Merge["Merge caller middleware at core boundary"]
+    Merge --> SecondFilter["Filter exclusions again"]
+    SecondFilter --> ToolFilter["Append excluded tool filter last"]
+    ToolFilter --> Build["Pass main stack to create_agent"]
 ```
 
-Diagram: the three bands the harness assembles before delegating to `create_agent()`.
+Diagram: main-stack construction, including the two middleware-exclusion passes before the final tool filter.
 
-The exact default ordering lives in code and in the `middleware` parameter
-documentation on `create_deep_agent()`; treat that parameter as the source of
-truth rather than memorizing an ordering here. The base scaffolding is appended
-first, then caller middleware, then the tail
-([main-agent assembly](repo://libs/deepagents/deepagents/graph.py#L815-L892)).
+### Exact order
 
-### Why the tail depends on the final prompt and tool surface
+1. **Core stack**
+   1. `SkillsMiddleware` when `skills` is supplied.
+   2. `FilesystemMiddleware`.
+   3. `SubAgentMiddleware` when synchronous inline subagents exist. The automatically added `general-purpose` subagent normally makes this true.
+   4. Model/backend-specific summarization middleware.
+   5. `PatchToolCallsMiddleware`.
+   6. `AsyncSubAgentMiddleware` when `AsyncSubAgent` specs are supplied.
+2. **Tail before caller merge**
+   1. materialized `HarnessProfile.extra_middleware`;
+   2. `AnthropicPromptCachingMiddleware`, followed by optional Bedrock and Fireworks caching middleware when their integration packages are available;
+   3. `MemoryMiddleware` when `memory` is supplied;
+   4. `HumanInTheLoopMiddleware` when permissions generate interrupt rules or `interrupt_on` supplies rules. For the same tool, an explicit `interrupt_on` entry wins over a generated filesystem-permission entry.
+3. Filter `HarnessProfile.excluded_middleware` from the assembled list.
+4. Merge caller `middleware=` at the core/tail boundary, then filter exclusions **again**. The second pass prevents callers from restoring an excluded class or name.
+5. If the profile has `excluded_tools`, append `_ToolExclusionMiddleware` **after everything else**.
 
-Tail members are ordered late on purpose because they react to the request as it
-will actually be sent. Provider prompt-caching middleware
-(`AnthropicPromptCachingMiddleware`, and optionally Bedrock/Fireworks when their
-integration packages are installed) is appended after the harness-profile extras
-so that per-turn changes do not repeatedly invalidate the cache prefix; in
-particular `MemoryMiddleware` is placed *after* prompt caching because it mutates
-the system prompt, and putting it earlier would invalidate the Anthropic cache
-prefix ([tail ordering rationale](repo://libs/deepagents/deepagents/graph.py#L855-L869)).
-Prompt-caching middleware is unconditional but no-ops for models it does not
-apply to ([append_prompt_caching_middleware](repo://libs/deepagents/deepagents/middleware/_prompt_caching.py#L41-L49)),
-so it is a good example of middleware that may be installed but never
-fire for a given model — see [runtime behavior](repo://openwiki/runtime-behavior.md)
-for reasoning about installed-but-inert middleware.
+Prompt caching is installed even for unsupported models: Anthropic caching is always appended with `unsupported_model_behavior="ignore"`; Bedrock and Fireworks variants are appended only when their packages can be imported and use the same behavior. An installed cache middleware can therefore be inert for the request model. Profile extras precede caching, while memory follows it so memory's system-prompt updates do not invalidate the Anthropic cache prefix.
 
-Tool exclusion is appended *last* so excluded tool names are stripped after every
-tool-injecting middleware — including any caller `wrap_model_call` — has run, and
-cannot be restored ([tool exclusion runs last](repo://libs/deepagents/deepagents/graph.py#L889-L892)).
+The final main stack also defines the state boundary for synchronous delegation. `create_deep_agent()` combines an explicit `state_schema` with state schemas contributed by middleware, identifies private fields, and gives those keys to `SubAgentMiddleware` so ordinary subagent dispatch does not expose them.
 
-## How caller middleware is spliced in
+## Caller placement and replacement semantics
 
-Caller middleware passed via the `middleware=` parameter is merged by name, not
-simply appended. If a caller middleware's `.name` matches a member already in the
-base stack, it *replaces* that member in place, preserving stack position;
-otherwise it is inserted after the last "core" member so it precedes the
-profile/prompt-caching/memory tail
-([_apply_custom_middleware](repo://libs/deepagents/deepagents/graph.py#L201-L235)).
-The core-name set is captured before the tail is appended, which is what makes
-this "insert ahead of the tail" behavior deterministic
-([core names captured](repo://libs/deepagents/deepagents/graph.py#L852-L854)).
+Caller middleware is not simply appended. The core names are captured before profile/tail members are added.
 
-## Required scaffolding cannot be removed
+- If a caller entry's `.name` still exists in the working stack, it replaces that entry in place, preserving its position. This is the supported way to replace a default slot without changing relative order.
+- Otherwise, new caller entries are inserted immediately after the last surviving core member and before profile extras, caching, memory, and approval middleware.
+- Replacement is assessed after the first exclusion pass. An excluded slot is no longer present to replace; a caller entry with that name becomes a new core-boundary entry, and the second pass removes it if its name or exact class is excluded.
 
-Two middleware classes are treated as protected scaffolding —
-`FilesystemMiddleware` (which backs every built-in file tool and enforces
-`permissions`) and `SubAgentMiddleware` (which backs the `task` tool handler).
-Removing either silently breaks core features, so they are registered as required
-and cannot be excluded ([_REQUIRED_MIDDLEWARE](repo://libs/deepagents/deepagents/graph.py#L238-L265)).
+This positioning lets request-shaping application middleware run after core capability providers but before tail middleware reacts to the nearly final prompt and tool surface. See [middleware catalog](/openwiki/concepts/middleware-catalog.md) for individual responsibilities.
 
-## Profile-driven exclusions
+## Exclusion and tool-surface invariants
 
-Beyond user middleware, an active `HarnessProfile` can subtract middleware from
-the assembled stack via `excluded_middleware`. This machinery lives in
-[`_excluded_middleware.py`](repo://libs/deepagents/deepagents/_excluded_middleware.py)
-and runs in three phases:
+A `HarnessProfile` can subtract middleware and model-visible tools. These are deliberately different controls.
 
-- **Validation** rejects any exclusion that targets required scaffolding, before
-  any stack is filtered ([_validate_excluded_middleware_config](repo://libs/deepagents/deepagents/_excluded_middleware.py#L23-L64)).
-- **Filtering** drops matching members. Class entries match on *exact type* (not
-  `isinstance`), so a caller's subclass survives when the profile excludes the
-  base class; string entries match `AgentMiddleware.name` exactly, which lets a
-  public alias such as `"SummarizationMiddleware"` drop an implementation class
-  whose `.name` differs from its `__name__`
-  ([_apply_excluded_middleware](repo://libs/deepagents/deepagents/_excluded_middleware.py#L90-L165)).
-- **Coverage verification** raises `ValueError` if any exclusion entry matched
-  nothing across all the stacks the profile applies to, catching typos and stale
-  profiles ([_verify_excluded_middleware_coverage](repo://libs/deepagents/deepagents/_excluded_middleware.py#L168-L199)).
+- `FilesystemMiddleware` and `SubAgentMiddleware` are protected scaffolding. The former backs the built-in file tools and filesystem permission enforcement; the latter backs the synchronous `task` handler. Excluding either by class or name raises `ValueError` rather than yielding a silently degraded agent.
+- Middleware exclusions use exact identity semantics: class entries match `type(middleware) is entry`, not `isinstance`; string entries match `AgentMiddleware.name` exactly. A base-class exclusion consequently does not remove a caller subclass. A public name can target an implementation class whose `.name` differs from `__name__`.
+- A string exclusion matching more than one distinct concrete class in one stack raises `ValueError`; use a class-form exclusion to disambiguate. Every legitimate exclusion must match somewhere. For the main profile, matching is accumulated across the main and auto-added general-purpose stacks and checked after both are filtered; a subagent resolving another profile is checked independently.
+- `_ToolExclusionMiddleware` filters names from each model request **and** rejects an attempted excluded tool call at the tool-call boundary. It is a consistency/visibility control, not a substitute for authorization; filesystem permissions enforce built-in filesystem access. Because the filter is final, middleware that injects tools and caller `wrap_model_call()` code cannot restore an excluded name.
 
-A string exclusion that matches more than one distinct class within a single
-stack is also rejected, forcing the caller to disambiguate with a class-form
-exclusion ([name-collision guard](repo://libs/deepagents/deepagents/_excluded_middleware.py#L67-L87)).
+The practical distinction matters: a missing tool usually points to stack assembly, a profile exclusion, or backend capability; a visible file tool that later fails can instead be a permission decision. See [permissions and human-in-the-loop](/openwiki/concepts/permissions-hitl.md).
 
-Because a profile-level entry only has to match *somewhere*, exclusion is applied
-per stack while matches are accumulated into shared sets, and coverage is checked
-once after every stack (main agent plus general-purpose subagent) has been
-filtered ([accumulated matches](repo://libs/deepagents/deepagents/graph.py#L614-L619),
-[coverage after all stacks](repo://libs/deepagents/deepagents/graph.py#L898-L908)).
+## Separate subagent construction paths
 
-## Subagents have their own stacks
+Determine the subagent form before diagnosing delegated behavior. At assembly time, a spec with `graph_id` goes to `AsyncSubAgentMiddleware`; a spec with `runnable` is a `CompiledSubAgent`; every other spec is a declarative `SubAgent` assembled by Deep Agents. Main-agent middleware therefore does not retrofit a supplied runnable or a remote graph.
 
-A behavior observed only during delegated work usually comes from a *different*
-middleware stack than the main agent's. Each declarative `SubAgent` gets its own
-independently assembled stack — filesystem, summarization, patch-tool-calls, its
-own skills, its own harness-profile extras (resolved for that subagent's model),
-prompt caching, exclusion filtering, its own spec-level middleware, and tool
-exclusion — built from the subagent's own resolved profile
-([subagent stack assembly](repo://libs/deepagents/deepagents/graph.py#L664-L742)).
-The auto-added general-purpose subagent is assembled the same way and only
-inherits caller middleware that overrides one of its default slots, not
-main-agent-specific middleware
-([GP subagent stack](repo://libs/deepagents/deepagents/graph.py#L749-L793)).
+### Declarative `SubAgent`: isolated by default
 
-Subagents come in several forms — declarative `SubAgent`, pre-compiled
-`CompiledSubAgent`, and background `AsyncSubAgent` routed to
-`AsyncSubAgentMiddleware` — and each carries its own configuration
-([subagent routing](repo://libs/deepagents/deepagents/graph.py#L644-L653)). When
-debugging delegated behavior, first determine which subagent type handled the
-task before changing main-agent middleware; changing the main stack will not
-affect a compiled or async subagent. See the
-[middleware catalog](repo://openwiki/concepts/middleware-catalog.md) for the
-individual middleware and
-[SDK construction & execution](repo://openwiki/architecture/sdk-construction-execution.md)
-for how the assembled graph is invoked.
+The current `SubAgent` contract calls the default mode **`isolated`**: the child receives the delegated task as its message input rather than the parent's conversation. `mode="handoff"` is accepted only as a legacy alias for isolated behavior; it is not a separate current mode and does not fork context. `mode="fork"` is the experimental opt-in that continues the parent's conversation.
+
+Each declarative spec resolves its own model and harness profile, then gets an independent stack:
+
+1. `FilesystemMiddleware`, summarization middleware, and `PatchToolCallsMiddleware`;
+2. `SkillsMiddleware` from the spec's `skills` in isolated mode;
+3. subagent-profile extras and provider cache middleware;
+4. an exclusion filter, spec middleware merged at the subagent core boundary, a second exclusion filter, coverage verification, and finally `_ToolExclusionMiddleware` when that profile excludes tools.
+
+A declarative subagent inherits top-level tools, permissions, and `interrupt_on` only when its spec omits the corresponding field. Its own permissions replace rather than extend parent rules. Compilation appends `HumanInTheLoopMiddleware` when the resolved interrupt configuration is non-empty. The parent `state_schema` is forwarded to declarative compilation; compiled and remote forms own compatible schemas themselves.
+
+### Forks: context-preserving, not an additional default
+
+A declarative fork mirrors top-level skills when configured and appends `MemoryMiddleware` after caching when top-level memory is configured; it cannot define independent `skills`. Its prompt is the effective parent prompt plus any subagent prompt addendum. Top-level caller middleware is also inherited for a fork and merged with spec middleware by name, with a same-name spec member winning.
+
+At invocation, a declarative fork receives the parent's effective conversation plus a task preamble and inherits parent state except specifically excluded fork keys. This includes private channels so its matching graph shape can rebuild parent prompt-producing behavior. A compiled fork is more restricted because its runnable is opaque: it receives the forked history but strips private state. Both forms prevent recursive delegation: a forked child that calls `task` receives a refusal instead of launching another child.
+
+### Auto-added general-purpose subagent
+
+Unless the caller supplies a synchronous subagent named `general-purpose` or the profile disables it, the harness inserts this synchronous subagent. Its independent initial stack is filesystem, summarization, patch tool calls, optional top-level skills, profile extras, and caching; it is filtered, receives only caller middleware that overrides one of its own original default slots, is filtered again, and then receives final tool exclusion. Arbitrary main-only caller middleware is not inherited.
+
+The general-purpose spec uses the main model and caller tools, carries main permissions and resolved interrupt configuration, and can receive a profile-specific description or prompt. Disabling it removes the `task` tool only if no other synchronous subagent exists; async subagents remain independent.
+
+### Async and compiled subagents
+
+`CompiledSubAgent` supplies an already-built runnable, so Deep Agents does not assemble its internal middleware, apply top-level interrupt rules, or propagate the parent schema. The runnable must return state with `messages`; when it completes, the parent receives a `ToolMessage` containing a structured response serialized as JSON when present, otherwise the last non-empty AI message text. Other returned state is merged except excluded and private fields.
+
+`AsyncSubAgent` is managed by `AsyncSubAgentMiddleware` as a remote/background Agent Protocol task. It returns a task ID and keeps task records in middleware state rather than blocking the parent task call. Configure schema and approval behavior in the remote graph. See [subagents and skills](/openwiki/concepts/subagents-skills.md) and [state and persistence](/openwiki/concepts/state-persistence.md).
+
+## Safe-change checks
+
+Focused tests in `libs/deepagents/tests/unit_tests/test_graph.py` and `libs/deepagents/tests/unit_tests/test_subagents.py` cover construction wiring, filtering, and dispatch. When changing this assembly path, assert observable invariants rather than only constructor calls:
+
+- exact main and general-purpose ordering, caller replacement position, and new-caller placement before the tail;
+- both exclusion passes and final tool filtering, including protected-scaffolding, exact-type, alias, collision, and unmatched-coverage failures;
+- isolated default behavior and legacy `handoff` equivalence, fork-only inheritance/skill restrictions, and recursive-delegation refusal;
+- declarative inheritance versus compiled/remote ownership boundaries; and
+- private-state isolation for ordinary children, plus the intentionally different declarative-fork boundary.

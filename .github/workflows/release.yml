@@ -651,6 +651,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: "false"
 
+      - name: Set up Node for Talon
+        if: needs.build.outputs.pkg-name == 'deepagents-talon'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: dist

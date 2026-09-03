@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import urllib.error
+import urllib.request
 from pathlib import Path
-from typing import TYPE_CHECKING, Self, cast
+from typing import Self, cast
 
 import pytest
 
@@ -12,6 +14,7 @@ from deepagents_talon.channels.base import (
     ChannelExposure,
     ChannelMediaError,
     ExposureMode,
+    send_with_retry,
 )
 from deepagents_talon.channels.whatsapp import (
     DEFAULT_WHATSAPP_MAX_MEDIA_BYTES,
@@ -19,19 +22,18 @@ from deepagents_talon.channels.whatsapp import (
     WhatsAppChannelConfig,
     _bridge_script_path,
     _BridgeTransport,
+    _parse_message,
     _WhatsAppBridgeError,
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
-
-if TYPE_CHECKING:
-    import urllib.request
 
 
 class RecordingTransport:
     def __init__(self, messages: list[dict[str, object]] | None = None) -> None:
         self.messages = messages or []
         self.posts: list[tuple[str, dict[str, object]]] = []
+        self.media_bytes: list[bytes] = []
 
     async def get(self, path: str) -> object:
         if path == "/messages":
@@ -45,6 +47,9 @@ class RecordingTransport:
 
     async def post(self, path: str, payload: dict[str, object]) -> object:
         self.posts.append((path, payload))
+        file_path = payload.get("filePath")
+        if isinstance(file_path, str):
+            self.media_bytes.append(await asyncio.to_thread(Path(file_path).read_bytes))
         return {"success": True, "message_id": "sent"}
 
 
@@ -59,6 +64,20 @@ class DelayedHealthTransport:
             msg = "bridge not listening yet"
             raise _WhatsAppBridgeError(msg)
         return {"status": "qr_pending", "botId": None}
+
+
+class FailingSendTransport:
+    def __init__(self, *, retryable: bool = False, failures: int | None = None) -> None:
+        self.posts: list[tuple[str, dict[str, object]]] = []
+        self.retryable = retryable
+        self.failures = failures
+
+    async def post(self, path: str, payload: dict[str, object]) -> object:
+        self.posts.append((path, payload))
+        if self.failures is not None and len(self.posts) > self.failures:
+            return {"success": True, "message_id": "sent"}
+        msg = f"WhatsApp bridge request failed: POST {path}"
+        raise _WhatsAppBridgeError(msg, retryable=self.retryable)
 
 
 class JsonResponse:
@@ -194,6 +213,30 @@ def test_bridge_transport_sends_bearer_token(monkeypatch: pytest.MonkeyPatch) ->
     assert request.get_header("Authorization") == "Bearer test-token"
 
 
+def test_bridge_transport_marks_service_unavailable_as_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:
+        del request, timeout
+        url = "http://127.0.0.1:3000/send"
+        reason = "Service Unavailable"
+        raise urllib.error.HTTPError(
+            url,
+            503,
+            reason,
+            hdrs=None,
+            fp=None,
+        )
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = _BridgeTransport(base_url="http://127.0.0.1:3000", timeout=2)
+
+    with pytest.raises(_WhatsAppBridgeError) as exc_info:
+        transport._request("POST", "/send", {"chatId": "chat", "text": "hello"})
+
+    assert exc_info.value.retryable is True
+
+
 def test_config_rejects_open_exposure_without_acknowledgement(tmp_path: Path) -> None:
     config = TalonConfig.from_env(
         {
@@ -222,7 +265,29 @@ def test_config_accepts_open_exposure_with_acknowledgement(tmp_path: Path) -> No
     assert whatsapp.exposure.mode == ExposureMode.OPEN
 
 
-async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    ("reply_metadata", "expected_status"),
+    [
+        ({"quotedParticipant": "quoted-user@lid"}, "resolved"),
+        ({"replyContextStatus": "lookup_failed"}, "lookup_failed"),
+        ({"replyContextStatus": "untrusted-value"}, "not_reply"),
+    ],
+)
+def test_channel_normalizes_reply_context_status(
+    reply_metadata: dict[str, object],
+    expected_status: str,
+) -> None:
+    message = _parse_message({"text": "message", "chat_id": "chat", **reply_metadata})
+
+    assert message.metadata["reply_context_status"] == expected_status
+
+
+async def test_channel_polls_and_dispatches_allowed_messages(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    quoted_participant = "quoted-user@s.whatsapp.net"
+    quoted_message_id = "false_chat@lid_ABC"
     transport = RecordingTransport(
         messages=[
             {
@@ -231,6 +296,9 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
                 "user_id": "operator",
                 "message_id": "message-1",
                 "message_type": "chat",
+                "quotedMessageId": quoted_message_id,
+                "quotedParticipant": quoted_participant,
+                "replyContextStatus": "resolved",
             },
             {
                 "text": "blocked",
@@ -257,12 +325,56 @@ async def test_channel_polls_and_dispatches_allowed_messages(tmp_path: Path) -> 
 
     channel.set_message_handler(record)
 
+    with caplog.at_level(logging.DEBUG, logger="deepagents_talon.channels.whatsapp"):
+        await channel.start()
+        await asyncio.sleep(0)
+        await channel.stop()
+
+    assert [message.text for message in received] == ["allowed"]
+    assert received[0].metadata["provider"] == "whatsapp"
+    assert received[0].metadata["quoted_message_id"] == quoted_message_id
+    assert received[0].metadata["quoted_participant"] == quoted_participant
+    assert received[0].metadata["reply_context_status"] == "resolved"
+    assert '"quoted_message_id_present": true' in caplog.text
+    assert '"quoted_participant_present": true' in caplog.text
+    assert '"reply_context_status": "resolved"' in caplog.text
+    assert quoted_message_id not in caplog.text
+    assert quoted_participant not in caplog.text
+
+
+async def test_channel_rejects_truthy_non_boolean_self_markers(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "not self",
+                "chatId": "chat",
+                "senderId": "other",
+                "messageId": "message-1",
+                "messageType": "chat",
+                "fromSelf": "false",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
     await channel.start()
     await asyncio.sleep(0)
     await channel.stop()
 
-    assert [message.text for message in received] == ["allowed"]
-    assert received[0].metadata["provider"] == "whatsapp"
+    assert received == []
 
 
 async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -> None:
@@ -275,6 +387,7 @@ async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -
                 "messageId": "message-1",
                 "messageType": "chat",
                 "fromSelf": True,
+                "selfChat": True,
             },
             {
                 "body": "other",
@@ -308,6 +421,50 @@ async def test_channel_polls_self_messages_without_operator_id(tmp_path: Path) -
     assert received[0].metadata["from_self"] is True
 
 
+async def test_channel_never_dispatches_outbound_messages_to_other_chats(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        messages=[
+            {
+                "body": "outbound direct message",
+                "chatId": "other-user",
+                "senderId": "operator",
+                "messageId": "message-1",
+                "messageType": "chat",
+                "fromSelf": True,
+                "selfChat": False,
+            },
+            {
+                "body": "inbound direct message",
+                "chatId": "other-user",
+                "senderId": "other-user",
+                "messageId": "message-2",
+                "messageType": "chat",
+            },
+        ],
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(mode=ExposureMode.OPEN),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    received: list[ChannelMessage] = []
+
+    async def record(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel.set_message_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [message.text for message in received] == ["inbound direct message"]
+
+
 async def test_channel_parses_inbound_media_payload(tmp_path: Path) -> None:
     media = tmp_path / "voice.ogg"
     media.write_bytes(b"voice")
@@ -324,6 +481,7 @@ async def test_channel_parses_inbound_media_payload(tmp_path: Path) -> None:
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["audio/ogg"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -368,6 +526,7 @@ async def test_channel_filters_oversized_inbound_media_payload(tmp_path: Path) -
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["audio/ogg"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -409,6 +568,7 @@ async def test_channel_normalizes_ptt_payload_as_voice(tmp_path: Path) -> None:
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["application/octet-stream"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -448,6 +608,7 @@ async def test_channel_normalizes_audio_mime_payload_as_voice(tmp_path: Path) ->
                 "mediaPaths": [str(media)],
                 "mediaMimeTypes": ["audio/ogg; codecs=opus"],
                 "fromSelf": True,
+                "selfChat": True,
             },
         ],
     )
@@ -515,6 +676,81 @@ async def test_send_message_debug_logs_are_payload_safe(
     assert text not in caplog.text
 
 
+async def test_channel_does_not_retry_ambiguous_text_send_failures(tmp_path: Path) -> None:
+    transport = FailingSendTransport()
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    result = await send_with_retry(
+        lambda: channel.send_message("chat", "hello"),
+        base_delay=0,
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert transport.posts == [("/send", {"chatId": "chat", "text": "*deepagents bot*\nhello"})]
+
+
+async def test_channel_does_not_retry_ambiguous_media_send_failures(tmp_path: Path) -> None:
+    transport = FailingSendTransport()
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, inbound_media_dir=tmp_path / "bridge-media"),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    result = await send_with_retry(
+        lambda: channel.send_media("chat", ChannelMedia(path=image, media_type="image")),
+        base_delay=0,
+    )
+
+    assert result.success is False
+    assert result.retryable is False
+    assert [path for path, _payload in transport.posts] == ["/send-media"]
+    staged = Path(cast("str", transport.posts[0][1]["filePath"]))
+    assert not await asyncio.to_thread(staged.exists)
+
+
+async def test_channel_retries_text_rejected_before_send(tmp_path: Path) -> None:
+    transport = FailingSendTransport(retryable=True, failures=1)
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    result = await send_with_retry(
+        lambda: channel.send_message("chat", "hello"),
+        base_delay=0,
+    )
+
+    assert result.success is True
+    assert [path for path, _payload in transport.posts] == ["/send", "/send"]
+
+
+async def test_channel_retries_media_rejected_before_send(tmp_path: Path) -> None:
+    transport = FailingSendTransport(retryable=True, failures=1)
+    image = tmp_path / "image.png"
+    image.write_bytes(b"image")
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, inbound_media_dir=tmp_path / "bridge-media"),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    result = await send_with_retry(
+        lambda: channel.send_media("chat", ChannelMedia(path=image, media_type="image")),
+        base_delay=0,
+    )
+
+    assert result.success is True
+    assert [path for path, _payload in transport.posts] == ["/send-media", "/send-media"]
+    for _path, payload in transport.posts:
+        staged = Path(cast("str", payload["filePath"]))
+        assert not await asyncio.to_thread(staged.exists)
+
+
 async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
     transport = RecordingTransport()
     image = tmp_path / "image.png"
@@ -532,7 +768,8 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
 
     staged = Path(cast("str", transport.posts[0][1]["filePath"]))
     assert staged.parent == media_dir
-    assert await asyncio.to_thread(staged.read_bytes) == b"image"
+    assert transport.media_bytes == [b"image"]
+    assert not await asyncio.to_thread(staged.exists)
     assert transport.posts == [
         (
             "/send-media",
@@ -552,6 +789,22 @@ async def test_channel_sends_media_and_edits_messages(tmp_path: Path) -> None:
             },
         ),
     ]
+
+
+async def test_channel_preserves_media_already_in_bridge_directory(tmp_path: Path) -> None:
+    transport = RecordingTransport()
+    media_dir = tmp_path / "bridge-media"
+    media_dir.mkdir()
+    image = media_dir / "image.png"
+    image.write_bytes(b"image")
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, inbound_media_dir=media_dir),
+        transport=cast("_BridgeTransport", transport),
+    )
+
+    await channel.send_media("chat", ChannelMedia(path=image, media_type="image"))
+
+    assert await asyncio.to_thread(image.read_bytes) == b"image"
 
 
 async def test_channel_rejects_media_outside_configured_outbound_root(tmp_path: Path) -> None:
@@ -641,6 +894,82 @@ async def test_channel_forwards_bridge_output_to_logs(
     assert "WhatsApp bridge: Scan this QR code to pair WhatsApp:" in caplog.text
 
 
+async def test_restart_clears_exited_bridge_before_starting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExitedProcess:
+        returncode = 1
+
+        def terminate(self) -> None:
+            msg = "an exited process must not be terminated"
+            raise AssertionError(msg)
+
+    channel = WhatsAppChannel(WhatsAppChannelConfig(session_dir=tmp_path))
+    channel._process = cast("asyncio.subprocess.Process", ExitedProcess())
+    started = False
+
+    async def start_bridge() -> None:
+        nonlocal started
+        started = True
+        assert channel._process is None
+
+    monkeypatch.setattr(channel, "_start_bridge", start_bridge)
+
+    await channel._restart_bridge()
+
+    assert started
+
+
 def test_bridge_script_is_packaged() -> None:
     assert _bridge_script_path().name == "bridge.js"
     assert _bridge_script_path().is_file()
+    assert _bridge_script_path().with_name("id_compat.js").is_file()
+    assert _bridge_script_path().with_name("package-lock.json").is_file()
+
+
+async def test_transport_wraps_connection_interruptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        msg = "connection lost during sleep"
+        raise ConnectionResetError(msg)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = _BridgeTransport(base_url="http://127.0.0.1:3000", timeout=1)
+
+    with pytest.raises(_WhatsAppBridgeError, match="request failed") as exc_info:
+        await transport.get("/health")
+
+    assert isinstance(exc_info.value.__cause__, ConnectionResetError)
+
+
+async def test_health_watchdog_retries_failed_bridge_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableTransport:
+        async def get(self, path: str) -> object:
+            assert path == "/health"
+            msg = "bridge unavailable"
+            raise _WhatsAppBridgeError(msg)
+
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, health_interval_seconds=0),
+        transport=cast("_BridgeTransport", UnavailableTransport()),
+    )
+    restart_attempts = 0
+
+    async def restart_bridge() -> None:
+        nonlocal restart_attempts
+        restart_attempts += 1
+        if restart_attempts == 1:
+            msg = "restart interrupted"
+            raise _WhatsAppBridgeError(msg)
+        channel._stopped.set()
+
+    monkeypatch.setattr(channel, "_restart_bridge", restart_bridge)
+
+    await channel._watch_health()
+
+    assert restart_attempts == 2

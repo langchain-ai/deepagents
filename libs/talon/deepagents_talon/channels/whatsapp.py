@@ -6,6 +6,7 @@ Talon is an experimental runtime and is subject to change or removal at any time
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
+from http import HTTPStatus
 from importlib.resources import files
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -64,11 +66,16 @@ DEFAULT_BOT_HEADER = "deepagents bot"
 DEFAULT_BRIDGE_TOKEN_BYTES = 32
 DEFAULT_WHATSAPP_MAX_MEDIA_BYTES = 64 * 1024 * 1024
 _FAILED_HEALTH_RESTART_THRESHOLD = 3
+_REPLY_CONTEXT_STATUSES = frozenset({"not_reply", "resolved", "lookup_failed"})
 OPEN_EXPOSURE_ACK_ENV = "DEEPAGENTS_TALON_WHATSAPP_OPEN_ACK"
 
 
 class _WhatsAppBridgeError(RuntimeError):
     """Raised when the WhatsApp bridge reports or causes a transport error."""
+
+    def __init__(self, message: str, *, retryable: bool = False) -> None:
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True, slots=True)
@@ -240,9 +247,20 @@ class _BridgeTransport:
                 timeout=self.timeout,
             ) as response:
                 return json.loads(response.read().decode())
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as error:
+        except (
+            OSError,
+            http.client.HTTPException,
+            json.JSONDecodeError,
+            UnicodeDecodeError,
+        ) as error:
             msg = f"WhatsApp bridge request failed: {method} {path}"
-            raise _WhatsAppBridgeError(msg) from error
+            retryable = (
+                isinstance(error, urllib.error.HTTPError)
+                and error.code == HTTPStatus.SERVICE_UNAVAILABLE
+            )
+            if isinstance(error, urllib.error.HTTPError):
+                error.close()
+            raise _WhatsAppBridgeError(msg, retryable=retryable) from error
 
 
 class WhatsAppChannel:
@@ -347,8 +365,14 @@ class WhatsAppChannel:
             chunk_count=len(chunks),
             text_chars=len(text),
         )
-        for chunk in chunks:
-            response = await self._post_result("/send", {"chatId": conversation_id, "text": chunk})
+        try:
+            for chunk in chunks:
+                response = await self._post_result(
+                    "/send",
+                    {"chatId": conversation_id, "text": chunk},
+                )
+        except _WhatsAppBridgeError as error:
+            return SendResult(success=False, error=str(error), retryable=error.retryable)
         message_id = _extract_message_id(response)
         log_debug_event(
             logger,
@@ -374,12 +398,13 @@ class WhatsAppChannel:
             max_bytes=self.config.max_media_bytes,
         )
         staged = await asyncio.to_thread(_stage_bridge_media, checked.path, self.config)
+        staged_copy = staged != checked.path.expanduser().resolve()
         log_debug_event(
             logger,
             "whatsapp.outbound.media.started",
             caption_present=checked.caption is not None,
             media_type=checked.media_type,
-            staged_copy=staged != checked.path,
+            staged_copy=staged_copy,
         )
         payload: dict[str, object] = {
             "chatId": conversation_id,
@@ -392,7 +417,13 @@ class WhatsAppChannel:
             )
         else:
             payload["caption"] = _bot_header(self.config.bot_header)
-        response = await self._post_result("/send-media", payload)
+        try:
+            response = await self._post_result("/send-media", payload)
+        except _WhatsAppBridgeError as error:
+            return SendResult(success=False, error=str(error), retryable=error.retryable)
+        finally:
+            if staged_copy:
+                await asyncio.to_thread(_remove_staged_media, staged)
         message_id = _extract_message_id(response)
         log_debug_event(
             logger,
@@ -421,7 +452,7 @@ class WhatsAppChannel:
         Returns:
             Result indicating whether the edit succeeded.
         """
-        await self._post_result(
+        response = await self._post_result(
             "/edit",
             {
                 "chatId": conversation_id,
@@ -429,7 +460,7 @@ class WhatsAppChannel:
                 "content": _with_bot_header(text, bot_header=self.config.bot_header),
             },
         )
-        return SendResult(success=True, message_id=message_id)
+        return SendResult(success=True, message_id=_extract_message_id(response) or message_id)
 
     async def status(self) -> ChannelStatus:
         """Report the most recent bridge connection status."""
@@ -477,19 +508,23 @@ class WhatsAppChannel:
         await self._wait_for_bridge()
 
     async def _stop_bridge(self) -> None:
-        if self._process is None:
+        process = self._process
+        if process is None:
             log_debug_event(logger, "whatsapp.bridge.stop.skipped", reason="not_running")
             return
         log_debug_event(logger, "whatsapp.bridge.stopping")
-        self._process.terminate()
         try:
-            await asyncio.wait_for(self._process.wait(), timeout=5)
-        except TimeoutError:
-            self._process.kill()
-            await self._process.wait()
-        await self._stop_bridge_output_tasks()
-        self._process = None
-        log_debug_event(logger, "whatsapp.bridge.stopped")
+            if process.returncode is None:
+                process.terminate()
+                try:
+                    await asyncio.wait_for(process.wait(), timeout=5)
+                except TimeoutError:
+                    process.kill()
+                    await process.wait()
+        finally:
+            self._process = None
+            await self._stop_bridge_output_tasks()
+            log_debug_event(logger, "whatsapp.bridge.stopped")
 
     async def _restart_bridge(self) -> None:
         logger.warning("Restarting WhatsApp bridge after failed health checks")
@@ -510,7 +545,7 @@ class WhatsAppChannel:
                     )
                 accepted = 0
                 for message in messages:
-                    if self.config.exposure.allows(message):
+                    if _allows_whatsapp_message(self.config.exposure, message):
                         accepted += 1
                         checked = _enforce_inbound_media_cap(
                             message,
@@ -521,6 +556,13 @@ class WhatsAppChannel:
                             "whatsapp.inbound.message.dispatching",
                             has_media=bool(checked.metadata.get("has_media")),
                             media_type=checked.metadata.get("media_type"),
+                            quoted_message_id_present=(
+                                checked.metadata.get("quoted_message_id") is not None
+                            ),
+                            quoted_participant_present=(
+                                checked.metadata.get("quoted_participant") is not None
+                            ),
+                            reply_context_status=checked.metadata.get("reply_context_status"),
                             text_chars=len(checked.text),
                         )
                         await dispatch_message(self._handler, checked, provider="WhatsApp")
@@ -573,7 +615,17 @@ class WhatsAppChannel:
                     detail="disconnected",
                 )
                 if self._failed_health_checks >= _FAILED_HEALTH_RESTART_THRESHOLD:
-                    await self._restart_bridge()
+                    try:
+                        await self._restart_bridge()
+                    except (OSError, _WhatsAppBridgeError) as error:
+                        logger.warning(
+                            "Failed to restart WhatsApp bridge; retrying after interval",
+                        )
+                        log_debug_event(
+                            logger,
+                            "whatsapp.bridge.restart.failed",
+                            error_type=type(error).__name__,
+                        )
             await asyncio.sleep(self.config.health_interval_seconds)
 
     async def _wait_for_bridge(self) -> None:
@@ -688,6 +740,13 @@ def _stage_bridge_media(path: Path, config: WhatsAppChannelConfig) -> Path:
     return destination
 
 
+def _remove_staged_media(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        logger.warning("Failed to remove staged WhatsApp outbound media")
+
+
 def _validate_loopback_url(value: str) -> str:
     parsed = urllib.parse.urlparse(value)
     if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost", "::1"}:
@@ -701,6 +760,12 @@ def _parse_messages(payload: object) -> list[ChannelMessage]:
         msg = "WhatsApp bridge /messages response must be a list"
         raise _WhatsAppBridgeError(msg)
     return [_parse_message(item) for item in payload]
+
+
+def _allows_whatsapp_message(exposure: ChannelExposure, message: ChannelMessage) -> bool:
+    if message.metadata.get("from_self") is True:
+        return message.metadata.get("self_chat") is True and exposure.allows(message)
+    return exposure.allows(message)
 
 
 def _parse_message(payload: object) -> ChannelMessage:
@@ -725,6 +790,12 @@ def _parse_message(payload: object) -> ChannelMessage:
     if not isinstance(text, str):
         text = values.get("body")
     has_media = bool(values.get("has_media") or values.get("hasMedia") or media_paths)
+    quoted_participant = optional_str(
+        values.get("quoted_participant") or values.get("quotedParticipant"),
+    )
+    quoted_message_id = optional_str(
+        values.get("quoted_message_id") or values.get("quotedMessageId"),
+    )
     message = ChannelMessage(
         conversation_id=_required_str_any(values, ("chat_id", "chatId")),
         text=text if isinstance(text, str) else "",
@@ -738,8 +809,16 @@ def _parse_message(payload: object) -> ChannelMessage:
             "chat_type": values.get("chat_type") or values.get("chatType"),
             "chat_id_from": values.get("chat_id_from") or values.get("chatIdFrom"),
             "user_name": values.get("user_name") or values.get("senderName"),
+            "quoted_participant": quoted_participant,
+            "quoted_message_id": quoted_message_id,
+            "reply_context_status": _reply_context_status(
+                values,
+                quoted_participant=quoted_participant,
+                quoted_message_id=quoted_message_id,
+            ),
             "raw_message": values.get("raw_message") or {},
-            "from_self": bool(values.get("from_self") or values.get("fromSelf")),
+            "from_self": values.get("from_self") is True or values.get("fromSelf") is True,
+            "self_chat": values.get("self_chat") is True or values.get("selfChat") is True,
         },
     )
     return message_with_media_paths(
@@ -748,6 +827,20 @@ def _parse_message(payload: object) -> ChannelMessage:
         mime_types=media_mime_types,
         has_media=has_media,
     )
+
+
+def _reply_context_status(
+    values: Mapping[str, object],
+    *,
+    quoted_participant: str | None,
+    quoted_message_id: str | None,
+) -> str:
+    status = optional_str(values.get("reply_context_status") or values.get("replyContextStatus"))
+    if status in _REPLY_CONTEXT_STATUSES:
+        return status
+    if quoted_participant is not None or quoted_message_id is not None:
+        return "resolved"
+    return "not_reply"
 
 
 def _enforce_inbound_media_cap(message: ChannelMessage, *, max_bytes: int) -> ChannelMessage:

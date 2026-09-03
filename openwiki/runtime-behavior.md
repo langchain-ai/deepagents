@@ -1,108 +1,115 @@
 ---
 type: runtime-evidence
 title: Runtime Behavior & Findings
-description: Source-grounded operational behavior for dcode and the Deep Agents SDK, with explicit separation between code-derived checks and trace observations. Covers execution limits, recoverable tool behavior, accounting, context compaction, and model retries.
-tags: [runtime, traces, cost, latency, limits, retries, deepagents-code]
+description: Current source-derived runtime observations for dcode sessions, usage and cost accounting, headless execution, limits, compaction, and retries. These findings describe the inspected implementation rather than production rates or architecture guarantees.
+tags: [runtime, sessions, cost, usage, retries, deepagents-code]
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-02T08:05:45.554Z
 sources:
+  - id: openwiki-source-dc8749c06f6da0ecc0666f26
+    resource: repo://libs/code/deepagents_code/_session_stats.py
   - id: openwiki-source-05106e66a949150d557266a2
     resource: repo://libs/code/deepagents_code/agent.py
+  - id: openwiki-source-ecf20e7a2684ba0d2ae7d701
+    resource: repo://libs/code/deepagents_code/client/non_interactive.py
   - id: openwiki-source-2fb89d2b59c886d0cb3ee3ea
     resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
     resource: repo://libs/code/deepagents_code/cost_tracking.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-0f8622164498a685abc913d5
+    resource: repo://libs/code/deepagents_code/sessions.py
+  - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
+    resource: repo://libs/code/tests/unit_tests/test_sessions.py
   - id: openwiki-source-e3efb5f3e4a9e8517eb6d8f5
     resource: repo://libs/deepagents/deepagents/backends/protocol.py
   - id: openwiki-source-0fc0e47059e4d07e23e50be2
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-08-28T11:44:48.051Z
-generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
 ---
 
 # Runtime Behavior & Findings
 
-This page is an operational reading guide, not a dashboard. It connects the dcode product layer to the Deep Agents SDK mechanisms that bound or recover a run. For construction and middleware composition, see [Code Agent](architecture/code-agent.md) and [SDK Construction & Execution](architecture/sdk-construction-execution.md); for the corresponding context and filesystem concepts, see [Context Management](concepts/context-management.md) and [Tools & Filesystem](concepts/tools-filesystem.md).
+This page records **observed implementation behavior** from the current repository. It is not a production telemetry report and does not establish architecture guarantees. No production trace sample was supplied for this update; therefore no latency, token, cost, error-rate, retry-frequency, or compaction-frequency measurement is asserted here. For static composition, see [Code Agent](architecture/code-agent.md); for operational procedures, see [Cost & Sessions](operations/cost-and-sessions.md), [Context Management](concepts/context-management.md), and [Run a dcode Session](workflows/run-dcode-session.md).
 
-## Evidence status
-
-**Observed trace evidence: unavailable.** No usable LangSmith or other production trace sample was supplied for this refresh. Consequently, this page makes **no claim** about production latency, token totals, error rates, tool frequency, recursion depth, or the prevalence of retries and compaction.
-
-The behavior below is **code-derived**: it describes configured limits, control flow, and failure handling visible in the repository. It is a set of checks for a future trace sample, not evidence that the paths occur in production. A future update should label measured findings **Observed**, scope them to the sample, and keep them separate from the code-derived statements here.
-
-## Runtime control flow
+## Observed execution and accounting path
 
 ```mermaid
 sequenceDiagram
     participant Caller
-    participant Dcode as dcode agent builder
-    participant SDK as Deep Agents graph
+    participant Client as Headless client
+    participant Server as Graph server
     participant Model
-    participant Cost as cost recorder
-    Caller->>Dcode: create agent
-    Dcode->>SDK: create_deep_agent
-    SDK->>SDK: configure recursion limit 9999
-    Dcode->>SDK: copy effective recursion limit
-    Caller->>SDK: run turn
-    SDK->>Model: invoke model
-    Model-->>Cost: completed request callback
-    Cost-->>SDK: records drained at checkpoint
-    SDK-->>Caller: state and streamed result
+    participant Recorder as Cost recorder
+    Caller->>Client: run_non_interactive
+    Client->>Server: start server session
+    Client->>Server: astream with thread config
+    Server->>Model: model request
+    Model-->>Recorder: completion callback
+    Recorder-->>Server: records drained at checkpoint
+    Recorder-->>Client: nested usage custom event
+    Server-->>Client: messages updates and cost event
+    Client-->>Caller: response and optional usage table
 ```
 
-This shows the code-derived construction and accounting path. A model request can be the main agent call, a subagent call, or a direct side invocation; the diagram does not imply one request per turn.
+*Observed implementation flow for a headless run: stream consumers maintain a display-oriented usage ledger while the graph checkpoint owns the durable thread cost total.*
 
-## Execution budget: SDK default versus dcode resolution
+A completed request is not equivalent to one user turn. The process-wide `_SessionCostRecorder` collects completed model requests by thread, including main-agent calls, subagent graphs, summarization/offload, and Auto-mode classification. `CostTrackingMiddleware` drains those records around model and agent completion, prices them away from the event loop, and checkpoints additive cost. Nested graphs checkpoint a local delta and transfer their completed total to the owning graph. Accordingly, observed source behavior does not support using “one model call per turn” for cost or latency accounting.
 
-`create_deep_agent` compiles the SDK graph with `recursion_limit: 9_999`. dcode then calculates an effective limit and directly copies it into the graph configuration. Direct copying is intentional: it can replace the SDK value even when the value equals LangGraph's environment-derived default.
+The client independently builds `SessionStats` for presentation. It tracks request, input/output, cache read/write, priceable-request, model/provider, and request-kind totals (`assistant`, `subagent`, `offload`, and `auto`). Stream chunks for one request revise a ledger entry rather than adding another request. At each stream-round boundary the ledger is finalized so replay during a human-in-the-loop (HITL) continuation cannot double-count. Attempt-scoped keys additionally distinguish retry attempts that reuse a provider message ID. Nested custom usage events are validated, ignored when malformed or for a different active thread, then use the same de-duplication path.
 
-The effective dcode value is no longer a fixed product default such as 2,000. `resolve_recursion_limit` resolves `runtime.recursion_limit` by managed configuration, CLI, environment, and `config.toml` precedence, then inherits `LANGGRAPH_DEFAULT_RECURSION_LIMIT` when no Deep Agents setting wins; it can return `None` when neither supplies a value. Managed, environment, and TOML values must be integers in `[25, 100000]`; invalid values are warned about and resolution continues at lower precedence. The public `--recursion-limit` CLI path is deliberately looser and accepts any non-boolean integer at least 1.
+### Cost completeness and pricing limits
 
-**Operational check (code-derived):** diagnose a recursion failure from the resolved configuration and invocation environment, not by assuming either 9,999 or a historical dcode default. Trace step counts, if available, must be reported as observations rather than inferred from this setting.
+Cost accounting is observed as best effort, not a billing authority. Middleware charging exceptions are logged and do not fail the turn; a failed pricing pass restores drained records for a later drain when possible. However, a thread-less request cannot be attributed, an in-flight start context evicted after 4,096 newer starts loses its cost, and the recorder bounds retained residue to 64 threads and 1,024 undrained records per thread. Missing pricing means an omitted estimate, **not** zero spend.
 
-## Filesystem search timeouts are recoverable results
+`estimate_cost` uses `genai-prices` lazily and forwards inclusive input totals with supported cache, modality, and reasoning details. A primary catalog price wins. Only a primary `LookupError` tries `~/.deepagents/prices.json` and then the bundled catalog; other pricing failures return `None`. The first successful pricing import may start the catalog updater; `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0`, `[update].prices_auto_update = false`, and offline operation control that behavior.
 
-The backend protocol establishes a 15-second synchronous grep phase budget, a 35-second asynchronous grep wrapper timeout (allowing a ripgrep attempt and Python fallback), and a 30-second asynchronous glob round-trip timeout. `agrep` runs synchronous `grep` in a worker thread under `asyncio.wait_for`; its timeout bounds the caller's wait but does not terminate that worker thread. A timeout becomes a `GrepResult.error` whose text asks the model to use a more specific pattern or narrower path, rather than an exception that necessarily aborts the turn.
+**Operational interpretation (observed implementation behavior):** use graph checkpoint totals as the durable session value and treat client-side streamed totals as provisional display assistance, particularly during long nested work. Investigate missing cost as a pricing or attribution gap, not as evidence of free execution.
 
-**Operational check (code-derived):** distinguish a returned grep timeout from a run failure. When traces are available, inspect whether the next tool call narrows the query and whether repeated timeouts consume a meaningful part of a turn. The outer glob limit includes sandbox startup, round-trip, and result transfer, not merely directory walking.
+## Observed session persistence and listing behavior
 
-## Cost accounting and its loss boundaries
+Sessions are backed by the profile state SQLite database at `sessions.db`; thread IDs are UUIDv7 strings. Thread listing reads LangGraph checkpoints and exposes the latest checkpoint identifier plus metadata such as agent name, timestamps, branch, and working directory. A `cwd` filter is an exact stored-string comparison: it neither normalizes paths nor follows symlinks, and older threads without that metadata do not match.
 
-The graph owns the durable cumulative cost; clients render a streamed/checkpointed total rather than maintaining an independent session total. A process-wide `_SessionCostRecorder` is installed through LangChain's configure hook for each model request. It records completed, attributable requests by thread, while `CostTrackingMiddleware` drains and prices records during the graph checkpoint path. This covers direct offload/summarization and Auto-mode classifier calls as well as main-agent and subagent graph calls. Nested agents checkpoint their own delta before transfer to their owning parent graph, preserving spend across an interruption boundary.
+To avoid reading large checkpoint blobs during ordinary lists, the implementation attempts to create a covering index over checkpoint metadata. Failure to create the index is non-fatal but can make a large history slow. Optional message counts and initial prompts are derived from checkpoint state and/or `writes`; caches are keyed by the latest checkpoint ID, so a new checkpoint invalidates an earlier enrichment result. This is an optimization observation, not a promise of a fixed listing latency.
 
-Accounting is best-effort by design: exceptions in the cost middleware are logged and do not fail the user turn; drained records are restored if a pricing pass fails. There are explicit incompleteness cases: a request with no thread cannot be attributed, an in-flight start record evicted before completion drops that request's cost, and bounded undrained per-thread records can be discarded. These are accounting warnings, not model execution failures.
+## Observed headless lifecycle and failure semantics
 
-`estimate_cost` imports and uses `genai-prices` lazily. A successful primary catalog price wins; only a `LookupError` falls through to the user override catalog at `~/.deepagents/prices.json` and then the bundled maintainer catalog. Missing or unusable pricing returns `None`, so an absent price should not be read as zero cost. The first successful pricing use starts an hourly catalog updater unless disabled by `DEEPAGENTS_CODE_PRICES_AUTO_UPDATE=0` or `[update].prices_auto_update = false`; `DEEPAGENTS_CODE_OFFLINE` suppresses that network fetch.
+`run_non_interactive` creates a fresh thread, starts a server session, and invokes `astream` with `messages`, `updates`, and `custom` stream modes. It creates an `interactive=False` graph and a single headless user turn; HITL resumes remain within that run. An omitted `--max-turns` uses an internal safety cap. If the cap would be exceeded before another resume, the client raises a HITL iteration error and returns exit code 124; keyboard interruption returns 130, ordinary errors return 1, and a client hook stop returns 0.
 
-**Operational check (code-derived):** do not assume one model request per turn or equate missing pricing with free execution. Attribute observed cost by request kind—assistant, subagent, offload, and Auto mode—before optimizing a main loop. See [Cost & Sessions](operations/cost-and-sessions.md) for presentation and session details.
+For headless safety, repository hooks are not trusted merely because an interactive session previously trusted them: `--trust-project-hooks` is the explicit opt-in. Shell policy also determines approval behavior: no shell allow-list or `all` requests broad auto-approval, while a restrictive list gates shell execution; permission hooks override shortcuts that would otherwise skip HITL. A `--startup-cmd` timeout or non-zero exit is a warning and the task continues.
 
-## Context compaction is threshold-gated and recoverable
+A completed headless run finalizes uncommitted attempt lifecycle state, dispatches completion/session-end handling, and drains background hook work before process exit. If a stream ends with tool calls lacking results, the client synthesizes `tool.error` and error `tool.result` hook events so emitted `tool.use` events are closed. Session-end hooks are fired at most once and are time-bounded; a timeout is logged while teardown continues.
 
-The public `SummarizationMiddleware` wraps LangChain's summarization helper and retains Deep Agents-specific state for the most recent event and a per-graph-invocation history session ID. The factory selects thresholds from the resolved model profile: with `max_input_tokens`, it triggers at 85% of the context window and keeps 10%; without profile information, it uses a 170,000-token trigger and keeps six messages. It also configures a lighter pre-summarization tool-argument truncation path, which can reclaim context before full compaction.
+## Observed runtime controls and recovery paths
 
-Before replacing messages with a summary, Deep Agents offloads evicted history to the configured backend under `/conversation_history/{session_id}.md`; the summary can point the agent back to that file where filesystem tools are present. The middleware additionally handles a provider `ContextOverflowError` by summarizing and retrying rather than simply bubbling the overflow. The raw message state is retained while the summarization event is private state, supporting replay and evaluation.
+### Execution budget
 
-**Operational check (code-derived):** compaction is not a per-turn expectation. If a future trace shows it, report the configured trigger, model profile, and run context separately from latency or cost measurements. An overflow-recovery retry should be distinguished from a transient transport retry.
+`create_deep_agent` configures a compiled graph with `recursion_limit: 9,999`, and dcode subsequently copies its resolved effective recursion limit into that graph configuration, allowing the dcode value to override the SDK value even when it equals LangGraph's inherited default.
 
-## Model transport retry behavior
+Observed configuration resolution uses managed configuration, CLI, environment, and `config.toml` precedence, then inherits `LANGGRAPH_DEFAULT_RECURSION_LIMIT` when no Deep Agents value wins. Managed, environment, and TOML values are bounded to `[25, 100,000]`; the CLI accepts non-boolean integers at least 1. Diagnose a recursion limit from effective configuration, not a historical default.
 
-`CodeModelRetryMiddleware` wraps only the model node, so a transient model failure is retried without replaying tool calls that have already completed. The retry policy is attached to constructed models so runtime model selection can supply a provider-specific budget. The interactive curve begins at 0.2 seconds, doubles, caps an individual ordinary delay at 10 seconds, uses 10% jitter, honors bounded `Retry-After` values, and caps aggregate interactive retry sleep at 60 seconds. Retry status is emitted for interactive surfaces rather than leaving an unexplained pause.
+### Recoverable search and context pressure
 
-This is not a guarantee that every provider error retries: the policy classifies specific transport and provider failures, including HTTP 408, 409, 429, and 5xx responses. When attempts are exhausted after partial streaming, the runtime uses an explicit marker that the partial response is incomplete; it must not be treated as a valid completed answer.
+The backend protocol uses a 15-second synchronous grep phase budget and a 35-second async wrapper timeout. A timed-out async grep returns a model-readable `GrepResult` error that requests a narrower pattern or path; it is a tool result rather than a required run failure. The async wrapper bounds the caller’s wait and does not necessarily terminate its worker.
 
-**Operational check (code-derived):** on a trace sample, correlate attempts and retry events within a model call, separate retry sleep from provider latency, and verify that a retry did not duplicate a completed tool action.
+Summarization is threshold-gated, not per-turn. With `max_input_tokens`, the factory selects an 85%-of-context trigger and 10% retention; without it, the observed fallback is a 170,000-token trigger and six retained messages. It also has a lower-cost tool-argument truncation path. Before replacement, evicted history is offloaded to the configured backend; provider `ContextOverflowError` can trigger summarize-and-retry while raw messages remain in state and the event remains private state.
+
+### Model retries
+
+`CodeModelRetryMiddleware` wraps the model node rather than the whole turn, so a transient model failure retries without replaying completed tool calls. The interactive policy starts at 0.2 seconds, doubles, caps ordinary delays at 10 seconds, and caps aggregate retry sleep at 60 seconds. It does not imply that every provider failure retries: classification governs eligible failures. Partial output after exhausted retry handling is explicitly marked incomplete and should not be treated as a completed answer.
 
 ## Focused verification
 
-Run the focused unit tests when changing these operational contracts:
+Use focused tests to verify these observed behaviors after a change:
 
-- `libs/code/tests/unit_tests/test_cost_tracking.py` for recorder, durable totals, pricing fallback, and loss handling.
-- `libs/code/tests/unit_tests/test_model_retry.py` for classification, backoff, retry event correlation, and partial-output behavior.
-- `libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py` and `test_summarization_factory.py` for trigger selection, history handling, and compaction behavior.
-- `libs/deepagents/tests/unit_tests/backends/test_protocol.py` for protocol-level async timeout and result guarantees.
+- `libs/code/tests/unit_tests/test_cost_tracking.py` covers recorder capture, fallback pricing, checkpoint charging, nested transfers, restoration, and bounded-loss paths.
+- `libs/code/tests/unit_tests/test_session_stats.py` covers chunk revision, HITL replay protection, retry attempt scopes, nested usage events, and usage-table failure handling.
+- `libs/code/tests/unit_tests/test_sessions.py` covers session listing, checkpoint enrichment, and cache invalidation.
+- `libs/code/tests/unit_tests/test_non_interactive.py` covers shell approval branches, project-hook trust, HITL limits, lifecycle closure, and headless exit behavior.
+- `libs/code/tests/unit_tests/test_model_retry.py`, `libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py`, and `libs/deepagents/tests/unit_tests/backends/test_protocol.py` cover the linked recovery mechanisms.
 
-For a production investigation, record the trace selection method and sample window, then add a clearly marked **Observed** section with counts, durations, token/cost values, and failure signatures. Do not convert anomaly-selected samples into fleet rates, and never copy raw model inputs or outputs into this page.
+When production traces are available, add a separately scoped **Observed trace findings** section naming the sample window and selection method. Report measured counts and durations without extrapolating anomaly-selected traces into fleet-wide rates or copying raw prompts and outputs.

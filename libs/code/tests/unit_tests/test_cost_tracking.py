@@ -430,15 +430,6 @@ class TestPriceUpdater:
     def _reset_updater_guard(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Isolate the process-wide updater state between tests.
 
-        `monkeypatch.setattr` restores this module's latches after each test.
-        genai-prices' own module globals are rolled back too: a leaked handle
-        in `_global_update_prices` would make a later `start()` raise, and a
-        leaked `_custom_snapshot` would silently re-price every later test off
-        fetched data. Note this does *not* stop a daemon thread that a real
-        `start()` already spawned -- it only clears the guard and the catalog.
-        Nothing here starts a real one; the conftest opt-out keeps the rest of
-        the suite from doing so either.
-
         `DEEPAGENTS_CODE_OFFLINE` is cleared because the suite-wide
         `_skip_managed_tool_downloads` fixture sets it, and it now suppresses
         this updater too -- leaving it set would make every test here pass
@@ -454,11 +445,6 @@ class TestPriceUpdater:
         # read is stubbed, so a local `[update].prices_auto_update = false`
         # would silently disable the updater under test.
         monkeypatch.setattr("deepagents_code.config_manifest.load_config_toml", dict)
-        import genai_prices.data_snapshot
-        import genai_prices.update_prices
-
-        monkeypatch.setattr(genai_prices.update_prices, "_global_update_prices", None)
-        monkeypatch.setattr(genai_prices.data_snapshot, "_custom_snapshot", None)
 
     def _patch_updater(
         self, monkeypatch: pytest.MonkeyPatch, instance: MagicMock

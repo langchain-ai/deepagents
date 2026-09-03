@@ -122,7 +122,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "config.py",
         "Credentials.snapshot_from_environment",
         "find_project_root",
-        "88bd9ffe",
+        "8f8190fd",
     ): "The skills CLI omits `start_path`. Bootstrap supplies the launch "
     "directory. Server callers pass the workspace path.",
     CallSite(

@@ -584,6 +584,17 @@ def _resolve_env_var_from(env: dict[str, str], name: str) -> str | None:
     return env.get(name) or None
 
 
+def _user_langsmith_project_from(env: Mapping[str, str]) -> str | None:
+    """Return the caller's project when bootstrap replaced the canonical value."""
+    from deepagents_code._env_vars import LANGSMITH_PROJECT
+
+    project = env.get("LANGSMITH_PROJECT")
+    agent_project = env.get(LANGSMITH_PROJECT)
+    if _bootstrap_state.done and agent_project and project == agent_project:
+        return _bootstrap_state.original_langsmith_project
+    return project
+
+
 def _load_dotenv(
     *, start_path: Path | None = None, refresh_loaded: bool = False
 ) -> bool:
@@ -3199,7 +3210,7 @@ class Credentials:
             deepagents_langchain_project=_resolve_env_var_from(
                 dict(env), LANGSMITH_PROJECT
             ),
-            user_langchain_project=env.get("LANGSMITH_PROJECT"),
+            user_langchain_project=_user_langsmith_project_from(env),
             project_root=find_project_root(start_path),
         )
 

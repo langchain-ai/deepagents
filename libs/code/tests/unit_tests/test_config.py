@@ -264,6 +264,28 @@ class TestWorkspaceDotenvEnvironment:
         ):
             assert config_mod.get_langsmith_project_name() == "workspace-traces"
 
+    def test_snapshot_preserves_project_replaced_during_bootstrap(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Shells retain the caller's project after the agent override is applied."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(config_mod._bootstrap_state, "done", True)
+        monkeypatch.setattr(
+            config_mod._bootstrap_state,
+            "original_langsmith_project",
+            "caller-traces",
+        )
+        snapshot = config_mod.Credentials.snapshot_from_environment(
+            environ={
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "agent-traces",
+                "LANGSMITH_PROJECT": "agent-traces",
+            }
+        )
+
+        assert snapshot.deepagents_langchain_project == "agent-traces"
+        assert snapshot.user_langchain_project == "caller-traces"
+
     def test_environment_binding_is_immutable_and_restored(self) -> None:
         """Bindings copy inputs and reset after exceptions."""
         import os

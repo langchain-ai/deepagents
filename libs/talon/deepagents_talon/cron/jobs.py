@@ -58,8 +58,7 @@ class CronScheduleDict(TypedDict):
 
     Only `kind` and `display` are always present. Interval schedules carry
     `minutes`; wall-clock schedules carry `form`, `timezone`, `local_time`, and
-    (for one-shots) `local_date`. Records written before wall-clock support have
-    no `form` key and load as `form="interval"`.
+    (for one-shots) `local_date`.
     """
 
     kind: ScheduleKind
@@ -316,8 +315,7 @@ class CronSchedule:
     def to_dict(self) -> CronScheduleDict:
         """Serialize this schedule for disk storage.
 
-        Interval schedules emit exactly the keys written before wall-clock
-        support existed, so files stay stable across the upgrade.
+        Only the keys the schedule form uses are emitted.
 
         Returns:
             JSON-compatible schedule dictionary.
@@ -338,8 +336,7 @@ class CronSchedule:
         """Deserialize a cron schedule from disk.
 
         Args:
-            data: JSON schedule dictionary. A dictionary without `form` is read
-                as an interval schedule for backward compatibility.
+            data: JSON schedule dictionary.
 
         Returns:
             Parsed cron schedule.

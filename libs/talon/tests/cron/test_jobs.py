@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -310,51 +309,6 @@ def test_interval_job_catches_up_after_long_downtime(tmp_path) -> None:
 
     assert claimed is not None
     assert claimed.next_run_at == back_online + timedelta(minutes=1)
-
-
-def test_store_loads_schedules_written_before_wall_clock_support(tmp_path) -> None:
-    store = _store(tmp_path)
-    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
-    store.cron_dir.mkdir(parents=True, exist_ok=True)
-    store.path.write_text(
-        json.dumps(
-            [
-                {
-                    "id": "legacy000001",
-                    "assistant_id": "assistant",
-                    "name": "legacy",
-                    "prompt": "heartbeat",
-                    "schedule": {"kind": "recurring", "minutes": 15, "display": "every 15m"},
-                    "repeat": {"times": None, "completed": 0},
-                    "enabled": True,
-                    "created_at": now.isoformat(),
-                    "next_run_at": (now + timedelta(minutes=15)).isoformat(),
-                    "last_run_at": None,
-                    "last_status": None,
-                    "last_error": None,
-                    "origin": {
-                        "conversation_id": "chat",
-                        "channel": None,
-                        "message_id": None,
-                    },
-                },
-            ],
-        ),
-        encoding="utf-8",
-    )
-
-    loaded = store.list_jobs()[0]
-    claimed = store.advance_next_run(loaded.id, now=now + timedelta(minutes=15))
-
-    assert loaded.schedule.form == "interval"
-    assert loaded.schedule.minutes == 15
-    assert loaded.schedule.to_dict() == {
-        "kind": "recurring",
-        "minutes": 15,
-        "display": "every 15m",
-    }
-    assert claimed is not None
-    assert claimed.next_run_at == now + timedelta(minutes=30)
 
 
 def test_schedule_keeps_its_original_positional_signature() -> None:

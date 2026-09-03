@@ -573,6 +573,27 @@ async function authenticatedBot(github, appSlug, login, id) {
   return user;
 }
 
+async function acknowledgeCommand({ github, owner, repo, commentId, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
+  const response = await github.rest.reactions.createForIssueComment({
+    owner,
+    repo,
+    comment_id: commentId,
+    content: 'eyes',
+  });
+  return response.data.id;
+}
+
+async function completeCommand({ github, owner, repo, commentId, reactionId, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
+  await github.rest.reactions.deleteForIssueComment({
+    owner, repo, comment_id: commentId, reaction_id: reactionId,
+  });
+  await github.rest.reactions.createForIssueComment({
+    owner, repo, comment_id: commentId, content: 'rocket',
+  });
+}
+
 async function createComment(github, owner, repo, number, body) {
   return github.rest.issues.createComment({ owner, repo, issue_number: number, body });
 }
@@ -733,26 +754,6 @@ async function validateTrigger({ github, context, core, botLogin = null, botId =
         );
       }
       return { shouldRun: false };
-    }
-    // A manual command otherwise passes silently into a queued Actions run,
-    // leaving the maintainer unsure whether it registered at all. Unlike the
-    // rejection replies above this is not gated on `canNotify`: clearing the
-    // write-permission check already proves the commenter is an insider.
-    // Best-effort by design — a createComment failure (e.g. secondary rate
-    // limit) must not fail validation and drop a command that passed every
-    // check. Never include COMMAND_MENTION here, or the ack re-triggers us.
-    try {
-      await createComment(
-        github,
-        owner,
-        repo,
-        number,
-        `Running \`${command}\` for the \`${target.component}\` release PR; the release-notes comment on this PR will be created or updated when the run finishes.`,
-      );
-    } catch (error) {
-      core.warning(
-        `Failed to post acknowledgment comment for ${command} on PR #${number}: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
   }
 
@@ -1524,6 +1525,7 @@ async function checkCuratedState({
 
 module.exports = {
   BYPASS_LABEL,
+  acknowledgeCommand,
   comparisonLeavesPackageUnchanged,
   pathIsInPackage,
   COMMAND_MENTION,
@@ -1537,6 +1539,7 @@ module.exports = {
   commandFromComment,
   componentFromBranch,
   componentRegistry,
+  completeCommand,
   createApplyCommit,
   exactSha256,
   extractPreviewSection,

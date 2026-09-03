@@ -119,7 +119,12 @@ function loadComponentRegistry(configPath = RELEASE_PLEASE_CONFIG) {
     const changelog = typeof meta['changelog-path'] === 'string' && meta['changelog-path']
       ? meta['changelog-path']
       : DEFAULT_CHANGELOG;
-    const changelogPath = `${packagePath.replace(/\/+$/, '')}/${changelog}`;
+    // A release-please config key may legally end in `/`. Strip it once here so
+    // every consumer sees the same shape: pathIsInPackage compares this prefix
+    // against compare-API filenames, and a stored `libs/code/` would match no
+    // file at all, reporting every package change as unrelated.
+    const normalizedPackagePath = packagePath.replace(/\/+$/, '');
+    const changelogPath = `${normalizedPackagePath}/${changelog}`;
     // The apply commit writes this path via the Git Data API. Refuse anything that
     // could escape the package directory even if the config is wrong.
     if (changelogPath.split('/').some(segment => segment === '' || segment === '.' || segment === '..')) {
@@ -127,7 +132,7 @@ function loadComponentRegistry(configPath = RELEASE_PLEASE_CONFIG) {
     }
     registry.set(component, {
       component,
-      packagePath,
+      packagePath: normalizedPackagePath,
       changelogPath,
       releaseBranch: `${RELEASE_BRANCH_PREFIX}${component}`,
     });

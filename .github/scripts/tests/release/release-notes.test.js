@@ -2481,4 +2481,13 @@ test('the component registry fails closed on a malformed release-please config',
     packages: { 'libs/x': { component: 'x' } },
   }));
   assert.equal(registry.get('x').changelogPath, 'libs/x/CHANGELOG.md');
+  assert.equal(registry.get('x').packagePath, 'libs/x');
+  // A trailing slash in the config key must not survive into packagePath. An
+  // unnormalized `libs/x/` prefix matches no compare-API filename, so every
+  // package change would read as unrelated and no draft would ever go stale.
+  const slashed = releaseNotes.loadComponentRegistry(write('slash.json', {
+    packages: { 'libs/x/': { component: 'x' } },
+  }));
+  assert.equal(slashed.get('x').packagePath, 'libs/x');
+  assert.equal(slashed.get('x').changelogPath, 'libs/x/CHANGELOG.md');
 });

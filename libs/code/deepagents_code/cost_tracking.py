@@ -2376,7 +2376,7 @@ class CostTrackingMiddleware(AgentMiddleware[CostState, ContextT]):
         """Charge model requests that completed after the last model step.
 
         Work outside the agent loop can spend once `after_model` has run for the
-        final step: `ReliableRubricMiddleware.aafter_agent` runs a whole grading
+        final step: `RubricMiddleware.aafter_agent` runs a whole grading
         agent, and `after_agent` hooks run in reverse stack order, so this one
         drains after it. Anything that still spends later is charged on the next
         turn's first step rather than lost, but draining here keeps the turn's

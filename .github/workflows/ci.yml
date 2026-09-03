@@ -266,7 +266,6 @@ jobs:
       working-directory: "libs/deepagents"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
       extra-configurations: '[{"python-version": "3.13", "os": "windows-latest"}]'
-      coverage-python-version: "3.12"
 
   test-code:
     name: "🧪 Test deepagents-code"
@@ -276,7 +275,6 @@ jobs:
     with:
       working-directory: "libs/code"
       python-versions: '["3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.14"
 
   test-talon:
     name: "🧪 Test deepagents-talon"
@@ -286,7 +284,6 @@ jobs:
     with:
       working-directory: "libs/talon"
       python-versions: '["3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-evals:
     name: "🧪 Test evals"
@@ -296,7 +293,6 @@ jobs:
     with:
       working-directory: "libs/evals"
       python-versions: '["3.12", "3.13"]'
-      coverage-python-version: "3.12"
 
   test-acp:
     name: "🧪 Test acp"
@@ -306,7 +302,6 @@ jobs:
     with:
       working-directory: "libs/acp"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-daytona:
     name: "🧪 Test daytona"
@@ -316,7 +311,6 @@ jobs:
     with:
       working-directory: "libs/partners/daytona"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-modal:
     name: "🧪 Test modal"
@@ -326,7 +320,6 @@ jobs:
     with:
       working-directory: "libs/partners/modal"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-runloop:
     name: "🧪 Test runloop"
@@ -336,7 +329,6 @@ jobs:
     with:
       working-directory: "libs/partners/runloop"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-vercel:
     name: "🧪 Test vercel"
@@ -346,7 +338,6 @@ jobs:
     with:
       working-directory: "libs/partners/vercel"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.12"
 
   test-quickjs:
     name: "🧪 Test quickjs"
@@ -356,7 +347,6 @@ jobs:
     with:
       working-directory: "libs/partners/quickjs"
       python-versions: '["3.11", "3.12", "3.13", "3.14"]'
-      coverage-python-version: "3.11"
 
   # Catch SDK -> quickjs prompt-snapshot drift: when the deepagents SDK
   # changes but the quickjs partner is untouched, the full test-quickjs suite

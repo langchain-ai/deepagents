@@ -657,7 +657,11 @@ def sanitize_auto_reason(reason: object, *, known_secrets: Sequence[str] = ()) -
 
 
 def classifier_unavailable_reason(
-    exc: BaseException, *, timeout_seconds: float, spec: str | None = None
+    exc: BaseException,
+    *,
+    timeout_seconds: float,
+    model_name: str | None = None,
+    spec: str | None = None,
 ) -> str:
     """Build a safe agent/UI reason for a failed auto classifier call.
 
@@ -672,13 +676,13 @@ def classifier_unavailable_reason(
     Args:
         exc: Failure raised while invoking or validating the classifier.
         timeout_seconds: Configured local wait budget for one batch.
+        model_name: Name of the active model when reviews inherit the main model.
         spec: Label of the distinct classifier model that failed, when one is in
             use — its spec, or its model name when a chat model instance was
             supplied programmatically (in which case there is no setting to
             change). Naming it points the user at the setting to fix; a cached
             model built against a since-rotated credential fails here rather
-            than at construction. `None` when reviews inherit the main agent
-            model and the spec would say nothing.
+            than at construction.
 
     Returns:
         Compact single-line reason for tool messages and TUI events.
@@ -690,14 +694,20 @@ def classifier_unavailable_reason(
             f"configured classifier model {exc.spec} could not be built "
             f"within {exc.timeout_seconds:g}s"
         )
+    if spec is not None:
+        prefix = f"configured classifier model {spec}"
+    elif model_name is not None:
+        prefix = f"classifier model {model_name}"
+    else:
+        prefix = "classifier"
     if isinstance(exc, _ClassifierDeadlineExceededError):
-        return f"classifier did not respond within {timeout_seconds:g}s"
+        return f"{prefix} did not respond within {timeout_seconds:g}s"
     if isinstance(exc, _ClassifierModelUnavailableError):
         # The spec is user-supplied config, not provider text, so naming it is
         # safe and is the fastest route to a fix.
         return f"configured classifier model {exc.spec} is unavailable"
-    if spec is not None:
-        return f"configured classifier model {spec} failed ({type(exc).__name__})"
+    if spec is not None or model_name is not None:
+        return f"{prefix} failed ({type(exc).__name__})"
     return f"failed ({type(exc).__name__})"
 
 
@@ -3083,6 +3093,11 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     exc if isinstance(exc, _ClassifierModelUnavailableError) else None
                 )
                 classifier_label = self._distinct_classifier_label(request)
+                classifier_model_name = (
+                    None
+                    if classifier_label is not None
+                    else _extract_model_name(request.model)
+                )
                 if config_fault is None and classifier_label is not None:
                     # Invoke-time failure against a distinct classifier: the cached
                     # model may have been built against a since-revoked credential,
@@ -3113,6 +3128,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     classifier_unavailable_reason(
                         exc,
                         timeout_seconds=self._classifier_timeout_seconds,
+                        model_name=classifier_model_name,
                         spec=classifier_label,
                     ),
                     known_secrets=self._known_secrets,

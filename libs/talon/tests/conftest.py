@@ -30,6 +30,7 @@ class RecordingChannel:
         self.stopped = False
         self.sent: list[tuple[str, str]] = []
         self.media: list[tuple[str, ChannelMedia]] = []
+        self.typing_calls: list[str] = []
         self.status_report = ChannelStatus(provider=provider, connected=True, detail="connected")
 
     async def start(self) -> None:
@@ -61,7 +62,7 @@ class RecordingChannel:
         return SendResult(success=True)
 
     async def send_typing(self, conversation_id: str) -> None:
-        pass
+        self.typing_calls.append(conversation_id)
 
     async def status(self) -> ChannelStatus:
         return self.status_report

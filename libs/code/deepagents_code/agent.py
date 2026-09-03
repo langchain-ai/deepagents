@@ -65,6 +65,10 @@ from langchain_core.tools import StructuredTool, tool
 from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
+from deepagents_code._env_vars import (
+    FORKED_SUBAGENTS,
+    is_env_truthy,
+)
 from deepagents_code._glm_5p2_profile import (
     _ensure_glm_5p2_profile_registered,
     _GlmTerminalStallRecovery,
@@ -139,6 +143,7 @@ from deepagents_code.unicode_security import (
     detect_dangerous_unicode,
     format_warning_detail,
     render_with_unicode_markers,
+    sanitize_control_chars,
     strip_dangerous_unicode,
     summarize_issues,
 )
@@ -1796,9 +1801,15 @@ def _format_task_description(
 
 
 def _format_execute_description(
-    tool_call: ToolCall, _state: AgentState[Any], _runtime: Runtime[Any]
+    tool_call: ToolCall, _state: AgentState[Any], runtime: Runtime[Any]
 ) -> str:
     """Format execute tool call for approval prompt.
+
+    The working directory comes from the run's bound workspace, which
+    `require_thread_workspace` validates against the durable binding before
+    the run starts. A run with no workspace falls back to the process-global
+    server project context and then the process CWD; both can name a
+    directory the command will not run in, so the fallback warns.
 
     Returns:
         Formatted description string for the execute tool call.
@@ -1806,13 +1817,25 @@ def _format_execute_description(
     args = tool_call["args"]
     command_raw = str(args.get("command", "N/A"))
     command = strip_dangerous_unicode(command_raw)
-    project_context = get_server_project_context()
-    effective_cwd = (
-        str(project_context.user_cwd)
-        if project_context is not None
-        else str(Path.cwd())
-    )
-    lines = [f"Execute Command: {command}", f"Working Directory: {effective_cwd}"]
+    context = CLIContextSchema.from_payload(runtime.context)
+    workspace = context.workspace if context is not None else {}
+    effective_cwd = workspace.get("cwd") if isinstance(workspace, dict) else None
+    # An empty or non-str `cwd` would render a blank directory line, which
+    # reads as "no directory" rather than as missing data. Fall through.
+    if not isinstance(effective_cwd, str) or not effective_cwd:
+        logger.warning(
+            "Shell approval prompt has no bound workspace cwd; the directory "
+            "shown may not be where this command runs (workspace=%r)",
+            workspace,
+        )
+        project_context = get_server_project_context()
+        effective_cwd = (
+            str(project_context.user_cwd)
+            if project_context is not None
+            else str(Path.cwd())
+        )
+    display_cwd = sanitize_control_chars(effective_cwd, collapse_whitespace=False)
+    lines = [f"Execute Command: {command}", f"Working Directory: {display_cwd}"]
 
     issues = detect_dangerous_unicode(command_raw)
     if issues:
@@ -2595,7 +2618,7 @@ def create_cli_agent(
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = list(tools or [])
     if extension_registry is not None:
-        from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+        from deepagents_code._env_vars import EXPERIMENTAL
 
         if not is_env_truthy(EXPERIMENTAL):
             extension_registry = None
@@ -2815,6 +2838,8 @@ def create_cli_agent(
             "system_prompt": GENERAL_PURPOSE_SUBAGENT["system_prompt"],
             "middleware": _subagent_cli_middleware(has_explicit_model=False),
         }
+        if is_env_truthy(FORKED_SUBAGENTS, default=True):
+            general_purpose_subagent["mode"] = "fork"
         if resolved_interrupt_on is not None:
             general_purpose_subagent["interrupt_on"] = {}
         custom_subagents.append(general_purpose_subagent)
@@ -3293,8 +3318,11 @@ def create_cli_agent(
         fs_tools=fs_tools,
     )
     from deepagents_code.goal_rubric import (
+        RubricGraderState,
         _ContextToolCallBudgetMiddleware,
         _CriteriaContextBudgetMiddleware,
+        _rubric_grader_messages,
+        _rubric_grader_state,
         _rubric_interrupt_on,
         _WebSearchBudgetMiddleware,
     )
@@ -3371,6 +3399,9 @@ def create_cli_agent(
             "tools": grader_tools,
             "grader_middleware": grader_middleware,
             "grader_context_schema": CLIContextSchema,
+            "grader_state_schema": RubricGraderState,
+            "prepare_messages_for_grader": _rubric_grader_messages,
+            "build_grader_state": _rubric_grader_state,
             # The bootstrap only scaffolds the runtime grader's graph;
             # `ConfigurableModelMiddleware` swaps in the thread-selected model
             # before any call. Pass the main model through even as an
@@ -3419,19 +3450,25 @@ def create_cli_agent(
         from deepagents_code.extensions.hosting import ExtensionRuntimeMiddleware
 
         agent_middleware.append(ExtensionRuntimeMiddleware(extension_registry))
-    agent = create_deep_agent(
-        model=model,
-        system_prompt=system_prompt,
-        tools=tools,
-        backend=composite_backend,
-        middleware=agent_middleware,
-        interrupt_on=interrupt_on,
-        context_schema=CLIContextSchema,
-        checkpointer=checkpointer,
-        store=store,
-        subagents=all_subagents or None,
-        name=_sanitize_agent_message_name(assistant_id),
-    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="The feature `forked subagents` is in beta",
+            category=Warning,
+        )
+        agent = create_deep_agent(
+            model=model,
+            system_prompt=system_prompt,
+            tools=tools,
+            backend=composite_backend,
+            middleware=agent_middleware,
+            interrupt_on=interrupt_on,
+            context_schema=CLIContextSchema,
+            checkpointer=checkpointer,
+            store=store,
+            subagents=all_subagents or None,
+            name=_sanitize_agent_message_name(assistant_id),
+        )
     if effective_recursion_limit is not None:
         # `Pregel.with_config` uses `merge_configs`, which discards a value equal
         # to LangGraph's environment-derived default. Replace the copied graph's

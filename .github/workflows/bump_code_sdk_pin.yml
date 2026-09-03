@@ -240,6 +240,13 @@ jobs:
 
           git config --local user.name "github-actions[bot]"
           git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Capture a trusted copy of the release scripts from the
+          # default-branch commit this run was dispatched on, before the
+          # PR-branch checkout below replaces the working tree. The
+          # version-compare step later in this script runs this copy, so
+          # a PR cannot swap in its own version of the script.
+          trusted_scripts="$(mktemp -d)"
+          cp .github/scripts/release/compare_versions.py "$trusted_scripts/"
           if [ -n "$EXISTING_PR" ]; then
             git fetch origin "refs/heads/$BRANCH:refs/remotes/origin/$BRANCH"
             git checkout -B "$BRANCH" "origin/$BRANCH"
@@ -311,8 +318,7 @@ jobs:
           if [[ ! "$branch_code_pin" =~ $SEMVER_PATTERN ]]; then
             fail "Could not parse the Code SDK pin in $code_pyproject on branch $BRANCH (got '$branch_code_pin')"
           fi
-          relation=$(uv run --no-project --with packaging python \
-            .github/scripts/release/compare_versions.py "$branch_code_pin" "$SDK_VERSION")
+          relation=$(python "$trusted_scripts/compare_versions.py" "$branch_code_pin" "$SDK_VERSION")
           # `ahead` means the branch pins a newer SDK than this run targets:
           # intentional prerelease coordination, or a hand-pushed commit. Keep
           # the files as they are, but describe the pin that the branch really

@@ -851,6 +851,31 @@ def test_sandbox_edit_inline_string_not_found() -> None:
     assert "not found" in result.error
 
 
+def test_sandbox_edit_empty_old_string_never_dispatches() -> None:
+    """Empty `old_string` must error before any sandbox command is sent."""
+    sandbox = MockSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+
+    result = sandbox.edit("/test/file.txt", "", "new")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    assert sandbox.last_command is None
+    assert len(sandbox._uploaded) == 0
+
+
+async def test_sandbox_aedit_empty_old_string_never_dispatches() -> None:
+    """Empty `old_string` must error on the async path before any dispatch."""
+    sandbox = NativeAsyncSandbox()
+    sandbox._next_output = json.dumps({"count": 1})
+
+    result = await sandbox.aedit("/foo/bar.txt", "", "new")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    assert len(sandbox._aexecute_calls) == 0
+
+
 def test_sandbox_edit_inline_multiple_occurrences() -> None:
     """Test that inline edit errors on multiple occurrences without replace_all."""
     sandbox = MockSandbox()

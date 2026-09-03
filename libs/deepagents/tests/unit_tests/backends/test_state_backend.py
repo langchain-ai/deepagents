@@ -109,3 +109,17 @@ def test_state_backend_edit_migrates_legacy_list_content(monkeypatch: pytest.Mon
     assert result.error is None
     assert updates[0]["/legacy.txt"]["content"] == "hello\nthere"
     assert updates[0]["/legacy.txt"]["encoding"] == "utf-8"
+
+
+def test_state_backend_edit_empty_old_string_returns_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    backend = StateBackend()
+    files = {"/legacy.txt": {"content": ["hello", "world"]}}
+    updates: list[dict[str, Any]] = []
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    monkeypatch.setattr(backend, "_send_files_update", updates.append)
+
+    result = backend.edit("/legacy.txt", "", "there")
+
+    assert result.error is not None
+    assert "old_string cannot be empty" in result.error
+    assert updates == []

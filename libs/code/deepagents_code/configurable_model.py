@@ -202,7 +202,7 @@ _FIREWORKS_SESSION_AFFINITY_HEADER = "x-session-affinity"
 """Fireworks prompt-cache affinity header populated from the active thread ID."""
 
 
-class _InjectedSessionSettings(dict[str, Any]):  # noqa: FURB189  # preserve dict API
+class _InjectedSessionSettings(dict[str, Any]):  # noqa: FURB189
     """Model settings carrying session hints added by this middleware."""
 
     __slots__ = ("prompt_cache_key", "session_affinity", "session_id")

@@ -2429,24 +2429,16 @@ class TestFilesystemMiddleware:
     @pytest.mark.parametrize(
         ("body", "offset", "limit", "expected_rows"),
         [
-            # Mid-file blank window: the original #4955 report.
+            # Mid-file blank window.
             ("line1\n\n\n\n\nline6\n", 1, 4, [2, 3, 4, 5]),
-            # Leading blank window. Pins the `start_line == 1` half of
-            # `window_is_entire_file`: the window starts at line 1 but the file
-            # continues, so it is not a blank *file*.
+            # Blank window starting at line 1 of a file that continues.
             ("\n\n\nline4\nline5\n", 0, 3, [1, 2, 3]),
-            # Trailing blank window. Pins the `total_lines == end_line` half:
-            # the window ends at EOF but does not start at line 1.
+            # Blank window ending at EOF but not starting at line 1.
             ("line1\n\n\n", 1, 2, [2, 3]),
         ],
     )
     def test_read_file_blank_window_of_non_empty_file_renders_lines(self, body: str, offset: int, limit: int, expected_rows: list[int]):
-        """A blank window of a file with content renders numbered blank lines (#4955).
-
-        Asserts the whole numbered block, not a prefix: a fabricated extra row
-        would otherwise pass unnoticed, and for these files the row past the
-        window has real content that must not be reported as blank.
-        """
+        """A blank window of a file with content renders numbered blank lines."""
         backend, _ = _make_backend()
         middleware = FilesystemMiddleware(backend=backend)
         runtime = _runtime("blank-window-read")
@@ -2464,21 +2456,14 @@ class TestFilesystemMiddleware:
     @pytest.mark.parametrize(
         ("content", "serialization"),
         [
-            # Sandbox / LangSmith join lines with "\n" as a separator, so the
-            # blank final row leaves no trailing terminator.
+            # Lines joined with "\n" as a separator: no trailing terminator.
             ("a\nb\n\n", "separator-joined"),
-            # `slice_read_response` keeps terminators, so the same window ends
-            # with "\n" and splits into a phantom trailing "".
+            # Terminators kept: the same window splits into a phantom "".
             ("a\nb\n\n\n", "terminator-kept"),
         ],
     )
     def test_read_file_window_ending_in_blank_row_keeps_that_row(self, content: str, serialization: str):
-        """A window whose last source row is blank renders every row it reports.
-
-        The row count in the pagination notice comes from `end_line`, so losing
-        the final blank row to serialization makes the body contradict its own
-        footer — and makes the same file render differently per backend.
-        """
+        """A window whose last source row is blank renders every row it reports."""
         backend, _ = _make_backend()
         read_result = ReadResult(
             file_data=FileData(content=content, encoding="utf-8"),
@@ -2499,12 +2484,7 @@ class TestFilesystemMiddleware:
         assert "Read 4 lines" in result.content
 
     def test_read_file_whitespace_only_file_with_pagination_returns_warning(self):
-        """A backend that paginates a whitespace-only file still describes an empty file.
-
-        Defensive: no in-repo backend emits this shape, since all three
-        short-circuit a blank file before applying a window. Hand-built here to
-        pin the `window_is_entire_file` branch for third-party backends.
-        """
+        """A window spanning a whole whitespace-only file still describes an empty file."""
         backend, _ = _make_backend()
         read_result = ReadResult(
             file_data=FileData(content=" \n\t", encoding="utf-8"),
@@ -2522,8 +2502,8 @@ class TestFilesystemMiddleware:
         assert result.content == EMPTY_CONTENT_WARNING
 
     @pytest.mark.parametrize(("content", "end_line"), [("", 2), ("\n\n\n", 5)])
-    def test_read_file_sandbox_blank_window_restores_reported_rows(self, content: str, end_line: int):
-        """Sandbox blank-window serialization must not drop its final source row."""
+    def test_read_file_blank_window_pads_to_reported_rows(self, content: str, end_line: int):
+        """A separator-joined blank window renders one row per line it reports."""
         backend, _ = _make_backend()
         read_result = ReadResult(
             file_data=FileData(content=content, encoding="utf-8"),
@@ -2543,13 +2523,7 @@ class TestFilesystemMiddleware:
         assert numbered_content == "\n".join(f"{line_number}  " for line_number in range(2, end_line + 1))
 
     def test_read_file_keeps_backend_truncation_banner_past_window(self):
-        """Rows a backend appends beyond `end_line` survive row restoration.
-
-        A byte-capped sandbox page carries its own truncation banner inside
-        `content`, numbered past `end_line` on purpose. Restoring blank rows
-        must pad only — slicing down to the window size would cut the banner
-        off the page and hide that the read was truncated.
-        """
+        """Rows a backend appends beyond `end_line` survive padding."""
         backend, _ = _make_backend()
         banner = "\n\n[Output was truncated due to size limits.]"
         read_result = ReadResult(

@@ -1027,22 +1027,14 @@ def _truncate_paginated_read(
     return content[:max_content_length] + truncation_msg
 
 
-def _restore_trailing_blank_rows(content: str, start_line: int, end_line: int) -> list[str]:
-    r"""Restore trailing blank source rows lost to a backend's text serialization.
+def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
+    r"""Restore blank source rows a page loses to `split("\n")`.
 
-    Backends serialize a page one of two ways and `split("\n")` cannot tell them
-    apart. `slice_read_response` keeps each line's terminator, so its content
-    ends with `"\n"` and splits into a phantom trailing `""`; the sandbox and
-    LangSmith backends join lines with `"\n"` as a separator, so a genuinely
-    blank final row *is* the last element. Dropping that trailing `""` -- which
-    is what `format_content_with_line_numbers` does for the terminator case --
-    therefore deletes a real source row from separator-joined content, leaving
-    one row fewer than the `end_line` the same backend reported (#4955).
-
-    Pads and never truncates. A byte-capped page carries the backend's own
-    truncation banner inside `content`, whose rows are deliberately numbered
-    past `end_line`, so slicing down to the window size would cut the banner
-    off the page.
+    Backends that join a page's lines with `"\n"` as a separator leave a blank
+    final row indistinguishable from a trailing terminator, which
+    `format_content_with_line_numbers` drops. Pads to the window the backend
+    reported and never truncates, since a backend may append a truncation
+    banner numbered past `end_line`.
 
     Args:
         content: Serialized content for the read window.
@@ -1050,16 +1042,13 @@ def _restore_trailing_blank_rows(content: str, start_line: int, end_line: int) -
         end_line: Last source line in the window.
 
     Returns:
-        One string per source line the backend reported, followed by any
-            extra rows it appended beyond the window.
+        A list of rows when padding was needed, `content` unchanged otherwise.
     """
-    lines = content.split("\n")
-    if lines and lines[-1] == "":
-        lines.pop()
-    line_count = end_line - start_line + 1
-    if len(lines) < line_count:
-        lines += [""] * (line_count - len(lines))
-    return lines
+    rows = content.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    missing = end_line - start_line + 1 - len(rows)
+    return [*rows, *[""] * missing] if missing > 0 else content
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -1941,33 +1930,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
-            # Empty files get a uniform warning regardless of encoding/type, so
-            # check before routing to avoid a degenerate empty content block for
-            # binary reads (#3664). Two shapes earn the warning:
-            # - No pagination metadata: the backend never sliced a window, so
-            #   this content is the whole file. Covers empty files, binary reads
-            #   (which never set pagination fields), and zero-line windows.
-            # - A window spanning the entire file. Every in-repo backend
-            #   short-circuits a blank file before paginating it, so this only
-            #   fires for third-party backends that do not.
-            # Anything else is a blank window inside a file with content
-            # elsewhere; calling that "empty" states something false about the
-            # file (#4955), so those render their source rows below.
+            # Empty content earns the warning ahead of type routing so a binary
+            # read never renders a degenerate empty content block. Only content
+            # that is the whole file qualifies: an unpaginated result, or a
+            # window spanning every line. A blank window of a file with content
+            # elsewhere renders its rows below instead. Unknown `total_lines`
+            # fails closed, so an unprovable whole-file claim renders rows too.
             empty_msg = check_empty_content(content)
-            # Fails closed when `total_lines` is unknown (the sandbox omits it
-            # for files too large to re-scan), so an unprovable whole-file claim
-            # renders rows instead of asserting emptiness.
-            window_is_entire_file = (
-                read_result.start_line == 1 and read_result.end_line is not None and read_result.total_lines == read_result.end_line
-            )
-            if empty_msg and (read_result.start_line is None or window_is_entire_file):
-                # Empty content has two causes that must not be conflated: a
-                # zero-line window, where the file was never inspected, and a
-                # genuinely empty file. Reporting the former as the latter
-                # states something false about a file that may have contents.
-                # `ReadResult.__post_init__` rejects `no_lines_requested`
-                # alongside any pagination field, so this can only fire on the
-                # unpaginated shape.
+            is_whole_file = read_result.start_line is None or (read_result.start_line == 1 and read_result.total_lines == read_result.end_line)
+            if empty_msg and is_whole_file:
+                # A zero-line window never inspected the file, so it must not be
+                # reported as empty.
                 if not content and read_result.no_lines_requested:
                     empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
                 return ToolMessage(
@@ -2005,16 +1978,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            # Pre-split every window the backend described, so a blank final
-            # source row survives serialization instead of being mistaken for a
-            # line terminator and dropped (#4955). Applied to all paginated text
-            # reads, not just all-blank ones: a window ending in a blank row
-            # loses it whether or not the rest of the window has content.
-            content_to_format: str | list[str] = content
+            rows: str | list[str] = content
             if read_result.start_line is not None and read_result.end_line is not None:
-                content_to_format = _restore_trailing_blank_rows(content, read_result.start_line, read_result.end_line)
+                rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
             content = format_content_with_line_numbers(
-                content_to_format,
+                rows,
                 # `max(offset, 0)` so the fallback gutter stays 1-indexed: a
                 # backend that returns numberable text without `start_line`
                 # would otherwise render a zero or negative line marker, which

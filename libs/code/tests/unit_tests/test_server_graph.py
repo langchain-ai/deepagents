@@ -294,14 +294,24 @@ class TestServerGraph:
         }
 
 
+def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
+    """Resolve a workspace binding for `cwd`, creating the directory first."""
+    from deepagents_code.workspace import resolve_workspace
+
+    cwd.mkdir(exist_ok=True)
+    return resolve_workspace(
+        str(cwd),
+        config.to_workspace_payload(),
+        config_fingerprint=config.workspace_fingerprint(),
+    )
+
+
 class TestWorkspaceRuntime:
     """Workspace runtimes retain trusted server-only configuration."""
 
     async def test_uses_full_server_config_and_replaces_only_workspace_paths(
         self, tmp_path
     ) -> None:
-        from deepagents_code.workspace import resolve_workspace
-
         module = _import_fresh_server_graph()
         bound_config = ServerConfig(
             model="trusted:model",
@@ -309,11 +319,7 @@ class TestWorkspaceRuntime:
             model_params={"api_key": "secret"},
             auto_approve=True,
         )
-        binding = resolve_workspace(
-            str(tmp_path),
-            bound_config.to_workspace_payload(),
-            config_fingerprint=bound_config.workspace_fingerprint(),
-        )
+        binding = _bind(bound_config, tmp_path)
         runtime = module.ServerRuntime(object(), object(), object())
         with (
             patch.object(ServerConfig, "from_env", return_value=bound_config),
@@ -332,16 +338,110 @@ class TestWorkspaceRuntime:
         assert config.cwd == binding.cwd
         assert config.project_root == binding.project_root
 
+    async def test_readiness_runtime_owns_sandbox_workspace(self, tmp_path) -> None:
+        """The startup runtime must reserve its sandbox for the launch workspace."""
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        launch_dir = tmp_path / "launch"
+        config = ServerConfig(sandbox_type="daytona", cwd=str(launch_dir))
+        launch = _bind(config, launch_dir)
+        other = _bind(config, tmp_path / "other")
+        readiness_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=readiness_runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module.get_server_runtime() is readiness_runtime
+            assert await module._workspace_runtime(launch) is readiness_runtime
+            with pytest.raises(WorkspaceConflictError, match="another workspace"):
+                await module._workspace_runtime(other)
+
+        make.assert_awaited_once_with()
+
+    async def test_sandbox_refuses_second_workspace_and_keeps_first(
+        self, tmp_path
+    ) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(sandbox_type="daytona")
+        first = _bind(config, tmp_path / "first")
+        second = _bind(config, tmp_path / "second")
+        first_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=first_runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(first) is first_runtime
+            with pytest.raises(
+                WorkspaceConflictError,
+                match=(
+                    "Cannot host this workspace because a runtime for another "
+                    "workspace already exists and the configured sandbox is "
+                    "process-wide"
+                ),
+            ):
+                await module._workspace_runtime(second)
+            assert await module._workspace_runtime(first) is first_runtime
+
+        make.assert_awaited_once()
+
+    async def test_failed_sandbox_runtime_keeps_workspace_ownership(
+        self, tmp_path
+    ) -> None:
+        """A failed build must not let another workspace claim the sandbox."""
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(sandbox_type="daytona")
+        first = _bind(config, tmp_path / "first")
+        second = _bind(config, tmp_path / "second")
+        first_runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(side_effect=[SystemExit(1), first_runtime])
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            with pytest.raises(SystemExit):
+                await module._workspace_runtime(first)
+            with pytest.raises(WorkspaceConflictError, match="another workspace"):
+                await module._workspace_runtime(second)
+            assert await module._workspace_runtime(first) is first_runtime
+
+        assert make.await_count == 2
+
+    async def test_without_sandbox_builds_second_workspace(self, tmp_path) -> None:
+        module = _import_fresh_server_graph()
+        config = ServerConfig()
+        bindings = [_bind(config, tmp_path / name) for name in ("first", "second")]
+        runtimes = [
+            module.ServerRuntime(object(), object(), object()),
+            module.ServerRuntime(object(), object(), object()),
+        ]
+        make = AsyncMock(side_effect=runtimes)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert [
+                await module._workspace_runtime(binding) for binding in bindings
+            ] == (runtimes)
+
+        assert make.await_count == 2
+
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
-        from deepagents_code.workspace import resolve_workspace
+        from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
         bound_config = ServerConfig(model="trusted:model")
-        binding = resolve_workspace(
-            str(tmp_path),
-            bound_config.to_workspace_payload(),
-            config_fingerprint=bound_config.workspace_fingerprint(),
-        )
+        binding = _bind(bound_config, tmp_path)
         with (
             patch.object(
                 ServerConfig,
@@ -349,10 +449,35 @@ class TestWorkspaceRuntime:
                 return_value=ServerConfig(model="changed:model"),
             ),
             patch.object(module, "_make_graphs", new=AsyncMock()) as make,
-            pytest.raises(RuntimeError, match="configuration changed"),
+            pytest.raises(WorkspaceConflictError, match="configuration changed"),
         ):
             await module._workspace_runtime(binding)
 
+        make.assert_not_awaited()
+
+    async def test_unusable_launch_cwd_emits_startup_marker(
+        self, tmp_path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Resolving the launch binding runs outside `_get_runtime`'s barrier.
+
+        A launch cwd that cannot be canonicalized must still produce the marker
+        the parent app process scrapes, not a bare `ValueError`.
+        """
+        from deepagents_code._startup_error import STARTUP_ERROR_MARKER
+
+        module = _import_fresh_server_graph()
+        missing = tmp_path / "gone"
+        config = ServerConfig(cwd=str(missing))
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await module.get_server_runtime()
+
+        assert exc_info.value.code == 1
+        assert STARTUP_ERROR_MARKER in capsys.readouterr().err
         make.assert_not_awaited()
 
 

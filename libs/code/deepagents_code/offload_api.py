@@ -217,7 +217,11 @@ async def workspace(request: Request) -> JSONResponse:
             )
         server_config = ServerConfig.from_env()
         identity = await asyncio.to_thread(resolve_workspace, body.get("cwd"))
-        trusted = server_config.resolve_workspace(identity.cwd, identity.project_root)
+        trusted = await asyncio.to_thread(
+            server_config.resolve_workspace,
+            identity.cwd,
+            identity.project_root,
+        )
         if "workspace_config" in body or "config_fingerprint" in body:
             claim = body.get("workspace_config")
             if not isinstance(claim, dict):

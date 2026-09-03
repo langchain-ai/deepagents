@@ -23,15 +23,21 @@ from deepagents_talon.channels.whatsapp import (
     _bridge_script_path,
     _BridgeTransport,
     _parse_message,
+    _parse_reaction,
     _WhatsAppBridgeError,
 )
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.interfaces import ChannelMedia, ChannelMessage
+from deepagents_talon.interfaces import ChannelMedia, ChannelMessage, ChannelReaction
 
 
 class RecordingTransport:
-    def __init__(self, messages: list[dict[str, object]] | None = None) -> None:
+    def __init__(
+        self,
+        messages: list[dict[str, object]] | None = None,
+        reactions: list[dict[str, object]] | None = None,
+    ) -> None:
         self.messages = messages or []
+        self.reactions = reactions or []
         self.posts: list[tuple[str, dict[str, object]]] = []
         self.media_bytes: list[bytes] = []
 
@@ -40,6 +46,10 @@ class RecordingTransport:
             messages = self.messages
             self.messages = []
             return messages
+        if path == "/reactions":
+            reactions = self.reactions
+            self.reactions = []
+            return reactions
         if path == "/health":
             return {"status": "connected", "botId": "bot"}
         msg = f"unexpected get path: {path}"
@@ -280,6 +290,136 @@ def test_channel_normalizes_reply_context_status(
     message = _parse_message({"text": "message", "chat_id": "chat", **reply_metadata})
 
     assert message.metadata["reply_context_status"] == expected_status
+
+
+def test_channel_parses_reaction_payload() -> None:
+    reaction = _parse_reaction(
+        {
+            "chatId": "123@g.us",
+            "messageId": "false_123@g.us_ABC",
+            "senderId": "operator@lid",
+            "reaction": "👍",
+            "chatType": "group",
+            "fromSelf": False,
+            "selfChat": False,
+            "timestamp": 123,
+        }
+    )
+
+    assert reaction == ChannelReaction(
+        conversation_id="123@g.us",
+        message_id="false_123@g.us_ABC",
+        emoji="👍",
+        sender_id="operator@lid",
+        metadata={
+            "provider": "whatsapp",
+            "chat_type": "group",
+            "from_self": False,
+            "self_chat": False,
+            "timestamp": 123,
+        },
+    )
+
+
+async def test_channel_polls_and_dispatches_allowed_reactions(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        reactions=[
+            {"emoji": "malformed"},
+            {
+                "chat_id": "self@lid",
+                "message_id": "true_self@lid_OWN",
+                "sender_id": "self@c.us",
+                "emoji": "👍",
+                "from_self": True,
+                "self_chat": True,
+            },
+            {
+                "chat_id": "123@g.us",
+                "message_id": "true_123@g.us_BOT",
+                "sender_id": "operator@lid",
+                "emoji": "✅",
+            },
+            {
+                "chat_id": "123@g.us",
+                "message_id": "true_123@g.us_BOT",
+                "sender_id": "stranger@lid",
+                "emoji": "❌",
+            },
+            {
+                "chat_id": "123@g.us",
+                "message_id": "true_123@g.us_BOT",
+                "sender_id": "self@lid",
+                "emoji": "👎",
+                "from_self": True,
+                "self_chat": False,
+            },
+        ]
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(operator_ids=frozenset({"operator@lid"})),
+            poll_interval_seconds=60,
+            health_interval_seconds=60,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    received: list[ChannelReaction] = []
+
+    async def record(reaction: ChannelReaction) -> None:
+        received.append(reaction)
+
+    channel.set_reaction_handler(record)
+
+    await channel.start()
+    await asyncio.sleep(0)
+    await channel.stop()
+
+    assert [(reaction.sender_id, reaction.emoji) for reaction in received] == [
+        ("self@c.us", "👍"),
+        ("operator@lid", "✅"),
+    ]
+
+
+async def test_reaction_poll_survives_handler_failure(tmp_path: Path) -> None:
+    transport = RecordingTransport(
+        reactions=[
+            {
+                "chat_id": "chat",
+                "message_id": "message-1",
+                "sender_id": "operator",
+                "emoji": "👍",
+            },
+            {
+                "chat_id": "chat",
+                "message_id": "message-2",
+                "sender_id": "operator",
+                "emoji": "👎",
+            },
+        ]
+    )
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(
+            session_dir=tmp_path,
+            exposure=ChannelExposure(operator_ids=frozenset({"operator"})),
+            poll_interval_seconds=0,
+        ),
+        transport=cast("_BridgeTransport", transport),
+    )
+    received: list[str] = []
+
+    async def flaky_handler(reaction: ChannelReaction) -> None:
+        if reaction.message_id == "message-1":
+            msg = "failed callback"
+            raise RuntimeError(msg)
+        received.append(reaction.message_id)
+        channel._stopped.set()
+
+    channel.set_reaction_handler(flaky_handler)
+
+    await channel._poll_reactions()
+
+    assert received == ["message-2"]
 
 
 async def test_channel_polls_and_dispatches_allowed_messages(

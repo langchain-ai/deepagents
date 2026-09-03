@@ -12,6 +12,7 @@ const {
   createCompatibleClientClass,
   isSelfChat,
   normalizeMessage,
+  normalizeReaction,
   quotedMessageContext,
   serializedId,
   widString,
@@ -35,6 +36,7 @@ let botId = null;
 let botIds = [];
 let bridgeMediaSends = 0;
 const queue = [];
+const reactionQueue = [];
 const sentMessageIds = new Set();
 const sentMessages = new Map();
 const sentBodies = new SentBodyReservations();
@@ -132,6 +134,18 @@ client.on("media_uploaded", (message) => {
 
 client.on("message_ack", (message, ack) => {
   recordMessageAck(message, ack);
+});
+
+client.on("message_reaction", (reaction) => {
+  const entry = normalizeReaction(reaction, botIds);
+  if (!entry) {
+    console.log("[bridge] Skipping incomplete WhatsApp reaction");
+    return;
+  }
+  console.log(
+    `[bridge] Queued reaction; fromSelf=${entry.fromSelf} chatType=${entry.chat_type}`,
+  );
+  reactionQueue.push(entry);
 });
 
 async function onClientReady() {
@@ -575,6 +589,11 @@ async function handle(req, res) {
 
     if (req.method === "GET" && req.url === "/messages") {
       sendJson(res, 200, queue.splice(0, queue.length));
+      return;
+    }
+
+    if (req.method === "GET" && req.url === "/reactions") {
+      sendJson(res, 200, reactionQueue.splice(0, reactionQueue.length));
       return;
     }
 

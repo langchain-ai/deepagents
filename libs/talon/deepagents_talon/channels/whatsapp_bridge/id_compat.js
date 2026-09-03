@@ -47,6 +47,16 @@ function serializedId(value) {
   return typeof value.id === "string" && value.id ? value.id : null;
 }
 
+function messageChatId(value) {
+  const remote = value && typeof value === "object" ? widString(value.remote) : null;
+  if (remote) {
+    return remote;
+  }
+  const serialized = serializedId(value);
+  const match = typeof serialized === "string" ? /^(?:true|false)_([^_]+)_/.exec(serialized) : null;
+  return match ? match[1] : null;
+}
+
 async function quotedMessageContext(message) {
   if (!message.hasQuotedMsg) {
     return { participant: null, messageId: null, status: "not_reply" };
@@ -61,6 +71,38 @@ async function quotedMessageContext(message) {
   } catch (_error) {
     return { participant: null, messageId: null, status: "lookup_failed" };
   }
+}
+
+function normalizeReaction(reaction, ownIds) {
+  if (!reaction || typeof reaction !== "object") {
+    return null;
+  }
+  const messageId = serializedId(reaction.msgId);
+  const chatId = messageChatId(reaction.msgId);
+  const reportedSenderId = widString(reaction.senderId);
+  const emoji = typeof reaction.reaction === "string" ? reaction.reaction : null;
+  if (!messageId || !chatId || !reportedSenderId || !emoji || chatId === "status@broadcast") {
+    return null;
+  }
+  const fromSelf = ownIds.some((value) => widString(value) === reportedSenderId);
+  const senderId = fromSelf ? widString(ownIds[0]) || reportedSenderId : reportedSenderId;
+  const selfChat = isSelfChat(fromSelf, chatId, ownIds);
+  return {
+    chat_id: chatId,
+    chatId,
+    message_id: messageId,
+    messageId,
+    sender_id: senderId,
+    senderId,
+    emoji,
+    reaction: emoji,
+    from_self: fromSelf,
+    fromSelf,
+    self_chat: selfChat,
+    selfChat,
+    chat_type: chatId.endsWith("@g.us") ? "group" : "direct",
+    timestamp: Number.isFinite(reaction.timestamp) ? reaction.timestamp : null,
+  };
 }
 
 function normalizeId(value) {
@@ -273,6 +315,7 @@ module.exports = {
   isSelfChat,
   normalizeId,
   normalizeMessage,
+  normalizeReaction,
   quotedMessageContext,
   serializedId,
   widString,

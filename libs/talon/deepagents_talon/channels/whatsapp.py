@@ -43,8 +43,10 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
+    ChannelReaction,
     ChannelStatus,
     MessageHandler,
+    ReactionHandler,
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
@@ -285,10 +287,12 @@ class WhatsAppChannel:
             token=config.bridge_token,
         )
         self._handler: MessageHandler | None = None
+        self._reaction_handler: ReactionHandler | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._bridge_stdout: asyncio.Task[None] | None = None
         self._bridge_stderr: asyncio.Task[None] | None = None
         self._poll: asyncio.Task[None] | None = None
+        self._reaction_poll: asyncio.Task[None] | None = None
         self._health: asyncio.Task[None] | None = None
         self._stopped = asyncio.Event()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
@@ -301,6 +305,14 @@ class WhatsAppChannel:
             handler: Coroutine callback invoked for accepted inbound messages.
         """
         self._handler = handler
+
+    def set_reaction_handler(self, handler: ReactionHandler) -> None:
+        """Register the host callback for inbound reactions.
+
+        Args:
+            handler: Coroutine callback invoked for accepted inbound reactions.
+        """
+        self._reaction_handler = handler
 
     async def start(self) -> None:
         """Start the bridge subprocess and background polling tasks."""
@@ -320,6 +332,10 @@ class WhatsAppChannel:
         self._stopped.clear()
         await self._start_bridge()
         self._poll = asyncio.create_task(self._poll_messages(), name="talon:whatsapp:poll")
+        self._reaction_poll = asyncio.create_task(
+            self._poll_reactions(),
+            name="talon:whatsapp:reaction-poll",
+        )
         self._health = asyncio.create_task(self._watch_health(), name="talon:whatsapp:health")
         log_debug_event(
             logger,
@@ -335,14 +351,18 @@ class WhatsAppChannel:
             "whatsapp.channel.stopping",
             health_active=self._health is not None,
             poll_active=self._poll is not None,
+            reaction_poll_active=self._reaction_poll is not None,
         )
         self._stopped.set()
-        tasks = [task for task in (self._poll, self._health) if task is not None]
+        tasks = [
+            task for task in (self._poll, self._reaction_poll, self._health) if task is not None
+        ]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self._poll = None
+        self._reaction_poll = None
         self._health = None
         await self._stop_bridge()
         self._status = ChannelStatus(provider="whatsapp", connected=False, detail="disconnected")
@@ -587,6 +607,42 @@ class WhatsAppChannel:
                 log_debug_event(logger, "whatsapp.poll.failed")
             await asyncio.sleep(self.config.poll_interval_seconds)
 
+    async def _poll_reactions(self) -> None:
+        while not self._stopped.is_set():
+            try:
+                reactions = _parse_reactions(await self._transport.get("/reactions"))
+                if reactions:
+                    log_debug_event(
+                        logger,
+                        "whatsapp.reaction_poll.batch.received",
+                        reaction_count=len(reactions),
+                    )
+                for reaction in reactions:
+                    try:
+                        await self._process_reaction(reaction)
+                    except Exception:
+                        logger.exception("Failed to dispatch WhatsApp reaction")
+                        log_debug_event(logger, "whatsapp.inbound.reaction.failed")
+            except _WhatsAppBridgeError:
+                logger.exception("Failed to poll WhatsApp bridge reactions")
+                log_debug_event(logger, "whatsapp.reaction_poll.failed")
+            await asyncio.sleep(self.config.poll_interval_seconds)
+
+    async def _process_reaction(self, reaction: ChannelReaction) -> None:
+        if not _allows_whatsapp_reaction(self.config.exposure, reaction):
+            log_debug_event(
+                logger,
+                "whatsapp.inbound.reaction.rejected",
+                exposure=self.config.exposure.mode.value,
+            )
+            return
+        log_debug_event(logger, "whatsapp.inbound.reaction.dispatching")
+        if self._reaction_handler is None:
+            logger.warning("Dropping WhatsApp reaction because no handler is registered")
+            return
+        await self._reaction_handler(reaction)
+        log_debug_event(logger, "whatsapp.inbound.reaction.dispatched")
+
     async def _watch_health(self) -> None:
         while not self._stopped.is_set():
             try:
@@ -760,6 +816,50 @@ def _parse_messages(payload: object) -> list[ChannelMessage]:
         msg = "WhatsApp bridge /messages response must be a list"
         raise _WhatsAppBridgeError(msg)
     return [_parse_message(item) for item in payload]
+
+
+def _parse_reactions(payload: object) -> list[ChannelReaction]:
+    if not isinstance(payload, list):
+        msg = "WhatsApp bridge /reactions response must be a list"
+        raise _WhatsAppBridgeError(msg)
+    reactions: list[ChannelReaction] = []
+    for item in payload:
+        try:
+            reactions.append(_parse_reaction(item))
+        except _WhatsAppBridgeError:
+            logger.warning("Skipping malformed WhatsApp reaction")
+            log_debug_event(logger, "whatsapp.inbound.reaction.malformed")
+    return reactions
+
+
+def _parse_reaction(payload: object) -> ChannelReaction:
+    if not isinstance(payload, dict):
+        msg = "WhatsApp bridge reaction must be an object"
+        raise _WhatsAppBridgeError(msg)
+    values = cast("Mapping[str, object]", payload)
+    return ChannelReaction(
+        conversation_id=_required_str_any(values, ("chat_id", "chatId")),
+        message_id=_required_str_any(values, ("message_id", "messageId")),
+        emoji=_required_str_any(values, ("emoji", "reaction")),
+        sender_id=_required_str_any(values, ("sender_id", "senderId")),
+        metadata=_reaction_metadata(values),
+    )
+
+
+def _reaction_metadata(values: Mapping[str, object]) -> Mapping[str, object]:
+    return {
+        "provider": "whatsapp",
+        "chat_type": values.get("chat_type") or values.get("chatType"),
+        "from_self": values.get("from_self") is True or values.get("fromSelf") is True,
+        "self_chat": values.get("self_chat") is True or values.get("selfChat") is True,
+        "timestamp": values.get("timestamp"),
+    }
+
+
+def _allows_whatsapp_reaction(exposure: ChannelExposure, reaction: ChannelReaction) -> bool:
+    if reaction.metadata.get("from_self") is True:
+        return reaction.metadata.get("self_chat") is True
+    return reaction.sender_id is not None and reaction.sender_id in exposure.operator_ids
 
 
 def _allows_whatsapp_message(exposure: ChannelExposure, message: ChannelMessage) -> bool:

@@ -13,6 +13,7 @@ const {
   isSelfChat,
   normalizeId,
   normalizeMessage,
+  normalizeReaction,
   quotedMessageContext,
   serializedId,
   widString,
@@ -25,6 +26,100 @@ test("reads legacy, renamed, and component WhatsApp IDs", () => {
   assert.equal(
     serializedId({ fromMe: true, remote: { user: "123", server: "lid" }, id: "ABC" }),
     "true_123@lid_ABC",
+  );
+});
+
+test("normalizes WhatsApp reaction notifications", () => {
+  assert.deepEqual(
+    normalizeReaction(
+      {
+        msgId: { fromMe: true, remote: { user: "123", server: "g.us" }, id: "ABC" },
+        senderId: { _serialized: "operator@lid" },
+        reaction: "👍",
+        timestamp: 123,
+      },
+      ["self@c.us", "self@lid"],
+    ),
+    {
+      chat_id: "123@g.us",
+      chatId: "123@g.us",
+      message_id: "true_123@g.us_ABC",
+      messageId: "true_123@g.us_ABC",
+      sender_id: "operator@lid",
+      senderId: "operator@lid",
+      emoji: "👍",
+      reaction: "👍",
+      from_self: false,
+      fromSelf: false,
+      self_chat: false,
+      selfChat: false,
+      chat_type: "group",
+      timestamp: 123,
+    },
+  );
+});
+
+test("derives reaction chats from serialized-only message keys", () => {
+  for (const msgId of [
+    { $1: "false_chat@lid_FIRST" },
+    { _serialized: "false_chat@lid_SECOND" },
+  ]) {
+    const normalized = normalizeReaction(
+      { msgId, senderId: "operator@lid", reaction: "👍" },
+      ["self@c.us"],
+    );
+
+    assert.ok(normalized);
+    assert.equal(normalized.chatId, "chat@lid");
+    assert.equal(normalized.messageId, serializedId(msgId));
+  }
+});
+
+test("marks paired-account reactions in the self-chat", () => {
+  const normalized = normalizeReaction(
+    {
+      msgId: { fromMe: true, remote: "self@lid", id: "ABC" },
+      senderId: "self@lid",
+      reaction: "✅",
+    },
+    ["self@c.us", "self@lid"],
+  );
+
+  assert.equal(normalized.senderId, "self@c.us");
+  assert.equal(normalized.fromSelf, true);
+  assert.equal(normalized.selfChat, true);
+});
+
+test("rejects removed, malformed, and status reactions", () => {
+  assert.equal(
+    normalizeReaction(
+      { msgId: { remote: "chat@lid", id: "ABC" }, senderId: "user@lid", reaction: "" },
+      [],
+    ),
+    null,
+  );
+  assert.equal(normalizeReaction({ reaction: "👍" }, []), null);
+  assert.equal(
+    normalizeReaction(
+      {
+        msgId: { remote: "status@broadcast", id: "ABC" },
+        senderId: "user@lid",
+        reaction: "👍",
+      },
+      [],
+    ),
+    null,
+  );
+  assert.equal(
+    normalizeReaction(
+      {
+        msgId: { _serialized: "false_status@broadcast_ABC" },
+        senderId: "user@lid",
+        reaction: "👍",
+      },
+      [],
+    ),
+    null,
   );
 });
 

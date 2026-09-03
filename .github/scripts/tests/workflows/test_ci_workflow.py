@@ -210,6 +210,42 @@ def test_ci_success_builds_named_results_from_needs_object() -> None:
     assert "talon-failure-advisory" not in workflow["jobs"]["ci_success"]["needs"]
 
 
+def test_curated_apply_only_requires_bot_commit_and_green_parent_ci() -> None:
+    workflow = _load_workflow(CI_WORKFLOW)
+    changes = workflow["jobs"]["changes"]
+    step = _find_step(
+        workflow,
+        job="changes",
+        name="📝 Detect a changelog-only curated-notes apply",
+    )
+
+    assert changes["outputs"]["curated-apply-only"] == (
+        "${{ steps.curated-apply.outputs.only || 'false' }}"
+    )
+    assert workflow["concurrency"]["cancel-in-progress"] == (
+        "${{ !startsWith(github.head_ref, "
+        "'release-please--branches--main--components--') }}"
+    )
+    assert "github.actor == vars.RELEASE_BOT_LOGIN" in step["if"]
+    assert "head.repo.full_name == github.repository" in step["if"]
+    assert "curated_apply_only.py" in step["run"]
+    assert "commits/$parent/check-runs" in step["run"]
+    assert "✅ CI Success" in step["run"]
+    assert "success|failure" in step["run"]
+
+    gate = _find_step(workflow, job="ci_success", name="🎉 All Checks Passed")
+    assert gate["env"]["CURATED_APPLY_ONLY"] == (
+        "${{ needs.changes.outputs.curated-apply-only }}"
+    )
+    assert 'if [ "$CURATED_APPLY_ONLY" = true ]' in gate["run"]
+    assert 'if [ "$CURATED_APPLY_PARENT_CONCLUSION" = success ]' in gate["run"]
+
+    helper_job = workflow["jobs"]["check-release-options"]
+    assert helper_job["needs"] == "changes"
+    assert helper_job["if"] == "needs.changes.outputs.curated-apply-only != 'true'"
+    assert workflow["jobs"]["ci_success"]["if"] == "always()"
+
+
 def test_ci_success_runs_gate_script_from_trusted_base_ref() -> None:
     """The gate script must not come from the untrusted PR checkout.
 

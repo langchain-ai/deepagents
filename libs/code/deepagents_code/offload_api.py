@@ -36,7 +36,6 @@ from deepagents_code.server_graph import _workspace_runtime as get_server_runtim
 from deepagents_code.workspace import (
     WorkspaceConflictError,
     bind_thread_workspace,
-    canonical_workspace_config,
     require_thread_workspace,
 )
 
@@ -202,19 +201,45 @@ async def workspace(request: Request) -> JSONResponse:
             {"detail": "request body must be an object"}, status_code=422
         )
     try:
-        from deepagents_code._server_config import ServerConfig
+        from deepagents_code._server_config import (
+            ServerConfig,
+            project_workspace_fields,
+            workspace_claim_fields,
+        )
+        from deepagents_code.workspace import resolve_workspace
 
-        server_config = ServerConfig.from_env()
-        trusted_config = server_config.to_workspace_payload()
-        if "workspace_config" in body or "config_fingerprint" in body:
-            _, trusted_policy_fingerprint = canonical_workspace_config(trusted_config)
-            _, claimed_policy_fingerprint = canonical_workspace_config(
-                body.get("workspace_config")
+        allowed_request_keys = {"config_fingerprint", "cwd", "workspace_config"}
+        if unknown := body.keys() - allowed_request_keys:
+            names = ", ".join(sorted(unknown))
+            return JSONResponse(
+                {"detail": f"unknown workspace request field(s): {names}"},
+                status_code=422,
             )
+        server_config = ServerConfig.from_env()
+        identity = await asyncio.to_thread(resolve_workspace, body.get("cwd"))
+        trusted = server_config.resolve_workspace(identity.cwd, identity.project_root)
+        if "workspace_config" in body or "config_fingerprint" in body:
+            claim = body.get("workspace_config")
+            if not isinstance(claim, dict):
+                return JSONResponse(
+                    {"detail": "workspace_config must be an object"},
+                    status_code=422,
+                )
+            keys = set(claim)
+            if keys & project_workspace_fields():
+                return JSONResponse(
+                    {"detail": "clients cannot claim project workspace policy"},
+                    status_code=409,
+                )
+            if keys != workspace_claim_fields():
+                return JSONResponse(
+                    {"detail": "workspace configuration does not match server policy"},
+                    status_code=409,
+                )
             claimed_config_fingerprint = body.get("config_fingerprint")
             if (
-                claimed_policy_fingerprint != trusted_policy_fingerprint
-                or claimed_config_fingerprint != server_config.workspace_fingerprint()
+                claimed_config_fingerprint != trusted.session_workspace_fingerprint()
+                or claim != trusted.to_session_workspace_claim()
             ):
                 return JSONResponse(
                     {"detail": "workspace configuration does not match server policy"},
@@ -222,9 +247,9 @@ async def workspace(request: Request) -> JSONResponse:
                 )
         binding = await bind_thread_workspace(
             thread_id,
-            body.get("cwd"),
-            trusted_config,
-            config_fingerprint=server_config.workspace_fingerprint(),
+            identity.cwd,
+            trusted.to_workspace_payload(),
+            config_fingerprint=trusted.workspace_fingerprint(),
         )
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)

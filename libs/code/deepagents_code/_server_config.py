@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -24,6 +24,73 @@ if TYPE_CHECKING:
     from deepagents import FsToolName
 
     from deepagents_code.project_utils import ProjectContext
+
+
+_SESSION_WORKSPACE_FIELDS = frozenset(
+    {
+        "allow_fs_tools",
+        "assistant_id",
+        "auto_approve",
+        "enable_ask_user",
+        "enable_interpreter",
+        "enable_memory",
+        "enable_shell",
+        "enable_skills",
+        "interactive",
+        "interpreter_ptc",
+        "interpreter_ptc_acknowledge_unsafe",
+        "interrupt_shell_only",
+        "no_mcp",
+        "recursion_limit",
+        "sandbox_id",
+        "sandbox_snapshot_name",
+        "sandbox_type",
+        "shell_allow_list",
+    }
+)
+_PROJECT_WORKSPACE_FIELDS = frozenset(
+    {
+        "extension_paths",
+        "mcp_config_path",
+        "sandbox_setup",
+        "trust_project_extensions",
+        "trust_project_mcp",
+    }
+)
+
+
+def workspace_claim_fields() -> frozenset[str]:
+    """Return the exact workspace policy keys clients may claim.
+
+    Returns:
+        The session-scoped workspace field names.
+    """
+    return _SESSION_WORKSPACE_FIELDS
+
+
+def project_workspace_fields() -> frozenset[str]:
+    """Return the exact workspace policy keys resolved per project.
+
+    Returns:
+        The project-scoped workspace field names.
+    """
+    return _PROJECT_WORKSPACE_FIELDS
+
+
+def _fingerprint(value: object) -> str:
+    import hashlib
+
+    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(serialized.encode()).hexdigest()
+
+
+def _same_workspace_project(first: str | None, second: str) -> bool:
+    if first is None:
+        return False
+    try:
+        return Path(first).resolve(strict=True) == Path(second).resolve(strict=True)
+    except (OSError, RuntimeError):
+        return False
 
 
 def _read_env_bool(suffix: str, *, default: bool = False) -> bool:
@@ -452,19 +519,71 @@ class ServerConfig:
             "extension_paths": list(self.extension_paths),
         }
 
-    def workspace_fingerprint(self) -> str:
-        """Fingerprint the full effective config without persisting its contents.
+    def to_session_workspace_claim(self) -> dict[str, Any]:
+        """Return the command-scoped policy a managed client may claim."""
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in _SESSION_WORKSPACE_FIELDS
+        }
+
+    def to_project_workspace_policy(self) -> dict[str, Any]:
+        """Return policy that must be resolved for each project directory.
+
+        Returns:
+            The project-scoped subset of the workspace policy.
+        """
+        return {
+            key: value
+            for key, value in self.to_workspace_payload().items()
+            if key in _PROJECT_WORKSPACE_FIELDS
+        }
+
+    def session_workspace_fingerprint(self) -> str:
+        """Fingerprint the exact client-claimable session policy.
 
         Returns:
             The canonical SHA-256 fingerprint.
         """
-        import hashlib
+        return _fingerprint(self.to_session_workspace_claim())
 
+    def resolve_workspace(
+        self,
+        cwd: str,
+        project_root: str | None,
+    ) -> ServerConfig:
+        """Resolve directory-bound policy for one server workspace.
+
+        Returns:
+            A config bound to the target workspace's project policy.
+        """
+        launch_root = self.project_root or self.cwd
+        target_root = project_root or cwd
+        if _same_workspace_project(launch_root, target_root):
+            return replace(self, cwd=cwd, project_root=project_root)
+        from deepagents_code.extensions.trust import is_project_extensions_trusted
+
+        return replace(
+            self,
+            cwd=cwd,
+            project_root=project_root,
+            sandbox_setup=None,
+            mcp_config_path=None,
+            trust_project_mcp=None,
+            trust_project_extensions=is_project_extensions_trusted(target_root),
+            extension_paths=(),
+        )
+
+    def workspace_fingerprint(self) -> str:
+        """Fingerprint the resolved runtime config except workspace identity.
+
+        Returns:
+            The canonical SHA-256 fingerprint.
+        """
         values = self.to_env()
         values.pop("CWD")
         values.pop("PROJECT_ROOT")
-        serialized = json.dumps(values, sort_keys=True, separators=(",", ":"))
-        return hashlib.sha256(serialized.encode()).hexdigest()
+        return _fingerprint(values)
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.

@@ -85,7 +85,7 @@ async def test_binding_rejects_resource_policy_change(tmp_path) -> None:
         config_fingerprint="config-a",
     )
 
-    with pytest.raises(WorkspaceConflictError, match="already bound"):
+    with pytest.raises(WorkspaceConflictError, match="configuration changed"):
         await bind_thread_workspace(
             "thread-1",
             str(tmp_path),
@@ -96,6 +96,30 @@ async def test_binding_rejects_resource_policy_change(tmp_path) -> None:
         await require_thread_workspace(
             "thread-1", binding.to_payload(), config_fingerprint="config-b"
         )
+
+
+async def test_binding_rejects_resolved_project_policy_change(tmp_path) -> None:
+    binding = await bind_thread_workspace(
+        "thread-1",
+        str(tmp_path),
+        {"trust_project_mcp": False},
+        config_fingerprint="config-a",
+    )
+
+    expected = (
+        "Cannot host this workspace because the project's resolved policy differs "
+        "from the policy recorded when this workspace was bound."
+    )
+    with pytest.raises(WorkspaceConflictError) as exc_info:
+        await bind_thread_workspace(
+            "thread-1",
+            str(tmp_path),
+            {"trust_project_mcp": True},
+            config_fingerprint="config-b",
+        )
+
+    assert str(exc_info.value) == expected
+    assert binding.workspace_config()["trust_project_mcp"] is False
 
 
 async def test_binding_persists_only_non_secret_policy(

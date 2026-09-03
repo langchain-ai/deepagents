@@ -247,7 +247,10 @@ class _DiscordPyGateway:
                 await handle_reaction(reaction)
 
         self._client = client
-        task = asyncio.create_task(client.start(self._token), name="talon:discord:gateway")
+        task = asyncio.create_task(
+            client.start(self._token, reconnect=True),
+            name="talon:discord:gateway",
+        )
         self._task = task
         ready_task = asyncio.create_task(client.wait_until_ready())
         done, pending = await asyncio.wait(

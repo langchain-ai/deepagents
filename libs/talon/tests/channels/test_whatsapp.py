@@ -894,8 +894,82 @@ async def test_channel_forwards_bridge_output_to_logs(
     assert "WhatsApp bridge: Scan this QR code to pair WhatsApp:" in caplog.text
 
 
+async def test_restart_clears_exited_bridge_before_starting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ExitedProcess:
+        returncode = 1
+
+        def terminate(self) -> None:
+            msg = "an exited process must not be terminated"
+            raise AssertionError(msg)
+
+    channel = WhatsAppChannel(WhatsAppChannelConfig(session_dir=tmp_path))
+    channel._process = cast("asyncio.subprocess.Process", ExitedProcess())
+    started = False
+
+    async def start_bridge() -> None:
+        nonlocal started
+        started = True
+        assert channel._process is None
+
+    monkeypatch.setattr(channel, "_start_bridge", start_bridge)
+
+    await channel._restart_bridge()
+
+    assert started
+
+
 def test_bridge_script_is_packaged() -> None:
     assert _bridge_script_path().name == "bridge.js"
     assert _bridge_script_path().is_file()
     assert _bridge_script_path().with_name("id_compat.js").is_file()
     assert _bridge_script_path().with_name("package-lock.json").is_file()
+
+
+async def test_transport_wraps_connection_interruptions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_urlopen(request: object, *, timeout: float) -> JsonResponse:  # noqa: ARG001
+        msg = "connection lost during sleep"
+        raise ConnectionResetError(msg)
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    transport = _BridgeTransport(base_url="http://127.0.0.1:3000", timeout=1)
+
+    with pytest.raises(_WhatsAppBridgeError, match="request failed") as exc_info:
+        await transport.get("/health")
+
+    assert isinstance(exc_info.value.__cause__, ConnectionResetError)
+
+
+async def test_health_watchdog_retries_failed_bridge_restart(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class UnavailableTransport:
+        async def get(self, path: str) -> object:
+            assert path == "/health"
+            msg = "bridge unavailable"
+            raise _WhatsAppBridgeError(msg)
+
+    channel = WhatsAppChannel(
+        WhatsAppChannelConfig(session_dir=tmp_path, health_interval_seconds=0),
+        transport=cast("_BridgeTransport", UnavailableTransport()),
+    )
+    restart_attempts = 0
+
+    async def restart_bridge() -> None:
+        nonlocal restart_attempts
+        restart_attempts += 1
+        if restart_attempts == 1:
+            msg = "restart interrupted"
+            raise _WhatsAppBridgeError(msg)
+        channel._stopped.set()
+
+    monkeypatch.setattr(channel, "_restart_bridge", restart_bridge)
+
+    await channel._watch_health()
+
+    assert restart_attempts == 2

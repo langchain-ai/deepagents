@@ -2180,8 +2180,12 @@ async def _load_tools_from_config(
     # One `list_tools` covers every mounted backend; FastMCP paginates
     # internally and bounds itself, so a server returning a non-terminating
     # cursor cannot hang the load.
-    async with client:
-        mounted_tools = await client.list_tools()
+    try:
+        async with client:
+            mounted_tools = await client.list_tools()
+    except BaseException:
+        await runtime_manager.cleanup()
+        raise
 
     def _owner(tool_name: str) -> str | None:
         """Return the server a mounted tool belongs to.
@@ -2237,19 +2241,29 @@ async def _load_tools_from_config(
             )
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
-            # Pair each tool's schema by its mounted name, so the lookup needs no
-            # string surgery. Deep-copy the raw dict: `MCPToolInfo` is frozen, but
-            # `frozen=True` does not freeze nested mutables, and a shared reference
-            # would let one holder mutate every other's view.
+            # Pair each schema by the server-side name retained in the adapted
+            # tool's metadata. The provider-safe LangChain name may be sanitized
+            # or capped, so it cannot key this lookup reliably.
             schemas = {
-                mcp_tool.name: copy.deepcopy(mcp_tool.input_schema)
+                _unprefixed_tool_name(mcp_tool.name, server_name): copy.deepcopy(
+                    mcp_tool.input_schema
+                )
                 for mcp_tool in by_server[server_name]
             }
+
+            def _tool_schema(tool: BaseTool) -> dict[str, Any] | None:
+                original_name = (tool.metadata or {}).get(_MCP_ORIGINAL_TOOL_NAME_KEY)
+                return (
+                    schemas.get(original_name)
+                    if isinstance(original_name, str)
+                    else None
+                )
+
             tool_infos = [
                 MCPToolInfo(
                     name=tool.name,
                     description=tool.description or "",
-                    input_schema=schemas.get(tool.name),
+                    input_schema=_tool_schema(tool),
                 )
                 for tool in server_tools
             ]

@@ -717,6 +717,11 @@ class TestGetMCPTools:
         assert len(tools[0].name) == _MCP_TOOL_NAME_MAX_LENGTH
         assert re.fullmatch(r"[A-Za-z0-9_-]+", tools[0].name)
         assert server_infos[0].tools[0].name == tools[0].name
+        assert server_infos[0].tools[0].input_schema == {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {},
+        }
         assert original_name in str(result)
         await manager.cleanup()  # ty: ignore
 
@@ -2121,6 +2126,28 @@ class TestLoadToolsConcurrency:
         assert [i.name for i in infos] == names
         assert manager is not None
         await manager.cleanup()
+
+    async def test_discovery_failure_closes_adopted_resources(
+        self,
+        mcp_servers: MCPServerRegistry,
+    ) -> None:
+        """A load that fails after mounting closes the client and backends."""
+        mcp_servers.register("srv", "tool")
+        client = AsyncMock()
+        client.list_tools.side_effect = RuntimeError("discovery failed")
+        backend_stack = AsyncMock()
+
+        with (
+            patch(
+                "deepagents_code.mcp_tools._mount_backends",
+                AsyncMock(return_value=(client, backend_stack, {})),
+            ),
+            pytest.raises(RuntimeError, match="discovery failed"),
+        ):
+            await _load_tools_from_config(self._config("srv"))
+
+        client.close.assert_awaited_once()
+        backend_stack.aclose.assert_awaited_once()
 
     async def test_preflight_concurrency_is_bounded(
         self,

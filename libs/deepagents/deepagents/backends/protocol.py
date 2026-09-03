@@ -470,15 +470,6 @@ class BackendProtocol(abc.ABC):  # noqa: B024
         from `offset` when `start_line` is unset, which only yields a valid
         1-indexed gutter for windows the backend actually sliced.
 
-        Implementations must additionally report a wholly blank file — empty or
-        whitespace-only — with every pagination field unset, rather than as a
-        window over it. The middleware distinguishes "this file is empty" from
-        "this window happens to be blank" purely from that metadata, so a
-        whitespace-only file paginated with `offset > 0` renders as numbered
-        blank rows instead of the empty-file reminder. Backends that slice in
-        Python get this from `slice_read_response`, which checks blankness
-        before applying the window.
-
         Args:
             file_path: Absolute path to the file to read. Must start with `'/'`.
             offset: Line number to start reading from (0-indexed).

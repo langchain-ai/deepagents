@@ -18,6 +18,7 @@ if TYPE_CHECKING:
 
 from deepagents_code import theme
 from deepagents_code.config import get_glyphs, is_ascii_mode
+from deepagents_code.tui.key_hints import modal_navigation_hint
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     ThemeSelectorScreen > Vertical {
         width: 50;
         max-width: 90%;
-        height: auto;
-        max-height: 80%;
+        height: 80%;
         background: $surface;
         border: solid $primary;
         padding: 1 2;
@@ -85,12 +85,13 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
     }
 
     ThemeSelectorScreen OptionList {
-        height: auto;
-        max-height: 16;
+        height: 1fr;
+        min-height: 3;
         background: $background;
     }
 
     ThemeSelectorScreen .theme-selector-help {
+        dock: bottom;
         height: auto;
         color: $text-muted;
         text-style: italic;
@@ -165,7 +166,7 @@ class ThemeSelectorScreen(ModalScreen[str | None]):
             option_list.highlighted = highlight_index
             yield option_list
             nav_line = (
-                f"{glyphs.arrow_up}/{glyphs.arrow_down} or Tab switch"
+                f"{modal_navigation_hint(glyphs)}"
                 f" {glyphs.bullet} Enter select"
                 f" {glyphs.bullet} Esc cancel"
             )

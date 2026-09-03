@@ -18,7 +18,6 @@ on:
         options:
           - all
           - libs/deepagents
-          - libs/cli
           - libs/partners/daytona
           - libs/partners/modal
           - libs/partners/runloop
@@ -38,7 +37,6 @@ env:
   UV_FROZEN: "true"
   DEFAULT_LIBS: >-
     ["libs/deepagents",
-    "libs/cli",
     "libs/partners/daytona",
     "libs/partners/modal",
     "libs/partners/runloop"]

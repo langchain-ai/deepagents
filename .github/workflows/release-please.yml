@@ -124,7 +124,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       release-commit: ${{ steps.check-releases.outputs.release-commit }}
-      cli-release: ${{ steps.check-releases.outputs.cli-release }}
       sdk-release: ${{ steps.check-releases.outputs.sdk-release }}
       acp-release: ${{ steps.check-releases.outputs.acp-release }}
       code-release: ${{ steps.check-releases.outputs.code-release }}
@@ -188,14 +187,6 @@ jobs:
           # none can fail loudly instead of producing a green no-op run (see the
           # check after the last package below).
           ANY_PACKAGE=false
-
-          if echo "$CHANGED" | grep -q "^libs/cli/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents-cli\):"; then
-            echo "cli-release=true" >> "$GITHUB_OUTPUT"
-            ANY_PACKAGE=true
-            echo "CLI release detected: $COMMIT_MSG"
-          else
-            echo "cli-release=false" >> "$GITHUB_OUTPUT"
-          fi
 
           if echo "$CHANGED" | grep -q "^libs/deepagents/CHANGELOG.md$" && echo "$COMMIT_MSG" | grep -qE "^release\(deepagents\):"; then
             echo "sdk-release=true" >> "$GITHUB_OUTPUT"
@@ -986,7 +977,6 @@ jobs:
   trigger-releases:
     needs: detect-release-commit
     if: |
-      needs.detect-release-commit.outputs.cli-release == 'true' ||
       needs.detect-release-commit.outputs.sdk-release == 'true' ||
       needs.detect-release-commit.outputs.acp-release == 'true' ||
       needs.detect-release-commit.outputs.code-release == 'true' ||
@@ -1009,7 +999,6 @@ jobs:
       RIPGREP_BYPASS_LABEL: "bypass-ripgrep-check"
       RELEASE_WORKFLOW_URL: ${{ github.server_url }}/${{ github.repository
         }}/actions/workflows/release.yml
-      CLI_RELEASE: ${{ needs.detect-release-commit.outputs.cli-release }}
       SDK_RELEASE: ${{ needs.detect-release-commit.outputs.sdk-release }}
       ACP_RELEASE: ${{ needs.detect-release-commit.outputs.acp-release }}
       CODE_RELEASE: ${{ needs.detect-release-commit.outputs.code-release }}
@@ -1256,7 +1245,6 @@ jobs:
 
           # ${VAR:-false} guards against an output ever being unset/empty. assert_bool
           # surfaces a warning if the value is something other than "true"/"false".
-          CLI_RELEASE="${CLI_RELEASE:-false}";         assert_bool CLI_RELEASE     "$CLI_RELEASE"
           SDK_RELEASE="${SDK_RELEASE:-false}";         assert_bool SDK_RELEASE     "$SDK_RELEASE"
           ACP_RELEASE="${ACP_RELEASE:-false}";         assert_bool ACP_RELEASE     "$ACP_RELEASE"
           CODE_RELEASE="${CODE_RELEASE:-false}";       assert_bool CODE_RELEASE    "$CODE_RELEASE"
@@ -1309,7 +1297,6 @@ jobs:
           # a graceful miss (still best-effort — no job failure).
           DISPATCH_STARTED=$(date -u -d '-60 seconds' +%Y-%m-%dT%H:%M:%SZ)
 
-          if [ "$CLI_RELEASE" = "true" ];     then dispatch deepagents-cli;      fi
           if [ "$SDK_RELEASE" = "true" ];     then dispatch deepagents;          fi
           if [ "$ACP_RELEASE" = "true" ];     then dispatch deepagents-acp;      fi
           if [ "$CODE_RELEASE" = "true" ];    then dispatch deepagents-code;     fi

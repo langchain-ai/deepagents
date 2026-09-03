@@ -2,65 +2,257 @@
 
 from __future__ import annotations
 
-import argparse
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, patch
 
+from deepagents_code.mcp_tools import DiscoveredMCPConfig, MCPConfigScope
+
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     import pytest
-
-
-def _build_parser() -> argparse.ArgumentParser:
-    from deepagents_code.client.commands.mcp import setup_mcp_parsers
-
-    def _make_help_action(help_fn: Callable[[], None]) -> type[argparse.Action]:
-        class _ShowHelp(argparse.Action):
-            def __init__(
-                self,
-                option_strings: list[str],
-                dest: str = argparse.SUPPRESS,
-                default: str = argparse.SUPPRESS,
-                **kwargs: Any,
-            ) -> None:
-                super().__init__(
-                    option_strings=option_strings,
-                    dest=dest,
-                    default=default,
-                    nargs=0,
-                    **kwargs,
-                )
-
-            def __call__(  # ty: ignore
-                self,
-                parser: argparse.ArgumentParser,
-                _namespace: argparse.Namespace,
-                _values: object,
-                _option_string: str | None = None,
-            ) -> None:
-                help_fn()
-                parser.exit()
-
-        return _ShowHelp
-
-    parser = argparse.ArgumentParser()
-    subparsers = parser.add_subparsers(dest="command")
-    setup_mcp_parsers(subparsers, make_help_action=_make_help_action)
-    return parser
 
 
 class TestSetupMCPParsers:
     """Argument parser wiring for the `mcp` subcommand."""
 
-    def test_mcp_login_accepts_server_arg(self) -> None:
-        """The parser recognizes `dcode mcp login <server>`."""
-        parser = _build_parser()
-        ns = parser.parse_args(["mcp", "login", "notion"])
-        assert ns.command == "mcp"
-        assert ns.mcp_command == "login"
-        assert ns.server == "notion"
+
+class TestRunMCPLoginList:
+    """Behavior of bare `dcode mcp login`."""
+
+    async def test_lists_oauth_servers_without_tokens(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Only OAuth servers lacking a stored token are listed."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{'
+            '"notion":{"transport":"http","url":"https://notion.test/mcp",'
+            '"auth":"oauth"},'
+            '"linear":{"transport":"http","url":"https://linear.test/mcp",'
+            '"auth":"oauth"},'
+            '"public":{"transport":"http","url":"https://public.test/mcp"}}}'
+        )
+
+        exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        assert exit_code == 0
+        output = capsys.readouterr().out
+        assert "MCP servers needing login:" in output
+        assert "notion" in output
+        assert "linear" in output
+        assert "public" not in output
+        # The remediation hint is the point of the command; without it the
+        # user is told what is wrong but not what to do.
+        assert "mcp login <server>` to authenticate." in output
+
+    async def test_omits_oauth_servers_with_tokens(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A server with a stored token is not reported as needing login."""
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://notion.test/mcp","auth":"oauth"}}}'
+        )
+        with patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path):
+            storage = FileTokenStorage("notion", server_url="https://notion.test/mcp")
+            await storage.set_tokens(
+                OAuthToken(access_token="secret", token_type="Bearer")
+            )
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        assert exit_code == 0
+        assert capsys.readouterr().out.strip() == "No MCP servers need login."
+
+    async def test_resolves_url_before_looking_up_tokens(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """Token identity uses the interpolated URL, matching login and runtime."""
+        from mcp.shared.auth import OAuthToken
+
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"${MCP_TEST_URL}","auth":"oauth"}}}'
+        )
+        resolved_url = "https://notion.test/mcp"
+        monkeypatch.setenv("MCP_TEST_URL", resolved_url)
+
+        with patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path):
+            storage = FileTokenStorage("notion", server_url=resolved_url)
+            await storage.set_tokens(
+                OAuthToken(access_token="secret", token_type="Bearer")
+            )
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        assert exit_code == 0
+        assert capsys.readouterr().out.strip() == "No MCP servers need login."
+
+    async def test_invalid_url_type_is_reported(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A non-string OAuth URL is a config error, not a storage crash."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http","url":123,"auth":"oauth"}}}'
+        )
+
+        exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "Invalid MCP server config for 'notion'" in captured.err
+        assert "mcpServers.notion.url must be a string" in captured.err
+        assert "No MCP servers need login." not in captured.out
+
+    async def test_unreadable_token_state_returns_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A server whose token file cannot be read must not get an all-clear."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://notion.test/mcp","auth":"oauth"}}}'
+        )
+        with (
+            patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path),
+            patch.object(
+                FileTokenStorage, "get_tokens", side_effect=ValueError("corrupt")
+            ),
+        ):
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "Could not read login state for 'notion'" in captured.err
+        assert "No MCP servers need login." not in captured.out
+
+    async def test_unreadable_alongside_needs_login_returns_nonzero(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An unreadable server taints a non-empty list too, not just an empty one."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{'
+            '"notion":{"transport":"http","url":"https://notion.test/mcp",'
+            '"auth":"oauth"},'
+            '"linear":{"transport":"http","url":"https://linear.test/mcp",'
+            '"auth":"oauth"}}}'
+        )
+
+        async def _get_tokens(self: FileTokenStorage) -> None:
+            """Stub storage: `linear` is unreadable, `notion` has no tokens."""
+            if self._server_name == "linear":
+                msg = "corrupt"
+                raise ValueError(msg)
+
+        with (
+            patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path),
+            patch.object(FileTokenStorage, "get_tokens", _get_tokens),
+        ):
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "notion" in captured.out
+        # The unchecked server must not silently vanish from a confident list.
+        assert "1 server(s) could not be checked" in captured.out
+        assert "Could not read login state for 'linear'" in captured.err
+
+    async def test_token_read_error_keeps_the_remedy_text(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A corrupt token file reports its path and how to fix it."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://notion.test/mcp","auth":"oauth"}}}'
+        )
+        with patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path):
+            token_path = FileTokenStorage(
+                "notion", server_url="https://notion.test/mcp"
+            ).path
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text("{ not json")
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        err = capsys.readouterr().err
+        assert exit_code == 1
+        assert str(token_path) in err
+        assert "Delete the file and run" in err
+
+    async def test_non_object_token_file_is_reported_not_raised(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Valid JSON that is not an object must not escape as `AttributeError`."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+        from deepagents_code.mcp_auth import FileTokenStorage
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://notion.test/mcp","auth":"oauth"}}}'
+        )
+        with patch("deepagents_code.mcp_auth.token_store_dir", return_value=tmp_path):
+            token_path = FileTokenStorage(
+                "notion", server_url="https://notion.test/mcp"
+            ).path
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text("null")
+            exit_code = await run_mcp_login_list(config_path=str(config_path))
+
+        captured = capsys.readouterr()
+        assert exit_code == 1
+        assert "is not a JSON object" in captured.err
+        assert "No MCP servers need login." not in captured.out
+
+    async def test_prints_trust_hint_for_untrusted_project_config(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Trust-gated servers are explained, not silently absent from the list."""
+        from deepagents_code.client.commands.mcp import run_mcp_login_list
+
+        project_cfg = tmp_path / "project.json"
+        project_cfg.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+
+        with patch(
+            "deepagents_code.mcp_tools.discover_mcp_config_sources",
+            return_value=[
+                DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+            ],
+        ):
+            exit_code = await run_mcp_login_list(config_path=None)
+
+        err = capsys.readouterr().err
+        assert exit_code != 0
+        assert "Skipping untrusted project MCP server entries" in err
 
 
 class TestRunMCPLogin:
@@ -125,8 +317,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(lower, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(higher, MCPConfigScope.USER),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -160,8 +355,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[lower, higher],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(lower, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(higher, MCPConfigScope.USER),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -172,18 +370,6 @@ class TestRunMCPLogin:
         assert mock_login.await_args_list[0].kwargs["server_config"]["url"] == (
             "https://example.invalid/higher"
         )
-
-    async def test_no_config_found_returns_2(self) -> None:
-        """No discovered config files yields exit code 2."""
-        from deepagents_code.client.commands.mcp import run_mcp_login
-
-        with patch(
-            "deepagents_code.mcp_tools.discover_mcp_configs",
-            return_value=[],
-        ):
-            exit_code = await run_mcp_login(server="notion", config_path=None)
-
-        assert exit_code == 2
 
     async def test_untrusted_project_config_is_skipped(
         self,
@@ -202,8 +388,10 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -228,8 +416,10 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -272,8 +462,10 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path)
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -320,8 +512,13 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, broken_project],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(
+                        broken_project, MCPConfigScope.PROJECT, tmp_path
+                    ),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -371,8 +568,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -414,8 +614,11 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg, project_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[
+                    DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER),
+                    DiscoveredMCPConfig(project_cfg, MCPConfigScope.PROJECT, tmp_path),
+                ],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -448,8 +651,8 @@ class TestRunMCPLogin:
 
         with (
             patch(
-                "deepagents_code.mcp_tools.discover_mcp_configs",
-                return_value=[user_cfg],
+                "deepagents_code.mcp_tools.discover_mcp_config_sources",
+                return_value=[DiscoveredMCPConfig(user_cfg, MCPConfigScope.USER)],
             ),
             patch("deepagents_code.mcp_auth.login", new=AsyncMock()) as mock_login,
         ):
@@ -521,3 +724,36 @@ class TestRunMCPLogin:
 
         assert exit_code == 1
         assert "Login failed" in capsys.readouterr().err
+
+    async def test_permission_hint_uses_actual_token_store_source(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Permission remediation uses the same directory as `mcp_auth`."""
+        from deepagents_code.client.commands.mcp import run_mcp_login
+
+        config_path = tmp_path / "mcp.json"
+        config_path.write_text(
+            '{"mcpServers":{"notion":{"transport":"http",'
+            '"url":"https://mcp.notion.com/mcp","auth":"oauth"}}}'
+        )
+        actual_store = tmp_path / "selected-profile" / "tokens"
+
+        async def _denied(**_: Any) -> None:
+            msg = "read-only token store"
+            raise PermissionError(msg)
+
+        with (
+            patch("deepagents_code.mcp_auth.login", _denied),
+            patch(
+                "deepagents_code.mcp_auth.token_store_dir",
+                return_value=actual_store,
+            ) as store_dir,
+        ):
+            exit_code = await run_mcp_login(
+                server="notion",
+                config_path=str(config_path),
+            )
+
+        assert exit_code == 1
+        assert str(actual_store) in capsys.readouterr().err
+        store_dir.assert_called_once_with()

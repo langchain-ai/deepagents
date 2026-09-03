@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-from collections.abc import Callable
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
@@ -17,16 +16,12 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 
 from deepagents_code._cli_context import CLIContext, CLIContextSchema
-from deepagents_code.agent import build_model_identity_section
 from deepagents_code.configurable_model import (
     ConfigurableModelMiddleware,
-    _cache_endpoint_identity,
     _checkpoint_command,
-    _effective_cache_params,
     _get_context,
-    _is_anthropic_model,
-    _is_fireworks_model,
     _is_openai_model,
+    _model_spec_from_model,
     _ResolvedModelRequest,
 )
 
@@ -113,26 +108,19 @@ _mw = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
 class TestCheckpointPersistence:
     """Tests for private resume-state checkpoint updates."""
 
-    def test_records_request_start_only_after_success(self) -> None:
-        middleware = ConfigurableModelMiddleware(openai_prompt_cache_key=True)
-        request = _make_request(_make_model("gpt-5.6"))
+    def test_startup_custom_provider_uses_configured_spec(self) -> None:
+        """Custom classes must checkpoint their configured provider alias."""
+        from deepagents_code.config import runtime_state
 
-        with patch(
-            "deepagents_code.configurable_model._utc_now_iso",
-            return_value="2026-08-11T12:30:00+00:00",
+        model = _make_model("fake")
+        model._get_ls_params.return_value = {
+            "ls_provider": "deterministicintegrationchatmodel"
+        }
+        with (
+            patch.object(runtime_state, "model_provider", "itest"),
+            patch.object(runtime_state, "model_name", "fake"),
         ):
-            result = middleware.wrap_model_call(
-                request,
-                lambda _request: _make_response(),
-            )
-
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        update = result.command.update
-        assert isinstance(update, dict)
-        assert update["_last_model_request_at"] == "2026-08-11T12:30:00+00:00"
-        assert update["_last_cache_model_spec"] == "openai:gpt-5.6"
-        assert update["_last_cache_endpoint"] == "default"
+            assert _model_spec_from_model(model) == "itest:fake"
 
     def test_timestamp_is_captured_before_the_model_call(self) -> None:
         """Cache age must be measured from when the prefix was written.
@@ -262,112 +250,6 @@ class TestNoOverride:
         assert ctx.auto_approve is True
         assert ctx.approval_mode_key is None
 
-    def test_dict_context_carries_classifier_model(self) -> None:
-        """A serialized context must keep the Auto classifier override."""
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context={"classifier_model": "openai:gpt-5.5-mini"},
-        )
-
-        ctx = _get_context(request)
-
-        assert ctx is not None
-        assert ctx.classifier_model == "openai:gpt-5.5-mini"
-
-    @pytest.mark.parametrize("classifier_model", [None, 1, object()])
-    def test_dict_context_coerces_non_string_classifier_model(
-        self, classifier_model: object
-    ) -> None:
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context={"classifier_model": classifier_model},
-        )
-
-        ctx = _get_context(request)
-
-        assert ctx is not None
-        assert ctx.classifier_model is None
-
-    @pytest.mark.parametrize("thread_id", [None, 1, object()])
-    def test_dict_context_coerces_non_string_thread_id(self, thread_id: object) -> None:
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context={"thread_id": thread_id},
-        )
-
-        ctx = _get_context(request)
-
-        assert ctx is not None
-        assert ctx.thread_id is None
-
-    def test_same_model_spec(self) -> None:
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="claude-sonnet-4-6"),
-        )
-        captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-        assert captured[0] is request
-
-    def test_provider_prefixed_spec_matches(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.5"),
-            context=CLIContext(model="openai:gpt-5.5"),
-        )
-        captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-        assert captured[0] is request
-
-    def test_provider_prefixed_spec_mismatch_overrides_same_model_name(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.5"),
-            context=CLIContextSchema(model="openai_codex:gpt-5.5"),
-        )
-        replacement = _make_model("gpt-5.5")
-        replacement._get_ls_params.return_value = {"ls_provider": "openai-codex"}
-        captured: list[ModelRequest] = []
-
-        with patch(
-            _PATCH_CREATE, return_value=_make_model_result(replacement)
-        ) as create:
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        create.assert_called_once_with("openai_codex:gpt-5.5")
-        assert captured[0].model is replacement
-
-    def test_none_runtime(self) -> None:
-        request = ModelRequest(
-            model=_make_model("claude-sonnet-4-6"),
-            messages=[HumanMessage(content="hi")],
-            tools=[],
-            runtime=None,
-        )
-        captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-        assert captured[0].model is request.model
-
-    def test_non_dict_context_ignored(self) -> None:
-        runtime = SimpleNamespace(context="not-a-dict")
-        request = ModelRequest(
-            model=_make_model("claude-sonnet-4-6"),
-            messages=[HumanMessage(content="hi")],
-            tools=[],
-            runtime=cast("Any", runtime),
-        )
-        captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-        assert captured[0].model is request.model
-
     def test_empty_model_params(self) -> None:
         request = _make_request(
             _make_model("claude-sonnet-4-6"),
@@ -383,19 +265,6 @@ class TestNoOverride:
             "_model_params": None,
             "_last_cache_params": None,
         }
-
-
-def test_cache_endpoint_identity_uses_configured_provider_params() -> None:
-    """A `params.base_url` gateway must not be recorded as the default API."""
-    from deepagents_code.model_config import ModelConfig
-
-    config = ModelConfig(
-        providers={"openai": {"params": {"base_url": "https://proxy.example.com/v1"}}}
-    )
-    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
-        assert _cache_endpoint_identity("openai:gpt-5.5") == (
-            "https://proxy.example.com/v1"
-        )
 
 
 def test_checkpoint_records_effective_cache_params() -> None:
@@ -467,161 +336,8 @@ def test_checkpoint_cache_params_exclude_unrelated_config() -> None:
     assert update["_model_params"] == {"reasoning_effort": "high"}
 
 
-def test_cache_endpoint_identity_normalizes_the_provider() -> None:
-    """The reader lowercases before looking up, so the writer must too.
-
-    `get_kwargs`/`get_base_url` are exact-key lookups, so without this the two
-    sides resolve different endpoints for the same request and disagree on every
-    turn -- a disagreement that never self-heals.
-    """
-    from deepagents_code.model_config import ModelConfig
-
-    config = ModelConfig(
-        providers={"openai": {"params": {"base_url": "https://proxy.example.com/v1"}}}
-    )
-    with patch("deepagents_code.model_config.ModelConfig.load", return_value=config):
-        for spec in ("openai:gpt-5.5", "OpenAI:gpt-5.5", " openai:gpt-5.5"):
-            assert _cache_endpoint_identity(spec) == "https://proxy.example.com/v1"
-
-
-def test_cache_endpoint_identity_degrades_instead_of_raising(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    """A completed, billed model call must not be lost to a config surprise.
-
-    Both call sites run after `handler()` returns, so propagating here would
-    discard a paid response over a value used only for change detection.
-    """
-    config = MagicMock()
-    config.get_effective_kwargs.side_effect = RuntimeError("config exploded")
-    config.get_base_url.side_effect = RuntimeError("config exploded")
-
-    with (
-        patch("deepagents_code.model_config.ModelConfig.load", return_value=config),
-        caplog.at_level(logging.WARNING, logger="deepagents_code.configurable_model"),
-    ):
-        assert _cache_endpoint_identity("openai:gpt-5.5") == "default"
-
-    assert "Could not resolve the cache endpoint" in caplog.text
-
-
 class TestModelSwap:
     """Cases where the middleware should swap the model."""
-
-    def test_different_model_swapped(self) -> None:
-        original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-5.5")
-        request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
-
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model is override
-        assert request.model is original  # original unchanged
-
-    def test_profile_overrides_forwarded_to_swapped_model(self) -> None:
-        original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-5.5")
-        profile_overrides = {"max_input_tokens": 180_000}
-        request = _make_request(
-            original,
-            context=CLIContext(
-                model="openai:gpt-5.5",
-                profile_overrides=profile_overrides,
-            ),
-        )
-
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
-            _mw.wrap_model_call(request, lambda _: _make_response())
-
-        create.assert_called_once_with(
-            "openai:gpt-5.5",
-            profile_overrides=profile_overrides,
-        )
-
-    async def test_async_model_swapped(self) -> None:
-        original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-5.5")
-        request = _make_request(original, context=CLIContext(model="openai:gpt-5.5"))
-
-        captured: list[ModelRequest] = []
-        offloaded: list[
-            tuple[Callable[..., object], tuple[object, ...], dict[str, object]]
-        ] = []
-
-        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            captured.append(r)
-            return _make_response()
-
-        async def fake_to_thread(
-            func: Callable[..., object], /, *args: object, **kwargs: object
-        ) -> object:
-            await asyncio.sleep(0)
-            offloaded.append((func, args, kwargs))
-            return func(*args, **kwargs)
-
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create,
-            patch(
-                "deepagents_code.configurable_model.asyncio.to_thread", fake_to_thread
-            ),
-        ):
-            result = await _mw.awrap_model_call(request, handler)
-
-        assert captured[0].model is override
-        # Blocking calls must be offloaded: model construction, the
-        # endpoint-identity lookup, and effective cache-param resolution (both
-        # read the config and credential store). Doing any inline would trip
-        # `blockbuster` on the server event loop.
-        assert offloaded == [
-            (create, ("openai:gpt-5.5",), {}),
-            (_cache_endpoint_identity, ("openai:gpt-5.5",), {}),
-            (_effective_cache_params, ("openai:gpt-5.5", None), {}),
-        ]
-        assert "_last_cache_params" in _checkpoint_update(result)
-
-    async def test_async_profile_overrides_forwarded_to_swapped_model(self) -> None:
-        original = _make_model("claude-sonnet-4-6")
-        override = _make_model("gpt-5.5")
-        profile_overrides = {"max_input_tokens": 180_000}
-        request = _make_request(
-            original,
-            context=CLIContext(
-                model="openai:gpt-5.5",
-                profile_overrides=profile_overrides,
-            ),
-        )
-
-        async def handler(_: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            return _make_response()
-
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)) as create:
-            await _mw.awrap_model_call(request, handler)
-
-        create.assert_called_once_with(
-            "openai:gpt-5.5",
-            profile_overrides=profile_overrides,
-        )
-
-    def test_class_path_provider_swapped(self) -> None:
-        """Config-defined class_path provider resolves through create_model."""
-        original = _make_model("claude-sonnet-4-6")
-        custom = _make_model("my-model")
-        request = _make_request(original, context=CLIContext(model="custom:my-model"))
-
-        captured: list[ModelRequest] = []
-        with patch(
-            _PATCH_CREATE, return_value=_make_model_result(custom)
-        ) as mock_create:
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model is custom
-        mock_create.assert_called_once_with("custom:my-model")
 
     def test_create_model_error_falls_back_to_original(self) -> None:
         """ModelConfigError falls back to original model instead of crashing."""
@@ -654,22 +370,193 @@ class TestModelSwap:
             "_model_spec": "anthropic:claude-sonnet-4-6",
         }
 
-    def test_failed_override_records_original_as_cache_identity(self) -> None:
-        """The cache model spec tracks the model that served the call."""
+    def test_strict_model_resolution_propagates_config_error(self) -> None:
+        """Nested grader routing must not silently retain its startup model."""
         from deepagents_code.model_config import ModelConfigError
 
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="unknown:bad-model"),
+        )
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=False,
+            persist_model_state=False,
+            strict_model_resolution=True,
+        )
+
+        with (
+            patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")),
+            pytest.raises(ModelConfigError, match="no such provider"),
+        ):
+            middleware.wrap_model_call(request, lambda _request: _make_response())
+
+    def test_context_payload_conversion_reads_every_field(self) -> None:
+        """Drift guard: a new `CLIContextSchema` field must be wired up here.
+
+        The dict branch runs for RemoteGraph sessions only, so a field it
+        forgets is dropped silently for remote users while in-process sessions
+        keep working. If this fails, add the field to
+        `CLIContextSchema.from_payload` (and check the `/offload` allowlists)
+        before updating the payload below.
+        """
+        from dataclasses import fields
+
+        payload: dict[str, Any] = {
+            "model": "openai:gpt-5.5",
+            "model_params": {"temperature": 0.2},
+            "summarization_model": "openai:gpt-5.4-mini",
+            "profile_overrides": {"context_window": 1000},
+            "model_context_limit": 4096,
+            "classifier_model": "openai:gpt-5.1",
+            "approval_mode": "yolo",
+            "auto_approve": True,
+            "approval_mode_key": "key-1",
+            "thread_id": "t-1",
+            "turn_id": "turn-1",
+            "hooks_snapshot_id": "snap-1",
+            "hooks_server_events": ["PreToolUse"],
+            "prompt_id": "prompt-1",
+            "workspace": {"workspace_id": "workspace-1"},
+        }
+        assert set(payload) == {spec.name for spec in fields(CLIContextSchema)}
+
+        resolved = CLIContextSchema.from_payload(payload)
+
+        assert resolved == CLIContextSchema(**payload)
+
+    def test_context_payload_conversion_rejects_unknown_shapes(self) -> None:
+        """Only a schema instance or a dict describes a run's context."""
+        schema = CLIContextSchema(model="openai:gpt-5.5")
+
+        assert CLIContextSchema.from_payload(schema) is schema
+        assert CLIContextSchema.from_payload(None) is None
+        assert CLIContextSchema.from_payload(object()) is None
+
+    def test_context_payload_conversion_drops_malformed_values(self) -> None:
+        """A malformed JSON payload must not reach model construction."""
+        resolved = CLIContextSchema.from_payload(
+            {
+                "model": 42,
+                "approval_mode": None,
+                "model_context_limit": True,
+                "hooks_server_events": ["PreToolUse", 7],
+            }
+        )
+
+        assert resolved is not None
+        assert resolved.model is None
+        assert resolved.approval_mode == "manual"
+        # `bool` is an `int` subclass; a limit of `True` is not a limit.
+        assert resolved.model_context_limit is None
+        assert resolved.hooks_server_events == ["PreToolUse"]
+
+    def test_context_payload_conversion_tolerates_malformed_containers(self) -> None:
+        """Non-dict/non-list containers fall back to empty instead of raising.
+
+        `dict(...)` on a scalar raises `TypeError`/`ValueError`, and iterating
+        an int raises `TypeError` — either would abort an otherwise valid remote
+        request over a field the caller may not care about.
+        """
+        resolved = CLIContextSchema.from_payload(
+            {
+                "model_params": "x",
+                "profile_overrides": 7,
+                "hooks_server_events": 7,
+            }
+        )
+
+        assert resolved is not None
+        assert resolved.model_params == {}
+        assert resolved.profile_overrides == {}
+        assert resolved.hooks_server_events == []
+
+        string_events = CLIContextSchema.from_payload(
+            {"hooks_server_events": "PreToolUse"}
+        )
+
+        assert string_events is not None
+        # A bare string is not exploded into per-character events.
+        assert string_events.hooks_server_events == []
+
+    @pytest.mark.parametrize("value", ["false", 1, [True], {"enabled": True}])
+    def test_context_payload_conversion_rejects_non_boolean_auto_approve(
+        self, value: object
+    ) -> None:
+        """Malformed compatibility values must not enable legacy YOLO mode."""
+        resolved = CLIContextSchema.from_payload({"auto_approve": value})
+
+        assert resolved is not None
+        assert resolved.auto_approve is False
+
+    async def test_async_strict_model_resolution_propagates_config_error(self) -> None:
+        """The TUI streams, so the async path is the one the grader runs on."""
+        from deepagents_code.model_config import ModelConfigError
+
+        request = _make_request(
+            _make_model("claude-sonnet-4-6"),
+            context=CLIContext(model="unknown:bad-model"),
+        )
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=False,
+            persist_model_state=False,
+            strict_model_resolution=True,
+        )
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with (
+            patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")),
+            pytest.raises(ModelConfigError, match="no such provider"),
+        ):
+            await middleware.awrap_model_call(request, handler)
+
+    def test_model_policy_error_does_not_fall_back_to_original(self) -> None:
+        """A blocked runtime switch propagates instead of using the old model."""
+        from deepagents_code.model_config import ModelNotAllowedError
+
         original = _make_model("claude-sonnet-4-6")
-        original._get_ls_params.return_value = {"ls_provider": "anthropic"}
-        request = _make_request(original, context=CLIContext(model="unknown:bad-model"))
+        request = _make_request(
+            original,
+            context=CLIContext(model="openai:blocked"),
+        )
+        denial = ModelNotAllowedError(
+            model_spec="openai:blocked",
+            source="managed config",
+            allowed_models=("anthropic:allowed",),
+        )
 
-        with patch(_PATCH_CREATE, side_effect=ModelConfigError("no such provider")):
-            result = _mw.wrap_model_call(request, lambda _request: _make_response())
+        with (
+            patch(_PATCH_CREATE, side_effect=denial),
+            pytest.raises(ModelNotAllowedError, match="administrator-managed"),
+        ):
+            _mw.wrap_model_call(request, lambda _request: _make_response())
 
-        assert isinstance(result, ExtendedModelResponse)
-        assert result.command is not None
-        update = result.command.update
-        assert isinstance(update, dict)
-        assert update["_last_cache_model_spec"] == "anthropic:claude-sonnet-4-6"
+    async def test_async_model_policy_error_does_not_fall_back(self) -> None:
+        """The asynchronous runtime-switch path propagates policy denials."""
+        from deepagents_code.model_config import ModelNotAllowedError
+
+        original = _make_model("claude-sonnet-4-6")
+        request = _make_request(
+            original,
+            context=CLIContext(model="openai:blocked"),
+        )
+        denial = ModelNotAllowedError(
+            model_spec="openai:blocked",
+            source="config.toml",
+            allowed_models=("anthropic:allowed",),
+        )
+
+        async def handler(_request: ModelRequest) -> ModelResponse[Any]:
+            await asyncio.sleep(0)
+            return _make_response()
+
+        with (
+            patch(_PATCH_CREATE, side_effect=denial),
+            pytest.raises(ModelNotAllowedError, match=r"config\.toml"),
+        ):
+            await _mw.awrap_model_call(request, handler)
 
     def test_successful_swap_records_resolved_model_spec(self) -> None:
         original = _make_model("claude-sonnet-4-6")
@@ -701,151 +588,6 @@ class TestAnthropicSettingsStripped:
     target provider's API (e.g. OpenAI/Groq).
     """
 
-    def test_cache_control_stripped_on_swap(self) -> None:
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            model_settings={"cache_control": {"type": "ephemeral", "ttl": "5m"}},
-        )
-        captured: list[ModelRequest] = []
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
-            patch(
-                "deepagents_code.configurable_model._is_anthropic_model",
-                return_value=False,
-            ),
-        ):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert "cache_control" not in captured[0].model_settings
-
-    def test_cache_control_preserved_for_anthropic_swap(self) -> None:
-        override = _make_model("claude-opus-4-6")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="anthropic:claude-opus-4-6"),
-            model_settings={"cache_control": {"type": "ephemeral", "ttl": "5m"}},
-        )
-        captured: list[ModelRequest] = []
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
-            patch(
-                "deepagents_code.configurable_model._is_anthropic_model",
-                return_value=True,
-            ),
-        ):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model_settings["cache_control"] == {
-            "type": "ephemeral",
-            "ttl": "5m",
-        }
-
-    def test_other_settings_preserved_on_swap(self) -> None:
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            model_settings={
-                "cache_control": {"type": "ephemeral"},
-                "max_tokens": 2048,
-            },
-        )
-        captured: list[ModelRequest] = []
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
-            patch(
-                "deepagents_code.configurable_model._is_anthropic_model",
-                return_value=False,
-            ),
-        ):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model_settings == {"max_tokens": 2048}
-
-    async def test_async_cache_control_stripped(self) -> None:
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            model_settings={"cache_control": {"type": "ephemeral"}},
-        )
-        captured: list[ModelRequest] = []
-
-        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            captured.append(r)
-            return _make_response()
-
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
-            patch(
-                "deepagents_code.configurable_model._is_anthropic_model",
-                return_value=False,
-            ),
-        ):
-            await _mw.awrap_model_call(request, handler)
-
-        assert "cache_control" not in captured[0].model_settings
-
-    def test_swap_with_model_params_and_cache_control(self) -> None:
-        """Stripping operates on the merged settings, not the original."""
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(
-                model="openai:gpt-5.5",
-                model_params={"temperature": 0.7},
-            ),
-            model_settings={
-                "cache_control": {"type": "ephemeral"},
-                "max_tokens": 2048,
-            },
-        )
-        captured: list[ModelRequest] = []
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
-            patch(
-                "deepagents_code.configurable_model._is_anthropic_model",
-                return_value=False,
-            ),
-        ):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model_settings == {
-            "max_tokens": 2048,
-            "temperature": 0.7,
-        }
-
-    def test_only_cache_control_results_in_empty_settings(self) -> None:
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            model_settings={"cache_control": {"type": "ephemeral"}},
-        )
-        captured: list[ModelRequest] = []
-        with (
-            patch(_PATCH_CREATE, return_value=_make_model_result(override)),
-            patch(
-                "deepagents_code.configurable_model._is_anthropic_model",
-                return_value=False,
-            ),
-        ):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model_settings == {}
-
 
 class TestFireworksSessionSettings:
     """Fireworks model calls receive session settings from the thread ID."""
@@ -854,23 +596,6 @@ class TestFireworksSessionSettings:
         model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
         model._get_ls_params.return_value = {"ls_provider": "fireworks"}
         return model
-
-    def test_fireworks_model_gets_session_settings(self) -> None:
-        request = _make_request(
-            self._fireworks_model(),
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model is request.model
-        assert captured[0].model_settings == {
-            "prompt_cache_key": "thread-123",
-            "extra_headers": {"x-session-affinity": "thread-123"},
-        }
 
     def test_existing_headers_preserved_and_session_affinity_not_overwritten(
         self,
@@ -896,61 +621,6 @@ class TestFireworksSessionSettings:
                 "Authorization": "Bearer custom",
                 "X-Session-Affinity": "custom-session",
             }
-        }
-
-    def test_non_fireworks_non_openai_model_unchanged_with_thread_id(self) -> None:
-        model = _make_model("gemini-3.6-flash")
-        model._get_ls_params.return_value = {"ls_provider": "google_genai"}
-        request = _make_request(
-            model,
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0] is request
-
-    def test_fireworks_swap_gets_session_settings(self) -> None:
-        override = self._fireworks_model()
-        request = _make_request(
-            _make_model("gpt-5.5"),
-            context=CLIContext(
-                model="fireworks:accounts/fireworks/models/kimi-k2p7-code",
-                thread_id="thread-123",
-            ),
-        )
-        captured: list[ModelRequest] = []
-
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model is override
-        assert captured[0].model_settings == {
-            "prompt_cache_key": "thread-123",
-            "extra_headers": {"x-session-affinity": "thread-123"},
-        }
-
-    async def test_async_fireworks_model_gets_session_settings(self) -> None:
-        request = _make_request(
-            self._fireworks_model(),
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            captured.append(r)
-            return _make_response()
-
-        await _mw.awrap_model_call(request, handler)
-
-        assert captured[0].model_settings == {
-            "prompt_cache_key": "thread-123",
-            "extra_headers": {"x-session-affinity": "thread-123"},
         }
 
     def test_empty_thread_id_skips_session_settings(self) -> None:
@@ -988,23 +658,6 @@ class TestFireworksSessionSettings:
         assert captured[0] is request
         assert captured[0].model_settings == {"extra_headers": ["not", "a", "mapping"]}
         assert "extra_headers" in caplog.text
-
-    def test_existing_prompt_cache_key_not_overwritten(self) -> None:
-        request = _make_request(
-            self._fireworks_model(),
-            context=CLIContext(thread_id="thread-123"),
-            model_settings={"prompt_cache_key": "custom-cache"},
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model_settings == {
-            "prompt_cache_key": "custom-cache",
-            "extra_headers": {"x-session-affinity": "thread-123"},
-        }
 
     def test_existing_session_affinity_header_case_insensitive(self) -> None:
         """A differently-cased session-affinity header is not duplicated."""
@@ -1063,68 +716,6 @@ class TestFireworksSessionSettings:
 
 class TestOpenAIPromptCacheKey:
     """OpenAI model calls receive a `prompt_cache_key` from the thread ID."""
-
-    def test_openai_model_gets_prompt_cache_key(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model is request.model
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
-
-    def test_prompt_cache_key_merged_with_existing_settings(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(thread_id="thread-123"),
-            model_settings={"temperature": 0.5},
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model_settings == {
-            "temperature": 0.5,
-            "prompt_cache_key": "thread-123",
-        }
-
-    def test_existing_prompt_cache_key_not_overwritten(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(thread_id="thread-123"),
-            model_settings={"prompt_cache_key": "custom-cache"},
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0] is request
-        assert captured[0].model_settings == {"prompt_cache_key": "custom-cache"}
-
-    def test_model_prompt_cache_key_not_overwritten(self) -> None:
-        model = _make_model("gpt-5.6")
-        model.model_kwargs = {"prompt_cache_key": "model-cache"}
-        request = _make_request(
-            model,
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0] is request
-        assert captured[0].model_settings == {}
 
     def test_non_mapping_model_kwargs_still_injects(self) -> None:
         """A non-mapping `model_kwargs` is treated as no key present."""
@@ -1331,50 +922,6 @@ class TestOpenAIPromptCacheKey:
         with pytest.raises(BlockingError):
             ConfigurableModelMiddleware()
 
-    def test_empty_thread_id_skips_prompt_cache_key(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(thread_id=""),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0] is request
-
-    def test_no_prompt_cache_key_without_thread_id(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0] is request
-
-    def test_openai_swap_gets_prompt_cache_key(self) -> None:
-        base = _make_model("claude-sonnet-4-6")
-        base._get_ls_params.return_value = {"ls_provider": "anthropic"}
-        override = _make_model("gpt-5.6")
-        request = _make_request(
-            base,
-            context=CLIContext(model="openai:gpt-5.6", thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model is override
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
-
     def test_swap_to_openai_injects_key_and_strips_cache_control(self) -> None:
         """Anthropic→OpenAI swap injects the key and strips `cache_control`.
 
@@ -1402,40 +949,6 @@ class TestOpenAIPromptCacheKey:
         assert captured[0].model is override
         assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
 
-    def test_prompt_cache_key_layered_over_model_params(self) -> None:
-        """The key is added on top of a `model_params` merge, not instead of it."""
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(
-                model_params={"temperature": 0.7}, thread_id="thread-123"
-            ),
-        )
-        captured: list[ModelRequest] = []
-
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model_settings == {
-            "temperature": 0.7,
-            "prompt_cache_key": "thread-123",
-        }
-
-    async def test_async_openai_model_gets_prompt_cache_key(self) -> None:
-        request = _make_request(
-            _make_model("gpt-5.6"),
-            context=CLIContext(thread_id="thread-123"),
-        )
-        captured: list[ModelRequest] = []
-
-        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            captured.append(r)
-            return _make_response()
-
-        await _mw.awrap_model_call(request, handler)
-
-        assert captured[0].model_settings == {"prompt_cache_key": "thread-123"}
-
     def test_caller_model_settings_not_mutated(self) -> None:
         """Injection copies the caller's dict instead of mutating in place."""
         model_settings = {"temperature": 0.5}
@@ -1457,38 +970,9 @@ class TestOpenAIPromptCacheKey:
 class TestIsFireworksModel:
     """Direct tests for the `_is_fireworks_model` helper."""
 
-    def test_returns_true_for_fireworks(self) -> None:
-        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
-        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
-        assert _is_fireworks_model(model) is True
-
-    def test_returns_false_for_non_fireworks(self) -> None:
-        assert _is_fireworks_model(_make_model("gpt-5.5")) is False
-
-    def test_returns_false_for_plain_object(self) -> None:
-        assert _is_fireworks_model(object()) is False
-
-    def test_returns_false_when_ls_params_returns_none(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.return_value = None
-        assert _is_fireworks_model(model) is False
-
-    def test_returns_false_when_ls_provider_not_str(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.return_value = {"ls_provider": 123}
-        assert _is_fireworks_model(model) is False
-
 
 class TestIsOpenAIModel:
     """Direct tests for the `_is_openai_model` helper."""
-
-    def test_returns_true_for_openai(self) -> None:
-        assert _is_openai_model(_make_model("gpt-5.6")) is True
-
-    def test_returns_true_for_official_openai_endpoint(self) -> None:
-        model = _make_model("gpt-5.6")
-        model.root_client = SimpleNamespace(base_url="https://api.openai.com/v1")
-        assert _is_openai_model(model) is True
 
     def test_returns_true_for_custom_openai_endpoint(self) -> None:
         """A custom base URL still resolves the OpenAI provider, so it is eligible."""
@@ -1510,49 +994,9 @@ class TestIsOpenAIModel:
         model._get_ls_params.return_value = {"ls_provider": "openai"}
         assert _is_openai_model(model) is True
 
-    def test_returns_false_for_non_openai(self) -> None:
-        model = _make_model("accounts/fireworks/models/kimi-k2p7-code")
-        model._get_ls_params.return_value = {"ls_provider": "fireworks"}
-        assert _is_openai_model(model) is False
-
-    def test_returns_false_for_plain_object(self) -> None:
-        assert _is_openai_model(object()) is False
-
-    def test_returns_false_when_ls_params_returns_none(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.return_value = None
-        assert _is_openai_model(model) is False
-
-    def test_returns_false_when_ls_provider_not_str(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.return_value = {"ls_provider": object()}
-        assert _is_openai_model(model) is False
-
 
 class TestIsAnthropicModel:
     """Direct tests for the `_is_anthropic_model` helper."""
-
-    def test_returns_true_for_anthropic(self) -> None:
-        from langchain_anthropic import ChatAnthropic
-
-        model = ChatAnthropic(model_name="claude-sonnet-4-6")
-        assert _is_anthropic_model(model) is True
-
-    def test_returns_false_for_non_anthropic(self) -> None:
-        assert _is_anthropic_model(_make_model("gpt-5.5")) is False
-
-    def test_returns_false_for_plain_object(self) -> None:
-        assert _is_anthropic_model(object()) is False
-
-    def test_returns_false_when_ls_params_returns_none(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.return_value = None
-        assert _is_anthropic_model(model) is False
-
-    def test_returns_false_when_ls_params_raises(self) -> None:
-        model = MagicMock(spec=BaseChatModel)
-        model._get_ls_params.side_effect = RuntimeError("not initialized")
-        assert _is_anthropic_model(model) is False
 
 
 class TestModelParams:
@@ -1602,50 +1046,6 @@ class TestModelParams:
             "_last_cache_params": None,
         }
 
-    def test_params_merge_preserves_existing(self) -> None:
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model_params={"temperature": 0.5}),
-            model_settings={"max_tokens": 2048},
-        )
-        captured: list[ModelRequest] = []
-        _mw.wrap_model_call(
-            request, lambda r: (captured.append(r), _make_response())[1]
-        )
-
-        assert captured[0].model_settings == {"max_tokens": 2048, "temperature": 0.5}
-
-    def test_params_with_model_swap(self) -> None:
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(
-                model="openai:gpt-5.5", model_params={"max_tokens": 1024}
-            ),
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model is override
-        assert captured[0].model_settings == {"max_tokens": 1024}
-
-    async def test_async_params(self) -> None:
-        request = _make_request(
-            _make_model("claude-sonnet-4-6"),
-            context=CLIContext(model_params={"temperature": 0.3}),
-        )
-        captured: list[ModelRequest] = []
-
-        async def handler(r: ModelRequest) -> ModelResponse[Any]:  # noqa: RUF029
-            captured.append(r)
-            return _make_response()
-
-        await _mw.awrap_model_call(request, handler)
-        assert captured[0].model_settings == {"temperature": 0.3}
-
 
 class TestModelIdentityPatch:
     """System prompt Model Identity section is updated on model swap."""
@@ -1658,137 +1058,36 @@ class TestModelIdentityPatch:
         "### Skills Directory\n\nYour skills are stored at: `/tmp/skills`\n"
     )
 
-    def test_identity_replaced_on_swap(self) -> None:
-        override = _make_model("gpt-5.5")
-        result = _make_model_result(
-            override, model_name="gpt-5.5", provider="openai", context_limit=128_000
-        )
+
+class TestRuntimeModelRetryBudget:
+    """A `/model` switch must carry the explicit CLI retry budget."""
+
+    @staticmethod
+    def _switch(
+        model_params: dict[str, Any], *, cli_max_retries: int | None = None
+    ) -> tuple[MagicMock, ModelRequest]:
+        """Drive a runtime model switch and return the `create_model` mock.
+
+        Returns:
+            The patched `create_model` mock and the request the handler saw.
+        """
         request = _make_request(
-            _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            system_prompt=self._OLD_PROMPT,
+            _make_model("gpt-5.5"),
+            context=CLIContextSchema(
+                model="anthropic:claude-sonnet-4-6", model_params=model_params
+            ),
         )
+        replacement = _make_model("claude-sonnet-4-6")
+        replacement._get_ls_params.return_value = {"ls_provider": "anthropic"}
         captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=True,
+            cli_max_retries=cli_max_retries,
+        )
+        with patch(
+            _PATCH_CREATE, return_value=_make_model_result(replacement)
+        ) as create:
+            middleware.wrap_model_call(
                 request, lambda r: (captured.append(r), _make_response())[1]
             )
-
-        prompt = captured[0].system_prompt
-        assert prompt is not None
-        assert "`gpt-5.5`" in prompt
-        assert "(provider: openai)" in prompt
-        assert "128,000 tokens" in prompt
-        assert "`claude-opus-4-6`" not in prompt
-        # Surrounding content must survive the replacement
-        assert "Some preamble." in prompt
-        assert "### Skills Directory" in prompt
-        assert "`/tmp/skills`" in prompt
-
-    def test_no_identity_section_left_unchanged(self) -> None:
-        """Prompt without identity section is not modified."""
-        bare_prompt = "You are a helpful assistant.\n\n### Skills Directory\n"
-        override = _make_model("gpt-5.5")
-        result = _make_model_result(override, model_name="gpt-5.5", provider="openai")
-        request = _make_request(
-            _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            system_prompt=bare_prompt,
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].system_prompt == bare_prompt
-
-    def test_no_system_prompt_skips_patch(self) -> None:
-        """When system_prompt is None, no patching is attempted."""
-        override = _make_model("gpt-5.5")
-        request = _make_request(
-            _make_model("claude-opus-4-6"),
-            context=CLIContext(model="openai:gpt-5.5"),
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=_make_model_result(override)):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        assert captured[0].model is override
-
-    def test_identity_at_end_of_prompt(self) -> None:
-        """Identity section at the very end (no trailing ###) is still replaced."""
-        prompt = (
-            "Preamble.\n\n### Model Identity\n\nYou are running as model `old`.\n\n"
-        )
-        override = _make_model("gpt-5.5")
-        result = _make_model_result(override, model_name="gpt-5.5", provider="openai")
-        request = _make_request(
-            _make_model("old"),
-            context=CLIContext(model="openai:gpt-5.5"),
-            system_prompt=prompt,
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        patched = captured[0].system_prompt
-        assert patched is not None
-        assert "`gpt-5.5`" in patched
-        assert "`old`" not in patched
-        assert "Preamble." in patched
-
-    def test_identity_without_context_limit(self) -> None:
-        result = build_model_identity_section("gpt-5.5", provider="openai")
-        assert "`gpt-5.5`" in result
-        assert "(provider: openai)" in result
-        assert "context window" not in result
-
-    def test_identity_without_provider(self) -> None:
-        result = build_model_identity_section("local-llama", context_limit=4096)
-        assert "`local-llama`" in result
-        assert "provider" not in result
-        assert "4,096 tokens" in result
-
-    def test_identity_no_model_name(self) -> None:
-        assert build_model_identity_section(None) == ""
-
-    def test_modality_line_replaced_on_swap(self) -> None:
-        """Swapping replaces old modality warning with the new model's."""
-        prompt_with_modality = (
-            "Preamble.\n\n### Model Identity\n\n"
-            "You are running as model `deepseek-r1` (provider: deepseek).\n"
-            "Your context window is 64,000 tokens.\n"
-            "Audio, image, pdf, video input may not be available for this model.\n\n"
-            "### Skills Directory\n\nSkills here.\n"
-        )
-        override = _make_model("claude-sonnet-4-6")
-        result = _make_model_result(
-            override,
-            model_name="claude-sonnet-4-6",
-            provider="anthropic",
-            context_limit=200_000,
-            unsupported_modalities=frozenset(),
-        )
-        request = _make_request(
-            _make_model("deepseek-r1"),
-            context=CLIContext(model="anthropic:claude-sonnet-4-6"),
-            system_prompt=prompt_with_modality,
-        )
-        captured: list[ModelRequest] = []
-        with patch(_PATCH_CREATE, return_value=result):
-            _mw.wrap_model_call(
-                request, lambda r: (captured.append(r), _make_response())[1]
-            )
-
-        patched = captured[0].system_prompt
-        assert patched is not None
-        assert "`claude-sonnet-4-6`" in patched
-        assert "200,000 tokens" in patched
-        assert "may not be available" not in patched
-        assert "`deepseek-r1`" not in patched
-        assert "### Skills Directory" in patched
+        return create, captured[0]

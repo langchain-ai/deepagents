@@ -1,0 +1,190 @@
+{
+  "schemaVersion": 1,
+  "pageVersion": "sha256:c727ddf1ffd21691ed5c1363432c145fa4026fb8549961121a600b7909bc6813",
+  "claims": [
+    {
+      "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
+      "statement": "FilesystemMiddleware evicts a large tool result by writing its text to `{large_tool_results_prefix}/{sanitized_tool_call_id}` on the backend and replacing the ToolMessage with a TOO_LARGE_TOOL_MSG head+tail preview that instructs recovery via read_file with offset/limit; if the backend write fails the original message is kept.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
+          "version": "repo-file-v1:sha256:ec529779bf748ae6fc50dd0c7860ce4d2d31e305faad998b4f3a123ff66b3db2"
+        }
+      ]
+    },
+    {
+      "id": "claim_ddf8f81e6a8a4810bb8409af9600c050",
+      "statement": "SummarizationMiddleware.wrap_model_call compacts history by truncating over-long tool args, checking `_should_summarize` against the configured trigger, and when triggered partitioning messages at `_determine_cutoff_index`, offloading pre-summary history, generating an LLM summary, and returning a summary message plus the preserved tail with a Command state update.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
+          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+        }
+      ]
+    },
+    {
+      "id": "claim_10a56ee22b374e31bcdb878f4330c43e",
+      "statement": "Full pre-summary conversation history is offloaded as a single per-session markdown file at `{artifacts_root}/conversation_history/{session_id}.md`, with each summarization event appending a new timestamped `## Summarized at` section (messages rendered as XML) rather than overwriting, and previous summary messages filtered out.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
+          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+        }
+      ]
+    },
+    {
+      "id": "claim_eb4c583b960b4d75b8f073c146b5bfca",
+      "statement": "After a ContextOverflowError-triggered summarization, `_clip_overflow_tail` shrinks the trailing consecutive ToolMessage batch when its combined token count reaches a threshold derived from `keep` (the keep token budget, or 5000 tokens when keep is message-based).",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py",
+          "version": "repo-file-v1:sha256:f02938ea6c7b738d2a92363e5e6c27494bae894fb65fa22c3c9a6008e2b76cc8"
+        },
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
+          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+        }
+      ]
+    },
+    {
+      "id": "claim_7936dc0f2ada44eca5a914ea47086c6d",
+      "statement": "The server-owned /offload operation compacts checkpoint state behind an HTTP boundary writing only summary/session/cost channels and never `messages`, stages archive appends as a _PendingArchive committed only after the checkpoint summary is reserved, and can restore the exact prior archive snapshot via _ArchiveAppend.rollback.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py",
+          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
+          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+        }
+      ]
+    },
+    {
+      "id": "claim_df612564e43640808bf471cf1db7c27a",
+      "statement": "In local mode conversation-history archives are stored under the persistent profile root (DEEPAGENTS_HOME, default ~/.deepagents) in its `conversation_history` subdirectory, falling back to a private temporary directory (recorded by _EPHEMERAL_OFFLOAD_STORAGE / offload_storage_is_ephemeral) when the profile root is unwritable; the archive subdir is hardened to 0o700 while the shared profile root permissions are left untouched.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py",
+          "version": "repo-file-v1:sha256:492786f6e7a41e0124a02520b1f091b20b67a0c0b6ab2aee6776ce5371f71d6c"
+        }
+      ]
+    },
+    {
+      "id": "claim_4a56f02092a640b9afcca97ee1a913aa",
+      "statement": "The server publishes OffloadOperation on the agent's CompositeBackend and rejects attachment when its compaction summarizer is bound to a different backend, enforcing that forced compaction uses the same backend as the agent.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/agent.py",
+          "version": "repo-file-v1:sha256:d15680127f65b2c8e0f3dd25343e62186c0c55ff591611a32616cd0ab0ad4642"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
+          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+        }
+      ]
+    },
+    {
+      "id": "claim_815dff2b53744815bde9ef4d7916cf94",
+      "statement": "The HTTP offload path locks an idle thread, rejects pending work and checkpoint changes before commit, and reports that no state was committed when the checkpoint advanced while compaction was running.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py",
+          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+        }
+      ]
+    },
+    {
+      "id": "claim_9fbaf68716f843979e345814c66af0d2",
+      "statement": "Eviction preserves a ToolMessage's identity fields and non-text content blocks while replacing only text, so media remains model-visible after a large text result is offloaded.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_message_eviction.py",
+          "version": "repo-file-v1:sha256:ec529779bf748ae6fc50dd0c7860ce4d2d31e305faad998b4f3a123ff66b3db2"
+        }
+      ]
+    },
+    {
+      "id": "claim_50a87ab4a8de4887ad16aa05726da200",
+      "statement": "If automatic summarization is not indicated, SummarizationMiddleware tries the normal model call; a ContextOverflowError switches to its summarization path, and archive failure warns while compaction continues with `file_path=None`.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py",
+          "version": "repo-file-v1:sha256:0f0dcc030acb348bf2d00e88f61e0151e073f403936eb4c32c443000b9b37218"
+        }
+      ]
+    },
+    {
+      "id": "claim_ba78edb64084474583599682904d352b",
+      "statement": "Overflow tail clipping treats read_file results specially by retaining about 4,000 leading characters and a pointer to the original file, whereas other trailing tool results use the generic offload helper; replacement ids permit reducer-based state overwrite and failed writes remain unchanged.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/_overflow_clip.py",
+          "version": "repo-file-v1:sha256:f02938ea6c7b738d2a92363e5e6c27494bae894fb65fa22c3c9a6008e2b76cc8"
+        }
+      ]
+    },
+    {
+      "id": "claim_e4caadabed1548c28c545323dab96ef9",
+      "statement": "CLICompactionMiddleware runs PreCompact before automatic threshold compaction and overflow recovery; if that gate blocks an already-overflowed provider call, it re-raises the original ContextOverflowError.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
+          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+        }
+      ]
+    },
+    {
+      "id": "claim_d1f1ff70b6dd4d9db951f585b6c0867d",
+      "statement": "Server-owned forced offload dispatches a synthetic forced `compact_conversation` through PreCompact and PreToolUse, returns hook interrupts for client fulfillment, and fails closed if it cannot read the hook outcome channel.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py",
+          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
+          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+        }
+      ]
+    },
+    {
+      "id": "claim_6d63433614af45c6ab6e8bb7c0d9398f",
+      "statement": "The /offload hook-resume protocol re-executes the operation from the top with accumulated responses; its forced call id is derived from the per-attempt checkpoint namespace so it stays stable across resumes and differs between attempts.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py",
+          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
+          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+        }
+      ]
+    },
+    {
+      "id": "claim_3d0c46f60b0f4029a2f5915b83b61b34",
+      "statement": "The HTTP offload boundary joins its deferred commit task even if cancellation arrives, then re-raises the original cancellation after settlement.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py",
+          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+        }
+      ]
+    },
+    {
+      "id": "claim_62fc5a64d2d54486a2743bb5e0203f9a",
+      "statement": "Local history sweeping honors `history.retention_days` with zero disabling deletion, and rechecks a regular markdown archive through an open descriptor immediately before unlinking to avoid a concurrent-refresh race.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload.py",
+          "version": "repo-file-v1:sha256:492786f6e7a41e0124a02520b1f091b20b67a0c0b6ab2aee6776ce5371f71d6c"
+        }
+      ]
+    }
+  ],
+  "verification": {
+    "by": "openwiki/0.4.2",
+    "at": "2026-09-02T08:05:45.554Z"
+  }
+}

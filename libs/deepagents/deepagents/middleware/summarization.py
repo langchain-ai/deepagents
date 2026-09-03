@@ -82,7 +82,7 @@ from langchain.agents.middleware.summarization import (
     SummarizationMiddleware as LCSummarizationMiddleware,
     TokenCounter,
 )
-from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr
+from langchain.agents.middleware.types import AgentMiddleware, AgentState, ExtendedModelResponse, PrivateStateAttr, TracePolicy, omit_payload
 from langchain.tools import (
     ToolRuntime,  # noqa: TC002  # runtime import: StructuredTool resolves the compact-tool annotations at schema-inference time
 )
@@ -130,6 +130,13 @@ logger = logging.getLogger(__name__)
 
 class CompactConversationSchema(BaseModel):
     """Input schema for the `compact_conversation` tool."""
+
+
+SUMMARIZATION_EVENT_KEY = "_summarization_event"
+"""State key holding the most recent `SummarizationEvent`."""
+
+SUMMARIZATION_SESSION_ID_KEY = "_summarization_session_id"
+"""State key holding the id that names the offload history file."""
 
 
 class SummarizationEvent(TypedDict):
@@ -493,6 +500,9 @@ def _upload_response_error(responses: list[FileUploadResponse]) -> str | None:
 class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
     """Summarization middleware with backend for conversation history offloading."""
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema = SummarizationState
     serialized_name: ClassVar[str] = "SummarizationMiddleware"
     """Preferred config-file reference for class-form exclusion export."""
@@ -669,7 +679,7 @@ class _DeepAgentsSummarizationMiddleware(AgentMiddleware):
         Returns:
             A session id (e.g. `'session_<uuid4 hex>'`).
         """
-        existing = state.get("_summarization_session_id")
+        existing = state.get(SUMMARIZATION_SESSION_ID_KEY)
         if isinstance(existing, str) and existing:
             return existing
         # Full uuid4 entropy: history filenames must not collide across
@@ -767,7 +777,7 @@ A condensed summary follows:
         Returns:
             The effective message list to use for the model call.
         """
-        event = request.state.get("_summarization_event")
+        event = request.state.get(SUMMARIZATION_EVENT_KEY)
         return self._apply_event_to_messages(request.messages, event)
 
     @staticmethod
@@ -1446,7 +1456,7 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        previous_event = request.state.get("_summarization_event")
+        previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
         state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
 
         # Create new summarization event
@@ -1461,8 +1471,8 @@ A condensed summary follows:
         response = handler(request.override(messages=modified_messages))
 
         update: dict[str, Any] = {
-            "_summarization_event": new_event,
-            "_summarization_session_id": session_id,
+            SUMMARIZATION_EVENT_KEY: new_event,
+            SUMMARIZATION_SESSION_ID_KEY: session_id,
         }
         if new_state_tail:
             update["messages"] = list(new_state_tail)
@@ -1588,7 +1598,7 @@ A condensed summary follows:
         # Build summary message with file path reference
         new_messages = self._build_new_messages_with_path(summary, file_path)
 
-        previous_event = request.state.get("_summarization_event")
+        previous_event = request.state.get(SUMMARIZATION_EVENT_KEY)
         state_cutoff_index = self._compute_state_cutoff(previous_event, cutoff_index)
 
         # Create new summarization event
@@ -1603,8 +1613,8 @@ A condensed summary follows:
         response = await handler(request.override(messages=modified_messages))
 
         update: dict[str, Any] = {
-            "_summarization_event": new_event,
-            "_summarization_session_id": session_id,
+            SUMMARIZATION_EVENT_KEY: new_event,
+            SUMMARIZATION_SESSION_ID_KEY: session_id,
         }
         if new_state_tail:
             update["messages"] = list(new_state_tail)
@@ -1799,7 +1809,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
     This middleware never compacts automatically. Compaction only occurs when
     `compact_conversation` is called as a normal tool call (by the model or by
-    an explicit user action, e.g. as implemented in the deepagents-cli).
+    an explicit user action, e.g. as implemented in the deepagents-code CLI).
 
     To avoid compacting too early, compact tool execution is gated by
     `_is_eligible_for_compaction`, which requires reported usage to reach about
@@ -1824,6 +1834,9 @@ class SummarizationToolMiddleware(AgentMiddleware):
         agent = create_deep_agent(middleware=[summ, tool_mw])
         ```
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = SummarizationState
 
@@ -1928,8 +1941,8 @@ class SummarizationToolMiddleware(AgentMiddleware):
 
         return Command(
             update={
-                "_summarization_event": new_event,
-                "_summarization_session_id": session_id,
+                SUMMARIZATION_EVENT_KEY: new_event,
+                SUMMARIZATION_SESSION_ID_KEY: session_id,
                 "messages": [
                     ToolMessage(
                         content=f"Conversation compacted. Summarized {len(to_summarize)} messages into a concise summary.",
@@ -2052,7 +2065,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
         messages = runtime.state.get("messages", [])
-        event = runtime.state.get("_summarization_event")
+        event = runtime.state.get(SUMMARIZATION_EVENT_KEY)
         effective = s._apply_event_to_messages(messages, event)
 
         if not self._is_eligible_for_compaction(effective):
@@ -2086,7 +2099,7 @@ class SummarizationToolMiddleware(AgentMiddleware):
         s = self._summarization
         tool_call_id = runtime.tool_call_id or ""
         messages = runtime.state.get("messages", [])
-        event = runtime.state.get("_summarization_event")
+        event = runtime.state.get(SUMMARIZATION_EVENT_KEY)
         effective = s._apply_event_to_messages(messages, event)
 
         if not self._is_eligible_for_compaction(effective):

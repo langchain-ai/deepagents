@@ -15,6 +15,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Markdown, Static
 
 from deepagents_code._markdown import escape_markdown
+from deepagents_code.config import get_glyphs
 from deepagents_code.tui.widgets._links import open_checked_url_async
 
 if TYPE_CHECKING:
@@ -211,7 +212,7 @@ class AutoModeNoticeScreen(ModalScreen[bool]):
                 open_links=False,
             )
             yield Static(
-                "Enter switch to Auto · Esc cancel",
+                f"Enter switch to Auto {get_glyphs().separator} Esc cancel",
                 classes="auto-mode-notice-help",
                 markup=False,
             )

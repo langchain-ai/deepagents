@@ -21,9 +21,10 @@ import logging
 import os
 import shlex
 from abc import ABC, abstractmethod
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from deepagents.backends.protocol import (
+    ASYNC_GLOB_TIMEOUT,
     ASYNC_GREP_TIMEOUT,
     DeleteResult,
     EditResult,
@@ -34,6 +35,7 @@ from deepagents.backends.protocol import (
     FileInfo,
     FileUploadResponse,
     GlobResult,
+    GlobTruncationReason,
     GrepMatch,
     GrepResult,
     LsResult,
@@ -57,6 +59,11 @@ import time
 path = base64.b64decode('{path_b64}').decode('utf-8')
 pattern = base64.b64decode('{pattern_b64}').decode('utf-8')
 
+# Bounds on a model-supplied pattern over an untrusted tree. Exceeding any of
+# them sets the truncated flag on the result rather than failing. TIME_BUDGET is
+# the sandbox-side analogue of _DEFAULT_GLOB_TIMEOUT in filesystem.py and is
+# deliberately the same 5s; the outer round-trip is bounded separately by
+# ASYNC_GLOB_TIMEOUT. (No backticks: this comment runs through sh.)
 MAX_EXPANSIONS = 1000
 MAX_MATCHES = 10000
 TIME_BUDGET = 5.0
@@ -241,11 +248,38 @@ def _include_match(rel, pat, candidates):
 
 walk_errors = []
 
+# Pseudo-filesystems are effectively infinite and never hold user files. A bare
+# pattern is basename-at-any-depth, so a search rooted at '/' would otherwise
+# burn the entire time budget in /proc and return an arbitrary prefix.
+PRUNE_AT_ROOT = ('proc', 'sys', 'dev')
+
 
 def _on_walk_error(err):
-    walk_errors.append(type(err).__name__)
+    # Keep the failing path, not just the exception class: 'PermissionError' x40
+    # cannot distinguish one chronically unreadable mount from an unreadable tree.
+    walk_errors.append(type(err).__name__ + ':' + str(getattr(err, 'filename', '?')))
 
 
+def _emit(matches, truncated):
+    for item in sorted(matches):
+        print(json.dumps({{'path': item, 'is_dir': False}}))
+    if walk_errors:
+        print(json.dumps({{
+            'warning': 'walk_errors',
+            'count': len(walk_errors),
+            'sample': walk_errors[:5],
+        }}))
+    if truncated:
+        print(json.dumps({{'warning': 'truncated'}}))
+
+
+matches = []
+truncated = False
+# Prologue: everything that can fail before any match exists. Kept in its own
+# try so its handlers only ever fire when there is genuinely nothing to report --
+# a failure raised from inside the walk below must not be reported as an
+# inaccessible search root while discarding thousands of good matches.
+ready = False
 try:
     real_root = os.path.realpath(path)
     # os.path.realpath('/') is '/', so a naive real_root + os.sep is '//', which
@@ -261,43 +295,7 @@ try:
             print(json.dumps({{'error': 'pattern_too_broad'}}))
         else:
             candidates = [_normalize_classes(item) for item in expanded]
-            deadline = time.monotonic() + TIME_BUDGET
-            truncated = False
-            matches = []
-            # os.walk includes hidden directories; matching rules still exclude
-            # leading-dot basenames unless the pattern is explicit (no DOTMATCH).
-            # onerror is required: os.walk otherwise discards unreadable subtrees
-            # silently, shrinking the result set with no signal to the caller.
-            for dirpath, dirnames, filenames in os.walk('.', onerror=_on_walk_error):
-                if truncated:
-                    break
-                if time.monotonic() > deadline:
-                    truncated = True
-                    break
-                for name in filenames:
-                    if time.monotonic() > deadline or len(matches) >= MAX_MATCHES:
-                        truncated = True
-                        break
-                    full = name if dirpath == '.' else os.path.join(dirpath, name)
-                    rel = full.replace(chr(92), '/')
-                    if rel.startswith('./'):
-                        rel = rel[2:]
-                    if not _include_match(rel, pattern, candidates):
-                        continue
-                    candidate = os.path.realpath(full)
-                    if candidate != real_root and not candidate.startswith(root_prefix):
-                        continue
-                    # Regular files only, mirroring FilesystemBackend.glob's
-                    # is_file() filter; also drops broken symlinks.
-                    if not os.path.isfile(candidate):
-                        continue
-                    matches.append(rel)
-            for item in sorted(matches):
-                print(json.dumps({{'path': item, 'is_dir': False}}))
-            if walk_errors:
-                print(json.dumps({{'warning': 'walk_errors', 'count': len(walk_errors)}}))
-            if truncated:
-                print(json.dumps({{'warning': 'truncated'}}))
+            ready = True
 except FileNotFoundError:
     print(json.dumps({{'error': 'path_not_found'}}))
 except NotADirectoryError:
@@ -307,7 +305,51 @@ except PermissionError:
 except Exception as exc:
     # Without this, any other failure reaches stdout as a traceback that the
     # host parser cannot read, and the caller sees a successful empty search.
-    print(json.dumps({{'error': 'internal_error: ' + type(exc).__name__}}))
+    # Carry the message, bounded: 'internal_error: KeyError' alone cannot
+    # distinguish a pattern-parser bug from a surrogate in a filename.
+    print(json.dumps({{'error': 'internal_error: ' + type(exc).__name__ + ': ' + str(exc)[:200]}}))
+
+if ready:
+    deadline = time.monotonic() + TIME_BUDGET
+    at_root = real_root == os.sep
+    try:
+        # os.walk includes hidden directories; matching rules still exclude
+        # leading-dot basenames unless the pattern is explicit (no DOTMATCH).
+        # onerror is required: os.walk otherwise discards unreadable subtrees
+        # silently, shrinking the result set with no signal to the caller.
+        for dirpath, dirnames, filenames in os.walk('.', onerror=_on_walk_error):
+            if truncated:
+                break
+            if dirpath == '.' and at_root:
+                dirnames[:] = [d for d in dirnames if d not in PRUNE_AT_ROOT]
+            if time.monotonic() > deadline:
+                truncated = True
+                break
+            for name in filenames:
+                if time.monotonic() > deadline or len(matches) >= MAX_MATCHES:
+                    truncated = True
+                    break
+                full = name if dirpath == '.' else os.path.join(dirpath, name)
+                rel = full.replace(chr(92), '/')
+                if rel.startswith('./'):
+                    rel = rel[2:]
+                if not _include_match(rel, pattern, candidates):
+                    continue
+                candidate = os.path.realpath(full)
+                if candidate != real_root and not candidate.startswith(root_prefix):
+                    continue
+                # Regular files only, mirroring FilesystemBackend.glob's
+                # is_file() filter; also drops broken symlinks.
+                if not os.path.isfile(candidate):
+                    continue
+                matches.append(rel)
+    except Exception as exc:
+        # A failure mid-walk (a symlink racing a deletion, an unreadable entry
+        # os.walk raises rather than routing to onerror) must not throw away the
+        # matches already found. Record it as a walk error and emit the partial
+        # set -- valid but incomplete, which is exactly what 'walk_errors' means.
+        walk_errors.append(type(exc).__name__ + ':' + str(exc)[:100])
+    _emit(matches, truncated)
 
 " 2>&1"""
 """Find files matching a pattern.
@@ -320,8 +362,14 @@ dirs while still excluding leading-dot basenames unless the pattern is explicit.
 Emits one JSON object per matching regular file (directories are omitted, as in
 `FilesystemBackend.glob`), then an out-of-band `warning` record when the walk
 was cut short by its time/match budget or skipped an unreadable subtree, so a
-partial result is never mistaken for an exhaustive one. Every failure path emits
-a structured `error` code rather than a traceback.
+partial result is never mistaken for an exhaustive one. `walk_errors` and
+`truncated` are separate warnings because they need different remedies: the
+first cannot be fixed by narrowing the search, the second can.
+
+Every failure *inside the script* emits a structured `error` code rather than a
+traceback. Failures before it runs (no `python3`, a shell-level error) and output
+the transport clips still arrive as raw text, which `_parse_glob_output` treats
+as a hard error.
 """
 
 
@@ -981,6 +1029,20 @@ def _build_glob_cmd(pattern: str, search_path: str) -> str:
     return _GLOB_COMMAND_TEMPLATE.format(path_b64=path_b64, pattern_b64=pattern_b64)
 
 
+def _glob_search_root(path: str | None) -> str:
+    """Normalize a caller-supplied glob root to an absolute path.
+
+    `_absolutize_glob_path` joins matches onto this root, so a relative root
+    yields relative matches -- and `_check_fs_permission` only matches `deny`
+    rules against absolute patterns, so those matches would bypass every rule.
+    The middleware already forces a leading `/`, but `SandboxBackend.glob` is
+    also called directly by SDK users.
+    """
+    if not path:
+        return "/"
+    return path if path.startswith("/") else f"/{path}"
+
+
 def _absolutize_glob_path(search_path: str, rel_path: str) -> str:
     """Join a search-root-relative glob match onto its search root.
 
@@ -1000,16 +1062,25 @@ def _absolutize_glob_path(search_path: str, rel_path: str) -> str:
     return f"{search_path.rstrip('/')}/{rel_path}"
 
 
-def _classify_glob_line(line: str) -> tuple[str, Any]:
+_GlobLineKind = Literal["match", "error", "warning", "unparsed"]
+"""Classification of one line of remote glob output."""
+
+
+def _classify_glob_line(line: str) -> tuple[_GlobLineKind, Any]:
     """Classify one line of remote glob output.
+
+    Classification is total: every line lands in exactly one kind, with no
+    "skip" outcome. That is what keeps a remote crash from being mistaken for a
+    successful empty search -- see `_parse_glob_output`.
 
     Args:
         line: A single non-blank stdout line.
 
     Returns:
-        `(kind, payload)` where `kind` is `"match"` (payload is the record),
-        `"error"` (payload is the error code), `"warning"` (payload is the
-        record) or `"unparsed"` (payload is the raw line).
+        `(kind, payload)` where `kind` is `"match"` (payload is the record, and
+        its `"path"` is guaranteed to be a `str`), `"error"` (payload is the
+        error code), `"warning"` (payload is the record) or `"unparsed"`
+        (payload is the raw line).
     """
     try:
         data = json.loads(line)
@@ -1021,9 +1092,60 @@ def _classify_glob_line(line: str) -> tuple[str, Any]:
         return ("error", data["error"])
     if "warning" in data:
         return ("warning", data)
-    if "path" not in data:
+    # A non-`str` path would reach `_absolutize_glob_path` and raise at the tool
+    # boundary; treat it as unparseable so it becomes a structured error instead.
+    if not isinstance(data.get("path"), str):
         return ("unparsed", line)
     return ("match", data)
+
+
+def _glob_output_shortcut(result: ExecuteResponse, output: str, search_path: str) -> GlobResult | None:
+    """Resolve the two cases decidable without parsing any lines.
+
+    Returns `None` when the output must still be parsed.
+
+    A non-zero `exit_code` is a hard error: a killed or crashed helper otherwise
+    reports "no files found" with full confidence, and the agent concludes the
+    files do not exist. Empty output carries `result.truncated` through for the
+    same reason -- a transport that clipped the output to nothing must not read
+    as a confident empty result.
+    """
+    if result.exit_code is not None and result.exit_code != 0:
+        detail = output[:200] if output else f"exit code {result.exit_code}"
+        logger.error("Sandbox glob helper failed for path %r: %s", search_path, detail)
+        return GlobResult(matches=None, error=f"Path '{search_path}': glob helper failed: {detail}")
+    if not output:
+        return GlobResult(
+            matches=[],
+            truncated=result.truncated,
+            truncation_reason="transport" if result.truncated else None,
+        )
+    return None
+
+
+def _glob_warning_reason(
+    payload: dict[str, Any],
+    current: GlobTruncationReason | None,
+    search_path: str,
+) -> GlobTruncationReason | None:
+    """Map one remote `warning` record to a truncation reason.
+
+    Budget exhaustion and an unreadable subtree both mean "valid but partial",
+    but they need opposite advice downstream: narrowing the search recovers
+    budget-truncated matches and will never surface files under a directory we
+    could not read. `unreadable` therefore outranks any reason already set.
+    """
+    if payload.get("warning") == "walk_errors":
+        logger.warning(
+            "Sandbox glob could not read %s path(s) under %r; results are incomplete. Sample: %s",
+            payload.get("count", "an unknown number of"),
+            search_path,
+            payload.get("sample", []),
+        )
+        return "unreadable"
+    if current is None:
+        return "budget"
+    return current
 
 
 def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
@@ -1032,8 +1154,14 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
     Unrecognized lines are a hard error rather than a skip: with `2>&1` merging
     stderr into stdout, silently dropping them turns any remote crash into a
     successful empty search, and the agent concludes the files do not exist.
-    The sole exception is an unparseable final line when the transport reports
-    truncation, because that line may be an incomplete JSON record.
+    The sole exception is an unparseable final line when *the transport* reports
+    truncation, because that line may be an incomplete JSON record. The check
+    reads `result.truncated` rather than the accumulated `truncated` below: a
+    walk that self-reported a budget warning cannot produce a torn line, so
+    letting a warning widen the exemption would swallow a real traceback.
+
+    A non-zero `exit_code` is a hard error for the same reason -- a killed or
+    crashed helper otherwise reports "no files found" with full confidence.
 
     Args:
         result: Raw `execute` response; its `truncated` flag means the transport
@@ -1042,15 +1170,17 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
 
     Returns:
         `GlobResult` with absolute paths. `truncated` is `True` when the walk or
-        the transport cut results short.
+        the transport cut results short, with `truncation_reason` naming which.
     """
     output = result.output.strip()
-    if not output:
-        return GlobResult(matches=[])
+    early = _glob_output_shortcut(result, output, search_path)
+    if early is not None:
+        return early
     file_infos: list[FileInfo] = []
     unparsed: list[str] = []
     error: str | None = None
     truncated = result.truncated
+    reason: GlobTruncationReason | None = "transport" if result.truncated else None
     lines = output.split("\n")
     for index, line in enumerate(lines):
         if not line.strip():
@@ -1066,12 +1196,18 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
         elif kind == "error":
             error = payload
         elif kind == "warning":
-            # Budget exhausted or a subtree was unreadable: results are valid
-            # but partial, which `truncated` is exactly for.
             truncated = True
-        elif not (truncated and index == len(lines) - 1):
+            reason = _glob_warning_reason(payload, reason, search_path)
+        elif not (result.truncated and index == len(lines) - 1):
             unparsed.append(payload)
+        else:
+            logger.debug(
+                "Sandbox glob dropped a clipped final line for path %r: %s",
+                search_path,
+                payload[:200],
+            )
     if error is not None:
+        logger.error("Sandbox glob returned error %r for path %r", error, search_path)
         return GlobResult(matches=None, error=f"Path '{search_path}': {error}")
     if unparsed:
         logger.error(
@@ -1084,7 +1220,7 @@ def _parse_glob_output(result: ExecuteResponse, search_path: str) -> GlobResult:
             matches=None,
             error=f"Path '{search_path}': glob helper emitted unexpected output: {unparsed[0][:200]}",
         )
-    return GlobResult(matches=file_infos, truncated=truncated)
+    return GlobResult(matches=file_infos, truncated=truncated, truncation_reason=reason)
 
 
 def _build_edit_inline_cmd(file_path: str, old_string: str, new_string: str, *, replace_all: bool) -> str:
@@ -1788,15 +1924,38 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         return _parse_grep_output(result, path, max_count)
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Structured glob matching returning `GlobResult`."""
-        search_path = path or "/"
+        """Structured glob matching returning `GlobResult`.
+
+        Returned paths are absolute (see `_absolutize_glob_path`), which
+        `_check_fs_permission` relies on to apply `deny` rules.
+        """
+        search_path = _glob_search_root(path)
         result = self.execute(_build_glob_cmd(pattern, search_path))
         return _parse_glob_output(result, search_path)
 
     async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
-        """Async version of `glob`, delegating to `aexecute`."""
-        search_path = path or "/"
-        result = await self.aexecute(_build_glob_cmd(pattern, search_path))
+        """Async version of `glob`, delegating to `aexecute`.
+
+        Bounded by `ASYNC_GLOB_TIMEOUT`: the remote script's own `TIME_BUDGET`
+        covers only the walk, so without an outer timeout a wedged sandbox
+        hangs the caller with no upper bound.
+        """
+        search_path = _glob_search_root(path)
+        try:
+            result = await asyncio.wait_for(
+                self.aexecute(_build_glob_cmd(pattern, search_path)),
+                timeout=ASYNC_GLOB_TIMEOUT,
+            )
+        except TimeoutError:
+            logger.warning(
+                "aglob timed out after %ds (pattern=%r, path=%r)",
+                ASYNC_GLOB_TIMEOUT,
+                pattern,
+                search_path,
+            )
+            return GlobResult(
+                error=f"Error: glob timed out after {ASYNC_GLOB_TIMEOUT}s. Try a more specific pattern or a narrower path.",
+            )
         return _parse_glob_output(result, search_path)
 
     @property

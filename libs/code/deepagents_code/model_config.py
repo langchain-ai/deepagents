@@ -27,6 +27,7 @@ import tomli_w
 
 from deepagents_code import _env_vars, auth_store
 from deepagents_code._git import find_git_common_dir
+from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
 
 if TYPE_CHECKING:
@@ -128,8 +129,81 @@ URL is used everywhere a user is sent to read about provider setup.
 """
 
 
+MANAGED_CONFIG_SOURCE = "managed config"
+"""Resolver provenance label for a value managed policy decided.
+
+Mirrors `configuration.service.MANAGED_SOURCE`, which this module cannot
+import at module scope without pulling the configuration service onto the
+import path of every `model_config` consumer. `test_model_config` asserts the
+two stay equal, so a rename on either side fails loudly instead of silently
+degrading `ModelNotAllowedError` to generic wording.
+"""
+
+
 class ModelConfigError(Exception):
     """Raised when model configuration or creation fails."""
+
+
+class ModelNotAllowedError(ModelConfigError):
+    """Raised when a model is outside the effective `models.allowed` policy."""
+
+    def __init__(
+        self,
+        *,
+        model_spec: str | None,
+        source: str | None,
+        allowed_models: tuple[str, ...],
+        context: str | None = None,
+    ) -> None:
+        """Initialize an actionable policy error.
+
+        Args:
+            context: Where the offending spec was declared (e.g. a subagent name
+                and file path), prefixed to the message. Without it a rejection
+                inside a loop over many declaration files names only the model,
+                leaving the user to bisect by hand.
+            model_spec: The spec that was rejected, as the user supplied it (so
+                a bare model name is echoed back unqualified). Pass `None` when
+                no specific model was requested -- an empty allowlist blocking
+                default resolution -- so the message does not invent a spec the
+                user never typed.
+            source: Human-readable label for the configuration layer that
+                supplied the policy, as produced by the manifest resolver (e.g.
+                `'config.toml'`). `MANAGED_CONFIG_SOURCE` is compared literally
+                to select administrator wording; `None` yields generic wording.
+            allowed_models: The specs the policy permits. An empty tuple is a
+                deny-all policy and selects a distinct message.
+        """
+        if source == MANAGED_CONFIG_SOURCE:
+            policy = "the administrator-managed models.allowed policy"
+        elif source:
+            policy = f"models.allowed from {source}"
+        else:
+            policy = "the active models.allowed policy"
+        if model_spec is None:
+            message = f"No model can be used because {policy} allows no models."
+        elif not allowed_models:
+            message = (
+                f"Model {model_spec!r} is blocked because {policy} allows no models."
+            )
+        elif ModelSpec.try_parse(model_spec.strip()) is None:
+            message = (
+                f"Model {model_spec!r} cannot be matched against {policy}; "
+                "use a fully qualified provider:model spec."
+            )
+        else:
+            allowed = ", ".join(allowed_models)
+            message = (
+                f"Model {model_spec!r} is not included in {policy}. "
+                f"Allowed models: {allowed}."
+            )
+        if context:
+            message = f"{context}: {message}"
+        super().__init__(message)
+        self.model_spec = model_spec
+        self.source = source
+        self.allowed_models = allowed_models
+        self.context = context
 
 
 class NoCredentialsConfiguredError(ModelConfigError):
@@ -141,6 +215,18 @@ class NoCredentialsConfiguredError(ModelConfigError):
     start path in the TUI and CLI) `isinstance`-check this type to recover by
     launching the TUI with model creation deferred, rather than string-matching
     the formatted message.
+    """
+
+
+class NoAllowedModelCredentialsError(NoCredentialsConfiguredError):
+    """Raised when `models.allowed` is active but none of its models can auth.
+
+    A `NoCredentialsConfiguredError` so existing deferred-start recovery keeps
+    working, but distinguishable because the recovery differs: adding *any*
+    credential fixes the base case, while here only a credential for a provider
+    named in the allowlist helps. Handlers that would otherwise silently retry
+    surface this message instead, so `/auth` never accepts a key and then
+    appears to do nothing.
     """
 
 
@@ -328,7 +414,8 @@ class ProviderAuthStatus:
             return self.detail
         return (
             f"provider '{self.provider}' is not recognized. "
-            "Add it to ~/.deepagents/config.toml with an api_key_env field"
+            f"Add it to {PATHS.display(PATHS.profile.config_file)} with an "
+            "api_key_env field"
         )
 
 
@@ -405,6 +492,126 @@ class ModelSpec:
     def __str__(self) -> str:
         """Return the model spec as a string in `provider:model` format."""
         return f"{self.provider}:{self.model}"
+
+
+def parse_model_allowlist(value: object) -> tuple[str, ...]:
+    """Parse an ordered model allowlist of exact specs and provider wildcards.
+
+    Args:
+        value: Raw TOML value to validate.
+
+    Returns:
+        Canonical entries in declaration order with duplicates removed. Each is
+        either an exact `provider:model` spec or a `provider:*` wildcard
+        permitting every model from that provider.
+
+    Raises:
+        TypeError: If the value is not a list.
+        ValueError: If an entry is not an exact `provider:model` string or
+            `provider:*` wildcard, or is a bare Bedrock model ID (see below).
+    """
+    from deepagents_code.config import _is_bedrock_model_id
+
+    if not isinstance(value, list):
+        msg = "expected a list of provider:model strings"
+        raise TypeError(msg)
+
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for entry in value:
+        if not isinstance(entry, str) or not entry.strip():
+            msg = "every entry must be a non-empty provider:model string"
+            raise ValueError(msg)
+        normalized = entry.strip()
+        if _is_bedrock_model_id(normalized.lower()):
+            # A bare Bedrock ID such as `anthropic.claude-3-5-sonnet-v2:0`
+            # splits at its *version* colon, yielding a nonsense provider that
+            # no spec can ever match -- `create_model` normalizes the same
+            # input to `bedrock:<id>`. Left accepted, the allowlist would
+            # silently become deny-all, so demand the explicit prefix.
+            msg = (
+                f"invalid model spec {entry!r}; bare Bedrock model IDs must be "
+                f"written as 'bedrock:{normalized}'"
+            )
+            raise ValueError(msg)
+        if normalized.endswith(":*"):
+            provider = normalized[:-2].strip()
+            # Validate the prefix as a one-character model spec rather than
+            # accepting any non-empty string, so `o penai:*` and `:*` reject
+            # here instead of matching nothing (or everything) later. The
+            # `strip()` round-trip mirrors the exact-spec check below, which
+            # treats internal whitespace as noncanonical.
+            if (
+                not provider
+                or provider != provider.strip()
+                or any(ch.isspace() for ch in provider)
+                or ModelSpec.try_parse(f"{provider}:_") is None
+            ):
+                msg = (
+                    f"invalid model spec {entry!r}; a wildcard must name a "
+                    f"provider as 'provider:*'"
+                )
+                raise ValueError(msg)
+            canonical = f"{provider}:*"
+            if canonical not in seen:
+                seen.add(canonical)
+                allowed.append(canonical)
+            continue
+        if "*" in normalized:
+            msg = (
+                f"invalid model spec {entry!r}; '*' is only supported as a "
+                f"whole-provider wildcard ('provider:*')"
+            )
+            raise ValueError(msg)
+        parsed = ModelSpec.try_parse(normalized)
+        if (
+            parsed is None
+            or parsed.provider != parsed.provider.strip()
+            or parsed.model != parsed.model.strip()
+        ):
+            msg = f"invalid model spec {entry!r}; expected provider:model"
+            raise ValueError(msg)
+        canonical = str(parsed)
+        if canonical not in seen:
+            seen.add(canonical)
+            allowed.append(canonical)
+    return tuple(allowed)
+
+
+def _malformed_allowlist_source(
+    sources: object,
+    user_data: Mapping[str, Any],
+    config_path: Path,
+) -> str | None:
+    """Describe where a declared-but-unusable `models.allowed` came from.
+
+    Called only when the manifest resolver produced no tuple. A declaration
+    that survives to here failed `parse_model_allowlist`, so the caller turns
+    it into a deny-all policy instead of letting it vanish into "unrestricted".
+
+    Args:
+        sources: The loaded configuration sources (duck-typed to avoid a
+            circular import of the configuration service).
+        user_data: The user layer's TOML table, already emptied when the file
+            is unreadable.
+        config_path: Path the user layer was read from, for the label.
+
+    Returns:
+        A provenance label naming the layer and the defect, or `None` when
+            `models.allowed` was never declared and the policy is genuinely
+            absent.
+    """
+    managed_data = getattr(getattr(sources, "managed", None), "data", None)
+    for data, label in (
+        (managed_data, MANAGED_CONFIG_SOURCE),
+        (user_data, str(config_path)),
+    ):
+        if not isinstance(data, dict):
+            continue
+        models = data.get("models")
+        if isinstance(models, dict) and models.get("allowed") is not None:
+            return f"{label} ([models].allowed is malformed)"
+    return None
 
 
 class ModelProfileEntry(TypedDict):
@@ -521,19 +728,19 @@ class ProviderConfig(TypedDict, total=False):
     """
 
 
-DEFAULT_CONFIG_DIR = Path.home() / ".deepagents"
-"""Directory for user-level Deep Agents configuration (`~/.deepagents`)."""
+DEFAULT_CONFIG_DIR = PATHS.profile.root
+"""User-level Deep Agents directory, optionally set by `DEEPAGENTS_HOME`."""
 
-DEFAULT_CONFIG_PATH = DEFAULT_CONFIG_DIR / "config.toml"
-"""Path to the user's model configuration file (`~/.deepagents/config.toml`)."""
+DEFAULT_CONFIG_PATH = PATHS.profile.config_file
+"""Path to the selected profile's model configuration file."""
 
-DEFAULT_STATE_DIR = DEFAULT_CONFIG_DIR / ".state"
-"""Directory for app-managed internal state (`~/.deepagents/.state`).
+DEFAULT_STATE_DIR = PATHS.profile.state_dir
+"""Directory for app-managed internal state in the selected profile.
 
 Holds files the app writes for its own bookkeeping — OAuth tokens, the
 sessions database, version-check caches, input history. Kept separate from
-top-level user-facing config and agent directories so listing/iterating
-`~/.deepagents` doesn't conflate state with agents.
+top-level user-facing config and agent directories so listing the profile root
+doesn't conflate state with agents.
 """
 
 
@@ -544,7 +751,9 @@ def default_cache_dir() -> Path:
     to `~/AppData/Local`), and `XDG_CACHE_HOME` elsewhere when it is an
     absolute path (falling back to `~/.cache`). The XDG spec treats relative
     `XDG_CACHE_HOME` values as invalid, so they are ignored rather than
-    resolved against the launch directory.
+    resolved against the launch directory. If the OS home directory cannot be
+    resolved to an absolute path, caches fall back to the selected profile's
+    `.state/cache` directory so an absolute `DEEPAGENTS_HOME` remains usable.
 
     Platform-native locations are the convention for a long-lived app (this is
     what `platformdirs` codifies and what `uv` itself does — its own cache is
@@ -563,13 +772,21 @@ def default_cache_dir() -> Path:
         local_app_data = os.environ.get("LOCALAPPDATA")
         if local_app_data:
             return Path(local_app_data)
-        return Path.home() / "AppData" / "Local"
+    elif sys.platform != "darwin":
+        xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
+        if xdg_cache_home and Path(xdg_cache_home).is_absolute():
+            return Path(xdg_cache_home)
+    try:
+        home = Path.home()
+    except RuntimeError:
+        return DEFAULT_STATE_DIR / "cache"
+    if not home.is_absolute():
+        return DEFAULT_STATE_DIR / "cache"
+    if sys.platform == "win32":
+        return home / "AppData" / "Local"
     if sys.platform == "darwin":
-        return Path.home() / "Library" / "Caches"
-    xdg_cache_home = os.environ.get("XDG_CACHE_HOME")
-    if xdg_cache_home and Path(xdg_cache_home).is_absolute():
-        return Path(xdg_cache_home)
-    return Path.home() / ".cache"
+        return home / "Library" / "Caches"
+    return home / ".cache"
 
 
 RECENT_MODELS_FILENAME = "recent_models.json"
@@ -635,6 +852,7 @@ PROVIDER_API_KEY_ENV: dict[str, str] = {
     "cohere": "COHERE_API_KEY",
     "deepseek": "DEEPSEEK_API_KEY",
     "fireworks": "FIREWORKS_API_KEY",
+    "google_anthropic_vertex": "GOOGLE_CLOUD_PROJECT",
     "google_genai": "GOOGLE_API_KEY",
     "google_vertexai": "GOOGLE_CLOUD_PROJECT",
     "groq": "GROQ_API_KEY",
@@ -659,6 +877,70 @@ time.
 
 Providers not listed here fall through to the config-file check or the langchain
 registry fallback.
+"""
+
+RETRY_PARAM_BY_PROVIDER: dict[str, str | None] = {
+    "anthropic": "max_retries",
+    "azure_openai": "max_retries",
+    "baseten": "max_retries",
+    "bedrock": "max_retries",
+    "deepseek": "max_retries",
+    "fireworks": "max_retries",
+    "google_anthropic_vertex": "max_retries",
+    "google_genai": "max_retries",
+    "google_vertexai": "max_retries",
+    "groq": "max_retries",
+    "litellm": "max_retries",
+    "meta": "max_retries",
+    "mistralai": "max_retries",
+    "openai": "max_retries",
+    "openai_codex": "max_retries",
+    "openrouter": "max_retries",
+    "perplexity": "max_retries",
+    "together": "max_retries",
+    "xai": "max_retries",
+    # `None` means "checked, and this integration has no retry-count kwarg" --
+    # distinct from a provider absent from the table, which means dcode does
+    # not know. Only the absent case warrants the "SDK retries stay active"
+    # warning: a `None` provider has no SDK retry loop to multiply, so warning
+    # about it told the user to set `[retries.<provider>].param` to a kwarg
+    # their integration would drop.
+    #
+    # `cohere` is deliberately NOT listed here: `langchain_cohere`'s `BaseCohere`
+    # appears to expose `max_retries`, so it likely belongs above with a kwarg
+    # name rather than here. Left absent until someone can check it against an
+    # installed `langchain_cohere` -- absent warns, which is noisy but honest,
+    # whereas a wrong `None` would silently leave its SDK retries running.
+    "huggingface": None,
+    "ibm": None,
+    "nvidia": None,
+    "ollama": None,
+}
+"""Constructor kwargs used to disable provider-owned retry loops.
+
+dcode's model-node middleware owns the retry budget, so integrations with a
+known retry-count parameter receive their provider-specific disable value at
+construction time. A `None` value records an integration reported to
+have no retry-count parameter. Providers absent from this mapping are unknown
+to dcode and must declare one with `[retries.<provider>].param` in
+`config.toml`.
+
+A kwarg name is verified against that integration's chat model constructor,
+never inferred from the provider name. The `None` entries are the weaker claim:
+none of those packages is installed in this repo, so they rest on the
+integrations' own documentation. Re-check one before relying on it.
+"""
+
+RETRY_DISABLE_VALUE_BY_PROVIDER: dict[str, int] = {"google_genai": 1}
+"""Non-zero provider-specific values that disable SDK retries.
+
+`google-genai` counts *total attempts*, not retries. Before 1.68.0 it read zero
+as unset and restored its own five-attempt default; from 1.68.0 on it coerces
+zero to one (`_api_client._retry_args`), so zero and one now behave alike. One is
+sent because it disables retries on both, and it is the only value that means
+"the initial request only" on every version.
+
+Other registered providers count retries, so zero disables them.
 """
 
 LANGSMITH_SERVICE = "langsmith"
@@ -719,41 +1001,6 @@ the full `openai` API, so mirroring every openai model would surface specs the
 backend rejects at call time.
 """
 
-
-RETRY_PARAM_BY_PROVIDER: dict[str, str] = {
-    "anthropic": "max_retries",
-    "azure_openai": "max_retries",
-    "baseten": "max_retries",
-    "bedrock": "max_retries",
-    "deepseek": "max_retries",
-    "fireworks": "max_retries",
-    "google_genai": "max_retries",
-    "google_vertexai": "max_retries",
-    "groq": "max_retries",
-    "litellm": "max_retries",
-    "meta": "max_retries",
-    "mistralai": "max_retries",
-    "openai": "max_retries",
-    "openrouter": "max_retries",
-    "perplexity": "max_retries",
-    "together": "max_retries",
-    "xai": "max_retries",
-}
-"""Maps a provider to the constructor kwarg that sets its retry count.
-
-The value is the kwarg name to pass to the provider's chat model constructor.
-It is uniformly `max_retries` for every provider listed today, but this is a
-`dict` rather than a `set` of providers because retry-kwarg names diverge across
-the ecosystem -- some integrations expose a differently named kwarg -- and the
-value column lets a future provider register its own name without restructuring
-callers.
-
-Membership is verified against each provider's chat model constructor (e.g.
-`ChatGoogleGenerativeAI` exposes `max_retries`, not `retries`), not inferred
-from naming. Providers absent from this map either lack an integer retry-count
-kwarg or are not yet wired as a credential-resolvable provider in this module;
-a `[retries]` config for them is ignored with a warning by `_resolve_retry_kwargs`.
-"""
 
 PROVIDER_BASE_URL_ENV: dict[str, tuple[str, ...]] = {
     # Each tuple lists every base-URL env var the provider's LangChain
@@ -853,7 +1100,9 @@ def _canonical_base_url_env(provider: str) -> str | None:
     return names[0] if names else None
 
 
-IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset({"google_vertexai"})
+IMPLICIT_AUTH_PROVIDERS: frozenset[str] = frozenset(
+    {"google_anthropic_vertex", "google_vertexai"}
+)
 """Providers that support ambient auth outside app env-var checks.
 
 These providers can authenticate without the env var listed in
@@ -1030,6 +1279,29 @@ def clear_caches() -> None:
     _ollama_model_profiles_cache.clear()
     _profiles_cache = None
     _profiles_override_cache = None
+    # The thread config cache holds `[threads]` from the same file. Its read
+    # path deliberately has no invalidator (see `load_thread_config`), so
+    # `/reload` is the only thing that picks up a hand edit -- dropping this
+    # call left one cache serving the pre-reload file for the process lifetime.
+    invalidate_thread_config_cache()
+
+
+def _invalidate_config_caches(config_path: Path) -> None:
+    """Drop cached views of `config.toml` after a committed write.
+
+    Two caches hold the file: this module's `[models]` snapshot, and the shared
+    process resolver every manifest reader resolves against. A writer that
+    clears only the first leaves the resolver serving the pre-write generation
+    for the life of the process, so the saved preference never takes effect.
+
+    Args:
+        config_path: Path the caller just wrote.
+    """
+    global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
+    _default_config_cache = None
+    from deepagents_code.configuration.writer import refresh_shared_resolver
+
+    refresh_shared_resolver(config_path)
     invalidate_thread_config_cache()
 
 
@@ -1186,6 +1458,25 @@ def get_available_models() -> dict[str, list[str]]:
     if _available_models_cache is not None:
         return _available_models_cache
 
+    available = _discover_available_models(apply_allowlist=True)
+    _available_models_cache = available
+    return available
+
+
+def _discover_available_models(*, apply_allowlist: bool) -> dict[str, list[str]]:
+    """Discover the model lineup before any allowlist filtering.
+
+    This is the `get_available_models` body with the policy filter factored
+    out so allowlist machinery can expand `provider:*` wildcards against the
+    discovered lineup without recursing back into its own filter.
+
+    Args:
+        apply_allowlist: Filter each provider's models through the active
+            `models.allowed` policy. Only allowlist internals pass `False`.
+
+    Returns:
+        Dictionary mapping provider names to lists of model identifiers.
+    """
     available: dict[str, list[str]] = {}
     config = ModelConfig.load()
 
@@ -1343,8 +1634,37 @@ def get_available_models() -> dict[str, list[str]]:
                     reordered[CODEX_PROVIDER] = codex_models
             available = reordered
 
-    _available_models_cache = available
+    if apply_allowlist and config.allowed_models is not None:
+        available = {
+            provider: [
+                model
+                for model in models
+                if config.is_model_allowed(f"{provider}:{model}")
+            ]
+            for provider, models in available.items()
+        }
+        available = {
+            provider: models for provider, models in available.items() if models
+        }
+
     return available
+
+
+def get_discovered_models(provider_name: str) -> list[str]:
+    """Get the discovered lineup for one provider, unfiltered by policy.
+
+    `get_available_models()` applies `models.allowed` itself, so allowlist
+    machinery expanding a `provider:*` wildcard cannot call it without
+    recursing. This reads the same discovery result with the filter off.
+
+    Args:
+        provider_name: The provider whose models to list.
+
+    Returns:
+        Model identifiers discovery knows about, empty when the provider
+            declares none and none were discovered.
+    """
+    return _discover_available_models(apply_allowlist=False).get(provider_name, [])
 
 
 def _build_entry(
@@ -2752,11 +3072,11 @@ def _resolve_models_section(
 
 
 def _resolve_model_file_option(
-    option: ConfigOption,
+    option: ConfigOption[object],
     sources: ConfigSources,
     *,
     user_data: Mapping[str, Any],
-) -> object | None:
+) -> tuple[object | None, str | None]:
     """Resolve one stored model option without admitting the env tier.
 
     `ModelConfig` describes persisted choices. In particular its
@@ -2764,7 +3084,8 @@ def _resolve_model_file_option(
     environment override, so this reader constructs only the two file tiers.
 
     Returns:
-        The ranked file value, or `None` when both tiers abstain.
+        The ranked file value and its source, or `(None, None)` when both tiers
+        abstain.
     """
     from deepagents_code.configuration.providers import ranked_toml_value
     from deepagents_code.configuration.resolver import (
@@ -2798,7 +3119,10 @@ def _resolve_model_file_option(
         ),
         strategy=option.merge_strategy.value,
     )
-    return None if resolved is None else resolved.value
+    if resolved is None:
+        return None, None
+    source = " + ".join(resolved.provider_status[rank].name for rank in resolved.ranks)
+    return resolved.value, source
 
 
 @dataclass(frozen=True)
@@ -2836,10 +3160,64 @@ class ModelConfig:
     differ from the classifier Auto actually reviews with.
     """
 
+    summarization_default_model: str | None = None
+    """The default summary model from `[models].summarization_default`.
+
+    Not the resolution path -- `--summarization-model` outranks this value at
+    launch, so it may differ from the model summaries are actually generated
+    with. Stored unvalidated: `_validate` only warns when the spec omits a
+    `provider:` prefix, because `create_model`'s provider auto-detection makes
+    a bare name legitimate.
+    """
+
+    allowed_models: tuple[str, ...] | None = None
+    """Ordered model specs and provider wildcards the policy permits.
+
+    Three states, and the difference between the last two matters:
+
+    - `None` -- no policy is active; every model is allowed.
+    - `()` -- a policy is active and permits **nothing**. Model construction
+      and default resolution both fail closed.
+    - non-empty -- only these entries are permitted, in preference order
+      (`_get_default_model_spec` walks the tuple in declaration order). An
+      entry is either an exact `provider:model` spec or a `provider:*`
+      wildcard permitting every model from that provider; a wildcard is never
+      selected as a default itself, but models it admits remain candidates.
+
+    Test `is None`, never truthiness: `if not config.allowed_models` conflates
+    "unrestricted" with "deny all" and inverts the policy.
+    """
+
+    allowed_models_source: str | None = None
+    """Configuration layer that supplied `allowed_models`.
+
+    A resolver provenance label such as `MANAGED_CONFIG_SOURCE` or
+    `'config.toml'`. Compared literally against `MANAGED_CONFIG_SOURCE` to
+    select administrator wording in errors and in the model selector, so it
+    tracks that constant rather than being free-form. `None` exactly when
+    `allowed_models` is `None`.
+    """
+
     def __post_init__(self) -> None:
-        """Freeze the providers dict into a read-only proxy."""
+        """Freeze the providers dict into a read-only proxy.
+
+        Raises:
+            ValueError: If `allowed_models` and `allowed_models_source` disagree
+                about whether a policy is active.
+        """
         if not isinstance(self.providers, MappingProxyType):
             object.__setattr__(self, "providers", MappingProxyType(self.providers))
+        # The pair varies together: every consumer reads the source only to
+        # describe an active policy. Guarding here mirrors
+        # `ProviderAuthStatus.__post_init__` and makes an incoherent policy
+        # unconstructible rather than silently mis-attributed.
+        if (self.allowed_models is None) != (self.allowed_models_source is None):
+            msg = (
+                "allowed_models and allowed_models_source must both be set or "
+                f"both be None (got {self.allowed_models!r} from "
+                f"{self.allowed_models_source!r})"
+            )
+            raise ValueError(msg)
 
     @classmethod
     def load(cls, config_path: Path | None = None) -> ModelConfig:
@@ -2928,6 +3306,39 @@ class ModelConfig:
             if sources.managed.data
             else str(config_path)
         )
+
+        allowed_models: tuple[str, ...] | None = None
+        allowed_models_source: str | None = None
+        allowed_option = get_option("models.allowed")
+        if allowed_option is None:
+            msg = "models.allowed is missing from the config manifest"
+            raise RuntimeError(msg)
+        allowed_value, allowed_source = _resolve_model_file_option(
+            allowed_option,
+            sources,
+            user_data=user_data,
+        )
+        if isinstance(allowed_value, tuple):
+            allowed_models = cast("tuple[str, ...]", allowed_value)
+            allowed_models_source = allowed_source
+        elif (
+            declared := _malformed_allowlist_source(sources, user_data, config_path)
+        ) is not None:
+            # `models.allowed` has no manifest default, so an unparseable list
+            # resolves to `None` -- which means *unrestricted*. Failing open on
+            # a security control because of a typo is the wrong default, so a
+            # declaration that produced no usable value becomes deny-all. The
+            # managed layer additionally refuses to start
+            # (`ENFORCED_MANAGED_KEYS`); this covers the user layer, where the
+            # only other signal is a log line nobody reads.
+            logger.error(
+                "Ignoring malformed [models].allowed from %s; blocking all "
+                "models until it is fixed or removed",
+                declared,
+            )
+            allowed_models = ()
+            allowed_models_source = declared
+
         try:
             models_section = cast(
                 "Any", _resolve_models_section(sources, user_data=user_data)
@@ -2940,6 +3351,7 @@ class ModelConfig:
             option_keys = (
                 "models.default",
                 "models.recent",
+                "models.summarization_default",
                 "models.auto_classifier",
                 "models.providers",
             )
@@ -2949,10 +3361,10 @@ class ModelConfig:
                 raise RuntimeError(msg)
             resolved = {
                 key: _resolve_model_file_option(
-                    cast("ConfigOption", option),
+                    cast("ConfigOption[object]", option),
                     sources,
                     user_data=user_data,
-                )
+                )[0]
                 for key, option in options.items()
             }
 
@@ -2987,6 +3399,12 @@ class ModelConfig:
                     path=config_path,
                     source_label=source_label,
                 ),
+                summarization_default_model=_toml_model_spec(
+                    resolved["models.summarization_default"],
+                    key="summarization_default",
+                    path=config_path,
+                    source_label=source_label,
+                ),
                 auto_classifier_model=(
                     resolved["models.auto_classifier"]
                     if isinstance(resolved["models.auto_classifier"], str)
@@ -2999,6 +3417,8 @@ class ModelConfig:
                     path=config_path,
                     source_label=source_label,
                 ),
+                allowed_models=allowed_models,
+                allowed_models_source=allowed_models_source,
             )
         except (AttributeError, TypeError) as e:
             # Syntactically valid TOML can still have the wrong shape (e.g. a
@@ -3027,29 +3447,29 @@ class ModelConfig:
         Issues warnings for invalid configurations but does not raise exceptions,
         allowing the app to continue with potentially degraded functionality.
         """
-        # Warn if default_model is set but doesn't use provider:model format
-        if self.default_model and ":" not in self.default_model:
-            logger.warning(
-                "default_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.default_model,
-            )
-
-        # Warn if recent_model is set but doesn't use provider:model format
-        if self.recent_model and ":" not in self.recent_model:
-            logger.warning(
-                "recent_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
-                self.recent_model,
-            )
-
-        # Warn if auto_classifier_model is set but doesn't use provider:model format
-        if self.auto_classifier_model and ":" not in self.auto_classifier_model:
-            logger.warning(
-                "auto_classifier_model '%s' should use provider:model format "
-                "(e.g., 'anthropic:claude-sonnet-4-5')",
+        # Warn if a model field is set but doesn't use provider:model format
+        model_fields = (
+            ("default_model", self.default_model, "anthropic:claude-sonnet-4-5"),
+            ("recent_model", self.recent_model, "anthropic:claude-sonnet-4-5"),
+            (
+                "summarization_default_model",
+                self.summarization_default_model,
+                "openai:gpt-5.4-mini",
+            ),
+            (
+                "auto_classifier_model",
                 self.auto_classifier_model,
-            )
+                "anthropic:claude-sonnet-4-5",
+            ),
+        )
+        for field_name, spec, example in model_fields:
+            if spec and ":" not in spec:
+                logger.warning(
+                    "%s '%s' should use provider:model format (e.g., '%s')",
+                    field_name,
+                    spec,
+                    example,
+                )
 
         # Validate enabled field type and class_path format / params references
         for name, provider in self.providers.items():
@@ -3116,6 +3536,121 @@ class ModelConfig:
                         name,
                         key,
                     )
+
+    def is_model_allowed(self, model_spec: str) -> bool:
+        """Return whether an exact model spec is allowed by active policy.
+
+        A spec is permitted when it appears in `allowed_models` verbatim or a
+        `provider:*` wildcard entry names its provider.
+        """
+        if self.allowed_models is None:
+            return True
+        parsed = ModelSpec.try_parse(model_spec.strip())
+        return parsed is not None and (
+            str(parsed) in self.allowed_models
+            or f"{parsed.provider}:*" in self.allowed_models
+        )
+
+    def canonical_model_spec(self, model_spec: str) -> str | None:
+        """Resolve a user-typed spec to the form the policy gate matches on.
+
+        Mirrors `create_model`'s provider resolution, including the custom
+        provider, Bedrock, and leading-colon branches, so a preflight check
+        agrees with the authoritative gate instead of rejecting a bare name
+        that `create_model` would infer a provider for and allow.
+
+        Args:
+            model_spec: A spec as the user typed it, bare name included.
+
+        Returns:
+            The canonical `provider:model` string, or `None` when no provider
+                can be established -- which policy treats as unmatchable.
+        """
+        from deepagents_code.config import detect_provider
+
+        normalized = model_spec.strip()
+        if not normalized:
+            return None
+        inferred = detect_provider(normalized)
+        parsed = ModelSpec.try_parse(normalized)
+        if parsed and parsed.provider in self.providers:
+            provider, model_name = parsed.provider, parsed.model
+        elif inferred == "bedrock":
+            provider, model_name = inferred, normalized
+        elif parsed:
+            provider, model_name = parsed.provider, parsed.model
+        elif ":" in normalized:
+            _, _, after = normalized.partition(":")
+            if not after:
+                return None
+            model_name = after
+            provider = detect_provider(model_name) or ""
+        else:
+            model_name = normalized
+            provider = inferred or ""
+        return f"{provider}:{model_name}" if provider else None
+
+    def policy_error(
+        self,
+        model_spec: str | None,
+        *,
+        context: str | None = None,
+        canonicalize: bool = False,
+    ) -> ModelNotAllowedError | None:
+        """Build the policy error blocking a spec, or `None` when it is allowed.
+
+        The one place that turns this config's policy fields into an error, so
+        callers that need the *message* without raising (a launch advisory, a
+        selector footer) cannot drift from callers that raise.
+
+        Args:
+            model_spec: The spec to check, or `None` to ask for the error that
+                describes a deny-all policy blocking default resolution.
+            context: Where the spec was declared, prefixed to the message.
+            canonicalize: Infer a provider for a bare name before matching, the
+                way `create_model` does. Set this on preflight checks against
+                text a user typed; leave it off where the caller already holds a
+                canonical spec, so resolution stays off hot paths such as the
+                recent-models cache.
+
+        Returns:
+            The error to raise or render, or `None` when no policy blocks this.
+        """
+        if self.allowed_models is None:
+            return None
+        if model_spec is not None:
+            candidate = model_spec
+            if canonicalize:
+                # Fall back to the raw text when no provider can be inferred:
+                # it stays unmatchable, and the message then advises a fully
+                # qualified spec, which is the actionable advice.
+                candidate = self.canonical_model_spec(model_spec) or model_spec
+            if self.is_model_allowed(candidate):
+                return None
+        # The message quotes what the user supplied, not the canonical form, so
+        # it echoes back the text they can see in front of them.
+        return ModelNotAllowedError(
+            model_spec=model_spec,
+            source=self.allowed_models_source,
+            allowed_models=self.allowed_models,
+            context=context,
+        )
+
+    def require_model_allowed(
+        self, model_spec: str, *, context: str | None = None
+    ) -> None:
+        """Raise when an exact model spec is outside active policy.
+
+        Args:
+            model_spec: The spec to check.
+            context: Where the spec was declared, prefixed to the message.
+
+        Raises:
+            ModelNotAllowedError: If `model_spec` is not in the active allowlist.
+        """  # noqa: DOC502 - propagates from `policy_error`
+        error = self.policy_error(model_spec, context=context)
+        if error is not None:
+            raise error
 
     def is_provider_enabled(self, provider_name: str) -> bool:
         """Check whether a provider should appear in the model switcher.
@@ -3443,21 +3978,29 @@ def _save_toml_field(
             else:
                 data = {}
 
-            if section not in data:
-                data[section] = {}
-            data[section][field] = value
+            existing_section = data.get(section)
+            existing = (
+                existing_section.get(field)
+                if isinstance(existing_section, dict)
+                else None
+            )
+            unchanged = type(existing) is type(value) and existing == value
+            if not unchanged:
+                if section not in data:
+                    data[section] = {}
+                data[section][field] = value
 
-            # Write to temp file then rename so an interrupted write can't corrupt
-            fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
-            try:
-                with os.fdopen(fd, "wb") as f:
-                    tomli_w.dump(data, f)
-                Path(tmp_path).replace(config_path)
-            except BaseException:
-                # Clean up temp file on any failure
-                with contextlib.suppress(OSError):
-                    Path(tmp_path).unlink()
-                raise
+                # Write to temp file then rename so an interrupted write can't corrupt
+                fd, tmp_path = tempfile.mkstemp(dir=config_path.parent, suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "wb") as f:
+                        tomli_w.dump(data, f)
+                    Path(tmp_path).replace(config_path)
+                except BaseException:
+                    # Clean up temp file on any failure
+                    with contextlib.suppress(OSError):
+                        Path(tmp_path).unlink()
+                    raise
     except (OSError, tomllib.TOMLDecodeError, TypeError, ValueError):
         # `TypeError` covers `tomli_w.dump` rejecting a non-serializable
         # payload; `ValueError` covers things like `os.fdopen` on a
@@ -3466,9 +4009,7 @@ def _save_toml_field(
         logger.exception("Could not save %s.%s preference", section, field)
         return False
     else:
-        # Invalidate config cache so the next load() picks up the change.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -3497,9 +4038,7 @@ def save_goal_auto_accept_criteria(
 def _save_model_field(
     field: str, model_spec: str, config_path: Path | None = None
 ) -> bool:
-    """Read-modify-write a `[models].<field>` key in the config file.
-
-    Thin wrapper around `_save_toml_field` for the `[models]` section.
+    """Enforce `models.allowed`, then read-modify-write a `[models].<field>` key.
 
     Args:
         field: Key name under the `[models]` table (e.g., `'default'` or `'recent'`).
@@ -3510,7 +4049,17 @@ def _save_model_field(
 
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
-    """
+
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy. Distinct from the `False` return so callers
+            do not report a policy refusal as a filesystem problem; best-effort
+            callers that genuinely cannot act on it suppress it explicitly.
+    """  # noqa: DOC502 - propagates from `_save_model_field`
+    # `load(config_path)` skips the managed layer, so an explicit path checks
+    # only the user allowlist. Every production caller passes `None`; keep it
+    # that way or this refusal stops enforcing administrator policy.
+    ModelConfig.load(config_path).require_model_allowed(model_spec)
     return _save_toml_field("models", field, model_spec, config_path)
 
 
@@ -3529,9 +4078,13 @@ def save_default_model(model_spec: str, config_path: Path | None = None) -> bool
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("default", model_spec, config_path)
 
 
@@ -3555,9 +4108,13 @@ def save_auto_classifier_model(
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("auto_classifier", model_spec, config_path)
 
 
@@ -3672,8 +4229,7 @@ def _clear_model_field(field: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not clear models.%s preference", field)
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -3847,12 +4403,7 @@ def _update_effort_for_model(
         )
         return False
     else:
-        # `_default_config_cache` holds only the `[models]` table (default /
-        # recent / providers), never `[effort]`, so this write cannot stale it.
-        # Invalidating anyway is defensive parity with the other config writers
-        # (`_save_toml_field`, `clear_default_model`, ...) that share the file.
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 
@@ -4005,6 +4556,7 @@ def suppress_warning_reason(key: str, config_path: Path | None = None) -> str | 
     except OSError:
         logger.exception("Could not save warning suppression for '%s'", key)
         return f"{config_path} could not be written"
+    _invalidate_config_caches(config_path)
     return None
 
 
@@ -4070,6 +4622,7 @@ def unsuppress_warning(key: str, config_path: Path | None = None) -> bool:
     except (OSError, tomllib.TOMLDecodeError):
         logger.exception("Could not remove warning suppression for '%s'", key)
         return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5335,6 +5888,7 @@ def add_enabled_project_mcp_servers(
             "Could not save enabled project MCP servers to %s", config_path
         )
         return False
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5514,6 +6068,7 @@ def save_thread_columns(
         logger.exception("Could not save thread column preferences")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5577,6 +6132,7 @@ def save_thread_relative_time(enabled: bool, config_path: Path | None = None) ->
         logger.exception("Could not save thread relative_time preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5613,24 +6169,74 @@ STARTUP_MODE_AUTO = "auto"
 STARTUP_MODE_YOLO = "yolo"
 """Startup approval mode that executes gated actions without review."""
 
-STARTUP_MODE_DANGEROUSLY_AUTO = "dangerously-auto"
-"""Rejected legacy spelling retained only for migration diagnostics."""
-
 VALID_STARTUP_MODES = frozenset(
     {STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO, STARTUP_MODE_YOLO}
 )
 """Accepted values for the `[startup].mode` config option."""
 
+RECENT_STARTUP_MODES = frozenset({STARTUP_MODE_MANUAL, STARTUP_MODE_AUTO})
+"""Modes the app may restore implicitly from `[startup].recent`."""
+
+_RECENT_AUTO_NOT_RESTORED_NOTICE = (
+    "Auto was not restored for this session because its guidance notice is "
+    "missing or out of date. Press Shift+Tab to review it and re-enable Auto."
+)
+"""User-facing copy for a remembered Auto that the notice gate declined."""
+
+_recent_auto_not_restored_notice: str | None = None
+"""One-shot TUI notice populated when the notice gate declines a stored Auto."""
+
+
+def consume_recent_auto_not_restored_notice() -> str | None:
+    """Return and clear the pending not-restored notice, if any."""
+    global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+    notice = _recent_auto_not_restored_notice
+    _recent_auto_not_restored_notice = None
+    return notice
+
+
 DEFAULT_STARTUP_MODE = STARTUP_MODE_MANUAL
-"""Fallback startup mode when `[startup].mode` is missing, unreadable, or invalid."""
+"""Fail-closed startup mode.
+
+Returned when no mode resolves, when `[startup]` is absent or is not a table,
+when the config is unreadable, and when a stored recent Auto is not restorable.
+"""
+
+
+def is_recent_startup_mode_restorable(mode: str) -> bool:
+    """Return whether an app-managed recent mode may be restored.
+
+    Auto restoration requires the current versioned education notice. Manual
+    remains safe to restore without one. No caller prompts: `False` means the
+    caller falls back to `manual`.
+
+    Args:
+        mode: Candidate value from `[startup].recent`.
+
+    Returns:
+        Whether startup may restore the mode.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        return False
+    if mode != STARTUP_MODE_AUTO:
+        return True
+
+    # Function-local: `approval_mode` imports this module, so a module-level
+    # import would close the cycle.
+    from deepagents_code.approval_mode import has_auto_mode_notice
+
+    return has_auto_mode_notice()
 
 
 def load_startup_mode(config_path: Path | None = None) -> str:
-    """Load the default startup approval mode from config.toml.
+    """Load the startup approval mode from config.toml.
 
-    Reads `[startup].mode`, which accepts fail-closed `manual`, classifier-backed
-    `auto`, or unrestricted `yolo`. The removed `dangerously-auto` spelling is
-    invalid and falls back to `manual`.
+    An explicit `[startup].mode` outranks the app-managed `[startup].recent`
+    value. An invalid explicit mode fails closed to `manual` and never consults
+    `recent`. `recent` restores `manual`, or classifier-backed `auto` once the
+    current notice has been shown. Unrestricted `yolo` must stay explicitly
+    configured.
 
     Args:
         config_path: Path to config file.
@@ -5646,10 +6252,13 @@ def load_startup_mode(config_path: Path | None = None) -> str:
     try:
         data, _ = _load_effective_config_data(config_path)
         startup = data.get("startup")
-        value = startup.get("mode") if isinstance(startup, dict) else None
-        # `value` may be any TOML type; guard against non-strings (e.g. an
-        # array or table) before the frozenset membership test, which would
-        # otherwise raise `TypeError: unhashable type` and crash startup.
+        if not isinstance(startup, dict):
+            return DEFAULT_STARTUP_MODE
+        # TOML values carry any type. The isinstance guards here and on
+        # `recent` below keep an array or table out of the frozenset membership
+        # tests, which would raise `TypeError: unhashable type` — uncaught by
+        # the handler below — and crash startup.
+        value = startup.get("mode")
         if isinstance(value, str) and value in VALID_STARTUP_MODES:
             return value
         if value is not None:
@@ -5657,9 +6266,55 @@ def load_startup_mode(config_path: Path | None = None) -> str:
                 "Ignoring [startup].mode=%r (expected 'manual', 'auto', or 'yolo')",
                 value,
             )
+            return DEFAULT_STARTUP_MODE
+        recent = startup.get("recent")
+        # Re-test membership here so only an invalid value takes the warning
+        # below; a valid-but-notice-blocked Auto is a normal fail-closed, and
+        # gets its own diagnostic instead of being reported as a config error.
+        if isinstance(recent, str) and recent in RECENT_STARTUP_MODES:
+            if is_recent_startup_mode_restorable(recent):
+                return recent
+            # The only exit that discards a *valid* user-earned preference.
+            # Without this it is indistinguishable from the feature not working:
+            # a notice-version bump silently returns every Auto user to Manual.
+            global _recent_auto_not_restored_notice  # noqa: PLW0603
+
+            logger.warning(
+                "Not restoring [startup].recent=%r: the Auto notice is missing "
+                "or out of date; starting in %s",
+                recent,
+                DEFAULT_STARTUP_MODE,
+            )
+            _recent_auto_not_restored_notice = _RECENT_AUTO_NOT_RESTORED_NOTICE
+            return DEFAULT_STARTUP_MODE
+        if recent is not None:
+            logger.warning(
+                "Ignoring [startup].recent=%r (expected 'manual' or 'auto')",
+                recent,
+            )
     except (OSError, tomllib.TOMLDecodeError):
         logger.debug("Could not read startup mode config", exc_info=True)
     return DEFAULT_STARTUP_MODE
+
+
+def save_recent_startup_mode(mode: str, config_path: Path | None = None) -> bool:
+    """Save the most recently selected safe startup approval mode.
+
+    Args:
+        mode: `"manual"` or `"auto"`.
+        config_path: Path to config file.
+
+    Returns:
+        `True` when the preference was saved, otherwise `False`.
+
+    Raises:
+        ValueError: If `mode` is not `"manual"` or `"auto"`. `yolo` must stay
+            explicitly configured, so it is never stored as a recent mode.
+    """
+    if mode not in RECENT_STARTUP_MODES:
+        msg = f"Invalid recent startup mode: {mode!r}"
+        raise ValueError(msg)
+    return _save_toml_field("startup", "recent", mode, config_path)
 
 
 def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> bool:
@@ -5706,6 +6361,7 @@ def save_thread_sort_order(sort_order: str, config_path: Path | None = None) -> 
         logger.exception("Could not save thread sort_order preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5755,6 +6411,7 @@ def save_thread_scope(scope: str, config_path: Path | None = None) -> bool:
         logger.exception("Could not save thread scope preference")
         return False
     invalidate_thread_config_cache()
+    _invalidate_config_caches(config_path)
     return True
 
 
@@ -5773,9 +6430,13 @@ def save_recent_model(model_spec: str, config_path: Path | None = None) -> bool:
     Returns:
         True if save succeeded, False if it failed due to I/O errors.
 
+    Raises:
+        ModelNotAllowedError: If `model_spec` is outside the effective
+            `models.allowed` policy.
+
     Note:
         This function does not preserve comments in the config file.
-    """
+    """  # noqa: DOC502 - propagates from `_save_model_field`
     return _save_model_field("recent", model_spec, config_path)
 
 
@@ -5803,7 +6464,9 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
 
     Returns:
         Ordered list of recent `provider:model` specs, most recent first.
-            Capped at `RECENT_MODELS_LIMIT` and de-duplicated.
+            Capped at `RECENT_MODELS_LIMIT` and de-duplicated. Entries outside
+            `models.allowed` are dropped, so the result can be shorter than the
+            file -- or empty despite a populated cache.
     """
     path = _recent_models_path(state_dir)
     if not path.exists():
@@ -5816,10 +6479,16 @@ def load_recent_models(state_dir: Path | None = None) -> list[str]:
     raw = data.get("models") if isinstance(data, dict) else None
     if not isinstance(raw, list):
         return []
+    config = ModelConfig.load()
     seen: set[str] = set()
     out: list[str] = []
     for entry in raw:
-        if not isinstance(entry, str) or ":" not in entry or entry in seen:
+        if (
+            not isinstance(entry, str)
+            or ":" not in entry
+            or entry in seen
+            or not config.is_model_allowed(entry)
+        ):
             continue
         seen.add(entry)
         out.append(entry)
@@ -5836,14 +6505,24 @@ def touch_recent_model(model_spec: str, state_dir: Path | None = None) -> bool:
     error so callers can degrade silently — recents are a nice-to-have, not
     a correctness requirement.
 
+    A spec outside `models.allowed` also returns `False`. That refusal is
+    deliberately silent here: the MRU is a derived cache, and the visible
+    consequence (the spec not appearing under Recent) is already explained by
+    the selector's policy empty state.
+
     Args:
         model_spec: The `provider:model` string just selected.
         state_dir: Override for the state directory (test hook).
 
     Returns:
-        `True` on success, `False` on I/O error or invalid spec.
+        `True` on success, `False` on I/O error, an invalid spec, or a spec
+            outside `models.allowed`.
     """
-    if not model_spec or ":" not in model_spec:
+    if (
+        not model_spec
+        or ":" not in model_spec
+        or not ModelConfig.load().is_model_allowed(model_spec)
+    ):
         return False
     existing = load_recent_models(state_dir)
     deduped = [entry for entry in existing if entry != model_spec]
@@ -5967,8 +6646,7 @@ def clear_default_agent(config_path: Path | None = None) -> bool:
         logger.exception("Could not clear default agent preference")
         return False
     else:
-        global _default_config_cache  # noqa: PLW0603  # Module-level cache requires global statement
-        _default_config_cache = None
+        _invalidate_config_caches(config_path)
         return True
 
 

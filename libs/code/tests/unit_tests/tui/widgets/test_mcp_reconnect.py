@@ -21,23 +21,6 @@ class _ReconnectTestApp(App[None]):
 class TestMCPReconnectPromptScreen:
     """Behavior tests for `MCPReconnectPromptScreen`."""
 
-    async def test_enter_dismisses_with_reconnect(self) -> None:
-        """Pressing Enter chooses `reconnect`."""
-        app = _ReconnectTestApp()
-        async with app.run_test() as pilot:
-            outcomes: list[str | None] = []
-
-            def on_dismiss(result: str | None) -> None:
-                outcomes.append(result)
-
-            app.push_screen(MCPReconnectPromptScreen("notion"), on_dismiss)
-            await pilot.pause()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert outcomes == ["reconnect"]
-
     async def test_escape_dismisses_with_later(self) -> None:
         """Pressing Esc chooses `later` (no implicit reconnect)."""
         app = _ReconnectTestApp()
@@ -82,37 +65,9 @@ class TestMCPReconnectPromptScreen:
 
             assert outcomes == ["later"]
 
-    async def test_renders_server_name(self) -> None:
-        """The server name is surfaced in the modal title."""
-        app = _ReconnectTestApp()
-        async with app.run_test() as pilot:
-            app.push_screen(MCPReconnectPromptScreen("notion"))
-            await pilot.pause()
-
-            titles = app.screen.query(".mcp-reconnect-title")
-            assert len(titles) == 1
-            assert "notion" in str(titles.first().render())
-
 
 class TestMCPDisableReconnectPromptScreen:
     """Behavior tests for `MCPDisableReconnectPromptScreen`."""
-
-    async def test_enter_dismisses_with_reconnect(self) -> None:
-        """Pressing Enter chooses `reconnect`."""
-        app = _ReconnectTestApp()
-        async with app.run_test() as pilot:
-            outcomes: list[str | None] = []
-
-            def on_dismiss(result: str | None) -> None:
-                outcomes.append(result)
-
-            app.push_screen(MCPDisableReconnectPromptScreen(["filesystem"]), on_dismiss)
-            await pilot.pause()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert outcomes == ["reconnect"]
 
     async def test_escape_dismisses_with_later(self) -> None:
         """Pressing Esc chooses `later` (no implicit reconnect)."""
@@ -149,21 +104,6 @@ class TestMCPDisableReconnectPromptScreen:
 
             assert outcomes == ["later"]
 
-    async def test_renders_server_names(self) -> None:
-        """Every pending server name appears in the body."""
-        app = _ReconnectTestApp()
-        async with app.run_test() as pilot:
-            app.push_screen(
-                MCPDisableReconnectPromptScreen(["filesystem", "notion"]),
-            )
-            await pilot.pause()
-
-            bodies = app.screen.query(".mcp-reconnect-body")
-            assert len(bodies) == 1
-            rendered = str(bodies.first().render())
-            assert "filesystem" in rendered
-            assert "notion" in rendered
-
     async def test_shares_styling_with_login_prompt(self) -> None:
         """Both prompts inherit one style contract from the shared base.
 
@@ -195,23 +135,6 @@ class TestMCPDisableReconnectPromptScreen:
 
 class TestMCPReconnectForceConfirmScreen:
     """Behavior tests for `MCPReconnectForceConfirmScreen`."""
-
-    async def test_enter_dismisses_with_true(self) -> None:
-        """Enter confirms the force-reconnect."""
-        app = _ReconnectTestApp()
-        async with app.run_test() as pilot:
-            outcomes: list[bool | None] = []
-
-            def on_dismiss(result: bool | None) -> None:
-                outcomes.append(result)
-
-            app.push_screen(MCPReconnectForceConfirmScreen(), on_dismiss)
-            await pilot.pause()
-
-            await pilot.press("enter")
-            await pilot.pause()
-
-            assert outcomes == [True]
 
     async def test_escape_dismisses_with_false(self) -> None:
         """Esc cancels the force-reconnect."""

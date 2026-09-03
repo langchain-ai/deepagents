@@ -23,6 +23,8 @@ from langchain.agents.middleware.types import (
     ExtendedModelResponse,
     ModelRequest,
     ModelResponse,
+    TracePolicy,
+    omit_payload,
 )
 from langgraph.types import Command
 
@@ -293,7 +295,7 @@ def _resolve_openai_prompt_cache_key_enabled() -> bool:
     Called once when `ConfigurableModelMiddleware` is constructed. The read is
     kept off the blockbuster-guarded server loop by the caller: on the server
     path `create_cli_agent` runs inside `asyncio.to_thread` (see
-    `server_graph._make_graph`), so the synchronous `config.toml` read happens
+    `server_graph._make_graphs`), so the synchronous `config.toml` read happens
     on a worker thread.
 
     On an unexpected failure this defaults to enabled: breaking agent
@@ -337,44 +339,21 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     if runtime is None:
         return None
 
-    ctx = runtime.context
-    if isinstance(ctx, CLIContextSchema):
-        return ctx
-    if isinstance(ctx, dict):
-        raw_key = ctx.get("approval_mode_key")
-        raw_thread_id = ctx.get("thread_id")
-        raw_classifier_model = ctx.get("classifier_model")
-        return CLIContextSchema(
-            model=ctx.get("model"),
-            model_params=ctx.get("model_params") or {},
-            profile_overrides=ctx.get("profile_overrides") or {},
-            model_context_limit=ctx.get("model_context_limit"),
-            classifier_model=(
-                raw_classifier_model if isinstance(raw_classifier_model, str) else None
-            ),
-            approval_mode=(
-                ctx.get("approval_mode")
-                if isinstance(ctx.get("approval_mode"), str)
-                else "manual"
-            ),
-            auto_approve=bool(ctx.get("auto_approve", False)),
-            approval_mode_key=raw_key if isinstance(raw_key, str) else None,
-            thread_id=raw_thread_id if isinstance(raw_thread_id, str) else None,
-        )
-    return None
+    return CLIContextSchema.from_payload(runtime.context)
 
 
 def _model_spec_from_model(model: BaseChatModel) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
-    provider = _get_ls_provider(model)
     model_name = get_model_identifier(model)
+    from deepagents_code.config import runtime_state
+
+    settings_provider = runtime_state.model_provider or ""
+    settings_model = runtime_state.model_name or ""
+    if settings_provider and settings_model and model_name == settings_model:
+        return f"{settings_provider}:{settings_model}"
+    provider = _get_ls_provider(model)
     if provider and model_name:
         return f"{provider}:{model_name}"
-
-    from deepagents_code.config import settings
-
-    settings_provider = settings.model_provider or ""
-    settings_model = settings.model_name or ""
     if settings_provider and settings_model:
         return f"{settings_provider}:{settings_model}"
     return None
@@ -485,9 +464,9 @@ def _build_overrides(
 
     # Patch the Model Identity section in the system prompt so the new model
     # sees its own name/provider/context-limit, not the original's.
-    # We read metadata from model_result (not the app's settings singleton)
-    # because the middleware runs in the server subprocess where settings
-    # are never updated by /model.
+    # Read metadata from `model_result`, not the process-wide runtime state:
+    # the middleware runs in the server subprocess, whose state is not updated
+    # by `/model`.
     if model_result is not None and request.system_prompt:
         from deepagents_code.agent import (
             MODEL_IDENTITY_RE,
@@ -516,8 +495,28 @@ def _build_overrides(
     return request.override(**overrides)
 
 
+def _model_creation_kwargs(
+    ctx: CLIContextSchema, cli_max_retries: int | None
+) -> dict[str, Any]:
+    """Build constructor kwargs needed for a runtime model switch.
+
+    Returns:
+        Keyword arguments for `create_model`.
+    """
+    kwargs: dict[str, Any] = {}
+    if cli_max_retries is not None:
+        kwargs["cli_max_retries"] = cli_max_retries
+    if ctx.profile_overrides:
+        kwargs["profile_overrides"] = ctx.profile_overrides
+    return kwargs
+
+
 def _apply_overrides(
-    request: ModelRequest, *, openai_prompt_cache_key: bool
+    request: ModelRequest,
+    *,
+    openai_prompt_cache_key: bool,
+    cli_max_retries: int | None,
+    strict_model_resolution: bool = False,
 ) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
@@ -531,10 +530,16 @@ def _apply_overrides(
         request: The incoming model request from the middleware chain.
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
+        cli_max_retries: Explicit CLI retry count retained across model switches.
+        strict_model_resolution: Whether model construction failures should propagate.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
+        ModelConfigError: If strict resolution is enabled and construction fails.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -544,17 +549,21 @@ def _apply_overrides(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx, cli_max_retries)
         try:
             model_result = create_model(model, **model_kwargs)
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
+            if strict_model_resolution:
+                raise
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
                 "continuing with current model",
@@ -586,7 +595,11 @@ def _apply_overrides(
 
 
 async def _apply_overrides_async(
-    request: ModelRequest, *, openai_prompt_cache_key: bool
+    request: ModelRequest,
+    *,
+    openai_prompt_cache_key: bool,
+    cli_max_retries: int | None,
+    strict_model_resolution: bool = False,
 ) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
 
@@ -594,10 +607,16 @@ async def _apply_overrides_async(
         request: The incoming model request from the middleware chain.
         openai_prompt_cache_key: The resolved `models.openai_prompt_cache_key`
             opt-out, threaded through to `_build_overrides`.
+        cli_max_retries: Explicit CLI retry count retained across model switches.
+        strict_model_resolution: Whether model construction failures should propagate.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
             model params that should be recorded for resume.
+
+    Raises:
+        ModelNotAllowedError: If runtime context requests a blocked model.
+        ModelConfigError: If strict resolution is enabled and construction fails.
     """
     ctx = _get_context(request)
     if ctx is None:
@@ -607,21 +626,25 @@ async def _apply_overrides_async(
     model = ctx.model
     if model and not model_matches_spec(request.model, model):
         from deepagents_code.config import create_model
-        from deepagents_code.model_config import ModelConfigError
+        from deepagents_code.model_config import ModelConfigError, ModelNotAllowedError
 
         logger.debug("Overriding model to %s", model)
-        model_kwargs = (
-            {"profile_overrides": ctx.profile_overrides}
-            if ctx.profile_overrides
-            else {}
-        )
+        model_kwargs = _model_creation_kwargs(ctx, cli_max_retries)
         try:
             model_result = await asyncio.to_thread(
                 create_model,
                 model,
                 **model_kwargs,
             )
+        except ModelNotAllowedError:
+            # `ModelNotAllowedError` is a `ModelConfigError`; without this
+            # clause the handler below would swallow a policy denial, log it,
+            # and silently continue on the *current* model while the UI
+            # reported a switch. Not redundant -- do not remove.
+            raise
         except ModelConfigError:
+            if strict_model_resolution:
+                raise
             logger.exception(
                 "Failed to resolve runtime model override '%s'; "
                 "continuing with current model",
@@ -806,11 +829,16 @@ class ConfigurableModelMiddleware(AgentMiddleware):
     `AnthropicPromptCachingMiddleware`) runs.
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     def __init__(
         self,
         *,
         persist_model_state: bool = True,
         openai_prompt_cache_key: bool | None = None,
+        cli_max_retries: int | None = None,
+        strict_model_resolution: bool = False,
     ) -> None:
         """Initialize the middleware.
 
@@ -829,8 +857,14 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 `_resolve_openai_prompt_cache_key_enabled` re-raises rather than
                 masks. Pass an explicit bool to bypass the config read (mainly
                 for tests).
+            cli_max_retries: Explicit `--max-retries` value to retain across
+                runtime model switches.
+            strict_model_resolution: Whether invalid runtime model overrides should
+                fail the call instead of falling back to the construction-time model.
         """
         self._persist_model_state = persist_model_state
+        self._cli_max_retries = cli_max_retries
+        self._strict_model_resolution = strict_model_resolution
         self._openai_prompt_cache_key = (
             _resolve_openai_prompt_cache_key_enabled()
             if openai_prompt_cache_key is None
@@ -849,7 +883,10 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = _apply_overrides(
-            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+            request,
+            openai_prompt_cache_key=self._openai_prompt_cache_key,
+            cli_max_retries=self._cli_max_retries,
+            strict_model_resolution=self._strict_model_resolution,
         )
         request_started_at = _utc_now_iso()
         response = handler(resolved.request)
@@ -883,7 +920,10 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             completed call has model metadata to checkpoint.
         """
         resolved = await _apply_overrides_async(
-            request, openai_prompt_cache_key=self._openai_prompt_cache_key
+            request,
+            openai_prompt_cache_key=self._openai_prompt_cache_key,
+            cli_max_retries=self._cli_max_retries,
+            strict_model_resolution=self._strict_model_resolution,
         )
         request_started_at = _utc_now_iso()
         response = await handler(resolved.request)

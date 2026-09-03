@@ -36,6 +36,18 @@ Credential placement rules are in [`SECRETS.md`](./SECRETS.md). Release wiring i
 
 The two PR labelers also appear in [`RELEASING.md`](./RELEASING.md#ci-guardrails-around-releases) because the release guardrails section lists every check a PR may hit; the labelers' output does not drive release gating. The two issue labelers are not release-gated either.
 
+### PR gate workflows
+
+Blocking pre-merge checks that read PR metadata and fail until it is fixed or a
+bypass label is applied. They consume labels rather than apply them.
+
+- `pr_scope_file_check.yml` — fails when the PR title's package scope does not cover the package dirs it changes; bypass with `allow-scope-mismatch`.
+- `markdown_file_check.yml` — fails non-`docs` PRs that add Markdown files; bypass with `markdown-added: acknowledged`.
+- `project_readme_check.yml` — fails non-`docs` PRs that edit a project README; bypass with `readme: acknowledged`.
+
+None of these gate merges on their own — each must be added to the branch's
+required status checks.
+
 ## Local composite actions (`actions/`)
 
 Reusable steps shared by multiple workflows. Today this is mainly `actions/uv_setup` (Python + pinned `uv` with caching). Add a new composite action here only when two or more workflows need the same multi-step setup.

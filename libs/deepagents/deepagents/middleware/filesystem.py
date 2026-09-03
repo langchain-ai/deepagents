@@ -24,6 +24,8 @@ from langchain.agents.middleware.types import (
     ModelRequest,
     ModelResponse,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import ToolRuntime
 from langchain.tools.tool_node import ToolCallRequest
@@ -47,6 +49,7 @@ from deepagents.backends.protocol import (
     FileData as FileData,  # Re-export for backwards compatibility
     FileInfo,
     GlobResult,
+    GlobTruncationReason,
     GrepMatch,
     GrepResult,
     LsResult,
@@ -778,11 +781,22 @@ def _format_file_paths(paths: list[str]) -> str:
     return str(truncate_if_too_long(paths))
 
 
-def _format_glob_tool_result(paths: list[str], *, truncated: bool) -> str:
-    """Render glob paths for the tool boundary, appending the truncation note when partial."""
+def _format_glob_tool_result(
+    paths: list[str],
+    *,
+    truncated: bool,
+    truncation_reason: GlobTruncationReason | None = None,
+) -> str:
+    """Render glob paths for the tool boundary, appending the truncation note when partial.
+
+    The note depends on *why* the result is partial. Telling the model to narrow
+    its search when a subtree was unreadable sends it into a retry loop that can
+    never succeed, so that case gets its own note.
+    """
     content = _format_file_paths(paths)
     if truncated:
-        return f"{content}\n\n{GLOB_TRUNCATION_NOTE}"
+        note = GLOB_UNREADABLE_NOTE if truncation_reason == "unreadable" else GLOB_TRUNCATION_NOTE
+        return f"{content}\n\n{note}"
     return content
 
 
@@ -864,11 +878,18 @@ GREP_TRUNCATION_NOTE = (
     "The matches above are valid but incomplete. Narrow the search (a more specific pattern or a "
     "narrower path), or raise max_count, to see the rest."
 )
-# Glob has no match-count cap and no `max_count` argument, so its note names only
-# the time/size limit and omits the (inapplicable) "raise max_count" remedy.
+# Glob takes no `max_count` argument, so its note omits the (inapplicable)
+# "raise max_count" remedy. Backends do cap matches internally (`MAX_MATCHES` in
+# the sandbox script), hence "or size limit" rather than naming only the clock.
 GLOB_TRUNCATION_NOTE = (
-    "Note: the search stopped early because it hit its time limit. The paths above are valid but "
-    "incomplete. Narrow the search (a more specific pattern or a narrower path) to see the rest."
+    "Note: the search stopped early because it hit its time or size limit. The paths above are "
+    "valid but incomplete. Narrow the search (a more specific pattern or a narrower path) to see "
+    "the rest."
+)
+GLOB_UNREADABLE_NOTE = (
+    "Note: some directories could not be read, so the paths above are valid but incomplete. "
+    "Narrowing the search will NOT reveal the missing files -- they are inaccessible. Continue "
+    "with what is listed, or report the access problem rather than retrying."
 )
 
 
@@ -1004,6 +1025,30 @@ def _truncate_paginated_read(
     # backend's stale pagination offset.
     max_content_length = max(0, threshold - len(truncation_msg))
     return content[:max_content_length] + truncation_msg
+
+
+def _pad_blank_rows(content: str, start_line: int, end_line: int) -> str | list[str]:
+    r"""Restore blank source rows a page loses to `split("\n")`.
+
+    Backends that join a page's lines with `"\n"` as a separator leave a blank
+    final row indistinguishable from a trailing terminator, which
+    `format_content_with_line_numbers` drops. Pads to the window the backend
+    reported and never truncates, since a backend may append a truncation
+    banner numbered past `end_line`.
+
+    Args:
+        content: Serialized content for the read window.
+        start_line: First source line in the window.
+        end_line: Last source line in the window.
+
+    Returns:
+        A list of rows when padding was needed, `content` unchanged otherwise.
+    """
+    rows = content.split("\n")
+    if rows and rows[-1] == "":
+        rows.pop()
+    missing = end_line - start_line + 1 - len(rows)
+    return [*rows, *[""] * missing] if missing > 0 else content
 
 
 def _file_data_reducer(left: dict[str, FileData] | None, right: dict[str, FileData | None]) -> dict[str, FileData]:
@@ -1215,7 +1260,7 @@ class ExecuteSchema(BaseModel):
 
     timeout: int | None = Field(
         default=None,
-        description="Optional timeout in seconds for this command. Overrides the default timeout. Use 0 for no-timeout execution on backends that support it.",
+        description="Optional timeout in seconds for this command. Overrides the default timeout.",
     )
 
 
@@ -1316,7 +1361,7 @@ _EXECUTE_TOOL_DESCRIPTION_TEMPLATE = """Executes a shell command in an isolated 
 Usage:
 - Quote paths containing spaces (e.g. cd "/path/with spaces").
 - Chain commands with ';' or '&&' (use '&&' when a command depends on the previous); do not use newlines except inside quoted strings.
-- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default (0 disables it on backends that support that).
+- Use absolute paths and avoid `cd` so the working directory stays stable; use the optional timeout to override the default.
 - {search_guidance}Use read_file rather than cat/head/tail.{glob_bad_example}{grep_bad_example}
 
 Only available on backends implementing SandboxBackendProtocol; otherwise it returns an error."""
@@ -1615,6 +1660,9 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         ```
     """
 
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
+
     state_schema: type[FilesystemState]
 
     def __init__(
@@ -1882,22 +1930,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             encoding = read_result.file_data.get("encoding", "utf-8")
             content = read_result.file_data["content"]
 
-            # Empty files get a uniform warning regardless of encoding/type, so
-            # check before routing to avoid a degenerate empty content block for
-            # binary reads.
+            # Empty content earns the warning ahead of type routing so a binary
+            # read never renders a degenerate empty content block. Only content
+            # that is the whole file qualifies: an unpaginated result, or a
+            # window spanning every line. A blank window of a file with content
+            # elsewhere renders its rows below instead. Unknown `total_lines`
+            # fails closed, so an unprovable whole-file claim renders rows too.
             empty_msg = check_empty_content(content)
-            if empty_msg:
-                # Empty content has two causes that must not be conflated: a
-                # zero-line window, where the file was never inspected, and a
-                # genuinely empty file. Reporting the former as the latter
-                # states something false about a file that may have contents.
-                # The backend declares which one happened: both arrive as
-                # empty content with no pagination metadata, but only the
-                # never-inspected window sets `no_lines_requested` — a file
-                # that was inspected and is empty (whitespace-only text from
-                # `slice_read_response`'s blank branch, or empty base64 from
-                # a binary read that ignored `limit`) keeps the empty-file
-                # reminder.
+            is_whole_file = read_result.start_line is None or (read_result.start_line == 1 and read_result.total_lines == read_result.end_line)
+            if empty_msg and is_whole_file:
+                # A zero-line window never inspected the file, so it must not be
+                # reported as empty.
                 if not content and read_result.no_lines_requested:
                     empty_msg = NO_LINES_REQUESTED_WARNING.format(limit=limit)
                 return ToolMessage(
@@ -1935,11 +1978,17 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
                     status="success",
                 )
 
-            # `max(offset, 0)` so the fallback gutter stays 1-indexed: a backend
-            # that returns numberable text without `start_line` would otherwise
-            # render a zero or negative line marker, which the row-marker
-            # parsers downstream assume never happens.
-            content = format_content_with_line_numbers(content, start_line=read_result.start_line or max(offset, 0) + 1)
+            rows: str | list[str] = content
+            if read_result.start_line is not None and read_result.end_line is not None:
+                rows = _pad_blank_rows(content, read_result.start_line, read_result.end_line)
+            content = format_content_with_line_numbers(
+                rows,
+                # `max(offset, 0)` so the fallback gutter stays 1-indexed: a
+                # backend that returns numberable text without `start_line`
+                # would otherwise render a zero or negative line marker, which
+                # the row-marker parsers downstream assume never happens.
+                start_line=read_result.start_line or max(offset, 0) + 1,
+            )
             # `limit` already bounded raw source lines at the backend; do not
             # re-truncate by row count here, or wrapped continuation rows would
             # push real source lines off the end of the page (#2453).
@@ -2391,7 +2440,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
+                content=_format_glob_tool_result(
+                    paths,
+                    truncated=glob_result.truncated,
+                    truncation_reason=glob_result.truncation_reason,
+                ),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",
@@ -2455,7 +2508,11 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             infos = glob_result.matches or []
             paths = _apply_permissions_to_glob_results(self._permissions, infos)
             return ToolMessage(
-                content=_format_glob_tool_result(paths, truncated=glob_result.truncated),
+                content=_format_glob_tool_result(
+                    paths,
+                    truncated=glob_result.truncated,
+                    truncation_reason=glob_result.truncation_reason,
+                ),
                 tool_call_id=runtime.tool_call_id,
                 name="glob",
                 status="success",

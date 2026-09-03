@@ -3777,6 +3777,8 @@ class DeepAgentsApp(App):
 
         self._stale_header_allowed = sub_title is None
         self._base_sub_title = self.sub_title
+        self._stale_header_sub_title: str | None = None
+        """Stale-install subtitle currently owned by the update checker."""
         self._installation_stale: bool = (
             self._stale_header_allowed and is_installation_stale()
         )
@@ -3795,10 +3797,11 @@ class DeepAgentsApp(App):
                 self._installation_stale = False
             else:
                 unit = "day" if days == 1 else "days"
-                self.sub_title = (
+                self._stale_header_sub_title = (
                     f"Update available \u2014 installed version is "
                     f"{days} {unit} old (run /update)"
                 )
+                self.sub_title = self._stale_header_sub_title
 
         # Per-turn model overrides
         self._model_override: str | None = None
@@ -6509,14 +6512,22 @@ class DeepAgentsApp(App):
             and days >= INSTALLED_STALE_NOTICE_DAYS
         )
         self._installation_stale = stale
-        if stale:
+        owned_sub_title = self._stale_header_sub_title
+        owns_sub_title = (
+            owned_sub_title is not None and self.sub_title == owned_sub_title
+        )
+        if owned_sub_title is not None and not owns_sub_title:
+            self._stale_header_sub_title = None
+        if stale and (owns_sub_title or self.sub_title == self._base_sub_title):
             unit = "day" if days == 1 else "days"
-            self.sub_title = (
+            self._stale_header_sub_title = (
                 f"Update available — installed version is {days} {unit} old "
                 "(run /update)"
             )
-        else:
+            self.sub_title = self._stale_header_sub_title
+        elif not stale and owns_sub_title:
             self.sub_title = self._base_sub_title
+            self._stale_header_sub_title = None
         with suppress(NoMatches, ScreenStackError):
             for screen in self.screen_stack:
                 headers = screen.query("#app-header")

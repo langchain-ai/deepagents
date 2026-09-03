@@ -19861,6 +19861,34 @@ class TestStaleInstallBanner:
             app._refresh_stale_install_header(None)
             await pilot.pause()
             assert app.query_one("#app-header").display is True
+            assert app.sub_title == app._base_sub_title
+
+    async def test_runtime_stale_result_preserves_runtime_sub_title(self) -> None:
+        """A fresh stale result does not replace a runtime subtitle override."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+
+        app.sub_title = "Runtime status"
+        app._refresh_stale_install_header(7)
+
+        assert app.sub_title == "Runtime status"
+
+    async def test_runtime_fresh_result_preserves_runtime_sub_title(self) -> None:
+        """A fresh result only restores a stale subtitle still owned by dcode."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+
+        app._refresh_stale_install_header(7)
+        app.sub_title = "Runtime status"
+        app._refresh_stale_install_header(None)
+
+        assert app.sub_title == "Runtime status"
 
 
 class TestHandleExternalSignal:

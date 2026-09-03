@@ -127,6 +127,26 @@ re-applied only to the approval-gated shell backend's `execute` subprocesses by
 `agent._apply_inherited_pythonpath`.
 """
 
+_INHERITED_USER_TRACING_ENV = "DEEPAGENTS_INHERITED_USER_TRACING"
+"""Carrier var that relays the caller's pre-bootstrap tracing env to the server.
+
+`restore_user_tracing_env` / `restore_user_tracing_api_keys` revert bootstrap's
+overwrites of the canonical LangSmith flags and key so `execute` subprocesses
+run under the caller's own tracing identity. Both read `_bootstrap_state`, which
+is process-local — and the server subprocess inherits an environment where
+bootstrap has *already* overwritten those values (they are not in
+`_dotenv_loaded_values`, so the dotenv strip in `server._build_server_env`
+cannot undo them). Its own captured "originals" would therefore be the agent's
+values, and restoring from them would be a no-op that leaks the agent session
+key into user commands.
+
+The client instead serializes its true originals into this var, and
+`agent._apply_inherited_user_tracing` consumes it when building the shell
+environment. Denied from every `.env` for the same reason as
+`_INHERITED_PYTHONPATH_ENV`: a project file must not be able to choose which
+tracing credentials user commands run under.
+"""
+
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
         "BASH_ENV",
@@ -163,6 +183,7 @@ _DOTENV_DENIED_ENV_KEYS = frozenset(
         "WINDIR",
         READ_PROJECT_DOTENV,
         _INHERITED_PYTHONPATH_ENV,
+        _INHERITED_USER_TRACING_ENV,
     }
 )
 """Environment keys that no `.env` file may inject.
@@ -207,6 +228,9 @@ without checking which category it belongs to:
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
+`_INHERITED_USER_TRACING_ENV` is denied for the same reason: it decides which
+LangSmith flags and key user commands run under, so only the client's captured
+pre-bootstrap state may populate it.
 
 `READ_PROJECT_DOTENV` is denied from *every* `.env` (not just the project one)
 because it is a trust decision about the loader itself: if a project `.env`
@@ -1063,6 +1087,67 @@ def restore_user_tracing_api_keys(env: dict[str, str]) -> None:
             env.pop(var, None)
         else:
             env[var] = value
+
+
+def export_user_tracing_env(env: dict[str, str]) -> None:
+    """Relay the caller's pre-bootstrap tracing env into a server subprocess.
+
+    The server cannot recover these values itself: it inherits an environment
+    bootstrap has already overwritten, so its own capture would restore the
+    agent's key. See `_INHERITED_USER_TRACING_ENV`. Mutates `env` in place; the
+    carrier is always popped first so an inherited value is never trusted.
+
+    Args:
+        env: Environment mapping for the server subprocess, modified in place.
+    """
+    env.pop(_INHERITED_USER_TRACING_ENV, None)
+    if not _bootstrap_state.done:
+        return
+    originals = {
+        **_bootstrap_state.original_tracing_env,
+        **_bootstrap_state.original_tracing_api_keys,
+    }
+    env[_INHERITED_USER_TRACING_ENV] = json.dumps(originals)
+
+
+def apply_inherited_user_tracing(env: dict[str, str]) -> bool:
+    """Apply relayed caller tracing values to a shell-command environment.
+
+    Mirrors `restore_user_tracing_env` / `restore_user_tracing_api_keys` for the
+    server path, where `_bootstrap_state` holds the agent's values rather than
+    the caller's. A `None` entry means the caller had no value, so the variable
+    is removed rather than set. Mutates `env` in place.
+
+    Args:
+        env: Environment mapping for the shell backend, modified in place.
+
+    Returns:
+        Whether a relayed value was found and applied.
+    """
+    relayed = env.pop(_INHERITED_USER_TRACING_ENV, None)
+    if relayed is None:
+        return False
+    try:
+        originals = json.loads(relayed)
+    except ValueError:
+        logger.warning(
+            "Could not parse relayed caller tracing environment; dropping the "
+            "agent's tracing variables from shell commands instead of "
+            "restoring the caller's."
+        )
+        originals = None
+    if not isinstance(originals, dict):
+        # Fail closed: without the caller's values, removing the agent's is
+        # still better than passing the agent session key to user commands.
+        for var in (*_TRACING_ENABLE_ENV_VARS, *_TRACING_API_KEY_ENV_VARS):
+            env.pop(var, None)
+        return True
+    for var, value in originals.items():
+        if value is None:
+            env.pop(var, None)
+        else:
+            env[var] = str(value)
+    return True
 
 
 def _disable_orphaned_tracing() -> None:
@@ -5380,8 +5465,23 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
         stored_key = auth_store.get_stored_key(provider)
         stored_base_url = auth_store.get_stored_base_url(provider)
     except RuntimeError:
-        return
-    if not stored_key:
+        # On the scoped path this function is the only thing enforcing the
+        # key/endpoint pairing, because `apply_stored_credentials` is skipped.
+        # `resolve_provider_credential` still falls back to the environment key,
+        # so fail closed: drop an inherited gateway endpoint and its auth
+        # headers rather than shipping that key to it.
+        logger.warning(
+            "Could not read the stored credential for %r; the credential file "
+            "may be corrupt. Clearing any inherited endpoint so the resolved "
+            "key is not sent to it. Re-add the key via /auth.",
+            provider,
+        )
+        stored_key = None
+        stored_base_url = None
+        store_unreadable = True
+    else:
+        store_unreadable = False
+    if not store_unreadable and not stored_key:
         return
     provider_config = ModelConfig.load().providers.get(provider)
     configured_url = provider_config.get("base_url") if provider_config else None
@@ -5419,7 +5519,16 @@ def _apply_google_anthropic_vertex_kwargs(
             if not project:
                 project = auth_store.get_stored_key(provider)
         except RuntimeError:
-            pass
+            # `google_anthropic_vertex` stores the GCP project id in the key
+            # slot. It is also an implicit-auth provider, so the early
+            # credential check never fires — without this log a corrupt store
+            # surfaces only as an opaque ADC project-inference error.
+            logger.warning(
+                "Could not read the stored Google Cloud project for %r; the "
+                "credential file may be corrupt. Falling back to ADC project "
+                "inference. Re-add the project via /auth.",
+                provider,
+            )
     if project:
         kwargs.setdefault("project", project)
     if location:
@@ -5982,9 +6091,24 @@ def create_model(
                 try:
                     stored_base_url = auth_store.get_stored_base_url(provider)
                 except RuntimeError:
-                    stored_base_url = None
-                if stored_base_url and kwargs.get("base_url") == stored_base_url:
+                    # The caller passed an explicit `api_key` with no
+                    # `base_url`. Without the store we cannot tell whether the
+                    # inherited endpoint was paired with the *stored* key, so
+                    # fail closed and drop it: sending an explicitly supplied
+                    # key to a gateway it was not issued for is the worse
+                    # outcome.
+                    logger.warning(
+                        "Could not read the stored endpoint for %r; the "
+                        "credential file may be corrupt. Dropping the "
+                        "inherited base URL so the explicitly supplied key is "
+                        "not sent to it. Pass `base_url` via `--model-params` "
+                        "to target an endpoint explicitly.",
+                        provider,
+                    )
                     kwargs.pop("base_url", None)
+                else:
+                    if stored_base_url and kwargs.get("base_url") == stored_base_url:
+                        kwargs.pop("base_url", None)
         else:
             _apply_scoped_stored_endpoint(provider, kwargs)
             if extra_kwargs and "base_url" in extra_kwargs:

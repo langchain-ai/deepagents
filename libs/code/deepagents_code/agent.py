@@ -107,6 +107,7 @@ from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
+    apply_inherited_user_tracing,
     console,
     credentials,
     get_default_coding_instructions,
@@ -3000,7 +3001,13 @@ def create_cli_agent(
                 )
             else:
                 shell_env.pop("LANGSMITH_PROJECT", None)
-            if environ is None:
+            # Restore the caller's tracing flags and key so `execute` commands
+            # never run under the agent's session credentials. On the server
+            # path the client relays its pre-bootstrap values through
+            # `_INHERITED_USER_TRACING_ENV`, because this process's own
+            # `_bootstrap_state` already holds the agent's values; when nothing
+            # was relayed, the local capture is authoritative.
+            if not apply_inherited_user_tracing(shell_env):
                 restore_user_tracing_env(shell_env)
                 restore_user_tracing_api_keys(shell_env)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
@@ -3011,11 +3018,11 @@ def create_cli_agent(
             # The SDK's FilesystemMiddleware exposes per-command timeout
             # on the execute tool natively.
             # `inherit_env=False`: `shell_env` is already a complete, curated
-            # copy of `os.environ`. Inheriting again would re-copy `os.environ`
-            # and resurrect the popped carrier var, leaking it into `execute`.
-            # `restore_user_tracing_api_keys` above depends on this too: flipping
-            # to `inherit_env=True` would re-copy the agent's overridden
-            # `LANGSMITH_API_KEY` and undo the restore, leaking it into `execute`.
+            # copy of the active environment. Inheriting again would re-copy
+            # `os.environ` and resurrect the popped carrier vars, leaking them
+            # into `execute`. The tracing restore above depends on this too:
+            # flipping to `inherit_env=True` would re-copy the agent's
+            # overridden `LANGSMITH_API_KEY` and undo the restore.
             backend = LocalShellBackend(
                 root_dir=root_dir,
                 virtual_mode=False,

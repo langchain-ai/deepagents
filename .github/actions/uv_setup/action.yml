@@ -32,7 +32,7 @@ runs:
         # reference resolved to empty and setup-uv silently took latest,
         # racing the `releases.astral.sh` mirror on fresh releases.
         # `bump_uv_pin.yml` keeps this pin fresh on a monthly cron.
-        version: "0.12.3"
+        version: "0.12.8"
         python-version: ${{ inputs.python-version }}
         enable-cache: ${{ inputs.enable-cache }}
         # setup-uv v9 flipped this default from `true` to `false` (its one

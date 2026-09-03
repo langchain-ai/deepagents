@@ -16,6 +16,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api import beta
@@ -235,6 +237,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
         ```
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
 
     state_schema = REPLState
 

@@ -2,6 +2,12 @@
   "name": "deepagents-talon-whatsapp-bridge",
   "private": true,
   "type": "commonjs",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "test": "node --test ../../../tests/channels/whatsapp_bridge/*.test.js"
+  },
   "dependencies": {
     "qrcode-terminal": "^0.12.0",
     "whatsapp-web.js": "^1.26.0"

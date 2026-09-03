@@ -22,7 +22,6 @@ from langchain.agents.middleware.types import (
 )
 
 from deepagents_code._cli_context import CLIContextSchema
-from deepagents_code.goal_state_notice import is_conversation_control_message
 from deepagents_code.resume_state import (
     INHERIT_RUBRIC_MODEL,
     coerce_model_spec,
@@ -67,26 +66,6 @@ def _model_specs_match(actual: str, requested: str) -> bool:
     # A mixed pair compares bare names. `split` mirrors `ModelSpec.parse`, so a
     # model id that itself contains a colon stays intact.
     return actual.split(":", 1)[-1] == requested.split(":", 1)[-1]
-
-
-def _without_internal_control_messages(state: RubricState) -> RubricState:
-    """Remove dcode control turns before the SDK builds grader evidence.
-
-    Returns:
-        Original state when unchanged, otherwise a shallow copy with filtered
-        messages.
-    """
-    messages = state.get("messages", [])
-    if not isinstance(messages, list):
-        return state
-    filtered: list[AnyMessage] = [
-        message for message in messages if not is_conversation_control_message(message)
-    ]
-    if len(filtered) == len(messages):
-        return state
-    updated = dict(state)
-    updated["messages"] = filtered
-    return cast("RubricState", updated)
 
 
 class ReliableRubricState(RubricState):
@@ -152,6 +131,11 @@ class ReliableRubricMiddleware(RubricMiddleware):
         tools: Sequence[BaseTool] | None = None,
         grader_middleware: Sequence[AgentMiddleware[Any, Any]] | None = None,
         grader_context_schema: type[Any] | None = None,
+        grader_state_schema: type[AgentState[Any]] | None = None,
+        prepare_messages_for_grader: Callable[[list[AnyMessage]], list[AnyMessage]]
+        | None = None,
+        build_grader_state: Callable[[RubricState, int], Mapping[str, Any]]
+        | None = None,
         runtime_bootstrap_model: str | BaseChatModel | None = None,
         inherit_main_model: bool = False,
         max_iterations: int = 3,
@@ -161,11 +145,14 @@ class ReliableRubricMiddleware(RubricMiddleware):
             model=model,
             system_prompt=system_prompt,
             tools=tools,
+            grader_middleware=grader_middleware,
+            grader_context_schema=grader_context_schema,
+            grader_state_schema=grader_state_schema,
+            prepare_messages_for_grader=prepare_messages_for_grader,
+            build_grader_state=build_grader_state,
             max_iterations=max_iterations,
             on_evaluation=on_evaluation,
         )
-        self._grader_middleware = list(grader_middleware or ())
-        self._grader_context_schema = grader_context_schema
         self._runtime_bootstrap_model = runtime_bootstrap_model
         self._runtime_grader: Any = None
         self._inherit_main_model = inherit_main_model
@@ -299,7 +286,7 @@ class ReliableRubricMiddleware(RubricMiddleware):
             middleware=self._grader_middleware,
             name=RUBRIC_GRADER_MESSAGE_SOURCE,
             response_format=GraderResponse,
-            state_schema=RubricGraderState,
+            state_schema=self._grader_state_schema,
             context_schema=self._grader_context_schema,
         )
         return grader, resolved_model
@@ -384,28 +371,3 @@ class ReliableRubricMiddleware(RubricMiddleware):
                 iteration,
                 exc,
             )
-
-    def _grader_input(
-        self,
-        state: RubricState,
-        iteration: int,
-        correction: str | None = None,
-    ) -> dict[str, Any]:
-        """Build nested-grader input with a stable verification-operation ID.
-
-        Drops dcode control turns before delegating to the SDK, which applies
-        the delimiter sanitization for the untrusted transcript.
-
-        Args:
-            state: Agent state, read for the rubric and transcript.
-            iteration: Zero-based grading iteration.
-            correction: Feedback about a previous unusable response, if any.
-
-        Returns:
-            The nested grader's input state.
-        """
-        grading_run_id = state.get("_current_grading_run_id") or "untracked"
-        grader_state = _without_internal_control_messages(state)
-        grader_input = super()._grader_input(grader_state, iteration, correction)
-        grader_input["rubric_grading_operation_id"] = f"{grading_run_id}:{iteration}"
-        return grader_input

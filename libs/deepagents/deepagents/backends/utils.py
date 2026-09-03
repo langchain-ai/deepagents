@@ -21,6 +21,7 @@ from deepagents.backends.protocol import FileData, FileInfo as _FileInfo, GrepMa
 logger = logging.getLogger(__name__)
 
 EMPTY_CONTENT_WARNING = "System reminder: File exists but has empty contents"
+EMPTY_OLD_STRING_ERROR = "Error: old_string cannot be empty. Provide the exact text to replace."
 
 
 class InvalidGlobPatternError(ValueError):
@@ -534,6 +535,9 @@ def perform_string_replacement(
     Returns:
         Tuple of `(new_content, occurrences)` on success, or error message string
     """
+    if not old_string:
+        return EMPTY_OLD_STRING_ERROR
+
     occurrences = content.count(old_string)
 
     if occurrences == 0:
@@ -860,7 +864,8 @@ def _glob_search_files(
         relative = _relative_to_root(file_path, normalized_path)
 
         if matcher(relative):
-            matches.append((file_path, file_data["modified_at"]))
+            # `modified_at` is NotRequired on `FileData`; undated files sort last.
+            matches.append((file_path, file_data.get("modified_at", "")))
 
     matches.sort(key=lambda x: x[1], reverse=True)
 

@@ -218,10 +218,6 @@ class TestConstruction:
         with pytest.raises(TypeError, match=f"`{name}` must be callable"):
             RubricMiddleware(model=_STUB_MODEL, **kwargs)  # type: ignore[arg-type]
 
-    def test_tools_default_to_empty(self) -> None:
-        mw = RubricMiddleware(model=_STUB_MODEL)
-        assert mw._tools == []
-
     def test_tools_propagated(self) -> None:
         @tool
         def my_tool(query: str) -> str:

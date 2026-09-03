@@ -259,6 +259,7 @@ async def _make_graphs(
         Any,
         Any,
         Any,
+        Any,
     ]:
         project_context = project_context_override or get_server_project_context()
 
@@ -268,6 +269,7 @@ async def _make_graphs(
             create_model,
             credentials,
             is_memory_auto_save_enabled,
+            resolve_auto_classifier_model_for_provider,
         )
 
         if project_context is not None:
@@ -279,6 +281,7 @@ async def _make_graphs(
             create_model,
             is_memory_auto_save_enabled,
             configure_langsmith_secret_redaction,
+            resolve_auto_classifier_model_for_provider,
         )
 
     (
@@ -288,6 +291,7 @@ async def _make_graphs(
         create_model,
         is_memory_auto_save_enabled,
         configure_langsmith_secret_redaction,
+        resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
     configure_langsmith_secret_redaction()
 
@@ -399,7 +403,10 @@ async def _make_graphs(
             interpreter_config=interpreter_config,
             rubric_model=config.rubric_model,
             rubric_max_iterations=config.rubric_max_iterations,
-            auto_classifier_model=config.auto_classifier_model,
+            auto_classifier_model=resolve_auto_classifier_model_for_provider(
+                result.provider,
+                config.auto_classifier_model,
+            ),
             recursion_limit=config.recursion_limit,
             mcp_server_info=mcp_server_info,
             cwd=project_context.user_cwd if project_context is not None else config.cwd,

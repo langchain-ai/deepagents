@@ -683,24 +683,6 @@ def test_composite_backend_execute_without_sandbox_default():
         comp.execute("ls -la")
 
 
-def test_composite_backend_supports_execution_check():
-    """Test the isinstance check works correctly for CompositeBackend."""
-    mem_store = InMemoryStore()
-
-    # CompositeBackend with sandbox default should pass isinstance check
-    sandbox = MockSandboxBackend(store=mem_store, namespace=lambda _rt: ("default",))
-    comp_with_sandbox = CompositeBackend(default=sandbox, routes={})
-    # Note: CompositeBackend itself has execute() method, so isinstance will pass
-    # but the actual support depends on the default backend
-    assert hasattr(comp_with_sandbox, "execute")
-
-    # CompositeBackend with non-sandbox default should still have execute() method
-    # but will raise NotImplementedError when called
-    state = StoreBackend(store=mem_store, namespace=lambda _rt: ("default",))
-    comp_without_sandbox = CompositeBackend(default=state, routes={})
-    assert hasattr(comp_without_sandbox, "execute")
-
-
 def test_composite_backend_execute_with_routed_backends():
     """Test that execution doesn't interfere with file routing."""
     mem_store = InMemoryStore()

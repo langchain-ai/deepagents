@@ -19873,7 +19873,7 @@ class TestStaleInstallBanner:
             await pilot.pause()
             header = app.query_one(Header)
             assert header.display is False
-            app._refresh_stale_install_header(7)
+            app._refresh_stale_install_header(7, update_available=True)
             await pilot.pause()
             assert header.display is True
             assert app.sub_title == (
@@ -19893,8 +19893,8 @@ class TestStaleInstallBanner:
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            app._refresh_stale_install_header(7)
-            app._refresh_stale_install_header(None)
+            app._refresh_stale_install_header(7, update_available=True)
+            app._refresh_stale_install_header(None, update_available=False)
             await pilot.pause()
             assert app.query_one("#app-header").display is True
             assert app.sub_title == app._base_sub_title
@@ -19908,9 +19908,94 @@ class TestStaleInstallBanner:
             app = DeepAgentsApp()
 
         app.sub_title = "Runtime status"
-        app._refresh_stale_install_header(7)
+        app._refresh_stale_install_header(7, update_available=True)
 
         assert app.sub_title == "Runtime status"
+
+    async def test_unknown_age_keeps_a_shown_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unknown age never retracts an advisory the user already saw."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(Header)
+            app._refresh_stale_install_header(21, update_available=True)
+            await pilot.pause()
+            assert header.display is True
+
+            # The release-time cache went cold (e.g. a concurrent `dcode`
+            # rewrote it) while the update is still outstanding.
+            app._refresh_stale_install_header(None, update_available=True)
+            await pilot.pause()
+
+            assert header.display is True
+            assert app._installation_stale is True
+            assert app.sub_title == self._MESSAGE_21
+
+    async def test_resolved_update_hides_the_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A result with no update left hides the header and restores sub_title."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(Header)
+            app._refresh_stale_install_header(21, update_available=True)
+            await pilot.pause()
+            assert header.display is True
+            assert app.sub_title == self._MESSAGE_21
+
+            app._refresh_stale_install_header(None, update_available=False)
+            await pilot.pause()
+
+            assert header.display is False
+            assert app._installation_stale is False
+            assert app.sub_title == app._base_sub_title
+
+    async def test_resolved_update_restores_sandbox_sub_title(self) -> None:
+        """Clearing the advisory puts the sandbox label back."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp(server_kwargs={"sandbox_type": "modal"})
+
+        app._refresh_stale_install_header(21, update_available=True)
+        assert app.sub_title == self._MESSAGE_21
+
+        app._refresh_stale_install_header(None, update_available=False)
+
+        assert app.sub_title == "Sandbox: Modal"
+
+    async def test_explicit_sub_title_blocks_runtime_banner(self) -> None:
+        """An explicitly passed subtitle is never replaced by the advisory."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp(sub_title="custom")
+
+        app._refresh_stale_install_header(21, update_available=True)
+
+        assert app.sub_title == "custom"
+        assert app._installation_stale is False
 
     async def test_runtime_fresh_result_preserves_runtime_sub_title(self) -> None:
         """A fresh result only restores a stale subtitle still owned by dcode."""
@@ -19920,9 +20005,9 @@ class TestStaleInstallBanner:
         ):
             app = DeepAgentsApp()
 
-        app._refresh_stale_install_header(7)
+        app._refresh_stale_install_header(7, update_available=True)
         app.sub_title = "Runtime status"
-        app._refresh_stale_install_header(None)
+        app._refresh_stale_install_header(None, update_available=False)
 
         assert app.sub_title == "Runtime status"
 

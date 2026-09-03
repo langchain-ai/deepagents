@@ -6510,13 +6510,34 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
 
-    def _refresh_stale_install_header(self, days: int | None) -> None:
-        """Refresh the stale-install header from a fresh update result."""
+    def _refresh_stale_install_header(
+        self,
+        days: int | None,
+        *,
+        update_available: bool,
+    ) -> None:
+        """Refresh the stale-install header from a fresh update result.
+
+        Args:
+            days: Whole days since the installed release, or `None` when the
+                age is unknown. `None` with *update_available* set leaves the
+                header untouched: the release-time cache can go cold mid-session
+                (a concurrent `dcode` rewrites it), and an unknown age is no
+                reason to retract an advisory the user has already read.
+            update_available: Whether a newer version was just confirmed. `False`
+                hides the banner and restores the base subtitle.
+        """
         from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
         from deepagents_code.update_check import INSTALLED_STALE_NOTICE_DAYS
 
+        if update_available and days is None:
+            logger.debug(
+                "Installed version age unknown; leaving the stale-install header as is"
+            )
+            return
         stale = (
             self._stale_header_allowed
+            and update_available
             and days is not None
             and days >= INSTALLED_STALE_NOTICE_DAYS
         )
@@ -6615,16 +6636,16 @@ class DeepAgentsApp(App):
                 return
             if not available:
                 self._update_available = (False, None)
-                self._refresh_stale_install_header(None)
+                self._refresh_stale_install_header(None, update_available=False)
                 return
             if await asyncio.to_thread(is_installed_version_at_least, latest):
                 self._update_available = (False, None)
-                self._refresh_stale_install_header(None)
+                self._refresh_stale_install_header(None, update_available=False)
                 return
 
             self._update_available = (True, latest)
             days = await asyncio.to_thread(installed_days_old)
-            self._refresh_stale_install_header(days)
+            self._refresh_stale_install_header(days, update_available=True)
         except Exception:
             logger.debug("Background update check failed", exc_info=True)
             return

@@ -288,14 +288,24 @@ class TestServerGraph:
         }
 
 
+def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
+    """Resolve a workspace binding for `cwd`, creating the directory first."""
+    from deepagents_code.workspace import resolve_workspace
+
+    cwd.mkdir(exist_ok=True)
+    return resolve_workspace(
+        str(cwd),
+        config.to_workspace_payload(),
+        config_fingerprint=config.workspace_fingerprint(),
+    )
+
+
 class TestWorkspaceRuntime:
     """Workspace runtimes retain trusted server-only configuration."""
 
     async def test_uses_full_server_config_and_replaces_only_workspace_paths(
         self, tmp_path
     ) -> None:
-        from deepagents_code.workspace import resolve_workspace
-
         module = _import_fresh_server_graph()
         bound_config = ServerConfig(
             model="trusted:model",
@@ -303,11 +313,7 @@ class TestWorkspaceRuntime:
             model_params={"api_key": "secret"},
             auto_approve=True,
         )
-        binding = resolve_workspace(
-            str(tmp_path),
-            bound_config.to_workspace_payload(),
-            config_fingerprint=bound_config.workspace_fingerprint(),
-        )
+        binding = _bind(bound_config, tmp_path)
         runtime = module.ServerRuntime(object(), object(), object())
         with (
             patch.object(ServerConfig, "from_env", return_value=bound_config),
@@ -328,24 +334,13 @@ class TestWorkspaceRuntime:
 
     async def test_readiness_runtime_owns_sandbox_workspace(self, tmp_path) -> None:
         """The startup runtime must reserve its sandbox for the launch workspace."""
-        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+        from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
         launch_dir = tmp_path / "launch"
-        other_dir = tmp_path / "other"
-        launch_dir.mkdir()
-        other_dir.mkdir()
         config = ServerConfig(sandbox_type="daytona", cwd=str(launch_dir))
-        launch = resolve_workspace(
-            str(launch_dir),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
-        )
-        other = resolve_workspace(
-            str(other_dir),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
-        )
+        launch = _bind(config, launch_dir)
+        other = _bind(config, tmp_path / "other")
         readiness_runtime = module.ServerRuntime(object(), object(), object())
         make = AsyncMock(return_value=readiness_runtime)
 
@@ -363,24 +358,12 @@ class TestWorkspaceRuntime:
     async def test_sandbox_refuses_second_workspace_and_keeps_first(
         self, tmp_path
     ) -> None:
-        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+        from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
         config = ServerConfig(sandbox_type="daytona")
-        first_dir = tmp_path / "first"
-        second_dir = tmp_path / "second"
-        first_dir.mkdir()
-        second_dir.mkdir()
-        first = resolve_workspace(
-            str(first_dir),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
-        )
-        second = resolve_workspace(
-            str(second_dir),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
-        )
+        first = _bind(config, tmp_path / "first")
+        second = _bind(config, tmp_path / "second")
         first_runtime = module.ServerRuntime(object(), object(), object())
         make = AsyncMock(return_value=first_runtime)
 
@@ -406,24 +389,12 @@ class TestWorkspaceRuntime:
         self, tmp_path
     ) -> None:
         """A failed build must not let another workspace claim the sandbox."""
-        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+        from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
         config = ServerConfig(sandbox_type="daytona")
-        first_dir = tmp_path / "first"
-        second_dir = tmp_path / "second"
-        first_dir.mkdir()
-        second_dir.mkdir()
-        first = resolve_workspace(
-            str(first_dir),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
-        )
-        second = resolve_workspace(
-            str(second_dir),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
-        )
+        first = _bind(config, tmp_path / "first")
+        second = _bind(config, tmp_path / "second")
         first_runtime = module.ServerRuntime(object(), object(), object())
         make = AsyncMock(side_effect=[SystemExit(1), first_runtime])
 
@@ -440,22 +411,9 @@ class TestWorkspaceRuntime:
         assert make.await_count == 2
 
     async def test_without_sandbox_builds_second_workspace(self, tmp_path) -> None:
-        from deepagents_code.workspace import resolve_workspace
-
         module = _import_fresh_server_graph()
         config = ServerConfig()
-        first_dir = tmp_path / "first"
-        second_dir = tmp_path / "second"
-        first_dir.mkdir()
-        second_dir.mkdir()
-        bindings = [
-            resolve_workspace(
-                str(directory),
-                config.to_workspace_payload(),
-                config_fingerprint=config.workspace_fingerprint(),
-            )
-            for directory in (first_dir, second_dir)
-        ]
+        bindings = [_bind(config, tmp_path / name) for name in ("first", "second")]
         runtimes = [
             module.ServerRuntime(object(), object(), object()),
             module.ServerRuntime(object(), object(), object()),
@@ -473,15 +431,11 @@ class TestWorkspaceRuntime:
         assert make.await_count == 2
 
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
-        from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+        from deepagents_code.workspace import WorkspaceConflictError
 
         module = _import_fresh_server_graph()
         bound_config = ServerConfig(model="trusted:model")
-        binding = resolve_workspace(
-            str(tmp_path),
-            bound_config.to_workspace_payload(),
-            config_fingerprint=bound_config.workspace_fingerprint(),
-        )
+        binding = _bind(bound_config, tmp_path)
         with (
             patch.object(
                 ServerConfig,

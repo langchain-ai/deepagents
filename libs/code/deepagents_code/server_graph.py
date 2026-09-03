@@ -35,7 +35,7 @@ from deepagents_code._startup_error import (
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
-from deepagents_code.workspace import WorkspaceConflictError
+from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -550,7 +550,7 @@ def _build_graph_factory(
 
 _get_runtime = _build_runtime_factory()
 _MAX_WORKSPACE_RUNTIMES = 32
-_workspace_runtimes: OrderedDict[str, tuple[str, ServerRuntime]] = OrderedDict()
+_workspace_runtimes: OrderedDict[str, ServerRuntime] = OrderedDict()
 _workspace_runtime_lock = asyncio.Lock()
 _sandbox_workspace_id: str | None = None
 
@@ -561,16 +561,16 @@ def _cached_workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime | None
     if cached is None:
         return None
     _workspace_runtimes.move_to_end(binding.resource_key)
-    return cached[1]
+    return cached
 
 
 def _claim_sandbox_workspace(
-    config: ServerConfig,
+    sandbox_type: str | None,
     binding: WorkspaceBinding,
 ) -> None:
     """Reserve the process-wide sandbox for the first requesting workspace."""
     global _sandbox_workspace_id  # noqa: PLW0603  # process-lifetime ownership
-    if not config.sandbox_type:
+    if not sandbox_type:
         return
     if _sandbox_workspace_id is None:
         _sandbox_workspace_id = binding.workspace_id
@@ -581,6 +581,8 @@ def _claim_sandbox_workspace(
         "a runtime for another workspace already exists and the configured "
         "sandbox is process-wide"
     )
+    # Built into a local first: `raise X.from_reason(...)` reads as a
+    # `from_reason` raise to ruff's DOC501.
     conflict = WorkspaceConflictError.from_reason(reason)
     raise conflict
 
@@ -590,7 +592,7 @@ def _remember_workspace_runtime(
     runtime: ServerRuntime,
 ) -> None:
     """Cache one workspace runtime and enforce the bounded LRU size."""
-    _workspace_runtimes[binding.resource_key] = (binding.workspace_id, runtime)
+    _workspace_runtimes[binding.resource_key] = runtime
     if len(_workspace_runtimes) > _MAX_WORKSPACE_RUNTIMES:
         _workspace_runtimes.popitem(last=False)
 
@@ -603,8 +605,6 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     """
     if config.cwd is None:
         return None
-    from deepagents_code.workspace import resolve_workspace
-
     return await asyncio.to_thread(
         resolve_workspace,
         config.cwd,
@@ -637,9 +637,11 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
             or current_config.to_workspace_payload() != binding.workspace_config()
         ):
             reason = "the server configuration changed after this workspace was bound"
+            # Built into a local first: `raise X.from_reason(...)` reads as a
+            # `from_reason` raise to ruff's DOC501.
             conflict = WorkspaceConflictError.from_reason(reason)
             raise conflict
-        _claim_sandbox_workspace(current_config, binding)
+        _claim_sandbox_workspace(current_config.sandbox_type, binding)
         project_context = ProjectContext(
             user_cwd=Path(binding.cwd),
             project_root=Path(binding.project_root) if binding.project_root else None,
@@ -676,14 +678,14 @@ async def get_server_runtime() -> ServerRuntime:
         emit_startup_failure(exc)
         sys.exit(1)
     async with _workspace_runtime_lock:
-        if binding is not None:
-            cached = _cached_workspace_runtime(binding)
-            if cached is not None:
-                return cached
-            _claim_sandbox_workspace(config, binding)
+        if binding is None:
+            return await _get_runtime()
+        cached = _cached_workspace_runtime(binding)
+        if cached is not None:
+            return cached
+        _claim_sandbox_workspace(config.sandbox_type, binding)
         runtime = await _get_runtime()
-        if binding is not None:
-            _remember_workspace_runtime(binding, runtime)
+        _remember_workspace_runtime(binding, runtime)
         return runtime
 
 

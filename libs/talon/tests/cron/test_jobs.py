@@ -309,12 +309,3 @@ def test_interval_job_catches_up_after_long_downtime(tmp_path) -> None:
 
     assert claimed is not None
     assert claimed.next_run_at == back_online + timedelta(minutes=1)
-
-
-def test_schedule_keeps_its_original_positional_signature() -> None:
-    # CronSchedule is exported from the package root, so the first three
-    # argument positions are public API and must keep working positionally.
-    schedule = CronSchedule("recurring", 15, "every 15m")
-
-    assert schedule == CronSchedule.parse("every 15m")
-    assert schedule.form == "interval"

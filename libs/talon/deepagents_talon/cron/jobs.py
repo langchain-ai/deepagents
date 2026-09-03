@@ -143,20 +143,24 @@ class CronOrigin:
 class CronSchedule:
     """Minute-granularity schedule for a cron job.
 
+    The first three fields keep the argument positions this class has always
+    had, so `CronSchedule("recurring", 15, "every 15m")` still constructs an
+    interval schedule. Wall-clock forms pass `minutes=None`.
+
     Args:
         kind: Whether the schedule is one-shot or recurring.
+        minutes: Delay or interval in minutes, or `None` for wall-clock forms.
         display: Human-readable schedule text. Canonicalized for wall-clock forms.
         form: Which arithmetic computes the next run.
-        minutes: Delay or interval in minutes. Interval schedules only.
         timezone: IANA timezone name. Wall-clock schedules only.
         local_time: Local `HH:MM` wall-clock time. Wall-clock schedules only.
         local_date: Local `YYYY-MM-DD` date. One-shot wall-clock schedules only.
     """
 
     kind: ScheduleKind
+    minutes: int | None
     display: str
     form: ScheduleForm = "interval"
-    minutes: int | None = None
     timezone: str | None = None
     local_time: str | None = None
     local_date: str | None = None
@@ -256,6 +260,7 @@ class CronSchedule:
         _resolve_zone(zone_name)
         return cls(
             kind="one_shot",
+            minutes=None,
             display=f"at {local_date.isoformat()} {local_time} {zone_name}",
             form="at",
             timezone=zone_name,
@@ -269,6 +274,7 @@ class CronSchedule:
         _resolve_zone(zone_name)
         return cls(
             kind="recurring",
+            minutes=None,
             display=f"daily at {local_time} {zone_name}",
             form="daily",
             timezone=zone_name,
@@ -340,9 +346,9 @@ class CronSchedule:
         """
         return cls(
             kind=data["kind"],
+            minutes=data.get("minutes"),
             display=data["display"],
             form=data.get("form", "interval"),
-            minutes=data.get("minutes"),
             timezone=data.get("timezone"),
             local_time=data.get("local_time"),
             local_date=data.get("local_date"),

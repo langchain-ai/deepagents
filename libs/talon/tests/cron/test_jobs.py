@@ -355,3 +355,12 @@ def test_store_loads_schedules_written_before_wall_clock_support(tmp_path) -> No
     }
     assert claimed is not None
     assert claimed.next_run_at == now + timedelta(minutes=30)
+
+
+def test_schedule_keeps_its_original_positional_signature() -> None:
+    # CronSchedule is exported from the package root, so the first three
+    # argument positions are public API and must keep working positionally.
+    schedule = CronSchedule("recurring", 15, "every 15m")
+
+    assert schedule == CronSchedule.parse("every 15m")
+    assert schedule.form == "interval"

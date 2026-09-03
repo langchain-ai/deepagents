@@ -5187,6 +5187,26 @@ _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 _cli_openrouter_profile_registered = False
 """Process-wide guard so the app's OpenRouter profile is registered exactly once."""
 
+_AWS_MODEL_SDK_ENV_KWARGS = {
+    "region_name": ("AWS_REGION", "AWS_DEFAULT_REGION"),
+    "credentials_profile_name": ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"),
+    "aws_access_key_id": ("AWS_ACCESS_KEY_ID",),
+    "aws_secret_access_key": ("AWS_SECRET_ACCESS_KEY",),
+    "aws_session_token": ("AWS_SESSION_TOKEN",),
+}
+"""AWS model environment values accepted directly by LangChain constructors."""
+
+_PROVIDER_SDK_ENV_KWARGS: dict[str, dict[str, tuple[str, ...]]] = {
+    "anthropic_bedrock": _AWS_MODEL_SDK_ENV_KWARGS,
+    "azure_openai": {
+        "api_version": ("OPENAI_API_VERSION",),
+        "azure_ad_token": ("AZURE_OPENAI_AD_TOKEN",),
+    },
+    "bedrock": _AWS_MODEL_SDK_ENV_KWARGS,
+    "bedrock_converse": _AWS_MODEL_SDK_ENV_KWARGS,
+}
+"""SDK-read environment values that must be explicit in workspace runtimes."""
+
 
 def _cli_openrouter_attribution_kwargs() -> dict[str, Any]:
     """App-specific OpenRouter attribution kwargs.
@@ -5230,6 +5250,42 @@ def _ensure_cli_openrouter_profile_registered() -> None:
         ),
     )
     _cli_openrouter_profile_registered = True
+
+
+def _apply_azure_sdk_endpoint(kwargs: dict[str, Any]) -> None:
+    """Forward the Azure endpoint under the constructor's current field name."""
+    from deepagents_code.model_config import resolve_env_var
+
+    endpoint = resolve_env_var("AZURE_OPENAI_ENDPOINT")
+    if endpoint and kwargs.get("base_url") == endpoint:
+        kwargs.pop("base_url")
+    if endpoint and "base_url" not in kwargs:
+        kwargs.setdefault("azure_endpoint", endpoint)
+
+
+def _apply_provider_sdk_environment(
+    provider: str,
+    kwargs: dict[str, Any],
+) -> None:
+    """Apply SDK-only environment defaults without replacing explicit kwargs."""
+    from deepagents_code.model_config import resolve_env_var
+
+    if provider == "azure_openai":
+        _apply_azure_sdk_endpoint(kwargs)
+
+    for argument, env_names in _PROVIDER_SDK_ENV_KWARGS.get(provider, {}).items():
+        if argument in kwargs:
+            continue
+        value = next(
+            (
+                value
+                for name in env_names
+                if (value := resolve_env_var(name)) is not None
+            ),
+            None,
+        )
+        if value is not None:
+            kwargs[argument] = value
 
 
 def _get_provider_kwargs(
@@ -5307,6 +5363,7 @@ def _get_provider_kwargs(
                         client_kwargs["headers"] = headers
                         result["client_kwargs"] = client_kwargs
 
+    _apply_provider_sdk_environment(provider, result)
     return result
 
 

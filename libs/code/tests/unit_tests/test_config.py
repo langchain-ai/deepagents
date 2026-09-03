@@ -1002,6 +1002,76 @@ class TestWorkspaceStoredCredentials:
     """Stored auth remains workspace-local during server model construction."""
 
     @patch("langchain.chat_models.init_chat_model")
+    def test_azure_sdk_environment_is_forwarded_explicitly(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Azure SDK-only workspace settings reach the model constructor."""
+        import os
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock(profile=None)
+        mock_init_chat_model.return_value = mock_model
+        monkeypatch.delenv("OPENAI_API_VERSION", raising=False)
+        monkeypatch.delenv("AZURE_OPENAI_AD_TOKEN", raising=False)
+        monkeypatch.delenv("AZURE_OPENAI_ENDPOINT", raising=False)
+
+        with use_environment(
+            {
+                "AZURE_OPENAI_API_KEY": "test-key",
+                "AZURE_OPENAI_ENDPOINT": "https://workspace.openai.azure.com/",
+                "OPENAI_API_VERSION": "2026-01-01",
+                "AZURE_OPENAI_AD_TOKEN": "test-token",
+            }
+        ):
+            create_model("azure_openai:deployment")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["azure_endpoint"] == "https://workspace.openai.azure.com/"
+        assert "base_url" not in kwargs
+        assert kwargs["api_version"] == "2026-01-01"
+        assert kwargs["azure_ad_token"] == "test-token"
+        assert "OPENAI_API_VERSION" not in os.environ
+        assert "AZURE_OPENAI_AD_TOKEN" not in os.environ
+        assert "AZURE_OPENAI_ENDPOINT" not in os.environ
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_bedrock_sdk_environment_is_forwarded_explicitly(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """AWS workspace settings reach Bedrock without process mutation."""
+        import os
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock(profile=None)
+        mock_init_chat_model.return_value = mock_model
+        aws_environment = {
+            "AWS_DEFAULT_REGION": "us-test-1",
+            "AWS_DEFAULT_PROFILE": "workspace-profile",
+            "AWS_ACCESS_KEY_ID": "test-access-key",
+            "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+            "AWS_SESSION_TOKEN": "test-session-token",
+        }
+        for name in aws_environment:
+            monkeypatch.delenv(name, raising=False)
+
+        with use_environment(aws_environment):
+            create_model("bedrock:amazon.test-model")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["region_name"] == "us-test-1"
+        assert kwargs["credentials_profile_name"] == "workspace-profile"
+        assert kwargs["aws_access_key_id"] == "test-access-key"
+        assert kwargs["aws_secret_access_key"] == "test-secret-key"
+        assert kwargs["aws_session_token"] == "test-session-token"
+        assert all(name not in os.environ for name in aws_environment)
+
+    @patch("langchain.chat_models.init_chat_model")
     def test_stored_key_and_endpoint_do_not_mutate_process_environment(
         self,
         mock_init_chat_model: Mock,

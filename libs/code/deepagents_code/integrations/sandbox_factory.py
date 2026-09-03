@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
-from deepagents_code.config import console, get_glyphs
+from deepagents_code.config import active_environment, console, get_glyphs
 from deepagents_code.integrations.sandbox_provider import (
     SandboxNotFoundError,
     SandboxProvider,
@@ -26,7 +26,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
+    from collections.abc import Generator, Mapping
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -711,6 +711,32 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
+_AWS_SESSION_ENV_KWARGS = {
+    "profile_name": ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"),
+    "aws_access_key_id": ("AWS_ACCESS_KEY_ID",),
+    "aws_secret_access_key": ("AWS_SECRET_ACCESS_KEY",),
+    "aws_session_token": ("AWS_SESSION_TOKEN",),
+}
+"""AWS environment values accepted directly by `boto3.Session`."""
+
+
+def _aws_session_kwargs(environment: Mapping[str, str]) -> dict[str, str]:
+    """Translate a workspace environment into explicit boto3 session arguments.
+
+    Returns:
+        Populated boto3 session keyword arguments.
+    """
+    result: dict[str, str] = {}
+    for argument, env_names in _AWS_SESSION_ENV_KWARGS.items():
+        value = next(
+            (value for name in env_names if (value := environment.get(name))),
+            None,
+        )
+        if value:
+            result[argument] = value
+    return result
+
+
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
@@ -729,16 +755,20 @@ class _AgentCoreProvider(SandboxProvider):
             ValueError: If boto3 is installed and AWS credentials cannot
                 be resolved.
         """
-        self._region = region or os.environ.get(
-            "AWS_REGION", os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
+        environment = active_environment()
+        self._region = region or environment.get(
+            "AWS_REGION", environment.get("AWS_DEFAULT_REGION", "us-west-2")
         )
+        self._session: Any = None
 
         # Validate AWS credentials early for a clear error message.
         try:
             import boto3  # ty: ignore[unresolved-import]
 
-            session = boto3.Session()
-            credentials = session.get_credentials()
+            session_kwargs = _aws_session_kwargs(environment)
+            session_kwargs["region_name"] = self._region
+            self._session = boto3.Session(**session_kwargs)
+            credentials = self._session.get_credentials()
             if credentials is None:
                 msg = (
                     "AWS credentials not found. Configure via "
@@ -798,6 +828,7 @@ class _AgentCoreProvider(SandboxProvider):
 
         interpreter = agentcore_module.CodeInterpreter(
             region=self._region,
+            session=self._session,
             integration_source="deepagents-code",
         )
         try:

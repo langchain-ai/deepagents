@@ -495,6 +495,31 @@ class TestWorkspaceRuntime:
 
         make.assert_not_awaited()
 
+    async def test_unusable_launch_cwd_emits_startup_marker(
+        self, tmp_path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Resolving the launch binding runs outside `_get_runtime`'s barrier.
+
+        A launch cwd that cannot be canonicalized must still produce the marker
+        the parent app process scrapes, not a bare `ValueError`.
+        """
+        from deepagents_code._startup_error import STARTUP_ERROR_MARKER
+
+        module = _import_fresh_server_graph()
+        missing = tmp_path / "gone"
+        config = ServerConfig(cwd=str(missing))
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            await module.get_server_runtime()
+
+        assert exc_info.value.code == 1
+        assert STARTUP_ERROR_MARKER in capsys.readouterr().err
+        make.assert_not_awaited()
+
 
 class TestStartupErrorMarker:
     """`emit_startup_failure` must produce the parser marker on stderr.

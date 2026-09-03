@@ -206,11 +206,29 @@ async def workspace(request: Request) -> JSONResponse:
             trusted_config,
             config_fingerprint=server_config.workspace_fingerprint(),
         )
-        await get_server_runtime(binding)
     except (TypeError, ValueError) as exc:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    # Build the runtime here so a refusal reaches the client as a 409 before any
+    # thread state exists. This is its own block: request validation above maps
+    # `ValueError` to 422, but a `ValueError` out of the runtime build is server
+    # misconfiguration, not a malformed request.
+    try:
+        await get_server_runtime(binding)
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    except SystemExit:
+        # `_make_graphs` exits on sandbox construction failure. That barrier is
+        # right at graph-load time; in request scope it would take the server
+        # down for every thread. Contain it as `_execute_offload` does.
+        logger.exception("Workspace runtime build failed for thread %s", thread_id)
+        detail = (
+            "The server could not build its agent runtime for this workspace. "
+            "Check the server log for the startup failure."
+        )
+        return JSONResponse({"detail": detail}, status_code=503)
 
     client = _thread_client()
     metadata = {

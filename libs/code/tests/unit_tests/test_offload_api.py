@@ -130,6 +130,82 @@ class TestWorkspaceRoute:
         assert response.json() == {"detail": detail}
         thread_client.assert_not_called()
 
+    async def test_runtime_build_exit_is_contained_as_503(self, tmp_path) -> None:
+        """`_make_graphs` exits on sandbox failure; the route must contain it.
+
+        Without containment the `SystemExit` escapes the handler and takes the
+        server down mid-request, since it is a `BaseException`.
+        """
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
+            patch.object(
+                offload_api,
+                "bind_thread_workspace",
+                new=AsyncMock(return_value=object()),
+            ),
+            patch.object(
+                offload_api,
+                "get_server_runtime",
+                new=AsyncMock(side_effect=SystemExit(1)),
+            ),
+            patch.object(offload_api, "_thread_client") as thread_client,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app),
+                base_url="http://test",
+            ) as client:
+                response = await client.post(
+                    "/dcode/threads/thread-1/workspace",
+                    json={"cwd": str(tmp_path)},
+                )
+
+        assert response.status_code == 503
+        assert "could not build its agent runtime" in response.json()["detail"]
+        thread_client.assert_not_called()
+
+    async def test_runtime_build_error_is_not_reported_as_client_error(
+        self, tmp_path
+    ) -> None:
+        """A build `ValueError` is server misconfiguration, never a 422."""
+        from httpx import ASGITransport, AsyncClient
+
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=ServerConfig()),
+            patch.object(
+                offload_api,
+                "bind_thread_workspace",
+                new=AsyncMock(return_value=object()),
+            ),
+            patch.object(
+                offload_api,
+                "get_server_runtime",
+                new=AsyncMock(side_effect=ValueError("unknown model provider")),
+            ),
+            patch.object(offload_api, "_thread_client") as thread_client,
+        ):
+            async with AsyncClient(
+                transport=ASGITransport(app=offload_api.app),
+                base_url="http://test",
+            ) as client:
+                # `ASGITransport` re-raises app exceptions, so the build failure
+                # surfaces here rather than as the 422 the validation arm above
+                # would have produced when it shared this `try`.
+                with pytest.raises(ValueError, match="unknown model provider"):
+                    await client.post(
+                        "/dcode/threads/thread-1/workspace",
+                        json={"cwd": str(tmp_path)},
+                    )
+
+        thread_client.assert_not_called()
+
     async def test_rejects_client_policy_mismatch(self, tmp_path) -> None:
         """A caller cannot choose privileged runtime configuration."""
         from deepagents_code import offload_api

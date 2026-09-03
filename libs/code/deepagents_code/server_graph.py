@@ -665,8 +665,16 @@ async def get_server_runtime() -> ServerRuntime:
     Returns:
         The cached server runtime.
     """
-    config = ServerConfig.from_env()
-    binding = await _default_workspace_binding(config)
+    # Resolving the launch binding touches the filesystem and can raise, and
+    # claiming the sandbox can refuse. Both run before `_get_runtime`, so they
+    # sit outside its startup barrier and would exit without the marker the
+    # parent app process scrapes. Emit it here instead.
+    try:
+        config = ServerConfig.from_env()
+        binding = await _default_workspace_binding(config)
+    except Exception as exc:  # noqa: BLE001  # startup barrier
+        emit_startup_failure(exc)
+        sys.exit(1)
     async with _workspace_runtime_lock:
         if binding is not None:
             cached = _cached_workspace_runtime(binding)

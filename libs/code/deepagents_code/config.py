@@ -136,6 +136,14 @@ re-applied only to the approval-gated shell backend's `execute` subprocesses by
 _USER_LANGSMITH_ENV_CARRIER = "DEEPAGENTS_USER_LANGSMITH_ENV"
 """Private client-to-server carrier for user-command LangSmith settings."""
 
+_TRACING_ENABLE_ENV_VARS = (
+    "LANGSMITH_TRACING_V2",
+    "LANGCHAIN_TRACING_V2",
+    "LANGSMITH_TRACING",
+    "LANGCHAIN_TRACING",
+)
+"""Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
+
 _USER_LANGSMITH_ENV_VARS = (
     "LANGSMITH_API_KEY",
     "LANGCHAIN_API_KEY",
@@ -148,8 +156,9 @@ _USER_LANGSMITH_ENV_VARS = (
     "LANGSMITH_WORKSPACE_ID",
     "LANGSMITH_PROFILE",
     "LANGSMITH_CONFIG_FILE",
+    *_TRACING_ENABLE_ENV_VARS,
 )
-"""LangSmith CLI selectors restored for approval-gated user commands."""
+"""LangSmith settings restored for approval-gated user commands."""
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -688,14 +697,6 @@ def _load_dotenv(
         }
     return bool(effective.keys() - baseline.keys())
 
-
-_TRACING_ENABLE_ENV_VARS = (
-    "LANGSMITH_TRACING_V2",
-    "LANGCHAIN_TRACING_V2",
-    "LANGSMITH_TRACING",
-    "LANGCHAIN_TRACING",
-)
-"""Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
 
 _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Env vars that hold the LangSmith API key used for trace ingestion."""

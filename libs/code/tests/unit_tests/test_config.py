@@ -186,6 +186,9 @@ class TestRuntimeDotenvReload:
             config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_API_KEY"] = (
                 "lsv2_test"
             )
+            config_mod._bootstrap_state.launch_langsmith_env["LANGSMITH_TRACING"] = (
+                "true"
+            )
             monkeypatch.setenv("LANGSMITH_TRACING", "true")
             monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_test")
             monkeypatch.delenv("LANGSMITH_PROJECT", raising=False)
@@ -4338,6 +4341,10 @@ class TestUserLangsmithEnvironment:
                 "LANGSMITH_WORKSPACE_ID": "project-workspace",
                 "LANGSMITH_PROFILE": None,
                 "LANGSMITH_CONFIG_FILE": None,
+                "LANGSMITH_TRACING_V2": None,
+                "LANGCHAIN_TRACING_V2": None,
+                "LANGSMITH_TRACING": None,
+                "LANGCHAIN_TRACING": None,
             }
         finally:
             config_mod._bootstrap_state.launch_langsmith_env = original_launch
@@ -4380,12 +4387,16 @@ class TestUserLangsmithEnvironment:
                 {"launch": dict.fromkeys(values), "user": values}
             ),
             "LANGSMITH_API_KEY": "agent-key",
+            "LANGSMITH_TRACING": "true",
+            "DEEPAGENTS_CODE_LANGSMITH_TRACING": "true",
         }
 
         config_mod.restore_user_langsmith_env(env)
 
         assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
         assert "LANGSMITH_API_KEY" not in env
+        assert "LANGSMITH_TRACING" not in env
+        assert "DEEPAGENTS_CODE_LANGSMITH_TRACING" not in env
         assert env["LANGSMITH_PROFILE"] == "oauth"
         assert env["LANGSMITH_CONFIG_FILE"] == "/tmp/ls.json"
 

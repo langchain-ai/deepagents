@@ -65,6 +65,42 @@ from deepagents_code.project_utils import (
 class TestRuntimeDotenvReload:
     """Tests for project-scoped dotenv refresh behavior."""
 
+    def test_direct_reload_initializes_langsmith_carrier(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A directly constructed `Credentials` can reload before bootstrap."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            runtime.reload_from_environment(start_path=tmp_path)
+
+            carrier = json.loads(os.environ[config_mod._USER_LANGSMITH_ENV_CARRIER])
+            assert carrier == {
+                "launch": dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
+                "user": dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS),
+            }
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
+
     def test_reload_from_environment_refreshes_loaded_project_dotenv_values(
         self,
         tmp_path: Path,

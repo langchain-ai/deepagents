@@ -669,7 +669,8 @@ def _load_dotenv(
             applying the current project/global dotenv stack. Values modified
             after loading are preserved.
         capture_user_langsmith: Save launch and project-dotenv LangSmith values
-            before global defaults are applied.
+            before global defaults are applied, initializing a missing launch
+            snapshot from the environment below refreshed dotenv values.
 
     Returns:
         Whether dotenv loading injected at least one value.
@@ -681,6 +682,8 @@ def _load_dotenv(
         _dotenv_loaded_values.clear()
 
     baseline = dict(os.environ)
+    if capture_user_langsmith:
+        _initialize_launch_langsmith_env(baseline)
     project = _dotenv_environment(
         start_path=start_path,
         environ=baseline,
@@ -1141,6 +1144,15 @@ def _validate_user_langsmith_env(value: object) -> dict[str, str | None] | None:
             return None
         result[key] = item
     return result
+
+
+def _initialize_launch_langsmith_env(env: Mapping[str, str]) -> None:
+    """Capture a missing launch snapshot from an environment baseline."""
+    if _validate_user_langsmith_env(_bootstrap_state.launch_langsmith_env) is not None:
+        return
+    _bootstrap_state.launch_langsmith_env = {
+        var: env.get(var) for var in _USER_LANGSMITH_ENV_VARS
+    }
 
 
 def _decode_user_langsmith_env(

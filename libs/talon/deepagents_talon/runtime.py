@@ -34,6 +34,7 @@ from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
 )
+from deepagents_talon.clock import current_time
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -214,7 +215,8 @@ class DeepAgentRuntime:
 
     Args:
         model: Chat model identifier for `create_deep_agent`.
-        tools: Runtime tools exposed to the agent in addition to web and cron tools.
+        tools: Runtime tools exposed to the agent in addition to the clock,
+            web, and cron tools.
         refresh_tools: Optional callback that supplies replacement runtime tools
             after an external authorization changes their availability.
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
@@ -407,7 +409,7 @@ class DeepAgentRuntime:
         return AgentActivityCallback(logger, request.conversation_id)
 
     def _build_tools(self) -> list[BaseTool | Callable[..., object]]:
-        tools: list[BaseTool | Callable[..., object]] = []
+        tools: list[BaseTool | Callable[..., object]] = [current_time]
         if self.include_web_tools:
             tools.extend([fetch_url, web_search])
         if self.cron_store is not None:

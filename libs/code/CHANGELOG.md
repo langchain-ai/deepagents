@@ -8,15 +8,14 @@
 
 - Defaulted general-purpose subagents to fork mode ([#6024](https://github.com/langchain-ai/deepagents/issues/6024)).
 - Defaulted the Auto classifier by provider ([#6039](https://github.com/langchain-ai/deepagents/issues/6039)).
-- Added tracing for the effective approval mode ([#5972](https://github.com/langchain-ai/deepagents/issues/5972)).
 - Added support for binding conversations to a recorded workspace ([#5946](https://github.com/langchain-ai/deepagents/issues/5946)).
+- Added tracing for the effective approval mode ([#5972](https://github.com/langchain-ai/deepagents/issues/5972)).
 
 ### Bug Fixes
 
-- Classifier errors now include model names ([#6038](https://github.com/langchain-ai/deepagents/issues/6038)).
-
 - Fixed request-time working directory binding and now show the bound workspace in shell approvals ([#5968](https://github.com/langchain-ai/deepagents/issues/5968), [#5966](https://github.com/langchain-ai/deepagents/issues/5966)).
 - Fixed marketplace plugin installs to accept bare relative source paths and identify the rejected source path when validation fails ([#5959](https://github.com/langchain-ai/deepagents/issues/5959), [#5960](https://github.com/langchain-ai/deepagents/issues/5960)).
+- Classifier errors now include model names ([#6038](https://github.com/langchain-ai/deepagents/issues/6038)).
 - Updated the splash screen to use a sharp border ([#5970](https://github.com/langchain-ai/deepagents/issues/5970)).
 
 ### Performance Improvements

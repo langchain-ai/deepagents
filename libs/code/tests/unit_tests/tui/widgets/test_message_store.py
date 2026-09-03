@@ -129,6 +129,54 @@ class TestMessageStore:
         # Active at position 0 -> break immediately -> nothing pruned
         assert len(to_prune) == 0
 
+    def test_move_visible_window_to_tail_is_bounded(self):
+        """Moving to the tail skips intermediate archived rows."""
+        store = MessageStore()
+        for i in range(10):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 1
+        store._visible_end = 3
+
+        tail = store.move_visible_window_to_tail(3)
+
+        assert [message.id for message in tail or []] == ["id-7", "id-8", "id-9"]
+        assert store.get_visible_range() == (7, 10)
+        assert [message.id for message in store.get_all_messages()] == [
+            f"id-{i}" for i in range(10)
+        ]
+
+    def test_move_visible_window_to_tail_preserves_protected_rows(self):
+        """A protected row outside the target tail blocks the range change."""
+        store = MessageStore()
+        for i in range(10):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 1
+        store._visible_end = 3
+        store.protect_message("id-2")
+
+        assert store.move_visible_window_to_tail(3) is None
+        assert store.get_visible_range() == (1, 3)
+
+    def test_move_visible_window_to_tail_keeps_protected_tail_rows(self):
+        """Protected rows already inside the bounded tail remain mounted."""
+        store = MessageStore()
+        for i in range(10):
+            store.append(
+                MessageData(type=MessageType.USER, content=f"msg{i}", id=f"id-{i}")
+            )
+        store._visible_start = 1
+        store._visible_end = 3
+        store.protect_message("id-8")
+
+        tail = store.move_visible_window_to_tail(3)
+
+        assert [message.id for message in tail or []] == ["id-7", "id-8", "id-9"]
+        assert store.get_visible_range() == (7, 10)
+
     def test_should_hydrate_above_uses_top_spacer_boundary(self):
         """Hydration starts before the viewport reaches the mounted window."""
         store = MessageStore()

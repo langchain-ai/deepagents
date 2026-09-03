@@ -39,7 +39,7 @@ dependencies = [
     "httpx>=0.28.1,<1.0.0",
 
     # Core model providers - others are added as optional
-    "langchain-anthropic>=1.7.0,<2.0.0",
+    "langchain-anthropic>=1.7.1,<2.0.0",
     "langchain-google-genai>=4.4.0,<5.0.0",
     "langchain-openai>=1.6.0,<2.0.0",
     "pydantic>=2.12.5,<2.14.0a0",
@@ -108,7 +108,7 @@ dependencies = [
 
 [project.optional-dependencies]
 # Model providers
-anthropic = ["langchain-anthropic>=1.7.0,<2.0.0"]
+anthropic = ["langchain-anthropic>=1.7.1,<2.0.0"]
 baseten = ["langchain-baseten>=0.2.4,<1.0.0"]
 bedrock = ["langchain-aws>=1.7.5,<2.0.0"]
 cohere = ["langchain-cohere>=0.6.0,<1.0.0"]

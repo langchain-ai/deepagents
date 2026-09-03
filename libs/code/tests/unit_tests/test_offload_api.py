@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
+from blockbuster import blockbuster_ctx
 
 from deepagents_code.offload_middleware import OffloadExecution, OffloadResult
 
@@ -115,6 +116,7 @@ class TestWorkspaceRoute:
                 "_thread_client",
                 return_value=SimpleNamespace(threads=threads),
             ),
+            blockbuster_ctx(scanned_modules=offload_api),
         ):
             response = await offload_api.workspace(cast("Any", request))
 

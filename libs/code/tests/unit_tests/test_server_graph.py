@@ -11,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from blockbuster import blockbuster_ctx
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
@@ -356,7 +357,8 @@ class TestWorkspaceRuntime:
             mcp_config_path=str(project / "mcp.json"),
         )
 
-        binding = await module._default_workspace_binding(config)
+        with blockbuster_ctx(scanned_modules=module):
+            binding = await module._default_workspace_binding(config)
 
         assert binding is not None
         assert binding.workspace_config()["trust_project_mcp"] is True
@@ -364,6 +366,21 @@ class TestWorkspaceRuntime:
             project / "mcp.json"
         )
         assert binding.config_fingerprint == config.workspace_fingerprint()
+
+    async def test_cached_runtime_resolves_policy_off_event_loop(
+        self, tmp_path
+    ) -> None:
+        module = _import_fresh_server_graph()
+        config = ServerConfig()
+        binding = _bind(config, tmp_path)
+        runtime = module.ServerRuntime(object(), object(), object())
+        module._remember_workspace_runtime(binding, runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            blockbuster_ctx(scanned_modules=module),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
 
     async def test_uses_full_server_config_and_replaces_only_workspace_paths(
         self, tmp_path

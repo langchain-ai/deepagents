@@ -689,7 +689,11 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     if config.cwd is None:
         return None
     identity = await asyncio.to_thread(resolve_workspace, config.cwd)
-    resolved = config.resolve_workspace(identity.cwd, identity.project_root)
+    resolved = await asyncio.to_thread(
+        config.resolve_workspace,
+        identity.cwd,
+        identity.project_root,
+    )
     return await asyncio.to_thread(
         resolve_workspace,
         identity.cwd,
@@ -728,12 +732,15 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
-    _resolve_bound_workspace_config(binding)
+    await asyncio.to_thread(_resolve_bound_workspace_config, binding)
     cached = _cached_workspace_runtime(binding)
     if cached is not None:
         return cached
     async with _workspace_runtime_lock:
-        current_config = _resolve_bound_workspace_config(binding)
+        current_config = await asyncio.to_thread(
+            _resolve_bound_workspace_config,
+            binding,
+        )
         cached = _cached_workspace_runtime(binding)
         if cached is not None:
             return cached

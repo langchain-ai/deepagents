@@ -4296,6 +4296,9 @@ class TestUserLangsmithEnvironment:
         project.mkdir()
         (project / ".env").write_text(
             "LANGSMITH_PROJECT=project-value\n"
+            "LANGCHAIN_PROJECT=legacy-project-value\n"
+            "LANGSMITH_SESSION=legacy-smith-session\n"
+            "LANGCHAIN_SESSION=legacy-chain-session\n"
             "LANGSMITH_WORKSPACE_ID=project-workspace\n"
         )
         global_dotenv = tmp_path / "global.env"
@@ -4327,6 +4330,9 @@ class TestUserLangsmithEnvironment:
                 "LANGSMITH_API_KEY": None,
                 "LANGCHAIN_API_KEY": None,
                 "LANGSMITH_PROJECT": "project-value",
+                "LANGCHAIN_PROJECT": "legacy-project-value",
+                "LANGSMITH_SESSION": "legacy-smith-session",
+                "LANGCHAIN_SESSION": "legacy-chain-session",
                 "LANGSMITH_ENDPOINT": "https://launch.example.com",
                 "LANGCHAIN_ENDPOINT": None,
                 "LANGSMITH_WORKSPACE_ID": "project-workspace",

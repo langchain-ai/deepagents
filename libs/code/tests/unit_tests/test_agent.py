@@ -2642,18 +2642,9 @@ class TestCreateCliAgentProjectContext:
         if "DEEPAGENTS_USER_LANGSMITH_ENV" not in os.environ:
             import json
 
-            values = dict.fromkeys(
-                (
-                    "LANGSMITH_API_KEY",
-                    "LANGCHAIN_API_KEY",
-                    "LANGSMITH_PROJECT",
-                    "LANGSMITH_ENDPOINT",
-                    "LANGCHAIN_ENDPOINT",
-                    "LANGSMITH_WORKSPACE_ID",
-                    "LANGSMITH_PROFILE",
-                    "LANGSMITH_CONFIG_FILE",
-                )
-            )
+            import deepagents_code.config as config_mod
+
+            values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
             values["LANGSMITH_PROJECT"] = user_langchain_project
             monkeypatch.setenv(
                 "DEEPAGENTS_USER_LANGSMITH_ENV",

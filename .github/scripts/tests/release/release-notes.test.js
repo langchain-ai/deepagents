@@ -16,6 +16,8 @@ const RELEASE_BRANCH = `${releaseNotes.RELEASE_BRANCH_PREFIX}${COMPONENT}`;
 const CHANGELOG_PATH = 'libs/code/CHANGELOG.md';
 const HEAD = 'a'.repeat(40);
 const APPLIED_HEAD = 'b'.repeat(40);
+const MAIN_HEAD = '0'.repeat(40);
+const NEXT_MAIN_HEAD = '1'.repeat(40);
 const VERSION = '0.1.35';
 const OVERRIDE_UPDATED_AT = '2026-07-09T12:00:00Z';
 const APPLIED_UPDATED_AT = '2026-07-09T12:05:00Z';
@@ -39,13 +41,13 @@ function releasePr(overrides = {}) {
       sha: HEAD,
       repo: { full_name: 'langchain-ai/deepagents' },
     },
-    base: { ref: 'main', repo: { full_name: 'langchain-ai/deepagents' } },
+    base: { ref: 'main', sha: MAIN_HEAD, repo: { full_name: 'langchain-ai/deepagents' } },
     labels: [],
     ...overrides,
   };
 }
 
-function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = releaseNotes.changelogFingerprint(GENERATED_SECTION), head = HEAD, updatedAt = OVERRIDE_UPDATED_AT, htmlUrl = null } = {}) {
+function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = releaseNotes.changelogFingerprint(GENERATED_SECTION), head = HEAD, mainHead = null, updatedAt = OVERRIDE_UPDATED_AT, htmlUrl = null } = {}) {
   return {
     id,
     updated_at: updatedAt,
@@ -58,6 +60,7 @@ function overrideComment({ id = 10, section = CURATED_SECTION, fingerprint = rel
       'package: deepagents-code',
       `version: ${VERSION}`,
       `release-pr-head: ${head}`,
+      ...(mainHead === null ? [] : [`release-main-head: ${mainHead}`]),
       `release-heading-hash: ${releaseNotes.sha256(HEADING)}`,
       `changelog-fingerprint: ${fingerprint}`,
       'state: draft',
@@ -102,7 +105,7 @@ function makeCore() {
   };
 }
 
-function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, files = new Map(), comparison = 'ahead', malformedContent = false, onGetPr = null, onListComments = null, onCreateComment = null } = {}) {
+function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adminFlag = permission === 'admin', appUser = BOT, files = new Map(), comparison = 'ahead', changedFiles = [], malformedContent = false, onGetPr = null, onListComments = null, onCreateComment = null } = {}) {
   const calls = {
     createBlob: [],
     createComment: [],
@@ -166,7 +169,11 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
           const content = files.get(params.ref) ?? fallback;
           return { data: { type: 'file', encoding: 'base64', content: Buffer.from(content).toString('base64') } };
         },
-        compareCommitsWithBasehead: async () => ({ data: { status: comparison } }),
+        compareCommitsWithBasehead: async params => ({
+          data: typeof comparison === 'function'
+            ? comparison(params)
+            : { status: comparison, files: changedFiles },
+        }),
       },
       git: {
         getCommit: async params => {
@@ -483,7 +490,9 @@ test('prepares agent input from the exact validated head', async t => {
     runnerTemp,
   });
   assert.match(fs.readFileSync(prepared.input, 'utf8'), /untrusted source material/);
-  assert.equal(JSON.parse(fs.readFileSync(prepared.state, 'utf8')).fingerprint, releaseNotes.changelogFingerprint(GENERATED_SECTION));
+  const state = JSON.parse(fs.readFileSync(prepared.state, 'utf8'));
+  assert.equal(state.fingerprint, releaseNotes.changelogFingerprint(GENERATED_SECTION));
+  assert.equal(state.mainHead, MAIN_HEAD);
   // The trusted state file must live outside `work` (the agent's only writable dir)
   // so a compromised agent can't overwrite what postDraft re-validates against.
   assert.ok(!prepared.state.startsWith(prepared.work));
@@ -532,13 +541,14 @@ test('posts a bot-authored draft and refuses stale agent output', async t => {
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
   const state = path.join(dir, 'state.json');
   const output = path.join(dir, 'output.md');
-  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
+  fs.writeFileSync(state, JSON.stringify({ number: 123, component: COMPONENT, version: VERSION, head: HEAD, mainHead: MAIN_HEAD, fingerprint: releaseNotes.changelogFingerprint(GENERATED_SECTION), heading: HEADING }));
   fs.writeFileSync(output, '### Features\n\n* Add a useful feature.\n');
   const { github, calls } = makeGithub();
   await releaseNotes.postDraft({ github, owner: 'langchain-ai', repo: 'deepagents', stateFile: state, outputFile: output, core: makeCore(), ...BOT_AUTH });
   assert.deepEqual(calls.getByUsername, [{ username: BOT.login }]);
   assert.equal(calls.createComment.length, 1);
   assert.match(calls.createComment[0].body, /changelog-fingerprint:/);
+  assert.match(calls.createComment[0].body, new RegExp(`release-main-head: ${MAIN_HEAD}`));
   assert.match(calls.createComment[0].body, /---\n<!-- release-notes-content-start -->/);
   assert.match(calls.createComment[0].body, /<!-- release-notes-content-end -->\n---/);
   assert.match(calls.createComment[0].body, /```\n@release-bot apply\n```/);
@@ -613,6 +623,7 @@ test('prepare apply replaces only the changelog section and records immutable ha
   assert.equal(state.overrideId, '10');
   assert.equal(state.overrideUpdatedAt, OVERRIDE_UPDATED_AT);
   assert.equal(state.contentHash, releaseNotes.sha256(CURATED_SECTION));
+  assert.equal(state.baseHead, MAIN_HEAD);
   assert.equal(state.originalBodyHash, releaseNotes.exactSha256(releasePr().body));
   assert.match(state.body, /\* Add a useful feature/);
 });
@@ -649,6 +660,38 @@ test('apply rejects concurrent PR-body and override revisions', async t => {
     releaseNotes.publishAppliedState({ github: run.github, owner: 'langchain-ai', repo: 'deepagents', stateFile, appliedHead: APPLIED_HEAD, ...BOT_AUTH }),
     /draft changed while apply was preparing/,
   );
+});
+
+test('apply rejects main advancing after its package-scope snapshot', async t => {
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const stateFile = path.join(workspace.root, 'apply.json');
+  const run = makeGithub({ comments: [overrideComment()] });
+  await releaseNotes.prepareApply({
+    github: run.github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: HEAD,
+    changelogFile: workspace.file,
+    stateFile,
+    ...BOT_AUTH,
+  });
+  run.setPr(releasePr({ base: { ...releasePr().base, sha: NEXT_MAIN_HEAD } }));
+
+  await assert.rejects(
+    releaseNotes.createApplyCommit({
+      github: run.github,
+      owner: 'langchain-ai',
+      repo: 'deepagents',
+      stateFile,
+      changelogFile: workspace.file,
+      ...BOT_AUTH,
+    }),
+    /Release PR changed while apply was preparing/,
+  );
+  assert.equal(run.calls.createCommit.length, 0);
+  assert.equal(run.calls.updateRef.length, 0);
 });
 
 test('prepare apply preserves the generated release heading', async t => {
@@ -692,6 +735,73 @@ test('prepare apply rejects a draft from a rewritten release branch with unchang
   );
 });
 
+test('prepare apply keeps a scoped draft after unrelated main changes rewrite the release branch', async t => {
+  const rewrittenHead = 'c'.repeat(40);
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const currentHeading = HEADING.replace('(2026-07-09)', '(2026-07-10)');
+  const generated = GENERATED_SECTION.replace(HEADING, currentHeading);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: rewrittenHead },
+    base: { ...releasePr().base, sha: NEXT_MAIN_HEAD },
+    body: `Release notes preview\n\n${generated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[rewrittenHead, changelog(generated)]]);
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment({ mainHead: MAIN_HEAD })],
+    files,
+    changedFiles: [{ filename: '.github/workflows/ci.yml' }],
+  });
+
+  const state = await releaseNotes.prepareApply({
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    number: 123,
+    expectedHead: rewrittenHead,
+    changelogFile: workspace.file,
+    stateFile: path.join(workspace.root, 'state.json'),
+    ...BOT_AUTH,
+  });
+
+  const appliedSection = releaseNotes.extractVersionSection(fs.readFileSync(workspace.file, 'utf8'), VERSION);
+  assert.equal(appliedSection.split('\n')[0], currentHeading);
+  assert.match(appliedSection, /\* Add a useful feature/);
+  assert.equal(state.contentHash, releaseNotes.sha256(CURATED_SECTION));
+});
+
+test('prepare apply requires a new scoped draft when main changed the package', async t => {
+  const rewrittenHead = 'c'.repeat(40);
+  const workspace = tempWorkspace();
+  t.after(() => fs.rmSync(workspace.root, { recursive: true, force: true }));
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: rewrittenHead },
+    base: { ...releasePr().base, sha: NEXT_MAIN_HEAD },
+  });
+  const files = new Map([[rewrittenHead, changelog(GENERATED_SECTION)]]);
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment({ mainHead: MAIN_HEAD })],
+    files,
+    changedFiles: [{ filename: 'libs/code/deepagents_cli/app.py' }],
+  });
+
+  await assert.rejects(
+    releaseNotes.prepareApply({
+      github,
+      owner: 'langchain-ai',
+      repo: 'deepagents',
+      number: 123,
+      expectedHead: rewrittenHead,
+      changelogFile: workspace.file,
+      stateFile: path.join(workspace.root, 'state.json'),
+      ...BOT_AUTH,
+    }),
+    /draft no longer covers current deepagents-code changes on main; run @release-bot draft before apply/,
+  );
+});
+
 test('required check passes only when applied metadata, changelog, body, and ancestry match', async () => {
   const pr = releasePr({
     head: { ...releasePr().head, sha: APPLIED_HEAD },
@@ -731,6 +841,92 @@ test('required check accepts apply after unrelated branch advancement', async ()
   });
   assert.equal(result.status, 'passed', core.failed);
   assert.equal(core.failed, null);
+});
+
+test('required check asks only for apply after an unrelated main change rewrites a scoped release', async () => {
+  const rewrittenHead = 'c'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: rewrittenHead },
+    base: { ...releasePr().base, sha: NEXT_MAIN_HEAD },
+  });
+  const files = new Map([[rewrittenHead, changelog(GENERATED_SECTION)]]);
+  const comparison = ({ basehead }) => basehead === `${MAIN_HEAD}...${NEXT_MAIN_HEAD}`
+    ? { status: 'ahead', files: [{ filename: '.github/workflows/ci.yml' }] }
+    : { status: 'diverged', files: [] };
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment({ mainHead: MAIN_HEAD }), appliedComment()],
+    files,
+    comparison,
+  });
+  const core = makeCore();
+
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+
+  assert.equal(result.status, 'failed');
+  assert.match(core.failed, /Run @release-bot apply\.$/);
+  assert.doesNotMatch(core.failed, /draft and then/);
+});
+
+test('required check accepts a scoped draft re-applied with release-please refreshed heading metadata', async () => {
+  const currentHeading = HEADING.replace('(2026-07-09)', '(2026-07-10)');
+  const curated = CURATED_SECTION.replace(HEADING, currentHeading);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: APPLIED_HEAD },
+    base: { ...releasePr().base, sha: NEXT_MAIN_HEAD },
+    body: `Release notes preview\n\n${curated}\n_End release notes preview._\n`,
+  });
+  const files = new Map([[APPLIED_HEAD, changelog(curated)]]);
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment({ mainHead: MAIN_HEAD }), appliedComment()],
+    files,
+    changedFiles: [{ filename: '.github/workflows/ci.yml' }],
+  });
+  const core = makeCore();
+
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+
+  assert.equal(result.status, 'passed', core.failed);
+});
+
+test('required check requires a fresh scoped draft after a package change on main', async () => {
+  const rewrittenHead = 'c'.repeat(40);
+  const pr = releasePr({
+    head: { ...releasePr().head, sha: rewrittenHead },
+    base: { ...releasePr().base, sha: NEXT_MAIN_HEAD },
+  });
+  const files = new Map([[rewrittenHead, changelog(GENERATED_SECTION)]]);
+  const { github } = makeGithub({
+    pr,
+    comments: [overrideComment({ mainHead: MAIN_HEAD })],
+    files,
+    changedFiles: [{ filename: 'libs/code/uv.lock' }],
+  });
+  const core = makeCore();
+
+  const result = await releaseNotes.checkCuratedState({
+    github,
+    context: { repo: { owner: 'langchain-ai', repo: 'deepagents' } },
+    core,
+    number: 123,
+    ...BOT_AUTH,
+  });
+
+  assert.equal(result.status, 'missing');
+  assert.match(core.failed, /draft and then @release-bot apply/);
 });
 
 test('required check accepts an identical-ancestry comparison as a descendant', async () => {
@@ -1261,6 +1457,10 @@ test('required check fails when the applied commit is not an ancestor of the hea
 test('parseMetadata rejects malformed, unknown, duplicate, and missing-field comments', () => {
   const valid = overrideComment();
   assert.ok(releaseNotes.parseOverrideComment(valid));
+  assert.equal(
+    releaseNotes.parseOverrideComment(overrideComment({ mainHead: MAIN_HEAD })).metadata['release-main-head'],
+    MAIN_HEAD,
+  );
 
   // Missing prefix: body does not start with the marker at byte 0.
   assert.equal(releaseNotes.parseOverrideComment({ ...valid, body: `noise\n${valid.body}` }), null);

@@ -4126,6 +4126,46 @@ def resolve_auto_classifier_model_with_problem() -> tuple[str | None, str | None
     return None, None
 
 
+_DEFAULT_AUTO_CLASSIFIER_MODELS = {
+    "anthropic": "anthropic:claude-sonnet-5",
+    "google_genai": "google_genai:gemini-3.8-flash",
+    "google_vertexai": "google_vertexai:gemini-3.8-flash",
+    "openai": "openai:gpt-5.6-luna",
+    "openai_codex": "openai_codex:gpt-5.6-luna",
+}
+
+
+def default_auto_classifier_model(provider: str) -> str | None:
+    """Return the default Auto classifier model for a main-model provider."""
+    return _DEFAULT_AUTO_CLASSIFIER_MODELS.get(provider)
+
+
+def resolve_auto_classifier_model_for_provider(
+    provider: str,
+    classifier_model: str | None = None,
+) -> str | None:
+    """Resolve an unset Auto classifier after the main provider is known.
+
+    Returns:
+        The configured or provider-default classifier, or `None` to inherit.
+    """
+    if classifier_model is not None:
+        return classifier_model
+
+    from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+    from deepagents_code.model_config import ModelConfig
+
+    configured, problem = resolve_auto_classifier_model_with_problem()
+    if problem is not None:
+        return INHERIT_CLASSIFIER_MODEL
+    selected = configured or default_auto_classifier_model(provider)
+    if selected is None:
+        return None
+    if ModelConfig.load().policy_error(selected, canonicalize=True) is not None:
+        return INHERIT_CLASSIFIER_MODEL
+    return selected
+
+
 def resolve_auto_classifier_model() -> str | None:
     """Resolve the model spec the Auto approval classifier should use.
 

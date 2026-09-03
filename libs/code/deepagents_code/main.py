@@ -3003,20 +3003,6 @@ def _resolve_and_validate_sandbox(
         parser.error(f"--sandbox-id is not supported by provider '{args.sandbox}'")
 
 
-_DEFAULT_AUTO_CLASSIFIER_MODELS = {
-    "anthropic": "anthropic:claude-sonnet-5",
-    "google_genai": "google_genai:gemini-3.8-flash",
-    "google_vertexai": "google_vertexai:gemini-3.8-flash",
-    "openai": "openai:gpt-5.6-luna",
-    "openai_codex": "openai_codex:gpt-5.6-luna",
-}
-
-
-def _default_auto_classifier_model(provider: str) -> str | None:
-    """Return the default Auto classifier model for a main-model provider."""
-    return _DEFAULT_AUTO_CLASSIFIER_MODELS.get(provider)
-
-
 def _classifier_model_after_policy(spec: str | None) -> str | None:
     """Downgrade a policy-blocked classifier spec to "inherit the runtime model".
 
@@ -3259,6 +3245,7 @@ async def run_textual_cli_async(
     from deepagents_code.approval_mode import ApprovalMode, coerce_approval_mode
     from deepagents_code.config import (
         _get_default_model_spec,
+        default_auto_classifier_model,
         detect_provider,
         resolve_auto_classifier_model_with_problem,
         runtime_state,
@@ -3329,7 +3316,7 @@ async def run_textual_cli_async(
             auto_classifier_problem,
         ) = resolve_auto_classifier_model_with_problem()
         if resolved_auto_classifier_model is None and auto_classifier_problem is None:
-            resolved_auto_classifier_model = _default_auto_classifier_model(
+            resolved_auto_classifier_model = default_auto_classifier_model(
                 runtime_state.model_provider
             )
     if (
@@ -3491,6 +3478,7 @@ async def _run_acp_cli_async(
         create_model,
         credentials,
         is_memory_auto_save_enabled,
+        resolve_auto_classifier_model_for_provider,
     )
     from deepagents_code.model_config import (
         ModelConfigError,
@@ -3611,6 +3599,10 @@ async def _run_acp_cli_async(
                     )
                 )
                 session_model.apply_to_runtime_state()
+                classifier_model = resolve_auto_classifier_model_for_provider(
+                    session_model.provider,
+                    auto_classifier_model,
+                )
                 agent_graph, _backend = create_cli_agent(
                     model=session_model.model,
                     assistant_id=assistant_id,
@@ -3622,7 +3614,7 @@ async def _run_acp_cli_async(
                     recursion_limit=recursion_limit,
                     auto_approve=yolo,
                     auto_mode_enabled=auto,
-                    auto_classifier_model=auto_classifier_model,
+                    auto_classifier_model=classifier_model,
                     memory_auto_save=is_memory_auto_save_enabled(),
                     store=store,
                     cwd=context.cwd,

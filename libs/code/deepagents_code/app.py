@@ -29729,6 +29729,14 @@ class DeepAgentsApp(App):
         display = model_spec
         if provider and not parsed:
             display = f"{provider}:{model_name}"
+        if provider and self._server_kwargs.get("auto_classifier_model") is None:
+            from deepagents_code.config import (
+                resolve_auto_classifier_model_for_provider,
+            )
+
+            classifier_model = resolve_auto_classifier_model_for_provider(provider)
+            self._auto_classifier_model = classifier_model
+            self._server_kwargs["auto_classifier_model"] = classifier_model
 
         new_model_kwargs: dict[str, Any] = {
             "model_spec": display,

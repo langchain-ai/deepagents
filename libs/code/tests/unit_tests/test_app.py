@@ -16256,6 +16256,49 @@ class TestDeferredActions:
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "reconnecting"
 
+    async def test_retry_startup_defaults_classifier_after_provider_resolution(
+        self,
+    ) -> None:
+        """Deferred startup stores the classifier default for its resolved provider."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": None, "auto_classifier_model": None}
+            app._server_startup_deferred = True
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # ty: ignore
+            app.run_worker = MagicMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.UNKNOWN,
+                        provider="anthropic",
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config.resolve_auto_classifier_model_for_provider",
+                    return_value="anthropic:claude-sonnet-5",
+                ),
+            ):
+                started = await app._maybe_start_deferred_server_from_default()
+
+            assert started is True
+            assert app._auto_classifier_model == "anthropic:claude-sonnet-5"
+            assert (
+                app._server_kwargs["auto_classifier_model"]
+                == "anthropic:claude-sonnet-5"
+            )
+
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,
     ) -> None:

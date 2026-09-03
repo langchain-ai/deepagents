@@ -2111,6 +2111,29 @@ class TestRunTextualCliAsyncMcp:
             == INHERIT_CLASSIFIER_MODEL
         )
 
+    def test_provider_classifier_resolver_preserves_precedence(self) -> None:
+        """Late provider resolution preserves explicit and fail-closed choices."""
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+        from deepagents_code.config import resolve_auto_classifier_model_for_provider
+
+        with patch(
+            "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+            return_value=(None, "malformed configured classifier"),
+        ):
+            assert (
+                resolve_auto_classifier_model_for_provider("openai")
+                == INHERIT_CLASSIFIER_MODEL
+            )
+
+        explicit = "anthropic:claude-sonnet-5"
+        with patch(
+            "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+        ) as resolve_config:
+            assert resolve_auto_classifier_model_for_provider("openai", explicit) == (
+                explicit
+            )
+        resolve_config.assert_not_called()
+
     def test_classifier_policy_is_a_no_op_without_an_allowlist(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:

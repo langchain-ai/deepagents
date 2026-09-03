@@ -222,13 +222,31 @@ def test_curated_apply_only_requires_bot_commit_and_green_parent_ci() -> None:
     assert changes["outputs"]["curated-apply-only"] == (
         "${{ steps.curated-apply.outputs.only || 'false' }}"
     )
-    assert workflow["concurrency"]["cancel-in-progress"] == (
-        "${{ !startsWith(github.head_ref, "
-        "'release-please--branches--main--components--') }}"
-    )
+    cancellation = workflow["concurrency"]["cancel-in-progress"]
+    assert "github.event_name != 'pull_request'" in cancellation
+    assert "github.actor != vars.RELEASE_BOT_LOGIN" in cancellation
+    assert "head.repo.full_name != github.repository" in cancellation
+    assert "!startsWith(github.head_ref" in cancellation
     assert "github.actor == vars.RELEASE_BOT_LOGIN" in step["if"]
     assert "head.repo.full_name == github.repository" in step["if"]
-    assert "curated_apply_only.py" in step["run"]
+
+    checkout = _find_step(
+        workflow, job="changes", name="📋 Checkout detector from trusted base ref"
+    )
+    assert checkout["with"]["ref"] == "${{ github.base_ref }}"
+    assert checkout["with"]["path"] == ".curated-apply-base"
+    assert checkout["with"]["persist-credentials"] is False
+    assert (
+        ".github/scripts/checks/curated_apply_only.py"
+        in checkout["with"]["sparse-checkout"]
+    )
+    assert "release-please-config.json" in checkout["with"]["sparse-checkout"]
+    assert (
+        ".curated-apply-base/.github/scripts/checks/curated_apply_only.py"
+        in step["run"]
+    )
+    assert '--repo "$GITHUB_WORKSPACE"' in step["run"]
+    assert "--config .curated-apply-base/release-please-config.json" in step["run"]
     assert "commits/$parent/check-runs" in step["run"]
     assert "✅ CI Success" in step["run"]
     assert "success|failure" in step["run"]

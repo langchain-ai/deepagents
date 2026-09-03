@@ -15,10 +15,17 @@ on:
   pull_request:
   merge_group:
 
-# Cancel redundant workflow runs
+# Cancel redundant workflow runs, except trusted release-bot PR updates whose
+# new head may need to inspect the prior run before it finishes.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ !startsWith(github.head_ref, 'release-please--branches--main--components--') }}
+  cancel-in-progress: >-
+    ${{
+      github.event_name != 'pull_request' ||
+      github.actor != vars.RELEASE_BOT_LOGIN ||
+      github.event.pull_request.head.repo.full_name != github.repository ||
+      !startsWith(github.head_ref, 'release-please--branches--main--components--')
+    }}
 
 # `pull-requests: read` lets the called `_test.yml` reusable workflow read live
 # PR labels (re-runs replay the original event payload, so the API is the only
@@ -62,6 +69,21 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: "📋 Checkout detector from trusted base ref"
+        if: >-
+          github.event_name == 'pull_request' &&
+          github.actor == vars.RELEASE_BOT_LOGIN &&
+          github.event.pull_request.head.repo.full_name == github.repository &&
+          startsWith(github.head_ref, 'release-please--branches--main--components--')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: .curated-apply-base
+          persist-credentials: false
+          sparse-checkout: |
+            .github/scripts/checks/curated_apply_only.py
+            release-please-config.json
+
       - name: "📝 Detect a changelog-only curated-notes apply"
         id: curated-apply
         if: >-
@@ -76,8 +98,9 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HEAD_REF: ${{ github.head_ref }}
         run: |
-          only="$(python3 .github/scripts/checks/curated_apply_only.py \
-            --config release-please-config.json \
+          only="$(python3 .curated-apply-base/.github/scripts/checks/curated_apply_only.py \
+            --repo "$GITHUB_WORKSPACE" \
+            --config .curated-apply-base/release-please-config.json \
             --head "$HEAD_SHA" \
             --branch "$HEAD_REF" \
             --bot-login "$BOT_LOGIN" \

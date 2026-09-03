@@ -454,8 +454,8 @@ async def start_server_and_get_agent(
             raise RuntimeError(msg)
         agent.set_workspace(
             str(project_context.user_cwd),
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
+            config.to_session_workspace_claim(),
+            config_fingerprint=config.session_workspace_fingerprint(),
         )
         started = True
         return agent, server, None

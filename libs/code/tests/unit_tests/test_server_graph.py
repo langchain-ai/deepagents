@@ -330,15 +330,39 @@ def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
     from deepagents_code.workspace import resolve_workspace
 
     cwd.mkdir(exist_ok=True)
+    identity = resolve_workspace(str(cwd))
+    resolved = config.resolve_workspace(identity.cwd, identity.project_root)
     return resolve_workspace(
-        str(cwd),
-        config.to_workspace_payload(),
-        config_fingerprint=config.workspace_fingerprint(),
+        identity.cwd,
+        resolved.to_workspace_payload(),
+        config_fingerprint=resolved.workspace_fingerprint(),
     )
 
 
 class TestWorkspaceRuntime:
     """Workspace runtimes retain trusted server-only configuration."""
+
+    async def test_default_binding_preserves_launch_project_policy(
+        self, tmp_path
+    ) -> None:
+        module = _import_fresh_server_graph()
+        project = tmp_path / "project"
+        project.mkdir()
+        config = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=True,
+            mcp_config_path=str(project / "mcp.json"),
+        )
+
+        binding = await module._default_workspace_binding(config)
+
+        assert binding is not None
+        assert binding.workspace_config()["trust_project_mcp"] is True
+        assert binding.workspace_config()["mcp_config_path"] == str(
+            project / "mcp.json"
+        )
+        assert binding.config_fingerprint == config.workspace_fingerprint()
 
     async def test_uses_full_server_config_and_replaces_only_workspace_paths(
         self, tmp_path
@@ -466,6 +490,31 @@ class TestWorkspaceRuntime:
             ] == (runtimes)
 
         assert make.await_count == 2
+
+    async def test_rejects_resolved_project_policy_divergence(self, tmp_path) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        project = tmp_path / "project"
+        bound_config = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=False,
+        )
+        binding = _bind(bound_config, project)
+        changed = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=True,
+        )
+        with (
+            patch.object(ServerConfig, "from_env", return_value=changed),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
 
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
         from deepagents_code.workspace import WorkspaceConflictError

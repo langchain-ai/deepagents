@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import dataclasses
 import logging
 import sys
 from collections import OrderedDict
@@ -689,11 +688,13 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     """
     if config.cwd is None:
         return None
+    identity = await asyncio.to_thread(resolve_workspace, config.cwd)
+    resolved = config.resolve_workspace(identity.cwd, identity.project_root)
     return await asyncio.to_thread(
         resolve_workspace,
-        config.cwd,
-        config.to_workspace_payload(),
-        config_fingerprint=config.workspace_fingerprint(),
+        identity.cwd,
+        resolved.to_workspace_payload(),
+        config_fingerprint=resolved.workspace_fingerprint(),
     )
 
 
@@ -711,18 +712,24 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
         if cached is not None:
             return cached
         config = ServerConfig.from_env()
-        current_config = dataclasses.replace(
-            config,
-            cwd=binding.cwd,
-            project_root=binding.project_root,
+        current_config = config.resolve_workspace(
+            binding.cwd,
+            binding.project_root,
         )
-        if (
-            current_config.workspace_fingerprint() != binding.config_fingerprint
-            or current_config.to_workspace_payload() != binding.workspace_config()
+        bound_policy = binding.workspace_config()
+        if any(
+            bound_policy.get(key)
+            != current_config.to_project_workspace_policy().get(key)
+            for key in current_config.to_project_workspace_policy()
         ):
+            reason = (
+                "the project's resolved policy differs from the policy recorded "
+                "when this workspace was bound"
+            )
+            conflict = WorkspaceConflictError.from_reason(reason)
+            raise conflict
+        if current_config.workspace_fingerprint() != binding.config_fingerprint:
             reason = "the server configuration changed after this workspace was bound"
-            # Built into a local first: `raise X.from_reason(...)` reads as a
-            # `from_reason` raise to ruff's DOC501.
             conflict = WorkspaceConflictError.from_reason(reason)
             raise conflict
         _claim_sandbox_workspace(current_config.sandbox_type, binding)

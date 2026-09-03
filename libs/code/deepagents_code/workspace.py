@@ -225,6 +225,30 @@ def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> 
     )
 
 
+def _binding_conflict(
+    thread_id: str,
+    existing: WorkspaceBinding,
+    proposed: WorkspaceBinding,
+) -> WorkspaceConflictError:
+    if existing.workspace_id != proposed.workspace_id:
+        return WorkspaceConflictError(
+            f"thread {thread_id} is already bound to a different workspace"
+        )
+    from deepagents_code._server_config import project_workspace_fields
+
+    fields = project_workspace_fields()
+    old = existing.workspace_config()
+    new = proposed.workspace_config()
+    if any(old.get(key) != new.get(key) for key in fields):
+        reason = (
+            "the project's resolved policy differs from the policy recorded "
+            "when this workspace was bound"
+        )
+    else:
+        reason = "the server configuration changed after this workspace was bound"
+    return WorkspaceConflictError.from_reason(reason)
+
+
 def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
     with sqlite3.connect(_database_path(), timeout=5) as conn:
         conn.row_factory = sqlite3.Row
@@ -258,8 +282,7 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
             raise RuntimeError(msg)
         existing = _row_binding(row)
         if _binding_differs(existing, proposed):
-            msg = f"thread {thread_id} is already bound to a different workspace"
-            raise WorkspaceConflictError(msg)
+            raise _binding_conflict(thread_id, existing, proposed)
         if not existing.config_fingerprint:
             conn.execute(
                 """

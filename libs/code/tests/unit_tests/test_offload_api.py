@@ -119,11 +119,12 @@ class TestWorkspaceRoute:
             response = await offload_api.workspace(cast("Any", request))
 
         assert response.status_code == 200
+        resolved = server_config.resolve_workspace(str(tmp_path), None)
         bind.assert_awaited_once_with(
             "thread-1",
             str(tmp_path),
-            server_config.to_workspace_payload(),
-            config_fingerprint=server_config.workspace_fingerprint(),
+            resolved.to_workspace_payload(),
+            config_fingerprint=resolved.workspace_fingerprint(),
         )
         runtime.assert_awaited_once_with(binding)
 
@@ -203,6 +204,47 @@ class TestWorkspaceRoute:
 
         assert response.status_code == 409
         from_env.assert_called_once_with()
+
+    async def test_rejects_client_project_policy_claim(self, tmp_path) -> None:
+        from deepagents_code import offload_api
+        from deepagents_code._server_config import ServerConfig
+
+        config = ServerConfig()
+        claim = config.to_session_workspace_claim()
+        claim["trust_project_mcp"] = True
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(
+                return_value={
+                    "cwd": str(tmp_path),
+                    "workspace_config": claim,
+                    "config_fingerprint": config.session_workspace_fingerprint(),
+                }
+            ),
+        )
+
+        with patch.object(ServerConfig, "from_env", return_value=config):
+            response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 409
+        assert response.body == (
+            b'{"detail":"clients cannot claim project workspace policy"}'
+        )
+
+    async def test_rejects_unknown_workspace_request_field(self, tmp_path) -> None:
+        from deepagents_code import offload_api
+
+        request = SimpleNamespace(
+            path_params={"thread_id": "thread-1"},
+            json=AsyncMock(
+                return_value={"cwd": str(tmp_path), "trust_project_mcp": True}
+            ),
+        )
+
+        response = await offload_api.workspace(cast("Any", request))
+
+        assert response.status_code == 422
+        assert b"trust_project_mcp" in response.body
 
     async def test_malformed_policy_is_a_client_error(self, tmp_path) -> None:
         """A non-object policy returns 422 instead of escaping as a 500."""

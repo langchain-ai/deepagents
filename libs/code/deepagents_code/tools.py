@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import functools
 import ipaddress
 import logging
 import socket
@@ -311,53 +312,25 @@ def _get_tavily_client() -> TavilyClient | None:
 def create_web_search_tool(api_key: str) -> BaseTool:
     """Bind web search to one workspace credential.
 
+    The schema is taken from `web_search` via `functools.wraps` so the built-in
+    and workspace-bound variants can never present different arguments.
+
     Returns:
         Workspace-bound web search tool.
     """
+    # Built on first use and reused: a per-call client would open a fresh
+    # connection pool and repeat the TLS handshake for every search.
+    client: TavilyClient | None = None
 
     @tool("web_search")
-    def workspace_web_search(
-        query: Annotated[
-            str,
-            Field(description="The search query (be specific and detailed)."),
-        ],
-        max_results: Annotated[
-            int,
-            Field(description="Number of results to return."),
-        ] = 5,
-        topic: Annotated[
-            Literal["general", "news", "finance"],
-            Field(
-                description=(
-                    'Search topic type: "general" for most queries, "news" for '
-                    'current events, or "finance".'
-                )
-            ),
-        ] = "general",
-        include_raw_content: Annotated[
-            bool,
-            Field(
-                description=(
-                    "Include full page content (uses more tokens). Prefer `fetch_url` "
-                    "for a single URL."
-                )
-            ),
-        ] = False,
-    ) -> object:
-        """Search the web for current information.
+    @functools.wraps(web_search)
+    def workspace_web_search(**kwargs: Any) -> object:
+        nonlocal client
+        if client is None:
+            from tavily import TavilyClient as _TavilyClient
 
-        Returns:
-            Search hits or a translated error payload.
-        """
-        from tavily import TavilyClient as _TavilyClient
-
-        return _search_with_tavily(
-            _TavilyClient(api_key=api_key),
-            query=query,
-            max_results=max_results,
-            topic=topic,
-            include_raw_content=include_raw_content,
-        )
+            client = _TavilyClient(api_key=api_key)
+        return _search_with_tavily(client, **kwargs)
 
     _workspace_web_search_tools[id(workspace_web_search)] = workspace_web_search
     return workspace_web_search

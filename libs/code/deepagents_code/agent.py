@@ -67,6 +67,7 @@ from deepagents_code import theme
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import DEFAULT_AGENT_NAME
 from deepagents_code._env_vars import (
+    EXPERIMENTAL,
     FORKED_SUBAGENTS,
     is_env_truthy,
 )
@@ -1606,25 +1607,26 @@ def get_system_prompt(
             "available. Never run commands that block waiting for stdin."
         )
 
+    if model_result is not None:
+        model_identity = (
+            model_result.model_name,
+            model_result.provider,
+            model_result.context_limit,
+            model_result.unsupported_modalities,
+        )
+    else:
+        model_identity = (
+            runtime_state.model_name,
+            runtime_state.model_provider,
+            runtime_state.model_context_limit,
+            runtime_state.model_unsupported_modalities,
+        )
+    model_name, model_provider, model_context_limit, model_modalities = model_identity
     model_identity_section = build_model_identity_section(
-        model_result.model_name
-        if model_result is not None
-        else runtime_state.model_name,
-        provider=(
-            model_result.provider
-            if model_result is not None
-            else runtime_state.model_provider
-        ),
-        context_limit=(
-            model_result.context_limit
-            if model_result is not None
-            else runtime_state.model_context_limit
-        ),
-        unsupported_modalities=(
-            model_result.unsupported_modalities
-            if model_result is not None
-            else runtime_state.model_unsupported_modalities
-        ),
+        model_name,
+        provider=model_provider,
+        context_limit=model_context_limit,
+        unsupported_modalities=model_modalities,
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
     tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
@@ -2651,12 +2653,10 @@ def create_cli_agent(
     runtime_credentials = (
         credentials if credentials_snapshot is None else credentials_snapshot
     )
-    if extension_registry is not None:
-        from deepagents_code._env_vars import EXPERIMENTAL, classify_env_bool
-
-        experimental = classify_env_bool(environment.get(EXPERIMENTAL, "")) is True
-        if not experimental:
-            extension_registry = None
+    if extension_registry is not None and not is_env_truthy(
+        EXPERIMENTAL, environ=environment
+    ):
+        extension_registry = None
     mcp_tools = tuple(mcp_tools or ())
     if auto_mode_enabled and sandbox is not None:
         logger.warning(

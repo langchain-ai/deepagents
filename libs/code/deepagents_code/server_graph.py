@@ -92,6 +92,7 @@ async def _build_tools(
     project_context: ProjectContext | None,
     *,
     has_tavily: bool | None = None,
+    tavily_api_key: str | None = None,
 ) -> tuple[list[Any], list[Any] | None, list[Any]]:
     """Assemble the tool list based on server config.
 
@@ -111,6 +112,7 @@ async def _build_tools(
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
         has_tavily: Workspace credential availability override.
+        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
 
     Returns:
         Tuple of `(tools, mcp_server_info, mcp_tools)`.
@@ -119,7 +121,7 @@ async def _build_tools(
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import active_environment, credentials
+    from deepagents_code.config import credentials
     from deepagents_code.tools import (
         create_web_search_tool,
         fetch_url,
@@ -130,11 +132,10 @@ async def _build_tools(
     tools: list[Any] = [fetch_url, get_current_thread_id]
     tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
     if tavily_available:
-        api_key = active_environment().get(
-            "DEEPAGENTS_CODE_TAVILY_API_KEY"
-        ) or active_environment().get("TAVILY_API_KEY")
         tools.append(
-            web_search if has_tavily is None else create_web_search_tool(api_key or "")
+            web_search
+            if has_tavily is None
+            else create_web_search_tool(tavily_api_key or "")
         )
 
     mcp_server_info: list[Any] | None = None
@@ -380,6 +381,7 @@ async def _make_graphs_in_environment(
         config,
         project_context,
         has_tavily=workspace_credentials.has_tavily,
+        tavily_api_key=workspace_credentials.tavily_api_key,
     )
     read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
 
@@ -509,9 +511,9 @@ async def _make_graphs_in_environment(
             offload=offload,
         )
 
-    from deepagents_code._env_vars import EXPERIMENTAL, classify_env_bool
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
 
-    if classify_env_bool(workspace_env.get(EXPERIMENTAL, "")) is True:
+    if is_env_truthy(EXPERIMENTAL, environ=workspace_env):
         from deepagents_code.extensions import ExtensionMode, load_extensions
         from deepagents_code.extensions.runtime import bind_server_extensions
 

@@ -16,7 +16,13 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from rich.markup import escape as escape_markup
 
-from deepagents_code.config import active_environment, console, get_glyphs
+from deepagents_code.config import (
+    AWS_CREDENTIAL_ENV_SOURCES,
+    active_environment,
+    console,
+    get_glyphs,
+    resolve_env_kwargs,
+)
 from deepagents_code.integrations.sandbox_provider import (
     SandboxNotFoundError,
     SandboxProvider,
@@ -713,30 +719,13 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
-_AWS_SESSION_ENV_KWARGS = {
-    "profile_name": ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"),
-    "aws_access_key_id": ("AWS_ACCESS_KEY_ID",),
-    "aws_secret_access_key": ("AWS_SECRET_ACCESS_KEY",),
-    "aws_session_token": ("AWS_SESSION_TOKEN",),
-}
-"""AWS environment values accepted directly by `boto3.Session`."""
-
-
 def _aws_session_kwargs(environment: Mapping[str, str]) -> dict[str, str]:
     """Translate a workspace environment into explicit boto3 session arguments.
 
     Returns:
         Populated boto3 session keyword arguments.
     """
-    result: dict[str, str] = {}
-    for argument, env_names in _AWS_SESSION_ENV_KWARGS.items():
-        value = next(
-            (value for name in env_names if (value := environment.get(name))),
-            None,
-        )
-        if value:
-            result[argument] = value
-    return result
+    return resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, environment.get)
 
 
 class _AgentCoreProvider(SandboxProvider):

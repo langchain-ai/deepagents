@@ -175,18 +175,15 @@ class TestServerGraph:
         module = _import_fresh_server_graph()
         bound_tool = object()
 
-        with (
-            patch(
-                "deepagents_code.config.active_environment",
-                return_value={"TAVILY_API_KEY": "workspace-key"},
-            ),
-            patch(
-                "deepagents_code.tools.create_web_search_tool",
-                return_value=bound_tool,
-            ) as create,
-        ):
+        with patch(
+            "deepagents_code.tools.create_web_search_tool",
+            return_value=bound_tool,
+        ) as create:
             tools, _, _ = await module._build_tools(
-                ServerConfig(no_mcp=True), None, has_tavily=True
+                ServerConfig(no_mcp=True),
+                None,
+                has_tavily=True,
+                tavily_api_key="workspace-key",
             )
 
         assert bound_tool in tools
@@ -251,7 +248,7 @@ class TestServerGraph:
             observed["auto_classifier_model"] = kwargs["auto_classifier_model"]
             return graph_obj, _backend_with_offload(object())
 
-        settings_obj = SimpleNamespace(has_tavily=False)
+        settings_obj = SimpleNamespace(has_tavily=False, tavily_api_key=None)
         environment = dict(os.environ)
         config_module = _module_with_attrs(
             "deepagents_code.config",

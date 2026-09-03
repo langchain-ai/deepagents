@@ -454,7 +454,12 @@ def use_environment(environ: Mapping[str, str] | None) -> Iterator[None]:
     if environ is None:
         yield
         return
-    token = _active_environment.set(MappingProxyType(dict(environ)))
+    frozen = (
+        environ
+        if isinstance(environ, MappingProxyType)
+        else MappingProxyType(dict(environ))
+    )
+    token = _active_environment.set(frozen)
     try:
         yield
     finally:
@@ -488,16 +493,19 @@ def _dotenv_values_from(
         interpolate=False,
     ).dict()
     resolved: dict[str, str | None] = {}
+    # Built once: `resolved` only grows, and each new key is folded in below, so
+    # later values see every earlier one without re-copying the environment.
+    interpolation_env: dict[str, str | None] = dict(environ)
     for parsed_key, value in parsed.items():
         key = _environment_key(parsed_key)
         if value is None:
             resolved[key] = None
+            interpolation_env[key] = None
             continue
-        interpolation_env: dict[str, str | None] = dict(environ)
-        interpolation_env.update(resolved)
         resolved[key] = "".join(
             atom.resolve(interpolation_env) for atom in parse_variables(value)
         )
+        interpolation_env[key] = resolved[key]
     return resolved
 
 
@@ -603,7 +611,7 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
     return _dotenv_environment(start_path=start_path, environ=env)
 
 
-def _resolve_env_var_from(env: dict[str, str], name: str) -> str | None:
+def _resolve_env_var_from(env: Mapping[str, str], name: str) -> str | None:
     """Resolve an env var from a mapping using app prefix precedence.
 
     Returns:
@@ -953,7 +961,7 @@ def _quiet_sdk_logging() -> None:
 
 
 def _load_langsmith_profile_config(
-    env: dict[str, str] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> _LangSmithProfileConfig | None:
     """Return the active LangSmith profile client config, if available."""
     try:
@@ -974,7 +982,7 @@ def _load_langsmith_profile_config(
         return profiles.load_profile_client_config()
 
 
-def _has_langsmith_profile_credentials(env: dict[str, str] | None = None) -> bool:
+def _has_langsmith_profile_credentials(env: Mapping[str, str] | None = None) -> bool:
     """Return whether the LangSmith profile config has usable auth material."""
     config = _load_langsmith_profile_config(env)
     if config is None:
@@ -985,7 +993,9 @@ def _has_langsmith_profile_credentials(env: dict[str, str] | None = None) -> boo
     )
 
 
-def _has_langsmith_profile_custom_endpoint(env: dict[str, str] | None = None) -> bool:
+def _has_langsmith_profile_custom_endpoint(
+    env: Mapping[str, str] | None = None,
+) -> bool:
     """Return whether the LangSmith profile points at a custom endpoint.
 
     The SDK default US SaaS URL does not count: profiles often store it
@@ -3282,15 +3292,13 @@ class Credentials:
             Workspace-local credential and project context values.
         """
         env = active_environment() if environ is None else environ
-        openai_key = _resolve_env_var_from(dict(env), "OPENAI_API_KEY")
-        anthropic_key = _resolve_env_var_from(dict(env), "ANTHROPIC_API_KEY")
-        google_key = _resolve_env_var_from(dict(env), "GOOGLE_API_KEY")
-        nvidia_key = _resolve_env_var_from(dict(env), "NVIDIA_API_KEY")
-        tavily_key = _resolve_env_var_from(dict(env), "TAVILY_API_KEY")
-        google_cloud_project = _resolve_env_var_from(dict(env), "GOOGLE_CLOUD_PROJECT")
-        google_cloud_location = _resolve_env_var_from(
-            dict(env), "GOOGLE_CLOUD_LOCATION"
-        )
+        openai_key = _resolve_env_var_from(env, "OPENAI_API_KEY")
+        anthropic_key = _resolve_env_var_from(env, "ANTHROPIC_API_KEY")
+        google_key = _resolve_env_var_from(env, "GOOGLE_API_KEY")
+        nvidia_key = _resolve_env_var_from(env, "NVIDIA_API_KEY")
+        tavily_key = _resolve_env_var_from(env, "TAVILY_API_KEY")
+        google_cloud_project = _resolve_env_var_from(env, "GOOGLE_CLOUD_PROJECT")
+        google_cloud_location = _resolve_env_var_from(env, "GOOGLE_CLOUD_LOCATION")
         from deepagents_code._env_vars import LANGSMITH_PROJECT
         from deepagents_code.project_utils import find_project_root
 
@@ -3302,9 +3310,7 @@ class Credentials:
             tavily_api_key=tavily_key,
             google_cloud_project=google_cloud_project,
             google_cloud_location=google_cloud_location,
-            deepagents_langchain_project=_resolve_env_var_from(
-                dict(env), LANGSMITH_PROJECT
-            ),
+            deepagents_langchain_project=_resolve_env_var_from(env, LANGSMITH_PROJECT),
             user_langchain_project=_user_langsmith_project_from(env),
             project_root=find_project_root(start_path),
         )
@@ -3895,7 +3901,7 @@ def get_langsmith_project_name() -> str | None:
         from deepagents_code._env_vars import LANGSMITH_PROJECT
 
         return (
-            _resolve_env_var_from(dict(environ), LANGSMITH_PROJECT)
+            _resolve_env_var_from(environ, LANGSMITH_PROJECT)
             or environ.get("LANGSMITH_PROJECT")
             or LANGSMITH_PROJECT_DEFAULT
         )
@@ -4274,7 +4280,7 @@ def configure_langsmith_secret_redaction() -> bool:
     """
     from deepagents_code._env_vars import LANGSMITH_REDACT
 
-    env = dict(active_environment())
+    env = active_environment()
     # Cheap env-var checks first so the common (tracing-off) startup path skips
     # the TOML read in `is_langsmith_redaction_enabled`. These are plain env
     # reads with no failure mode of their own, so they stay outside the
@@ -4367,10 +4373,10 @@ def get_langsmith_replica_projects() -> list[str]:
     Returns:
         Project names, or `[]` when the env var is unset or empty.
     """
-    return _get_langsmith_replica_projects_from(dict(active_environment()))
+    return _get_langsmith_replica_projects_from(active_environment())
 
 
-def _get_langsmith_replica_projects_from(env: dict[str, str]) -> list[str]:
+def _get_langsmith_replica_projects_from(env: Mapping[str, str]) -> list[str]:
     """Parse replica project names from an environment snapshot.
 
     Args:
@@ -4445,7 +4451,7 @@ are not bridged, so only their canonical form takes effect.
 """
 
 
-def _tracing_enabled_from(env: dict[str, str]) -> bool:
+def _tracing_enabled_from(env: Mapping[str, str]) -> bool:
     """Return whether tracing is (or will be) enabled, prefix-aware.
 
     Mirrors the runtime: `DEEPAGENTS_CODE_`-prefixed forms of the bridged flags
@@ -4468,7 +4474,7 @@ def _tracing_enabled_from(env: dict[str, str]) -> bool:
     )
 
 
-def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
+def _tracing_explicitly_disabled_from(env: Mapping[str, str]) -> bool:
     """Return whether a tracing flag is explicitly set to a recognized off value.
 
     True only when tracing is not enabled and at least one tracing-enable flag
@@ -4511,10 +4517,10 @@ def _tracing_explicitly_disabled_from(env: dict[str, str]) -> bool:
 
 def _tracing_enabled() -> bool:
     """Return whether tracing is (or will be) enabled, prefix-aware."""
-    return _tracing_enabled_from(dict(active_environment()))
+    return _tracing_enabled_from(active_environment())
 
 
-def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
+def _tracing_has_credentials_from(env: Mapping[str, str]) -> bool:
     """Return whether a LangSmith API key (env or active profile) is available.
 
     Both API-key vars are bridged from a `DEEPAGENTS_CODE_` prefix at bootstrap,
@@ -4527,7 +4533,7 @@ def _tracing_has_credentials_from(env: dict[str, str]) -> bool:
     return has_key or _has_langsmith_profile_credentials(env)
 
 
-def _langsmith_runs_endpoint_urls_from(env: dict[str, str]) -> tuple[str, ...]:
+def _langsmith_runs_endpoint_urls_from(env: Mapping[str, str]) -> tuple[str, ...]:
     """Return the replica trace ingestion URLs configured via runs-endpoints.
 
     Mirrors the LangSmith SDK's accepted `LANGSMITH_RUNS_ENDPOINTS` shapes: a
@@ -4574,7 +4580,7 @@ def _langsmith_runs_endpoint_urls_from(env: dict[str, str]) -> tuple[str, ...]:
     return ()
 
 
-def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
+def _has_langsmith_runs_endpoints_from(env: Mapping[str, str]) -> bool:
     """Return whether replica trace ingestion targets are configured.
 
     Args:
@@ -4586,7 +4592,7 @@ def _has_langsmith_runs_endpoints_from(env: dict[str, str]) -> bool:
     return bool(_langsmith_runs_endpoint_urls_from(env))
 
 
-def _tracing_can_upload_from(env: dict[str, str]) -> bool:
+def _tracing_can_upload_from(env: Mapping[str, str]) -> bool:
     """Return whether tracing has credentials or an ingestion endpoint.
 
     Custom and replica endpoints are supported as keyless ingestion targets, so
@@ -4606,7 +4612,7 @@ def _tracing_can_upload_from(env: dict[str, str]) -> bool:
     )
 
 
-def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
+def _tracing_endpoint_from(env: Mapping[str, str]) -> str | None:
     """Return a custom tracing endpoint (env or active profile), if configured.
 
     The endpoint vars are not bridged from a `DEEPAGENTS_CODE_` prefix and the
@@ -4638,7 +4644,7 @@ def _tracing_endpoint_from(env: dict[str, str]) -> str | None:
     return None
 
 
-def _resolve_tracing_project_from(env: dict[str, str]) -> tuple[str, bool]:
+def _resolve_tracing_project_from(env: Mapping[str, str]) -> tuple[str, bool]:
     """Resolve the project agent traces would route to, without bootstrap.
 
     The reported project matches the `tracing.langsmith_project` manifest
@@ -5034,6 +5040,18 @@ def _is_bedrock_model_id(model_lower: str) -> bool:
     return bool(dot) and vendor.isalnum()
 
 
+def _detection_credentials() -> Credentials | CredentialsSnapshot:
+    """Return the credential source that matches the active environment scope.
+
+    Returns:
+        A workspace-scoped snapshot when an environment is bound, otherwise the
+        cached process-global credentials.
+    """
+    if _active_environment.get() is not None:
+        return Credentials.snapshot_from_environment()
+    return _get_credentials()
+
+
 def detect_provider(model_name: str) -> str | None:
     """Auto-detect provider from model name.
 
@@ -5081,21 +5099,13 @@ def detect_provider(model_name: str) -> str | None:
         return "perplexity"
 
     if model_lower.startswith("claude"):
-        credentials = (
-            Credentials.snapshot_from_environment()
-            if _active_environment.get() is not None
-            else _get_credentials()
-        )
+        credentials = _detection_credentials()
         if not credentials.has_anthropic and credentials.has_vertex_ai:
             return "google_anthropic_vertex"
         return "anthropic"
 
     if model_lower.startswith("gemini"):
-        credentials = (
-            Credentials.snapshot_from_environment()
-            if _active_environment.get() is not None
-            else _get_credentials()
-        )
+        credentials = _detection_credentials()
         if credentials.has_vertex_ai and not credentials.has_google:
             return "google_vertexai"
         return "google_genai"
@@ -5272,14 +5282,53 @@ _OPENROUTER_APP_CATEGORIES: list[str] = ["cli-agent"]
 _cli_openrouter_profile_registered = False
 """Process-wide guard so the app's OpenRouter profile is registered exactly once."""
 
-_AWS_MODEL_SDK_ENV_KWARGS = {
-    "region_name": ("AWS_REGION", "AWS_DEFAULT_REGION"),
-    "credentials_profile_name": ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"),
+AWS_CREDENTIAL_ENV_SOURCES: dict[str, tuple[str, ...]] = {
+    "profile_name": ("AWS_PROFILE", "AWS_DEFAULT_PROFILE"),
     "aws_access_key_id": ("AWS_ACCESS_KEY_ID",),
     "aws_secret_access_key": ("AWS_SECRET_ACCESS_KEY",),
     "aws_session_token": ("AWS_SESSION_TOKEN",),
 }
+"""Canonical AWS credential sources, keyed by the `boto3.Session` argument.
+
+Shared with `integrations.sandbox_factory` so a new AWS credential source is
+added in one place rather than drifting between the model and sandbox paths.
+"""
+
+_AWS_MODEL_SDK_ENV_KWARGS = {
+    "region_name": ("AWS_REGION", "AWS_DEFAULT_REGION"),
+    # LangChain constructors spell the profile argument differently to boto3.
+    "credentials_profile_name": AWS_CREDENTIAL_ENV_SOURCES["profile_name"],
+    **{
+        argument: names
+        for argument, names in AWS_CREDENTIAL_ENV_SOURCES.items()
+        if argument != "profile_name"
+    },
+}
 """AWS model environment values accepted directly by LangChain constructors."""
+
+
+def resolve_env_kwargs(
+    table: Mapping[str, tuple[str, ...]],
+    lookup: Callable[[str], str | None],
+) -> dict[str, str]:
+    """Translate an argument/env-name table into explicit constructor kwargs.
+
+    The first name that `lookup` resolves to a non-empty value wins.
+
+    Args:
+        table: Constructor argument name mapped to candidate env var names.
+        lookup: Resolver for a single env var name.
+
+    Returns:
+        Populated keyword arguments, omitting arguments with no value.
+    """
+    resolved: dict[str, str] = {}
+    for argument, env_names in table.items():
+        value = next((value for name in env_names if (value := lookup(name))), None)
+        if value:
+            resolved[argument] = value
+    return resolved
+
 
 _PROVIDER_SDK_ENV_KWARGS: dict[str, dict[str, tuple[str, ...]]] = {
     "anthropic_bedrock": _AWS_MODEL_SDK_ENV_KWARGS,
@@ -5358,19 +5407,12 @@ def _apply_provider_sdk_environment(
     if provider == "azure_openai":
         _apply_azure_sdk_endpoint(kwargs)
 
-    for argument, env_names in _PROVIDER_SDK_ENV_KWARGS.get(provider, {}).items():
-        if argument in kwargs:
-            continue
-        value = next(
-            (
-                value
-                for name in env_names
-                if (value := resolve_env_var(name)) is not None
-            ),
-            None,
-        )
-        if value is not None:
-            kwargs[argument] = value
+    table = {
+        argument: env_names
+        for argument, env_names in _PROVIDER_SDK_ENV_KWARGS.get(provider, {}).items()
+        if argument not in kwargs
+    }
+    kwargs.update(resolve_env_kwargs(table, resolve_env_var))
 
 
 def _get_provider_kwargs(
@@ -5478,11 +5520,9 @@ def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None
         )
         stored_key = None
         stored_base_url = None
-        store_unreadable = True
     else:
-        store_unreadable = False
-    if not store_unreadable and not stored_key:
-        return
+        if not stored_key:
+            return
     provider_config = ModelConfig.load().providers.get(provider)
     configured_url = provider_config.get("base_url") if provider_config else None
     if configured_url or _configured_base_url_survives_env_clear(provider):

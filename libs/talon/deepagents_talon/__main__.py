@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
+from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
 from deepagents_talon.channels.telegram import TelegramChannel, TelegramChannelConfig
 from deepagents_talon.channels.whatsapp import WhatsAppChannel, WhatsAppChannelConfig
 from deepagents_talon.config import TalonConfig
@@ -42,6 +43,18 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DCODE_DEBUG_ENV = "DEEPAGENTS_CODE_DEBUG"
+_DCODE_LOG_LEVEL_ENV = "DEEPAGENTS_CODE_LOG_LEVEL"
+_DCODE_DEBUG_VALUES = frozenset({"1", "true", "yes", "on"})
+_DCODE_LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+_CHANNEL_LOGGER_NAME = "deepagents_talon.channels"
+
 
 def main() -> None:
     """Run the Talon host with the placeholder runtime."""
@@ -61,12 +74,17 @@ def main() -> None:
         action="store_true",
         help="Attach the Telegram channel adapter.",
     )
+    parser.add_argument(
+        "--discord",
+        action="store_true",
+        help="Attach the Discord channel adapter.",
+    )
     subparsers = parser.add_subparsers(dest="command")
     _add_import_fleet_parser(subparsers)
     _add_mcp_parsers(subparsers)
     args = parser.parse_args()
 
-    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    _configure_logging(os.environ)
 
     config = TalonConfig.from_env()
     if args.command == "import-fleet":
@@ -79,7 +97,12 @@ def main() -> None:
     config.ensure_home()
     cleanup_sensitive_state(config=config, cron_store=cron_store)
 
-    channels = _channels(config, whatsapp=args.whatsapp, telegram=args.telegram)
+    channels = _channels(
+        config,
+        whatsapp=args.whatsapp,
+        telegram=args.telegram,
+        discord=args.discord,
+    )
     host = TalonHost(
         config=config,
         agent=asyncio.run(_agent_runtime(config, cron_store)),
@@ -247,13 +270,36 @@ def _channels(
     *,
     whatsapp: bool = False,
     telegram: bool = False,
+    discord: bool = False,
 ) -> tuple[ChannelAdapter, ...]:
     channels: list[ChannelAdapter] = []
     if whatsapp or _env_enabled(config.env, "DEEPAGENTS_TALON_WHATSAPP_ENABLED"):
         channels.append(WhatsAppChannel(WhatsAppChannelConfig.from_talon_config(config)))
     if telegram or _env_enabled(config.env, "DEEPAGENTS_TALON_TELEGRAM_ENABLED"):
         channels.append(TelegramChannel(TelegramChannelConfig.from_talon_config(config)))
+    if discord or _env_enabled(config.env, "DEEPAGENTS_TALON_DISCORD_ENABLED"):
+        channels.append(DiscordChannel(DiscordChannelConfig.from_talon_config(config)))
     return tuple(channels)
+
+
+def _configure_logging(env: Mapping[str, str]) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s:%(name)s:%(message)s")
+    logging.getLogger(_CHANNEL_LOGGER_NAME).setLevel(_channel_log_level(env))
+
+
+def _channel_log_level(env: Mapping[str, str]) -> int:
+    debug_enabled = env.get(_DCODE_DEBUG_ENV, "").strip().lower() in _DCODE_DEBUG_VALUES
+    fallback = logging.DEBUG if debug_enabled else logging.INFO
+    raw_level = env.get(_DCODE_LOG_LEVEL_ENV, "").strip().upper()
+    if not raw_level:
+        return fallback
+    if level := _DCODE_LOG_LEVELS.get(raw_level):
+        return level
+    logger.warning(
+        "Ignoring invalid %s; expected DEBUG, INFO, WARNING, ERROR, or CRITICAL",
+        _DCODE_LOG_LEVEL_ENV,
+    )
+    return fallback
 
 
 def _env_enabled(env: Mapping[str, str], key: str) -> bool:

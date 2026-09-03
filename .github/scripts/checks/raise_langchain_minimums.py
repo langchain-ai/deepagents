@@ -12,8 +12,16 @@ respected and never lowered.
 
 A dependency whose PyPI metadata could not be fetched, or a manifest that could
 not be rewritten, is reported as a failure rather than silently omitted: an
-unattended weekly cron must never render "PyPI was unreachable" as "everything
+unattended daily cron must never render "PyPI was unreachable" as "everything
 is already up to date".
+
+`--dependencies` narrows the run to an exact comma-separated name list (the
+prefix scope no longer applies), so a manual dispatch can raise just
+`langchain-core,langsmith` without touching the rest of the ecosystem. Names are
+compared after PEP 503 normalization. A requested name that is not a raiseable
+PyPI requirement of the selected package fails the run rather than passing
+quietly, because a narrowed run that skipped what it was asked for must not
+report success.
 """
 
 from __future__ import annotations
@@ -53,7 +61,6 @@ from check_lockfiles_pre_commit import package_dirs, python_version  # noqa: E40
 from check_release_deps import (  # noqa: E402
     PyPIRequestError,
     _write_output,
-    _write_step_summary,
     fetch_pypi_json,
     load_release_packages,
 )
@@ -117,12 +124,17 @@ class ManifestScope:
         text: The manifest's verbatim source text.
         requirements: `(raw_string, parsed_requirement)` pairs for every
             in-scope dependency, in manifest declaration order.
+        workspace_names: Canonical names declared here but resolved from the
+            workspace rather than PyPI (a URL, a `[tool.uv.sources]` path, or
+            the package itself). They have no PyPI floor to raise, which a
+            narrowed run must report differently from a name that is absent.
 
     """
 
     manifest_path: str
     text: str
     requirements: tuple[tuple[str, Requirement], ...]
+    workspace_names: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -285,23 +297,49 @@ def _self_name(project: Mapping[str, object]) -> str | None:
     return canonicalize_name(name) if isinstance(name, str) else None
 
 
-def _in_scope(
+def _resolved_from_pypi(
     requirement: Requirement,
     canonical_name: str,
     local_names: frozenset[str],
     self_name: str | None,
 ) -> bool:
+    """Return whether a requirement resolves from PyPI rather than the workspace.
+
+    A URL requirement, a `[tool.uv.sources]` path dependency, and the package's
+    own name all have no PyPI floor to raise. Kept separate from `_in_scope` so
+    a caller can tell *why* a name was excluded, which is what lets a narrowed
+    run say "resolved locally" instead of "not declared".
+    """
+    return not (
+        requirement.url or canonical_name in local_names or canonical_name == self_name
+    )
+
+
+def _in_scope(
+    requirement: Requirement,
+    canonical_name: str,
+    local_names: frozenset[str],
+    self_name: str | None,
+    narrow_to: frozenset[str] | None = None,
+) -> bool:
     """Return whether a dependency is an in-scope, externally-resolved dependency.
 
     Whether it declares a raiseable floor is a separate question, answered by
     `extract_minimum` and `_raiseable_specifier` at the call site.
+
+    When `narrow_to` is provided (the `--dependencies` CSV), it replaces the
+    prefix scope: a name must be listed there exactly to be in scope.
     """
-    if requirement.url or canonical_name in local_names or canonical_name == self_name:
+    if not _resolved_from_pypi(requirement, canonical_name, local_names, self_name):
         return False
+    if narrow_to is not None:
+        return canonical_name in narrow_to
     return canonical_name.startswith(IN_SCOPE_PREFIXES)
 
 
-def _load_scope(manifest_path: str) -> ManifestScope:
+def _load_scope(
+    manifest_path: str, narrow_to: frozenset[str] | None = None
+) -> ManifestScope:
     """Read and parse one manifest, returning its in-scope requirements.
 
     Raises:
@@ -318,6 +356,7 @@ def _load_scope(manifest_path: str) -> ManifestScope:
     local_names = local_dependency_names(manifest)
     self_name = _self_name(project)
     requirements: list[tuple[str, Requirement]] = []
+    workspace_names: set[str] = set()
     seen: set[str] = set()
     for raw in _project_requirement_strings(project) + _group_requirement_strings(
         manifest
@@ -333,11 +372,19 @@ def _load_scope(manifest_path: str) -> ManifestScope:
             )
             continue
         canonical_name = canonicalize_name(requirement.name)
-        if not _in_scope(requirement, canonical_name, local_names, self_name):
+        if not _resolved_from_pypi(requirement, canonical_name, local_names, self_name):
+            workspace_names.add(canonical_name)
+            continue
+        if not _in_scope(
+            requirement, canonical_name, local_names, self_name, narrow_to
+        ):
             continue
         requirements.append((raw, requirement))
     return ManifestScope(
-        manifest_path=manifest_path, text=text, requirements=tuple(requirements)
+        manifest_path=manifest_path,
+        text=text,
+        requirements=tuple(requirements),
+        workspace_names=frozenset(workspace_names),
     )
 
 
@@ -600,19 +647,56 @@ def _select_manifests(package: str, packages: Mapping[str, str]) -> list[str] | 
     return [f"{path}/pyproject.toml" for path in selected]
 
 
-def _run(package: str) -> int:
-    """Raise in-scope lower bounds for `package`, writing manifests and outputs."""
+def _run(package: str, narrow_to: frozenset[str] | None = None) -> int:
+    """Raise in-scope lower bounds for `package`, writing manifests and outputs.
+
+    When `narrow_to` is provided, only those distribution names are raised
+    instead of every dependency matching `IN_SCOPE_PREFIXES`.
+    """
     manifests = _select_manifests(package, load_release_packages())
     if manifests is None:
         return 1
     _notice(f"Raising dependency minimums for {package}: " + ", ".join(manifests))
+    if narrow_to is not None:
+        _notice("Restricted to dependencies: " + ", ".join(sorted(narrow_to)))
 
-    scopes = [_load_scope(manifest_path) for manifest_path in manifests]
+    scopes = [_load_scope(manifest_path, narrow_to) for manifest_path in manifests]
     in_scope_names = {
         canonicalize_name(requirement.name)
         for scope in scopes
         for _, requirement in scope.requirements
     }
+    if narrow_to:
+        # Report every requested name that resolved to nothing, not just the
+        # all-miss case: narrowing to `langchain-core,langsmiht` otherwise
+        # raises one bound and never mentions the typo, so the run reads as
+        # having done what was asked. Fail closed, as with fetch failures below.
+        missing = narrow_to - in_scope_names
+        if missing:
+            workspace = missing & {
+                name for scope in scopes for name in scope.workspace_names
+            }
+            absent = missing - workspace
+            reasons = []
+            if absent:
+                reasons.append(
+                    "not declared as a PyPI requirement of "
+                    f"{package}: {', '.join(sorted(absent))}"
+                )
+            if workspace:
+                reasons.append(
+                    "declared but resolved from the workspace (a URL or a "
+                    "[tool.uv.sources] path), so there is no PyPI floor to "
+                    f"raise: {', '.join(sorted(workspace))}"
+                )
+            _error(
+                f"Requested dependencies were not raised for {package} — "
+                + "; ".join(reasons)
+                + ". Check the spelling, or drop --dependencies to raise every "
+                "in-scope bound. Not reporting a partial run as complete."
+            )
+            return 1
+
     if not in_scope_names:
         # Every release package declares in-scope dependencies, so an empty set
         # means the manifests are shaped differently than this script expects —
@@ -649,6 +733,35 @@ def _run(package: str) -> int:
                 "as up to date."
             )
             return 1
+        if narrow_to:
+            # Every requested name is present (checked above) but none produced
+            # an edit. Distinguish why: a name whose requirements only ever
+            # appear as exact `==` pins or with no lower bound has no floor to
+            # raise, so it can never be bumped — answering green tells the
+            # operator the bump happened when it never could. A name that does
+            # declare a raiseable floor and is already at the latest compatible
+            # release is genuinely current, which stays a no-op success.
+            raiseable_names = {
+                canonicalize_name(requirement.name)
+                for scope in scopes
+                for _, requirement in scope.requirements
+                if _raiseable_specifier(requirement.specifier) is not None
+            }
+            unraiseable = narrow_to - raiseable_names
+            if unraiseable:
+                _error(
+                    f"Requested dependencies of {package} have no raiseable "
+                    "floor — each is an exact `==` pin or declares no lower "
+                    f"bound, so there is nothing to raise: "
+                    f"{', '.join(sorted(unraiseable))}. Not reporting this as "
+                    "up to date."
+                )
+                return 1
+            _notice(
+                f"All requested dependencies of {package} are already at the "
+                "latest compatible stable release; nothing to do."
+            )
+            return 0
         _notice(
             f"All in-scope minimums for {package} are already at or above the "
             "latest compatible stable PyPI releases; nothing to do."
@@ -662,7 +775,6 @@ def _run(package: str) -> int:
     if fetch_failures or plan_failures:
         summary += "\n\n" + failures_markdown(fetch_failures, plan_failures)
     print(summary)
-    _write_step_summary(summary)
 
     changed_files = sorted(plan.manifest_path for plan in plans)
     lock_dirs = stale_lock_dirs(changed_files)
@@ -675,8 +787,34 @@ def _run(package: str) -> int:
         "lock_specs",
         ",".join(f"{path}={python_version(REPO_ROOT / path)}" for path in lock_dirs),
     )
+    # Deliberately not `_write_step_summary`: `GITHUB_STEP_SUMMARY` is a per-step
+    # file uploaded when the step ends, so the table can only appear *after* the
+    # PR link if the step that learns the PR outcome emits both. The workflow
+    # replays this output in that step's own summary.
     _write_output("summary", summary)
     return 0
+
+
+def _parse_dependency_csv(value: str) -> frozenset[str] | None:
+    """Parse a comma-separated distribution-name list, or `None` when empty.
+
+    Canonicalizes each entry so PEP 503 spelling differences (`LangChain-Core`
+    vs `langchain-core`) still match manifest names. An empty string means
+    "no narrowing" and returns `None` so the prefix scope applies.
+    """
+    names = frozenset(
+        canonicalize_name(entry.strip()) for entry in value.split(",") if entry.strip()
+    )
+    return names or None
+
+
+def _branch_name(package: str, dependencies: Collection[str] | None) -> str:
+    """Return the canonical branch identity for a package and dependency set."""
+    suffix = ""
+    if dependencies:
+        names = sorted({canonicalize_name(name) for name in dependencies})
+        suffix = "-" + "-".join(names)
+    return f"chore/raise-dependency-minimums-{package}{suffix}"
 
 
 def main() -> int:
@@ -690,9 +828,20 @@ def main() -> int:
             "release package."
         ),
     )
+    parser.add_argument(
+        "--dependencies",
+        default="",
+        help=(
+            "Comma-separated PyPI distribution names to restrict the run to "
+            "(e.g. 'langchain-core,langsmith'). When empty, every dependency "
+            "matching IN_SCOPE_PREFIXES is raised."
+        ),
+    )
     args = parser.parse_args()
     try:
-        return _run(args.package)
+        dependencies = _parse_dependency_csv(args.dependencies)
+        _write_output("branch", _branch_name(args.package, dependencies))
+        return _run(args.package, dependencies)
     except Exception as err:  # noqa: BLE001  # fail closed on script defects
         _error(f"Raising dependency minimums failed unexpectedly: {err}")
         return 2

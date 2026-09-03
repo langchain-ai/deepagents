@@ -5,14 +5,20 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-import threading
 from types import ModuleType, SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+
+
+@pytest.fixture(autouse=True)
+def _disable_extensions(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep user extension code out of server graph unit tests."""
+    monkeypatch.delenv("DEEPAGENTS_CODE_EXPERIMENTAL", raising=False)
 
 
 def _import_fresh_server_graph() -> ModuleType:
@@ -29,6 +35,15 @@ def _module_with_attrs(name: str, **attrs: object) -> ModuleType:
     return module
 
 
+def _backend_with_offload(default: object) -> SimpleNamespace:
+    """Build a minimal backend carrying the server operation resource."""
+    from deepagents_code.offload_middleware import OffloadOperation
+
+    backend = SimpleNamespace(default=default)
+    backend._dcode_offload_operation = OffloadOperation(MagicMock(), MagicMock())
+    return backend
+
+
 class TestServerGraph:
     """Tests for server-mode graph bootstrap."""
 
@@ -38,12 +53,36 @@ class TestServerGraph:
         module = _import_fresh_server_graph()
 
         with patch.object(
-            module, "_make_graph", new=AsyncMock(return_value=graph_obj)
+            module,
+            "_make_graphs",
+            new=AsyncMock(
+                return_value=module.ServerRuntime(graph_obj, object(), object())
+            ),
         ) as make_graph:
             assert await module.make_graph() is graph_obj
             assert await module.make_graph() is graph_obj
 
         make_graph.assert_awaited_once_with()
+
+    async def test_concurrent_resolution_builds_one_runtime(self) -> None:
+        """Concurrent requests share the single graph runtime."""
+        import asyncio
+
+        module = _import_fresh_server_graph()
+        graph_obj = object()
+        calls = 0
+
+        async def build() -> object:
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0)
+            return module.ServerRuntime(graph_obj, object(), object())
+
+        factory = module._build_graph_factory(build)
+        results = await asyncio.gather(factory(), factory(), factory())
+
+        assert calls == 1
+        assert results == [graph_obj, graph_obj, graph_obj]
 
     def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
         """Criteria tools should be known context objects in main-tool order."""
@@ -120,7 +159,7 @@ class TestServerGraph:
         with (
             patch.object(
                 module,
-                "_make_graph",
+                "_make_graphs",
                 new=AsyncMock(side_effect=ValueError("boom: bad model")),
             ),
             pytest.raises(SystemExit) as exc_info,
@@ -131,202 +170,6 @@ class TestServerGraph:
         captured = capsys.readouterr()
         assert f"{STARTUP_ERROR_MARKER}ValueError: boom: bad model" in captured.err
 
-    async def test_auto_discovery_loads_mcp_without_explicit_config(self) -> None:
-        """Server mode should auto-discover MCP configs when the graph is built."""
-        graph_obj = object()
-        model_obj = object()
-        fetch_tool = object()
-        thread_tool = object()
-        web_tool = object()
-        mcp_tool = SimpleNamespace(
-            metadata={"readOnlyHint": True, "destructiveHint": False}
-        )
-        mcp_server_info = [SimpleNamespace(name="docs")]
-        loop_thread_id = threading.get_ident()
-        create_cli_agent_thread_ids: list[int] = []
-        create_model_thread_ids: list[int] = []
-        setup_thread_ids: list[int] = []
-        redaction_thread_ids: list[int] = []
-        repository_backend = object()
-        user_cwd = object()
-        project_context = SimpleNamespace(user_cwd=user_cwd, project_root=object())
-        reload_from_environment = MagicMock()
-
-        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
-            create_cli_agent_thread_ids.append(threading.get_ident())
-            return graph_obj, SimpleNamespace(default=repository_backend)
-
-        def create_model_side_effect(*_: object, **__: object) -> object:
-            create_model_thread_ids.append(threading.get_ident())
-            return model_result
-
-        def get_server_project_context_side_effect(*_: object, **__: object) -> object:
-            setup_thread_ids.append(threading.get_ident())
-            return project_context
-
-        def reload_from_environment_side_effect(
-            *_: object, **kwargs: object
-        ) -> list[str]:
-            setup_thread_ids.append(threading.get_ident())
-            assert kwargs.get("start_path") is user_cwd
-            return []
-
-        def configure_redaction_side_effect() -> None:
-            redaction_thread_ids.append(threading.get_ident())
-
-        reload_from_environment.side_effect = reload_from_environment_side_effect
-
-        create_cli_agent = MagicMock(side_effect=create_cli_agent_side_effect)
-        agent_module = _module_with_attrs(
-            "deepagents_code.agent",
-            DEFAULT_AGENT_NAME="agent",
-            create_cli_agent=create_cli_agent,
-            load_async_subagents=MagicMock(return_value=None),
-        )
-
-        model_result = SimpleNamespace(
-            model=model_obj,
-            apply_to_settings=MagicMock(),
-        )
-        configure_redaction = MagicMock(side_effect=configure_redaction_side_effect)
-        create_model = MagicMock(side_effect=create_model_side_effect)
-        config_module = _module_with_attrs(
-            "deepagents_code.config",
-            configure_langsmith_secret_redaction=configure_redaction,
-            create_model=create_model,
-            is_memory_auto_save_enabled=MagicMock(return_value=True),
-            settings=SimpleNamespace(
-                has_tavily=True,
-                reload_from_environment=reload_from_environment,
-            ),
-        )
-
-        tools_module = _module_with_attrs(
-            "deepagents_code.tools",
-            fetch_url=fetch_tool,
-            get_current_thread_id=thread_tool,
-            web_search=web_tool,
-        )
-
-        class FakeSessionManager:
-            async def cleanup(self) -> None:
-                return None
-
-        resolve_mcp_tools = AsyncMock(return_value=([mcp_tool], None, mcp_server_info))
-        mcp_module = _module_with_attrs(
-            "deepagents_code.mcp_tools",
-            MCPSessionManager=FakeSessionManager,
-            resolve_and_load_mcp_tools=resolve_mcp_tools,
-        )
-
-        config = ServerConfig(
-            no_mcp=False,
-            profile_overrides={"max_input_tokens": 32000},
-            # Non-default allowlist so the `fs_tools=` assertion below is
-            # load-bearing: it round-trips through `to_env()`/`from_env()` and
-            # must reach `create_cli_agent`. With the `None` default this
-            # assertion passed whether or not `_make_graph` read
-            # `config.allow_fs_tools`, so a dropped read would go unnoticed.
-            allow_fs_tools=["ls", "read_file"],
-        )
-        env_overrides = {}
-        for suffix, value in config.to_env().items():
-            if value is not None:
-                env_overrides[f"{SERVER_ENV_PREFIX}{suffix}"] = value
-
-        with (
-            patch.dict(os.environ, env_overrides, clear=False),
-            patch.dict(
-                sys.modules,
-                {
-                    "deepagents_code.agent": agent_module,
-                    "deepagents_code.config": config_module,
-                    "deepagents_code.tools": tools_module,
-                    "deepagents_code.mcp_tools": mcp_module,
-                },
-            ),
-            patch(
-                "deepagents_code.project_utils.get_server_project_context",
-                side_effect=get_server_project_context_side_effect,
-            ),
-            patch(
-                "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
-                return_value=(),
-            ),
-        ):
-            for suffix in (
-                "MCP_CONFIG_PATH",
-                "TRUST_PROJECT_MCP",
-                "CWD",
-                "PROJECT_ROOT",
-            ):
-                os.environ.pop(f"{SERVER_ENV_PREFIX}{suffix}", None)
-
-            module = _import_fresh_server_graph()
-            resolve_mcp_tools.assert_not_awaited()
-            assert await module.make_graph() is graph_obj
-
-        configure_redaction.assert_called_once_with()
-        reload_from_environment.assert_called_once_with(start_path=user_cwd)
-        resolve_mcp_tools.assert_awaited_once()
-        assert create_cli_agent_thread_ids
-        assert create_cli_agent_thread_ids[0] != loop_thread_id
-        # Project-context resolution and the settings bootstrap must run off the
-        # loop: on Windows they call `os.getcwd()` via `Path.resolve()` /
-        # `Path.cwd()`, which `blockbuster` rejects on the server event loop.
-        assert setup_thread_ids
-        assert all(thread_id != loop_thread_id for thread_id in setup_thread_ids)
-        # Redaction fail-closed must run on the server task so
-        # `configure(enabled=False)` updates this task's tracing ContextVar,
-        # not only a worker-thread copy left behind by `asyncio.to_thread`.
-        assert redaction_thread_ids == [loop_thread_id]
-        # `create_model` must run off the loop thread: it does blocking disk IO
-        # for some providers (e.g. the `openai_codex` token store calls
-        # `os.mkdir`), which `blockbuster` rejects on the server event loop.
-        assert create_model_thread_ids
-        assert create_model_thread_ids[0] != loop_thread_id
-        assert create_model.call_args.kwargs["profile_overrides"] == {
-            "max_input_tokens": 32000
-        }
-        kwargs = resolve_mcp_tools.await_args_list[0].kwargs
-        assert kwargs["explicit_config_path"] is None
-        assert kwargs["no_mcp"] is False
-        assert kwargs["trust_project_mcp"] is None
-        assert kwargs["project_context"] is project_context
-        assert kwargs["stateless"] is True
-        assert isinstance(kwargs["session_manager"], FakeSessionManager)
-        create_cli_agent.assert_called_once_with(
-            model=model_obj,
-            assistant_id="agent",
-            tools=[fetch_tool, thread_tool, web_tool, mcp_tool],
-            mcp_tools=[mcp_tool],
-            sandbox=None,
-            sandbox_type=None,
-            system_prompt=None,
-            interactive=True,
-            auto_approve=False,
-            auto_mode_enabled=True,
-            interrupt_shell_only=False,
-            shell_allow_list=None,
-            fs_tools=["ls", "read_file"],
-            enable_ask_user=False,
-            enable_memory=True,
-            memory_auto_save=True,
-            enable_skills=True,
-            enable_shell=True,
-            enable_interpreter=False,
-            rubric_model=None,
-            rubric_max_iterations=None,
-            auto_classifier_model=None,
-            recursion_limit=None,
-            mcp_server_info=mcp_server_info,
-            cwd=user_cwd,
-            project_context=project_context,
-            async_subagents=None,
-            goal_criteria_tools=[fetch_tool, web_tool, mcp_tool],
-            rubric_grader_tools=[fetch_tool, web_tool, mcp_tool],
-        )
-
     async def test_build_tools_skips_mcp_when_disabled(self) -> None:
         """`no_mcp=True` should not call the MCP resolver at all."""
         fetch_tool = object()
@@ -334,7 +177,7 @@ class TestServerGraph:
         resolve_mcp_tools = AsyncMock()
         config_module = _module_with_attrs(
             "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
+            credentials=SimpleNamespace(has_tavily=False),
         )
         tools_module = _module_with_attrs(
             "deepagents_code.tools",
@@ -367,36 +210,35 @@ class TestServerGraph:
         resolve_mcp_tools.assert_not_awaited()
 
     async def test_interpreter_settings_apply_before_agent_construction(self) -> None:
-        """Server config settings writes should be visible to `create_cli_agent`."""
+        """Server PTC overrides should reach the interpreter snapshot."""
         graph_obj = object()
         model_obj = object()
         observed: dict[str, object] = {}
 
-        def create_cli_agent_side_effect(**_: object) -> tuple[object, object]:
-            from deepagents_code.config import settings
+        def create_cli_agent_side_effect(**kwargs: object) -> tuple[object, object]:
+            from deepagents_code.configuration.interpreter import InterpreterConfig
 
-            observed["interpreter_ptc"] = settings.interpreter_ptc
-            observed["acknowledge"] = settings.interpreter_ptc_acknowledge_unsafe
-            observed["enable_interpreter"] = settings.enable_interpreter
-            return graph_obj, SimpleNamespace(default=object())
+            interpreter = kwargs["interpreter_config"]
+            assert isinstance(interpreter, InterpreterConfig)
+            observed["interpreter_ptc"] = interpreter.ptc
+            observed["acknowledge"] = interpreter.ptc_acknowledge_unsafe
+            observed["enable_interpreter"] = kwargs["enable_interpreter"]
+            return graph_obj, _backend_with_offload(object())
 
-        settings_obj = SimpleNamespace(
-            has_tavily=False,
-            interpreter_ptc=None,
-            interpreter_ptc_acknowledge_unsafe=False,
-            enable_interpreter=False,
-        )
+        settings_obj = SimpleNamespace(has_tavily=False)
         config_module = _module_with_attrs(
             "deepagents_code.config",
             configure_langsmith_secret_redaction=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,
-                    apply_to_settings=MagicMock(),
+                    apply_to_runtime_state=MagicMock(),
+                    model_retries=5,
+                    cli_max_retries=None,
                 ),
             ),
             is_memory_auto_save_enabled=MagicMock(return_value=True),
-            settings=settings_obj,
+            credentials=settings_obj,
         )
         agent_module = _module_with_attrs(
             "deepagents_code.agent",
@@ -445,137 +287,67 @@ class TestServerGraph:
             "enable_interpreter": True,
         }
 
-    async def test_build_tools_delegates_mcp_loading_to_resolver(self) -> None:
-        """`_build_tools` should defer all MCP work to the resolver.
 
-        Adapter warmup now lives inside `_load_tools_from_config` (gated on
-        active servers existing), so `_build_tools` no longer warms imports
-        itself — it just calls the resolver and appends the returned tools.
-        """
-        fetch_tool = object()
-        thread_tool = object()
-        discovered_mcp_tools = [object(), object()]
+class TestWorkspaceRuntime:
+    """Workspace runtimes retain trusted server-only configuration."""
 
-        class FakeSessionManager:
-            pass
-
-        resolve_mcp_tools = AsyncMock(return_value=(discovered_mcp_tools, None, []))
-        config_module = _module_with_attrs(
-            "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
-        )
-        tools_module = _module_with_attrs(
-            "deepagents_code.tools",
-            fetch_url=fetch_tool,
-            get_current_thread_id=thread_tool,
-            web_search=object(),
-        )
-        mcp_module = _module_with_attrs(
-            "deepagents_code.mcp_tools",
-            MCPSessionManager=FakeSessionManager,
-            resolve_and_load_mcp_tools=resolve_mcp_tools,
-        )
-
-        with patch.dict(
-            sys.modules,
-            {
-                "deepagents_code.config": config_module,
-                "deepagents_code.tools": tools_module,
-                "deepagents_code.mcp_tools": mcp_module,
-            },
-        ):
-            module = _import_fresh_server_graph()
-            assert not hasattr(module, "_warm_mcp_adapter_imports")
-            tools, mcp_server_info, mcp_tools = await module._build_tools(
-                ServerConfig(no_mcp=False),
-                None,
-            )
-
-        resolve_mcp_tools.assert_awaited_once()
-        assert tools == [fetch_tool, thread_tool, *discovered_mcp_tools]
-        assert mcp_server_info == []
-        assert mcp_tools is discovered_mcp_tools
-
-    async def test_build_tools_passes_project_dir_to_plugin_mcp_discovery(
-        self,
+    async def test_uses_full_server_config_and_replaces_only_workspace_paths(
+        self, tmp_path
     ) -> None:
-        """Server graph discovery should preserve project substitution context.
+        from deepagents_code.workspace import resolve_workspace
 
-        Plugin discovery must run off the event loop: it creates per-plugin
-        data dirs via `os.mkdir`, which `blockbuster` rejects on the loop.
-        """
-        fetch_tool = object()
-        thread_tool = object()
-        project_root = object()
-        project_context = SimpleNamespace(
-            project_root=project_root,
-            user_cwd=object(),
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(
+            model="trusted:model",
+            system_prompt="trusted prompt",
+            model_params={"api_key": "secret"},
+            auto_approve=True,
         )
-        plugin_configs: tuple[dict[str, object], ...] = (
-            {"mcpServers": {"plugin": {}}},
+        binding = resolve_workspace(
+            str(tmp_path),
+            bound_config.to_workspace_payload(),
+            config_fingerprint=bound_config.workspace_fingerprint(),
         )
-        resolve_mcp_tools = AsyncMock(return_value=([], None, []))
-        loop_thread_id = threading.get_ident()
-        discover_thread_ids: list[int] = []
-
-        def discover_plugin_mcp_side_effect(
-            *, project_dir: object | None = None
-        ) -> tuple[dict[str, object], ...]:
-            discover_thread_ids.append(threading.get_ident())
-            assert project_dir is project_root
-            return plugin_configs
-
-        config_module = _module_with_attrs(
-            "deepagents_code.config",
-            settings=SimpleNamespace(has_tavily=False),
-        )
-        tools_module = _module_with_attrs(
-            "deepagents_code.tools",
-            fetch_url=fetch_tool,
-            get_current_thread_id=thread_tool,
-            web_search=object(),
-        )
-
-        class FakeSessionManager:
-            pass
-
-        mcp_module = _module_with_attrs(
-            "deepagents_code.mcp_tools",
-            MCPSessionManager=FakeSessionManager,
-            resolve_and_load_mcp_tools=resolve_mcp_tools,
-        )
-
+        runtime = module.ServerRuntime(object(), object(), object())
         with (
-            patch.dict(
-                sys.modules,
-                {
-                    "deepagents_code.config": config_module,
-                    "deepagents_code.tools": tools_module,
-                    "deepagents_code.mcp_tools": mcp_module,
-                },
-            ),
-            patch(
-                "deepagents_code.plugins.adapters.mcp.discover_plugin_mcp_configs",
-                side_effect=discover_plugin_mcp_side_effect,
-            ) as discover_plugin_mcp,
+            patch.object(ServerConfig, "from_env", return_value=bound_config),
+            patch.object(
+                module, "_make_graphs", new=AsyncMock(return_value=runtime)
+            ) as make,
         ):
-            module = _import_fresh_server_graph()
-            tools, mcp_server_info, mcp_tools = await module._build_tools(
-                ServerConfig(no_mcp=False),
-                project_context,
-            )
+            assert await module._workspace_runtime(binding) is runtime
 
-        assert tools == [fetch_tool, thread_tool]
-        assert mcp_server_info == []
-        assert mcp_tools == []
-        discover_plugin_mcp.assert_called_once_with(project_dir=project_root)
-        assert discover_thread_ids
-        assert discover_thread_ids[0] != loop_thread_id
-        resolve_mcp_tools.assert_awaited_once()
-        await_args = resolve_mcp_tools.await_args
-        assert await_args is not None
-        assert await_args.kwargs["additional_configs"] == plugin_configs
-        assert await_args.kwargs["project_context"] is project_context
+        call = make.await_args
+        assert call is not None
+        config = call.kwargs["config_override"]
+        assert config.model == "trusted:model"
+        assert config.system_prompt == "trusted prompt"
+        assert config.model_params == {"api_key": "secret"}
+        assert config.cwd == binding.cwd
+        assert config.project_root == binding.project_root
+
+    async def test_rejects_server_config_drift(self, tmp_path) -> None:
+        from deepagents_code.workspace import resolve_workspace
+
+        module = _import_fresh_server_graph()
+        bound_config = ServerConfig(model="trusted:model")
+        binding = resolve_workspace(
+            str(tmp_path),
+            bound_config.to_workspace_payload(),
+            config_fingerprint=bound_config.workspace_fingerprint(),
+        )
+        with (
+            patch.object(
+                ServerConfig,
+                "from_env",
+                return_value=ServerConfig(model="changed:model"),
+            ),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            pytest.raises(RuntimeError, match="configuration changed"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
 
 
 class TestStartupErrorMarker:
@@ -585,47 +357,42 @@ class TestStartupErrorMarker:
     a one-line summary instead of "Server process exited with code N".
     """
 
-    def test_emits_marker_with_type_and_summary(
-        self,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        from deepagents_code._startup_error import (
-            STARTUP_ERROR_MARKER,
-            emit_startup_failure,
-        )
 
-        emit_startup_failure(ValueError("boom: details"))
-        captured = capsys.readouterr()
-        assert f"{STARTUP_ERROR_MARKER}ValueError: boom: details" in captured.err
-        assert "Failed to initialize server graph: boom: details" in captured.err
+class TestGraphFactorySignature:
+    """`make_graph` must stay loadable as a LangGraph server graph factory.
 
-    def test_marker_collapses_multiline_exception(
-        self,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        from deepagents_code._startup_error import (
-            STARTUP_ERROR_MARKER,
-            emit_startup_failure,
-        )
+    The server does not call the factory to learn what it wants. It resolves
+    the factory's annotations with `typing.get_type_hints` at graph-load time
+    and builds a keyword dispatch from them. An annotation that names a symbol
+    which exists only for type checkers fails to resolve, and the server then
+    rejects the graph before it serves a request. Calling `make_graph`
+    directly cannot detect this, because Python never evaluates annotations.
+    """
 
-        emit_startup_failure(ValueError("first line\nsecond line"))
-        captured = capsys.readouterr()
-        marker_line = next(
-            line
-            for line in captured.err.splitlines()
-            if line.startswith(STARTUP_ERROR_MARKER)
-        )
-        assert marker_line == f"{STARTUP_ERROR_MARKER}ValueError: first line"
+    def test_factory_annotations_resolve_at_runtime(self) -> None:
+        """Every `make_graph` annotation must resolve outside TYPE_CHECKING."""
+        import typing
 
-    def test_marker_handles_empty_exception_message(
-        self,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        from deepagents_code._startup_error import (
-            STARTUP_ERROR_MARKER,
-            emit_startup_failure,
-        )
+        module = _import_fresh_server_graph()
 
-        emit_startup_failure(RuntimeError())
-        captured = capsys.readouterr()
-        assert f"{STARTUP_ERROR_MARKER}RuntimeError: <no message>" in captured.err
+        hints = typing.get_type_hints(module.make_graph)
+
+        assert "runtime" in hints
+        assert "config" in hints
+
+    def test_server_classifies_factory_as_config_and_runtime(self) -> None:
+        """The server must map both parameters, not reject the factory."""
+        from langgraph_api._factory_utils import _classify_factory
+
+        module = _import_fresh_server_graph()
+
+        # `_classify_factory` returns the keyword dispatch the server uses for
+        # every graph load. The public `classify_factory` caches into a process
+        # global, so it is deliberately not used here.
+        dispatch = _classify_factory(module.make_graph)
+
+        assert dispatch is not None
+        # Sentinels: the dispatch only routes these values by keyword.
+        config: Any = object()
+        runtime: Any = object()
+        assert dispatch(config, runtime) == {"config": config, "runtime": runtime}

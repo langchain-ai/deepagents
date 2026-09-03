@@ -27,9 +27,9 @@ if TYPE_CHECKING:
 
 from deepagents_code._ask_user_types import (
     CHOICE_QUESTION_TYPES,
-    MULTI_SELECT_ANSWER_SEPARATOR,
-    MULTI_SELECT_FORBIDDEN_IN_VALUE,
     QUESTION_TYPES,
+    ask_user_answer_is_empty,
+    encode_multi_select_answer,
 )
 from deepagents_code.config import get_glyphs
 from deepagents_code.editor import editor_display_name
@@ -47,10 +47,6 @@ ADD_ANOTHER_OTHER_LABEL = "Add another custom answer"
 MAX_MULTI_SELECT_OTHER_ENTRIES = 10
 MISSING_ANSWER_TOAST = "Please provide an answer to all questions before continuing."
 MISSING_OTHER_TEXT_TOAST = "Please type a custom answer for Other, or uncheck it."
-MULTI_SELECT_COMMA_TOAST = (
-    "Custom multi-select answers cannot contain a comma "
-    f"({MULTI_SELECT_FORBIDDEN_IN_VALUE!r})."
-)
 MAX_OTHER_ENTRIES_TOAST = (
     f"At most {MAX_MULTI_SELECT_OTHER_ENTRIES} custom answers can be added to one "
     "question. Combine values into an existing field to add more."
@@ -258,7 +254,7 @@ class AskUserMenu(Container):
     def _render_help(self) -> str:
         """Build the footer hint text for the current menu state.
 
-        The `Ctrl+X external editor` hint is included only while one of this
+        The `Ctrl+G external editor` hint is included only while one of this
         menu's text areas holds focus, matching the routing in
         `App.action_open_editor`. Multi-select prompts add a Space-toggle tip.
 
@@ -279,9 +275,9 @@ class AskUserMenu(Container):
         if self._show_editor_hint():
             editor = editor_display_name()
             parts.append(
-                f"Ctrl+X edit in {editor}"
+                f"Ctrl+G edit in {editor}"
                 if editor is not None
-                else "Ctrl+X external editor"
+                else "Ctrl+G external editor"
             )
         if len(self._questions) > 1:
             parts.append("Tab/Shift+Tab switch question")
@@ -299,9 +295,9 @@ class AskUserMenu(Container):
         return question is not None and question.can_uncheck_other_input(focused)
 
     def _show_editor_hint(self) -> bool:
-        """Whether `ctrl+x` would currently open one of this menu's text areas.
+        """Whether `ctrl+g` would currently open one of this menu's text areas.
 
-        `App.action_open_editor` routes `ctrl+x` to an ask-user text area only
+        `App.action_open_editor` routes `ctrl+g` to an ask-user text area only
         when one is focused, and otherwise falls through to the chat input.
         A visible-but-unfocused field therefore must not advertise the
         shortcut: pressing it would open the user's chat draft instead. The
@@ -343,8 +339,7 @@ class AskUserMenu(Container):
                 if error is not None:
                     self.app.notify(error, severity="warning", markup=False)
                     return
-                answer = qw.get_answer()
-                if answer.strip() or not qw._required:
+                if not qw.answer_is_empty() or not qw._required:
                     self.confirm_and_advance(qw._index)
                 else:
                     self.app.notify(
@@ -390,16 +385,17 @@ class AskUserMenu(Container):
         # others still hold: the user can Shift+Tab back into a confirmed
         # question and edit it (`focus_input` even drops the cursor straight into
         # a checked Other field), or leave a question unconfirmed entirely and
-        # Tab past it. Without this, a comma typed into a custom multi-select
-        # answer after confirming reaches the agent as two selections, silently
-        # breaking the guarantee `_validate_choices` enforces on the tool side.
+        # Tab past it. Without this, a custom multi-select answer cleared after
+        # confirming would vanish from the answer the agent receives while its
+        # checkbox stays on.
         #
         # This subsumes the empty-required check for `multi_select`, and reports
         # the more specific Other-row errors in preference to the generic
-        # "answer all questions" toast.
+        # "answer all questions" toast. Emptiness goes through
+        # `_QuestionWidget.answer_is_empty`, which knows the `[]` encoding.
         for i, qw in enumerate(self._question_widgets):
             error = qw.validate_for_submit()
-            if error is None and not self._answers[i].strip() and qw._required:
+            if error is None and qw._required and qw.answer_is_empty():
                 error = MISSING_ANSWER_TOAST
             if error is not None:
                 self._confirmed[i] = False
@@ -469,13 +465,13 @@ class AskUserMenu(Container):
             node = node.parent
         if node is not None and node._index != self._current_question:
             self._highlight_question(node._index)
-        # Every focus change inside the menu can flip whether ctrl+x routes
+        # Every focus change inside the menu can flip whether ctrl+g routes
         # here, including clicks that land on a question container rather than
         # its text area, so refresh regardless of which question is active.
         self._update_help()
 
     def on_descendant_blur(self, event: events.DescendantBlur) -> None:
-        """Retract the `Ctrl+X` hint when focus leaves a text area."""
+        """Retract the `Ctrl+G` hint when focus leaves a text area."""
         del event  # Unused: the hint is recomputed from current focus.
         self._update_help()
 
@@ -719,11 +715,12 @@ class _QuestionWidget(Vertical):
         self._q_type: QuestionType = question_type
         self._choices: list[Choice] = question.get("choices", [])
         if self._q_type in CHOICE_QUESTION_TYPES and not self._choices:
-            # This one is a real gap: `choices` is `NotRequired`, so the adapter
-            # accepts a choice question with none and only `_validate_questions`
-            # rejects it. Degrade `_q_type` too, not just the rendering, so it
-            # stays a true discriminant — otherwise the help footer advertises
-            # "Space toggle" for what is actually a text box.
+            # A defensive degrade, not a live gap: `choices` is `NotRequired`,
+            # but `AskUserRequest.questions` is `list[ValidatedQuestion]`, so
+            # the adapter rejects a choice question with none before this runs.
+            # Degrade `_q_type` too, not just the rendering, so it stays a true
+            # discriminant — otherwise the help footer advertises "Space toggle"
+            # for what is actually a text box.
             logger.warning(
                 "ask_user %s question %d has no choices; rendering as text",
                 self._q_type,
@@ -984,17 +981,13 @@ class _QuestionWidget(Vertical):
         so the agent receives the full pasted content, not the compact
         `[Pasted text #N]` token.
 
-        A multi-select answer is the toggled predefined values in choice-list
-        order, then each filled custom Other value in slot order, joined with
-        `MULTI_SELECT_ANSWER_SEPARATOR`, and is empty when nothing is toggled.
-        A custom value duplicating an already-selected one is dropped, so the
-        agent never sees the same selection twice.
-
-        On the tool path `_validate_choices` rejects predefined values containing
-        `MULTI_SELECT_FORBIDDEN_IN_VALUE`, and `validate_for_submit` blocks
-        submitting Other text that contains it — including on the final
-        all-confirmed submit, since answers are read live and a confirmed
-        question can still be edited.
+        A multi-select answer is a JSON array (via `encode_multi_select_answer`)
+        of the toggled predefined values in choice-list order, then each filled
+        custom Other value in slot order — `[]` when nothing is toggled. JSON
+        is self-delimiting, so values carrying commas, quotes, or newlines
+        round-trip exactly through `decode_multi_select_answer`. A custom value
+        duplicating an already-selected one is dropped, so the agent never sees
+        the same selection twice.
         """
         if self._q_type == "text":
             return self._text_input.submitted_value if self._text_input else ""
@@ -1011,7 +1004,7 @@ class _QuestionWidget(Vertical):
                 other_text = self._entry_custom_text(entry)
                 if other_text and other_text not in selected:
                     selected.append(other_text)
-            return MULTI_SELECT_ANSWER_SEPARATOR.join(selected)
+            return encode_multi_select_answer(selected)
 
         if self._is_other_selected and self._other_input:
             return self._other_input.submitted_value
@@ -1020,6 +1013,19 @@ class _QuestionWidget(Vertical):
             return self._choices[self._selected_choice].get("value", "")
 
         return ""
+
+    def answer_is_empty(self) -> bool:
+        """Return whether the current answer counts as "no answer".
+
+        Defers to `ask_user_answer_is_empty` so this agrees with the
+        authorization path, which applies the same rule to the answer once it
+        is over the wire.
+
+        Returns:
+            `True` when the question has no substantive answer — an empty
+            multi-select selection, or a blank answer of any other type.
+        """
+        return ask_user_answer_is_empty(self.get_answer(), self._q_type)
 
     def validate_for_submit(self) -> str | None:
         """Return a user-facing error if this question cannot be submitted yet.
@@ -1040,9 +1046,7 @@ class _QuestionWidget(Vertical):
             other_text = entry.text_input.submitted_value
             if not other_text.strip():
                 return MISSING_OTHER_TEXT_TOAST
-            if MULTI_SELECT_FORBIDDEN_IN_VALUE in other_text:
-                return MULTI_SELECT_COMMA_TOAST
-        if not self.get_answer().strip() and self._required:
+        if self._required and self.answer_is_empty():
             return MISSING_ANSWER_TOAST
         return None
 

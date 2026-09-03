@@ -6,15 +6,14 @@ import asyncio
 import logging
 import os
 import threading
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import dotenv as _dotenv_module
 import pytest
 
 from deepagents_code import _env_vars
-from deepagents_code.command_registry import get_slash_commands
-from deepagents_code.config import Settings
+from deepagents_code.config import Credentials, runtime_state
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
 if TYPE_CHECKING:
@@ -22,12 +21,35 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_code.app import _PluginFingerprint
+    from deepagents_code.configuration.types import TomlSnapshot
     from deepagents_code.plugins.models import PluginInstance
     from deepagents_code.tui.modals.plugin_manager import PluginManagerScreen
     from deepagents_code.tui.modals.plugin_manager.models import PluginManagerResult
 
 # Capture before any monkeypatching replaces it on the module.
 _real_load_dotenv = _dotenv_module.load_dotenv
+
+
+def _resolved_config_value(key: str, *, path_base: Path | None = None) -> object:
+    from deepagents_code.config import _use_extra_skills_path_base
+    from deepagents_code.config_manifest import get_option
+    from deepagents_code.configuration.resolver import get_config_resolver
+
+    option = get_option(key)
+    assert option is not None
+    with _use_extra_skills_path_base(path_base):
+        return get_config_resolver().get(option).value
+
+
+def _shell_allow_list() -> list[str] | None:
+    return cast("list[str] | None", _resolved_config_value("shell.allow_list"))
+
+
+def _extra_skills_dirs(*, path_base: Path | None = None) -> list[Path] | None:
+    return cast(
+        "list[Path] | None",
+        _resolved_config_value("skills.extra_allowed_dirs", path_base=path_base),
+    )
 
 
 def _test_plugin_fingerprint(version: str) -> _PluginFingerprint:
@@ -57,11 +79,12 @@ _RELOAD_ENV_KEYS = (
     "DEEPAGENTS_CODE_GOOGLE_CLOUD_PROJECT",
     "DEEPAGENTS_CODE_LANGSMITH_PROJECT",
     "DEEPAGENTS_CODE_SHELL_ALLOW_LIST",
+    "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS",
 )
 
 
 class TestReloadFromEnvironment:
-    """Tests for `Settings.reload_from_environment`."""
+    """Tests for `Credentials.reload_from_environment`."""
 
     @pytest.fixture(autouse=True)
     def _clear_reload_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -92,14 +115,75 @@ class TestReloadFromEnvironment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Reload should read API keys added after initialization."""
-        settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.openai_api_key is None
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert credentials.openai_api_key is None
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-new-key")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.openai_api_key == "sk-new-key"
+        assert credentials.openai_api_key == "sk-new-key"
         assert "openai_api_key: unset -> set" in changes
+
+    def test_reload_publishes_one_complete_replacement(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Readers retain the old generation until one complete swap."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-old")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-old")
+        owner = Credentials.from_environment(start_path=tmp_path)
+        previous = owner.active
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-openai-new")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-anthropic-new")
+        observed: list[object] = []
+
+        def observe_before_publication(
+            _values: object, *, path_base: Path | None
+        ) -> None:
+            assert path_base == tmp_path
+            observed.append(owner.active)
+
+        monkeypatch.setattr(
+            config_mod, "_sync_reload_overrides", observe_before_publication
+        )
+
+        owner.reload_from_environment(start_path=tmp_path)
+
+        current = owner.active
+        assert observed == [previous]
+        assert current is not previous
+        assert previous.openai_api_key == "sk-openai-old"
+        assert previous.anthropic_api_key == "sk-anthropic-old"
+        assert current.openai_api_key == "sk-openai-new"
+        assert current.anthropic_api_key == "sk-anthropic-new"
+
+    def test_reload_failure_keeps_previous_snapshot(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A failure after candidate construction cannot publish it."""
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-old")
+        owner = Credentials.from_environment(start_path=tmp_path)
+        previous = owner.active
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-new")
+
+        def fail_before_publication(_values: object, *, path_base: Path | None) -> None:
+            del path_base
+            msg = "resolver publication failed"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            config_mod, "_sync_reload_overrides", fail_before_publication
+        )
+
+        with pytest.raises(RuntimeError, match="resolver publication failed"):
+            owner.reload_from_environment(start_path=tmp_path)
+
+        assert owner.active is previous
+        assert owner.openai_api_key == "sk-old"
 
     def test_preview_reload_reports_changes_without_mutating(
         self, tmp_path: Path
@@ -110,36 +194,225 @@ class TestReloadFromEnvironment:
         current.mkdir()
         target.mkdir()
         (target / ".env").write_text("DEEPAGENTS_CODE_SHELL_ALLOW_LIST=ls\n")
-        settings = Settings.from_environment(start_path=current)
+        credentials = Credentials.from_environment(start_path=current)
 
-        changes = settings.preview_reload_from_environment(start_path=target)
+        changes = credentials.preview_reload_from_environment(start_path=target)
 
         assert any(change.startswith("shell_allow_list:") for change in changes)
-        assert settings.shell_allow_list is None
+        assert _shell_allow_list() is None
         assert "DEEPAGENTS_CODE_SHELL_ALLOW_LIST" not in os.environ
 
-    def test_preserves_model_state(
+    def test_preview_reload_sees_shell_allow_list_toml_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """A preview reports a `[shell].allow_list` edit made since startup.
+
+        The shared resolver's user snapshot is cached at startup; a preview
+        that read it would report no change while the accepted reload applies
+        the edit, breaking the preview/apply contract. The preview resolves
+        the user tier from a fresh file read instead.
+        """
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _shell_allow_list() is None
+
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        changes = credentials.preview_reload_from_environment(start_path=tmp_path)
+
+        assert any(change.startswith("shell_allow_list:") for change in changes)
+        assert _shell_allow_list() is None
+
+    def test_preview_reload_sees_extra_skill_roots_toml_edit(
+        self, tmp_path: Path
+    ) -> None:
+        """A preview and accepted reload use the same fresh skill roots."""
+        from deepagents_code import model_config
+
+        skills_dir = tmp_path / "external-skills"
+        skills_dir.mkdir()
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _extra_skills_dirs() is None
+
+        config_path.write_text(
+            f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
+            encoding="utf-8",
+        )
+        preview = credentials.preview_reload_from_environment(start_path=tmp_path)
+        applied = credentials.reload_from_environment(start_path=tmp_path)
+
+        assert any(change.startswith("extra_skills_dirs:") for change in preview)
+        assert preview == applied
+        assert _extra_skills_dirs() == [skills_dir]
+
+    def test_reload_resolves_relative_skill_roots_from_target_cwd(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A cwd-switch reload interprets skill roots from the target project."""
+        from deepagents_code import model_config
+
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        monkeypatch.chdir(current)
+        model_config.DEFAULT_CONFIG_PATH.write_text(
+            '[skills]\nextra_allowed_dirs = ["shared-skills"]\n',
+            encoding="utf-8",
+        )
+        credentials = Credentials.from_environment(start_path=current)
+        assert _extra_skills_dirs() == [current / "shared-skills"]
+
+        credentials.reload_from_environment(start_path=target)
+
+        assert _extra_skills_dirs(path_base=target) == [target / "shared-skills"]
+
+    def test_preview_reload_retains_shell_allow_list_on_corrupt_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """Preview and apply retain the last readable user snapshot."""
+        config_path = tmp_path / "config.toml"
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _shell_allow_list() == ["ls"]
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+
+        preview = credentials.preview_reload_from_environment(start_path=tmp_path)
+        applied = credentials.reload_from_environment(start_path=tmp_path)
+
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in applied)
+        assert _shell_allow_list() == ["ls"]
+
+    def test_reload_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
+        """A corrupt `config.toml` must not be reported as a clean reload.
+
+        Retaining the previous generation is the right runtime behavior, but
+        the retention is otherwise silent: the only signal is a warning in the
+        debug buffer, while the report the user reads says "Configuration
+        reloaded. No changes detected." They edited the file a moment ago and
+        would have no way to tell the edit was rejected.
+        """
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _shell_allow_list() == ["ls"]
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        changes = credentials.reload_from_environment(start_path=tmp_path)
+
+        assert changes
+        assert changes[0].startswith("Kept previous config.toml:")
+        # The retained value is still in force -- the notice reports the
+        # rejection, it does not describe a rollback.
+        assert _shell_allow_list() == ["ls"]
+
+    def test_preview_reports_an_unparseable_user_config(self, tmp_path: Path) -> None:
+        """The preview reports its own read, so accept/decline agree with it."""
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        credentials = Credentials.from_environment(start_path=tmp_path)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        preview = credentials.preview_reload_from_environment(start_path=tmp_path)
+
+        assert preview
+        assert preview[0].startswith("Kept previous config.toml:")
+        assert _shell_allow_list() == ["ls"]
+
+    def test_reload_reports_no_notice_for_a_readable_config(
+        self, tmp_path: Path
+    ) -> None:
+        """A healthy file reports changes only -- no spurious notice."""
+        from deepagents_code import model_config
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        credentials = Credentials.from_environment(start_path=tmp_path)
+
+        config_path.write_text(
+            '[shell]\nallow_list = ["ls", "cat"]\n', encoding="utf-8"
+        )
+        changes = credentials.reload_from_environment(start_path=tmp_path)
+
+        assert not any(
+            change.startswith("Kept previous config.toml:") for change in changes
+        )
+        assert _shell_allow_list() == ["ls", "cat"]
+
+    def test_reload_retains_extra_skill_roots_on_corrupt_toml(
+        self, tmp_path: Path
+    ) -> None:
+        """A failed user-config reload cannot drop active skill containment roots."""
+        skills_dir = tmp_path / "external-skills"
+        skills_dir.mkdir()
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f'[skills]\nextra_allowed_dirs = ["{skills_dir}"]\n',
+            encoding="utf-8",
+        )
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _extra_skills_dirs() == [skills_dir]
+
+        config_path.write_text("[skills\n", encoding="utf-8")
+
+        changes = credentials.reload_from_environment(start_path=tmp_path)
+
+        assert not any(change.startswith("extra_skills_dirs:") for change in changes)
+        assert _extra_skills_dirs() == [skills_dir]
+
+    def test_reload_reads_managed_policy_once(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Reload should preserve runtime model fields and user project."""
-        settings = Settings.from_environment(start_path=tmp_path)
-        settings.model_name = "gpt-5"
-        settings.model_provider = "openai"
-        settings.model_context_limit = 200_000
-        settings.user_langchain_project = "my-project"
+        """One reload must use one managed-policy file generation."""
+        from deepagents_code.configuration import service
+
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        original_load = service._load_managed
+        loads = 0
+
+        def counted_load(path: Path | None = None) -> TomlSnapshot:
+            nonlocal loads
+            loads += 1
+            return original_load(path)
+
+        monkeypatch.setattr(service, "_load_managed", counted_load)
+
+        credentials.reload_from_environment(start_path=tmp_path)
+
+        assert loads == 1
+
+    def test_does_not_touch_runtime_model_state(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reload should not touch separate runtime model state or user project."""
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        runtime_state.model_name = "gpt-5"
+        runtime_state.model_provider = "openai"
+        runtime_state.model_context_limit = 200_000
+        credentials.user_langchain_project = "my-project"
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-reloaded")
-        settings.reload_from_environment(start_path=tmp_path)
+        credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.model_name == "gpt-5"
-        assert settings.model_provider == "openai"
-        assert settings.model_context_limit == 200_000
-        assert settings.user_langchain_project == "my-project"
+        assert runtime_state.model_name == "gpt-5"
+        assert runtime_state.model_provider == "openai"
+        assert runtime_state.model_context_limit == 200_000
+        assert credentials.user_langchain_project == "my-project"
 
     def test_no_changes_returns_empty(self, tmp_path: Path) -> None:
         """Reload should report no changes when environment is unchanged."""
-        settings = Settings.from_environment(start_path=tmp_path)
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
         assert changes == []
 
@@ -148,10 +421,10 @@ class TestReloadFromEnvironment:
     ) -> None:
         """Change reports should mask API key values."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-old-secret")
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-new-secret")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
         key_changes = [
             change for change in changes if change.startswith("openai_api_key:")
         ]
@@ -165,12 +438,12 @@ class TestReloadFromEnvironment:
     ) -> None:
         """Removing an API key should report `set -> unset`."""
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         monkeypatch.delenv("ANTHROPIC_API_KEY")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.anthropic_api_key is None
+        assert credentials.anthropic_api_key is None
         assert "anthropic_api_key: set -> unset" in changes
 
     def test_empty_api_key_treated_as_none(
@@ -178,10 +451,10 @@ class TestReloadFromEnvironment:
     ) -> None:
         """Empty-string API key should be normalized to `None`."""
         monkeypatch.setenv("OPENAI_API_KEY", "")
-        settings = Settings.from_environment(start_path=tmp_path)
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.openai_api_key is None
+        assert credentials.openai_api_key is None
         assert changes == []
 
     def test_updates_shell_allow_list(
@@ -189,25 +462,44 @@ class TestReloadFromEnvironment:
     ) -> None:
         """Reload should update parsed shell allow-list values."""
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls,cat")
-        settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls", "cat"]
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _shell_allow_list() == ["ls", "cat"]
 
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls,grep")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.shell_allow_list == ["ls", "grep"]
+        assert _shell_allow_list() == ["ls", "grep"]
         assert any(change.startswith("shell_allow_list:") for change in changes)
+
+    def test_reload_preserves_cli_shell_allow_list(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Reloads retain the session-scoped CLI allow-list winner."""
+        from deepagents_code.configuration.provider import CliProvider
+        from deepagents_code.configuration.resolver import install_cli_provider
+
+        install_cli_provider(CliProvider({"shell_allow_list": "ls,cat"}))
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _shell_allow_list() == ["ls", "cat"]
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "grep")
+        preview = credentials.preview_reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
+
+        assert _shell_allow_list() == ["ls", "cat"]
+        assert not any(change.startswith("shell_allow_list:") for change in preview)
+        assert not any(change.startswith("shell_allow_list:") for change in changes)
 
     def test_loads_project_dotenv_from_explicit_start_path(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Reload should anchor dotenv loading to the explicit start path."""
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
         env_file = tmp_path / ".env"
         env_file.write_text("OPENAI_API_KEY=sk-test\n")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        settings.reload_from_environment(start_path=tmp_path)
+        credentials.reload_from_environment(start_path=tmp_path)
 
         assert os.environ["OPENAI_API_KEY"] == "sk-test"
 
@@ -215,7 +507,7 @@ class TestReloadFromEnvironment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Reload should load project dotenv first, then global."""
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
         global_env.parent.mkdir()
@@ -227,7 +519,7 @@ class TestReloadFromEnvironment:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
 
-        settings.reload_from_environment(start_path=tmp_path)
+        credentials.reload_from_environment(start_path=tmp_path)
 
         assert os.environ["ANTHROPIC_API_KEY"] == "sk-project"
         assert os.environ["OPENAI_API_KEY"] == "sk-global"
@@ -239,7 +531,7 @@ class TestReloadFromEnvironment:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """OSError reading global `.env` should log a warning and continue."""
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         broken = MagicMock()
         msg = "permission denied"
@@ -253,125 +545,10 @@ class TestReloadFromEnvironment:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            settings.reload_from_environment(start_path=tmp_path)
+            credentials.reload_from_environment(start_path=tmp_path)
 
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
         assert os.environ["OPENAI_API_KEY"] == "sk-fallback"
-
-    def test_project_dotenv_beats_global(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Project `.env` should always beat global `.env`."""
-        from deepagents_code.config import _load_dotenv
-
-        global_dir = tmp_path / "global"
-        global_dir.mkdir()
-        global_env = global_dir / ".env"
-        global_env.write_text("TEST_PRECEDENCE_KEY=global-value\n")
-        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
-
-        project_env = tmp_path / ".env"
-        project_env.write_text("TEST_PRECEDENCE_KEY=project-value\n")
-
-        # Use real dotenv (not the stub) to test actual precedence
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-        monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ.get("TEST_PRECEDENCE_KEY") == "project-value"
-        monkeypatch.delenv("TEST_PRECEDENCE_KEY", raising=False)
-
-    def test_shell_env_beats_project_dotenv(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Shell-exported vars should beat project `.env`."""
-        from deepagents_code.config import _load_dotenv
-
-        # No global dotenv
-        monkeypatch.setattr(
-            "deepagents_code.config._GLOBAL_DOTENV_PATH",
-            tmp_path / "nonexistent" / ".env",
-        )
-
-        project_env = tmp_path / ".env"
-        project_env.write_text("TEST_SHELL_PROJECT_KEY=project-value\n")
-
-        monkeypatch.setenv("TEST_SHELL_PROJECT_KEY", "shell-value")
-
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ.get("TEST_SHELL_PROJECT_KEY") == "shell-value"
-        monkeypatch.delenv("TEST_SHELL_PROJECT_KEY", raising=False)
-
-    def test_shell_env_beats_global_dotenv(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Shell-exported vars should beat global `~/.deepagents/.env`."""
-        from deepagents_code.config import _load_dotenv
-
-        global_dir = tmp_path / "global"
-        global_dir.mkdir()
-        global_env = global_dir / ".env"
-        global_env.write_text("TEST_BOOT_KEY=global-value\n")
-        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
-
-        # Simulate a shell-exported variable (e.g., from $ZDOTDIR/.env)
-        monkeypatch.setenv("TEST_BOOT_KEY", "shell-value")
-
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-        # No project .env
-        monkeypatch.setattr(
-            "deepagents_code.config._find_dotenv_from_start_path",
-            lambda _: None,
-        )
-
-        _load_dotenv(start_path=tmp_path)
-
-        assert os.environ.get("TEST_BOOT_KEY") == "shell-value"
-        monkeypatch.delenv("TEST_BOOT_KEY", raising=False)
-
-    def test_global_only_no_project_dotenv(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Global `.env` values should apply when no project `.env` exists."""
-        from deepagents_code.config import _load_dotenv
-
-        global_dir = tmp_path / "global"
-        global_dir.mkdir()
-        global_env = global_dir / ".env"
-        global_env.write_text("TEST_GLOBAL_ONLY=global-value\n")
-        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
-
-        monkeypatch.setattr(
-            "dotenv.load_dotenv",
-            _real_load_dotenv,
-        )
-        monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
-
-        # No .env in isolated dir; global is the only source
-        monkeypatch.setattr(
-            "deepagents_code.config._find_dotenv_from_start_path",
-            lambda _: None,
-        )
-        isolated = tmp_path / "no_project_env"
-        isolated.mkdir()
-        result = _load_dotenv(start_path=isolated)
-
-        assert result is True
-        assert os.environ.get("TEST_GLOBAL_ONLY") == "global-value"
-        monkeypatch.delenv("TEST_GLOBAL_ONLY", raising=False)
 
     def test_global_dotenv_values_raises_oserror(
         self,
@@ -380,7 +557,7 @@ class TestReloadFromEnvironment:
         caplog: pytest.LogCaptureFixture,
     ) -> None:
         """OSError from `dotenv.dotenv_values` itself is caught."""
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
         global_env.parent.mkdir()
@@ -392,12 +569,12 @@ class TestReloadFromEnvironment:
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
         original_dotenv_values = _dotenv_module.dotenv_values
-        call_count = 0
+        global_calls = 0
 
         def _fail_on_global(*, dotenv_path: Path) -> dict[str, str | None]:
-            nonlocal call_count
-            call_count += 1
-            if call_count == 2:
+            nonlocal global_calls
+            if dotenv_path == global_env:
+                global_calls += 1
                 msg = "read error"
                 raise OSError(msg)
             return dict(original_dotenv_values(dotenv_path=dotenv_path))
@@ -405,9 +582,11 @@ class TestReloadFromEnvironment:
         monkeypatch.setattr("dotenv.dotenv_values", _fail_on_global)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
-            settings.reload_from_environment(start_path=tmp_path)
+            credentials.reload_from_environment(start_path=tmp_path)
 
-        assert call_count == 2
+        # The global file is read once for the trusted `read_project_dotenv`
+        # pre-check and once for its remaining values; both hit the failure.
+        assert global_calls == 2
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
 
@@ -424,6 +603,16 @@ class TestReloadFromEnvironment:
             "CDPATH=/tmp\n"
             "COMSPEC=C:\\repo\\cmd.exe\n"
             "ENV=/tmp/evil.sh\n"
+            "GIT_CONFIG_COUNT=1\n"
+            "GIT_CONFIG_KEY_0=core.fsmonitor\n"
+            "GIT_CONFIG_VALUE_0=/tmp/evil.sh\n"
+            "GIT_CONFIG_PARAMETERS='core.pager=/tmp/evil.sh'\n"
+            "GIT_CONFIG_GLOBAL=/tmp/evil.gitconfig\n"
+            "GIT_CONFIG_SYSTEM=/tmp/evil.gitconfig\n"
+            "GIT_DIR=/tmp/evil.git\n"
+            "GIT_EDITOR=/tmp/evil.sh\n"
+            "GIT_SSH_COMMAND=/tmp/evil.sh\n"
+            "GIT_WORK_TREE=/tmp/evil\n"
             "GLOBIGNORE=*\n"
             "LD_PRELOAD=/tmp/evil.so\n"
             "PYTHONPATH=/tmp/evil\n"
@@ -433,6 +622,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT=C:\\repo\\windows\n"
             "WINDIR=C:\\repo\\windows\n"
             "DEEPAGENTS_INHERITED_PYTHONPATH=/tmp/evil\n"
+            "DEEPAGENTS_HOME=/tmp/attacker-profile\n"
             "OPENAI_API_KEY=sk-ok\n"
         )
         for key in (
@@ -441,6 +631,16 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
+            "GIT_WORK_TREE",
             "GLOBIGNORE",
             "LD_PRELOAD",
             "PYTHONPATH",
@@ -449,6 +649,7 @@ class TestReloadFromEnvironment:
             "SYSTEMROOT",
             "WINDIR",
             "DEEPAGENTS_INHERITED_PYTHONPATH",
+            "DEEPAGENTS_HOME",
             "OPENAI_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
@@ -460,6 +661,16 @@ class TestReloadFromEnvironment:
         assert "CDPATH" not in os.environ
         assert "COMSPEC" not in os.environ
         assert "ENV" not in os.environ
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "GIT_CONFIG_KEY_0" not in os.environ
+        assert "GIT_CONFIG_VALUE_0" not in os.environ
+        assert "GIT_CONFIG_PARAMETERS" not in os.environ
+        assert "GIT_CONFIG_GLOBAL" not in os.environ
+        assert "GIT_CONFIG_SYSTEM" not in os.environ
+        assert "GIT_DIR" not in os.environ
+        assert "GIT_EDITOR" not in os.environ
+        assert "GIT_SSH_COMMAND" not in os.environ
+        assert "GIT_WORK_TREE" not in os.environ
         assert "GLOBIGNORE" not in os.environ
         assert "LD_PRELOAD" not in os.environ
         assert "PYTHONPATH" not in os.environ
@@ -470,7 +681,182 @@ class TestReloadFromEnvironment:
         # The carrier var must not be injectable from `.env`, or a project could
         # smuggle a PYTHONPATH into agent `execute` commands through it.
         assert "DEEPAGENTS_INHERITED_PYTHONPATH" not in os.environ
+        assert "DEEPAGENTS_HOME" not in os.environ
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_global_dotenv_cannot_set_deepagents_home(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The global dotenv cannot replace the launch-selected trust root."""
+        from deepagents_code._paths import get_deepagents_home
+        from deepagents_code.config import _load_dotenv
+
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("DEEPAGENTS_HOME=/tmp/attacker-profile\n")
+        isolated = tmp_path / "isolated"
+        isolated.mkdir()
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        monkeypatch.delenv("DEEPAGENTS_HOME", raising=False)
+        captured = get_deepagents_home()
+
+        _load_dotenv(start_path=isolated)
+
+        assert "DEEPAGENTS_HOME" not in os.environ
+        assert get_deepagents_home() == captured
+
+    def test_project_dotenv_denies_lowercase_git_config_keys(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Denied keys are matched case-insensitively for Windows env semantics.
+
+        On Windows `os.environ` keys are case-insensitive and Python normalizes
+        assigned keys to uppercase, so a lowercase `git_config_key_0` in a
+        committed `.env` would otherwise pass a case-sensitive check and become
+        an active `GIT_CONFIG_KEY_0` for the `git` commands dcode runs during
+        startup detection. On POSIX the lowercase spelling is inert (git reads
+        only the canonical case), so denying it there is harmless.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "git_config_count=1\n"
+            "git_config_key_0=core.fsmonitor\n"
+            "Git_Config_Value_0=/tmp/evil.sh\n"
+            "git_dir=/tmp/evil.git\n"
+            "OPENAI_API_KEY=sk-ok\n"
+        )
+        # On POSIX the lowercase names are distinct env vars; ensure neither the
+        # lowercase spelling nor its uppercase normalization is already set.
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+            "OPENAI_API_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        for key in (
+            "git_config_count",
+            "git_config_key_0",
+            "Git_Config_Value_0",
+            "git_dir",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_DIR",
+        ):
+            assert key not in os.environ
+        assert os.environ["OPENAI_API_KEY"] == "sk-ok"
+
+    def test_project_dotenv_skipped_when_read_project_dotenv_false(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """`startup.read_project_dotenv = false` skips the project `.env`.
+
+        The project file must not apply its values, while the global
+        `~/.deepagents/.env` still loads — disabling is scoped to the untrusted,
+        repo-traveling file, not the user's own global defaults.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text("GIT_CONFIG_COUNT=1\nPROJECT_ONLY_KEY=project-value\n")
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        global_env = global_dir / ".env"
+        global_env.write_text("GLOBAL_ONLY_KEY=global-value\n")
+        monkeypatch.setattr("deepagents_code.config._GLOBAL_DOTENV_PATH", global_env)
+        for key in ("GIT_CONFIG_COUNT", "PROJECT_ONLY_KEY", "GLOBAL_ONLY_KEY"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+
+        monkeypatch.setattr(
+            "deepagents_code.config_manifest.resolve_read_project_dotenv",
+            lambda **_kw: False,
+        )
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "GIT_CONFIG_COUNT" not in os.environ
+        assert "PROJECT_ONLY_KEY" not in os.environ
+        assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
+
+    def test_project_dotenv_cannot_set_read_project_dotenv(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A project `.env` cannot inject the toggle that skips it.
+
+        `DEEPAGENTS_CODE_READ_PROJECT_DOTENV` is denied from every `.env` (the
+        `_DOTENV_DENIED_ENV_KEYS` set), so a hostile project file cannot pin it
+        true and block the trusted global file from opting out via
+        first-write-wins.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_env = tmp_path / ".env"
+        project_env.write_text(
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV=1\nPROJECT_ONLY_KEY=project-value\n"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH",
+            tmp_path / "nonexistent" / ".env",
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", raising=False)
+        monkeypatch.delenv("PROJECT_ONLY_KEY", raising=False)
+
+        _load_dotenv(start_path=tmp_path)
+
+        assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
+        assert os.environ["PROJECT_ONLY_KEY"] == "project-value"
+
+    def test_global_dotenv_read_project_dotenv_false_protects_startup(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The trusted global `.env` opt-out is honored for the current startup.
+
+        The toggle is read from the global file *before* the project file is
+        touched, so `DEEPAGENTS_CODE_READ_PROJECT_DOTENV=false` in
+        `~/.deepagents/.env` skips the untrusted project `.env` even though the
+        global file is otherwise loaded after it.
+        """
+        from deepagents_code.config import _load_dotenv
+
+        project_dir = tmp_path / "project"
+        project_dir.mkdir()
+        (project_dir / ".env").write_text("PROJECT_ONLY_KEY=project-value\n")
+        global_dir = tmp_path / "global"
+        global_dir.mkdir()
+        (global_dir / ".env").write_text(
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV=false\nGLOBAL_ONLY_KEY=global-value\n"
+        )
+        monkeypatch.setattr(
+            "deepagents_code.config._GLOBAL_DOTENV_PATH", global_dir / ".env"
+        )
+        for key in (
+            "DEEPAGENTS_CODE_READ_PROJECT_DOTENV",
+            "PROJECT_ONLY_KEY",
+            "GLOBAL_ONLY_KEY",
+        ):
+            monkeypatch.delenv(key, raising=False)
+
+        _load_dotenv(start_path=project_dir)
+
+        assert "PROJECT_ONLY_KEY" not in os.environ
+        # The toggle's env var is denied from every `.env`, so the global file's
+        # own copy is consumed for the decision but not injected into os.environ.
+        assert "DEEPAGENTS_CODE_READ_PROJECT_DOTENV" not in os.environ
+        # The global file's other values still load.
+        assert os.environ["GLOBAL_ONLY_KEY"] == "global-value"
 
     def test_project_dotenv_cannot_set_mcp_trust_lists(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -662,12 +1048,12 @@ class TestReloadFromEnvironment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Reload should accumulate changes across multiple fields."""
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-new")
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant")
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
         assert len(changes) == 3
         fields = {c.split(":")[0] for c in changes}
@@ -677,24 +1063,35 @@ class TestReloadFromEnvironment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """DEEPAGENTS_CODE_ prefixed var should override canonical on reload."""
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-canonical")
         monkeypatch.setenv("DEEPAGENTS_CODE_ANTHROPIC_API_KEY", "sk-override")
-        settings.reload_from_environment(start_path=tmp_path)
+        credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.anthropic_api_key == "sk-override"
+        assert credentials.anthropic_api_key == "sk-override"
 
     def test_from_environment_uses_prefixed_var(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Settings.from_environment should honour the DEEPAGENTS_CODE_ prefix."""
+        """Credentials.from_environment should honour the DEEPAGENTS_CODE_ prefix."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-canonical")
         monkeypatch.setenv("DEEPAGENTS_CODE_OPENAI_API_KEY", "sk-override")
 
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
-        assert settings.openai_api_key == "sk-override"
+        assert credentials.openai_api_key == "sk-override"
+
+    def test_google_cloud_location_uses_prefixed_var(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Google Cloud location follows the standard prefixed-env precedence."""
+        monkeypatch.setenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        monkeypatch.setenv("DEEPAGENTS_CODE_GOOGLE_CLOUD_LOCATION", "us-east5")
+
+        credentials = Credentials.from_environment(start_path=tmp_path)
+
+        assert credentials.google_cloud_location == "us-east5"
 
     def test_preview_dotenv_shell_beats_project(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
@@ -751,6 +1148,13 @@ class TestReloadFromEnvironment:
             "CDPATH",
             "COMSPEC",
             "ENV",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_DIR",
+            "GIT_EDITOR",
+            "GIT_SSH_COMMAND",
             "GLOBIGNORE",
             "SHELLOPTS",
         )
@@ -782,15 +1186,15 @@ class TestReloadFromEnvironment:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Previewing an API-key change reports it masked and mutates nothing."""
-        settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.openai_api_key is None
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert credentials.openai_api_key is None
 
         monkeypatch.setenv("OPENAI_API_KEY", "sk-preview-secret")
-        changes = settings.preview_reload_from_environment(start_path=tmp_path)
+        changes = credentials.preview_reload_from_environment(start_path=tmp_path)
 
         assert "openai_api_key: unset -> set" in changes
         assert "sk-preview-secret" not in "\n".join(changes)
-        assert settings.openai_api_key is None
+        assert credentials.openai_api_key is None
 
 
 class TestReloadErrorPaths:
@@ -825,21 +1229,21 @@ class TestReloadErrorPaths:
     ) -> None:
         """Malformed shell allow-list should fall back to previous value."""
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls,cat")
-        settings = Settings.from_environment(start_path=tmp_path)
-        assert settings.shell_allow_list == ["ls", "cat"]
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _shell_allow_list() == ["ls", "cat"]
 
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "all,ls")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.shell_allow_list == ["ls", "cat"]
+        assert _shell_allow_list() == ["ls", "cat"]
         assert not any(change.startswith("shell_allow_list:") for change in changes)
 
     def test_deleted_cwd_keeps_previous_project_root(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         """Unreachable cwd should fall back to previous project root."""
-        settings = Settings.from_environment(start_path=tmp_path)
-        original_root = settings.project_root
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        original_root = credentials.project_root
 
         def _raise_oserror(_start: Path | None = None) -> None:
             msg = "No such file or directory"
@@ -848,26 +1252,26 @@ class TestReloadErrorPaths:
         monkeypatch.setattr(
             "deepagents_code.project_utils.find_project_root", _raise_oserror
         )
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.project_root == original_root
+        assert credentials.project_root == original_root
         assert not any(change.startswith("project_root:") for change in changes)
 
-    def test_settings_consistent_after_partial_failure(
+    def test_credentials_consistent_after_partial_failure(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
-        """Settings should remain consistent when one field fails to reload."""
+        """Credentials should remain consistent when one field fails to reload."""
         monkeypatch.setenv("OPENAI_API_KEY", "sk-original")
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "ls")
-        settings = Settings.from_environment(start_path=tmp_path)
+        credentials = Credentials.from_environment(start_path=tmp_path)
 
         # Change API key (succeeds) + break shell allow-list (falls back)
         monkeypatch.setenv("OPENAI_API_KEY", "sk-updated")
         monkeypatch.setenv("DEEPAGENTS_CODE_SHELL_ALLOW_LIST", "all,ls")
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.openai_api_key == "sk-updated"
-        assert settings.shell_allow_list == ["ls"]
+        assert credentials.openai_api_key == "sk-updated"
+        assert _shell_allow_list() == ["ls"]
         assert any(c.startswith("openai_api_key:") for c in changes)
 
     def test_invalid_extra_skills_dirs_keeps_previous(
@@ -881,44 +1285,81 @@ class TestReloadErrorPaths:
         """
         import deepagents_code.config as config_mod
 
-        settings = Settings.from_environment(start_path=tmp_path)
         sentinel = [tmp_path / "skills"]
-        settings.extra_skills_dirs = sentinel
+        monkeypatch.setenv("DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS", str(sentinel[0]))
+        credentials = Credentials.from_environment(start_path=tmp_path)
+        assert _extra_skills_dirs() == sentinel
 
         def boom(*_args: object, **_kwargs: object) -> list[Path] | None:
             msg = "broken symlink loop"
             raise OSError(msg)
 
         monkeypatch.setattr(config_mod, "_parse_extra_skills_dirs", boom)
-        changes = settings.reload_from_environment(start_path=tmp_path)
+        changes = credentials.reload_from_environment(start_path=tmp_path)
 
-        assert settings.extra_skills_dirs == sentinel
+        assert _extra_skills_dirs() == sentinel
         assert not any(change.startswith("extra_skills_dirs:") for change in changes)
 
+    def test_managed_skill_roots_are_validated_from_target_cwd(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """An invalid target-relative managed root cannot fall through to env."""
+        import deepagents_code.config as config_mod
+        from deepagents_code import model_config
+        from deepagents_code.configuration import service
+        from unit_tests.conftest import redirect_managed_config
 
-class TestReloadableFieldConstants:
-    """Guards for the derived reloadable-field constants."""
+        current = tmp_path / "current"
+        target = tmp_path / "target"
+        current.mkdir()
+        target.mkdir()
+        (current / "managed-skills").mkdir()
+        user_skills = tmp_path / "user-skills"
+        user_skills.mkdir()
+        managed = tmp_path / "managed.toml"
+        managed.write_text(
+            '[skills]\nextra_allowed_dirs = ["managed-skills"]\n',
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(current)
+        monkeypatch.setenv(
+            "DEEPAGENTS_CODE_EXTRA_SKILLS_DIRS",
+            str(user_skills),
+        )
+        redirect_managed_config(monkeypatch, managed)
+        service.invalidate_config_sources()
+        model_config.clear_caches()
+        try:
+            credentials = Credentials.from_environment(start_path=current)
+            previous_credentials = credentials.active
+            previous = _extra_skills_dirs()
+            assert previous == [current / "managed-skills"]
+            original_resolve = config_mod._resolve_extra_skills_path
 
-    def test_api_key_fields_derived_from_reloadable(self) -> None:
-        """`_API_KEY_FIELDS` is the `*_api_key` subset of `_RELOADABLE_FIELDS`."""
-        from deepagents_code.config import _API_KEY_FIELDS, _RELOADABLE_FIELDS
+            def resolve_for_target(raw: str) -> Path:
+                if config_mod._extra_skills_path_base.get() == target:
+                    # Python 3.12 reports a target-cwd symlink loop this way.
+                    msg = "broken symlink loop"
+                    raise RuntimeError(msg)
+                return original_resolve(raw)
 
-        assert {
-            "openai_api_key",
-            "anthropic_api_key",
-            "google_api_key",
-            "nvidia_api_key",
-            "tavily_api_key",
-        } == _API_KEY_FIELDS
-        assert set(_RELOADABLE_FIELDS) >= _API_KEY_FIELDS
+            monkeypatch.setattr(
+                config_mod,
+                "_resolve_extra_skills_path",
+                resolve_for_target,
+            )
+            changes = credentials.reload_from_environment(start_path=target)
+
+            assert config_mod.managed_reload_block(changes) is not None
+            assert credentials.active is previous_credentials
+            assert _extra_skills_dirs() == previous
+            assert _extra_skills_dirs() != [user_skills]
+        finally:
+            service.invalidate_config_sources()
 
 
 class TestReloadInAutocomplete:
     """Tests for autocomplete slash command registration."""
-
-    def test_reload_in_slash_commands(self) -> None:
-        """`/reload` should be registered in slash command completions."""
-        assert any(entry.name == "/reload" for entry in get_slash_commands())
 
 
 class TestReloadInputResponsiveness:
@@ -1032,7 +1473,6 @@ class TestReloadInputResponsiveness:
     ) -> None:
         """A skipped reload respawn preserves `/restart` and queued prompts."""
         from deepagents_code.app import AppMessage, DeepAgentsApp
-        from deepagents_code.config import settings
 
         app = DeepAgentsApp(agent=MagicMock())
         async with app.run_test() as pilot:
@@ -1049,7 +1489,9 @@ class TestReloadInputResponsiveness:
             restart = AsyncMock(return_value=restarted)
             monkeypatch.setattr(app, "_run_reload", _blocked_reload)
             monkeypatch.setattr(app, "_restart_server_manual", restart)
-            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                Credentials, "reload_from_environment", MagicMock(return_value=[])
+            )
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
             )
@@ -1071,9 +1513,16 @@ class TestReloadInputResponsiveness:
             await app._restart_respawn_task
 
             restart.assert_awaited_once()
-            assert [message.text for message in app._pending_messages] == [
-                "keep this prompt"
-            ]
+            if restarted:
+                assert [message.text for message in app._pending_messages] == [
+                    "keep this prompt"
+                ]
+            else:
+                # A non-respawn outcome has no `ServerReady` to drain the
+                # queue, so the restart returns queued prompts to the input.
+                assert list(app._pending_messages) == []
+                assert app._chat_input is not None
+                assert "keep this prompt" in app._chat_input.value
 
     @pytest.mark.parametrize("restart_raises", [False, True])
     @pytest.mark.timeout(15)
@@ -1082,7 +1531,6 @@ class TestReloadInputResponsiveness:
     ) -> None:
         """A `/restart` requested during reload's respawn does not run twice."""
         from deepagents_code.app import DeepAgentsApp, UserMessage, _ServerRespawnResult
-        from deepagents_code.config import settings
         from deepagents_code.plugins.models import PluginDiscoveryResult
 
         app = DeepAgentsApp(agent=MagicMock())
@@ -1119,7 +1567,9 @@ class TestReloadInputResponsiveness:
             monkeypatch.setattr(app, "_discover_skills", _fake_discover)
             monkeypatch.setattr(app, "_reload_hooks", AsyncMock())
             monkeypatch.setattr(app, "_restart_server_manual_result", restart)
-            monkeypatch.setattr(settings, "reload_from_environment", list)
+            monkeypatch.setattr(
+                Credentials, "reload_from_environment", MagicMock(return_value=[])
+            )
             monkeypatch.setattr(
                 "deepagents_code.model_config.clear_caches", lambda: None
             )
@@ -1149,67 +1599,6 @@ class TestReloadInputResponsiveness:
 
 class TestReloadModelProfileHints:
     """`/reload` should refresh profile-derived command hints."""
-
-    async def test_refreshes_status_without_owned_server(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Client-only sessions should resync after profile caches are cleared."""
-        from deepagents_code import model_config
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.config import settings
-        from deepagents_code.plugins.models import PluginDiscoveryResult
-
-        config_path = tmp_path / "config.toml"
-
-        def write_config(level: str) -> None:
-            config_path.write_text(f"""
-[models.providers.acme]
-models = ["foo"]
-[models.providers.acme.profile]
-reasoning_output = true
-reasoning_effort_levels = ["{level}"]
-""")
-
-        write_config("old")
-        monkeypatch.setattr(model_config, "DEFAULT_CONFIG_PATH", config_path)
-        monkeypatch.setattr(model_config, "_get_provider_profile_modules", list)
-        monkeypatch.setattr(settings, "model_provider", "acme")
-        monkeypatch.setattr(settings, "model_name", "foo")
-        model_config.clear_caches()
-
-        app = DeepAgentsApp()
-        try:
-            async with app.run_test() as pilot:
-                await pilot.pause()
-
-                async def _fake_discover() -> bool:  # noqa: RUF029
-                    return True
-
-                monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-                monkeypatch.setattr(
-                    "deepagents_code.plugins.discover_plugins",
-                    lambda: PluginDiscoveryResult(plugins=()),
-                )
-                monkeypatch.setattr(
-                    "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
-                    lambda _plugins: (),
-                )
-                assert app._server_proc is None
-                assert app._chat_input is not None
-                assert app._chat_input._argument_hint_overrides["effort"] == (
-                    "[old|clear]"
-                )
-
-                write_config("new")
-                await app._handle_command("/reload")
-                if app._reload_task is not None:
-                    await app._reload_task
-
-                assert app._chat_input._argument_hint_overrides["effort"] == (
-                    "[new|clear]"
-                )
-        finally:
-            model_config.clear_caches()
 
 
 class TestReloadSkillReport:
@@ -1271,79 +1660,47 @@ class TestReloadSkillReport:
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
 
-    async def test_reports_added_skills(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        text = await self._run_reload(
-            monkeypatch, before=["alpha"], after=["alpha", "beta"]
-        )
-        assert "Skills updated" in text
-        assert "  - Added: beta" in text
-        assert "Removed:" not in text
 
-    async def test_reports_removed_skills(
-        self, monkeypatch: pytest.MonkeyPatch
+async def test_reload_notifies_when_managed_policy_newly_masks_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A reload-time CLI masking warning must reach the active Textual app."""
+    from deepagents_code.app import DeepAgentsApp
+    from deepagents_code.config import credentials
+    from deepagents_code.configuration import service
+    from deepagents_code.configuration.provider import CliProvider
+    from deepagents_code.configuration.resolver import install_cli_provider
+    from unit_tests.conftest import redirect_managed_config
+
+    managed = tmp_path / "managed.toml"
+    managed.write_text("", encoding="utf-8")
+    redirect_managed_config(monkeypatch, managed)
+    service.invalidate_config_sources()
+    install_cli_provider(CliProvider({"shell_allow_list": "ls"}))
+    credentials.reload_from_environment(start_path=tmp_path)
+    notices: list[tuple[str, str | None]] = []
+
+    def capture_notify(
+        message: str, *_args: object, severity: str | None = None, **_kwargs: object
     ) -> None:
-        text = await self._run_reload(
-            monkeypatch, before=["alpha", "beta"], after=["alpha"]
-        )
-        assert "Skills updated" in text
-        assert "  - Removed: beta" in text
-        assert "Added:" not in text
+        notices.append((str(message), severity))
 
-    async def test_reports_added_and_removed(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        text = await self._run_reload(
-            monkeypatch, before=["alpha", "beta"], after=["alpha", "gamma"]
-        )
-        assert "Skills updated" in text
-        assert "  - Added: gamma" in text
-        assert "  - Removed: beta" in text
+    app = DeepAgentsApp()
+    try:
+        async with app.run_test() as pilot:
+            monkeypatch.setattr(app, "notify", capture_notify)
+            managed.write_text('[shell]\nallow_list = ["cat"]\n', encoding="utf-8")
+            reload_task = app._schedule_reload()
+            await reload_task
+            await pilot.pause()
+    finally:
+        service.invalidate_config_sources()
 
-    async def test_reports_no_changes_stays_silent(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """When the skill set is unchanged, the report should not mention skills."""
-        text = await self._run_reload(monkeypatch, before=["alpha"], after=["alpha"])
-        assert "Skills updated" not in text
-        assert "Added:" not in text
-        assert "Removed:" not in text
-        assert "Skill re-discovery failed" not in text
-
-    async def test_first_skill_added_from_empty(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """User installs first skill, then `/reload` — empty -> non-empty."""
-        text = await self._run_reload(monkeypatch, before=[], after=["alpha"])
-        assert "  - Added: alpha" in text
-        assert "Removed:" not in text
-
-    async def test_all_skills_removed(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """All known skills removed — non-empty -> empty."""
-        text = await self._run_reload(monkeypatch, before=["alpha", "beta"], after=[])
-        assert "  - Removed: alpha, beta" in text
-        assert "Added:" not in text
-
-    async def test_added_skills_sorted(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Added skill names should be sorted (deterministic output)."""
-        text = await self._run_reload(
-            monkeypatch, before=["alpha"], after=["alpha", "zeta", "beta"]
-        )
-        assert "  - Added: beta, zeta" in text
-
-    async def test_discovery_failure_preserves_cache_and_warns(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Discovery failure must not produce a misleading 'Removed: X' diff."""
-        text = await self._run_reload(
-            monkeypatch,
-            before=["alpha", "beta"],
-            after=None,
-            discovery_ok=False,
-        )
-        assert "Skill re-discovery failed" in text
-        # Critical: must not claim every prior skill was removed.
-        assert "Removed:" not in text
-        assert "Skills updated" not in text
+    assert any(
+        "--shell-allow-list was ignored" in message and severity == "warning"
+        for message, severity in notices
+    )
 
 
 class TestReloadThemeReapply:
@@ -1436,71 +1793,6 @@ class TestReloadThemeReapply:
 class TestReloadPluginsViaReload:
     """Plugins should reload through `/reload`."""
 
-    def test_fingerprint_detects_nested_skill_edits(self, tmp_path: Path) -> None:
-        """Editing `SKILL.md` under a skills directory must change the fingerprint."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        skills_root = tmp_path / "skills"
-        skill_dir = skills_root / "demo"
-        skill_dir.mkdir(parents=True)
-        skill_md = skill_dir / "SKILL.md"
-        skill_md.write_text("---\nname: demo\n---\noriginal\n", encoding="utf-8")
-
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(skills=(skills_root,)),
-        )
-
-        before = DeepAgentsApp._fingerprint_plugins((plugin,))
-        skill_md.write_text("---\nname: demo\n---\nedited\n", encoding="utf-8")
-        after = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert before != after
-
-    def test_fingerprint_detects_added_and_removed_nested_files(
-        self, tmp_path: Path
-    ) -> None:
-        """Adding then removing a nested file must each change the fingerprint.
-
-        Directory stat alone can stay put across a child add/remove on some
-        filesystems, so the recursive walk is what has to notice.
-        """
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        skills_root = tmp_path / "skills" / "demo"
-        skills_root.mkdir(parents=True)
-        (skills_root / "SKILL.md").write_text("---\nname: demo\n---\n", "utf-8")
-
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(skills=(tmp_path / "skills",)),
-        )
-
-        base = DeepAgentsApp._fingerprint_plugins((plugin,))
-        extra = skills_root / "helper.py"
-        extra.write_text("x = 1\n", encoding="utf-8")
-        with_extra = DeepAgentsApp._fingerprint_plugins((plugin,))
-        extra.unlink()
-        removed = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert base != with_extra
-        assert with_extra != removed
-        assert base == removed
-
     def test_fingerprint_records_sentinel_for_unreadable_subdir(
         self, tmp_path: Path
     ) -> None:
@@ -1549,39 +1841,6 @@ class TestReloadPluginsViaReload:
         )
         assert DeepAgentsApp._plugin_fingerprint_changed(fingerprint, fingerprint)
 
-    def test_fingerprint_caps_recursive_scan(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Oversized component trees stop at the hard entry limit."""
-        from deepagents_code import app as app_module
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        skills_root = tmp_path / "skills"
-        skills_root.mkdir()
-        for index in range(5):
-            (skills_root / f"skill-{index}.md").write_text(str(index), encoding="utf-8")
-        monkeypatch.setattr(app_module, "_MAX_PLUGIN_FINGERPRINT_ENTRIES", 3)
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(skills=(skills_root,)),
-        )
-
-        first = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
-        second = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
-
-        assert any(
-            entry.mtime_ns == app_module._TRUNCATED_PLUGIN_FINGERPRINT_STAT
-            for entry in first.components
-        )
-        assert DeepAgentsApp._plugin_fingerprint_changed(first, second)
-
     def test_fingerprint_does_not_follow_symlinks(self, tmp_path: Path) -> None:
         """A nested directory symlink is recorded without scanning its target."""
         from deepagents_code.app import DeepAgentsApp
@@ -1615,180 +1874,6 @@ class TestReloadPluginsViaReload:
 
         assert str(link) in paths
         assert str(outside_file) not in paths
-
-    def test_fingerprint_rejects_component_outside_plugin_root(
-        self, tmp_path: Path
-    ) -> None:
-        """A malformed inventory cannot make fingerprinting inspect another tree."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        plugin_root = tmp_path / "plugin"
-        plugin_root.mkdir()
-        outside = tmp_path / "outside.json"
-        outside.write_text('{"mcpServers": {}}', encoding="utf-8")
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=plugin_root,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(mcp_files=(outside,)),
-        )
-
-        fingerprint = DeepAgentsApp._fingerprint_plugins((plugin,))[plugin.plugin_id]
-
-        assert fingerprint.components == ((str(outside), -1, -1),)
-
-    def test_fingerprint_detects_version_change(self, tmp_path: Path) -> None:
-        """A version bump must change the fingerprint even with identical files."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        def _plugin(version: str) -> PluginInstance:
-            return PluginInstance(
-                plugin_id="demo@tools",
-                name="demo",
-                marketplace="tools",
-                version=version,
-                root=tmp_path,
-                data_dir=tmp_path / "data",
-                manifest=None,
-                inventory=ComponentInventory(),
-            )
-
-        before = DeepAgentsApp._fingerprint_plugins((_plugin("1.0"),))
-        after = DeepAgentsApp._fingerprint_plugins((_plugin("2.0"),))
-
-        assert before != after
-
-    def test_fingerprint_detects_manifest_change(self, tmp_path: Path) -> None:
-        """A manifest change must flip the fingerprint even when files match."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        def _plugin(manifest_version: str) -> PluginInstance:
-            manifest = PluginManifest(
-                name="demo",
-                version=manifest_version,
-                component_paths={},
-                inline_mcp={},
-            )
-            return PluginInstance(
-                plugin_id="demo@tools",
-                name="demo",
-                marketplace="tools",
-                # Hold the instance version fixed to isolate the manifest dimension.
-                version="1.0",
-                root=tmp_path,
-                data_dir=tmp_path / "data",
-                manifest=manifest,
-                inventory=ComponentInventory(),
-            )
-
-        before = DeepAgentsApp._fingerprint_plugins((_plugin("1.0"),))
-        after = DeepAgentsApp._fingerprint_plugins((_plugin("2.0"),))
-
-        assert before != after
-
-    def test_fingerprint_detects_mcp_file_edits(self, tmp_path: Path) -> None:
-        """Editing an `mcp_files` entry (a file path) must change the fingerprint."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import ComponentInventory, PluginInstance
-
-        mcp_file = tmp_path / ".mcp.json"
-        mcp_file.write_text('{"mcpServers": {}}', encoding="utf-8")
-
-        plugin = PluginInstance(
-            plugin_id="demo@tools",
-            name="demo",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=None,
-            inventory=ComponentInventory(mcp_files=(mcp_file,)),
-        )
-
-        before = DeepAgentsApp._fingerprint_plugins((plugin,))
-        mcp_file.write_text('{"mcpServers": {"x": {}}}', encoding="utf-8")
-        after = DeepAgentsApp._fingerprint_plugins((plugin,))
-
-        assert before != after
-
-    def test_plugin_login_labels_filters_dedupes_and_falls_back(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """Only added, login-needing plugins are listed, deduped, with name fallback."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        def _plugin(name: str, *, display_name: str | None) -> PluginInstance:
-            manifest = (
-                None
-                if display_name is None
-                else PluginManifest(
-                    name=name,
-                    display_name=display_name,
-                    version="1.0",
-                    component_paths={},
-                    inline_mcp={},
-                )
-            )
-            return PluginInstance(
-                plugin_id=f"{name}@tools",
-                name=name,
-                marketplace="tools",
-                version="1.0",
-                root=tmp_path,
-                data_dir=tmp_path / "data",
-                manifest=manifest,
-                inventory=ComponentInventory(),
-            )
-
-        # login_needed twice -> should dedupe to one "Login" label; no_login has
-        # no login-requiring server; nameless falls back to plugin.name;
-        # not_added is excluded because it is not in the added set.
-        entries_by_id = {
-            "login_needed@tools": (("s", "scoped", True),),
-            "no_login@tools": (("s", "scoped", False),),
-            "nameless@tools": (("s", "scoped", True),),
-            "not_added@tools": (("s", "scoped", True),),
-        }
-        monkeypatch.setattr(
-            "deepagents_code.plugins.adapters.mcp.plugin_mcp_server_entries",
-            lambda plugin: entries_by_id[plugin.plugin_id],
-        )
-
-        plugins = (
-            _plugin("login_needed", display_name="Login"),
-            _plugin("dupe", display_name="Login"),
-            _plugin("no_login", display_name="Silent"),
-            _plugin("nameless", display_name=None),
-            _plugin("not_added", display_name="Skipped"),
-        )
-        # "dupe" shares the "Login" display name to exercise deduplication.
-        entries_by_id["dupe@tools"] = (("s", "scoped", True),)
-        added = {
-            "login_needed@tools",
-            "dupe@tools",
-            "no_login@tools",
-            "nameless@tools",
-        }
-
-        labels = DeepAgentsApp._plugin_login_labels(plugins, added)
-
-        assert labels == ("Login", "nameless")
 
     @pytest.mark.parametrize(
         "change", ["none", "fingerprint", "fingerprint_key_added", "enabled"]
@@ -1913,41 +1998,6 @@ class TestReloadPluginsViaReload:
         assert "Couldn't check plugin state" in str(message._content)
         assert "/reload" in str(message._content)
 
-    async def test_plugin_manager_reopen_preserves_deferred_reload_baseline(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """Reopening after deferral must retain the state from before changes."""
-        from deepagents_code.app import DeepAgentsApp
-
-        before: dict[str, _PluginFingerprint] = {}
-        after = {"linear@tools": _test_plugin_fingerprint("v1")}
-        snapshots = iter(
-            (
-                (frozenset[str](), before),
-                (frozenset({"linear@tools"}), after),
-                (frozenset({"linear@tools"}), after),
-                (frozenset({"linear@tools"}), after),
-            )
-        )
-        app = DeepAgentsApp()
-        pushed: list[PluginManagerScreen] = []
-
-        monkeypatch.setattr(app, "_snapshot_plugin_state", lambda: next(snapshots))
-        monkeypatch.setattr(
-            app,
-            "push_screen",
-            lambda screen, _callback: pushed.append(screen),
-        )
-
-        await app._show_plugin_manager()
-        first_reload_required = await _check_plugin_reload(pushed[0])
-        await app._show_plugin_manager()
-        second_reload_required = await _check_plugin_reload(pushed[1])
-
-        assert app._plugin_fingerprints == before
-        assert first_reload_required is True
-        assert second_reload_required is False
-
     async def test_plugin_manager_warns_when_snapshot_fails(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2056,39 +2106,6 @@ class TestReloadPluginsViaReload:
             else:
                 assert "Plugin changes are pending" in message
 
-    async def test_reports_plugin_summary(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`/reload` includes a plugin summary."""
-        from deepagents_code.app import DeepAgentsApp
-        from deepagents_code.plugins.models import PluginDiscoveryResult
-        from deepagents_code.tui.widgets.messages import AppMessage
-
-        app = DeepAgentsApp()
-        async with app.run_test() as pilot:
-            await pilot.pause()
-
-            async def _fake_discover() -> bool:  # noqa: RUF029
-                return True
-
-            monkeypatch.setattr(app, "_discover_skills", _fake_discover)
-            monkeypatch.setattr(
-                "deepagents_code.plugins.discover_plugins",
-                lambda: PluginDiscoveryResult(plugins=()),
-            )
-            monkeypatch.setattr(
-                "deepagents_code.plugins.adapters.mcp.plugin_mcp_configs",
-                lambda _plugins: (),
-            )
-
-            await app._handle_command("/reload")
-            if app._reload_task is not None:
-                await app._reload_task
-            await pilot.pause()
-
-            text = "\n".join(str(w._content) for w in app.query(AppMessage))
-            assert "Plugins: 0 plugins · 0 skills · 0 plugin MCP servers" in text
-
     async def _reload_transcript_with_fingerprints(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -2139,182 +2156,6 @@ class TestReloadPluginsViaReload:
             await pilot.pause()
 
             return "\n".join(str(w._content) for w in app.query(AppMessage))
-
-    @pytest.mark.parametrize(
-        ("old_versions", "new_versions", "expected"),
-        [
-            pytest.param(
-                {"demo@tools": "v1"},
-                {"demo@tools": "v1"},
-                "Plugin changes: no changes detected.",
-                id="no-changes",
-            ),
-            pytest.param(
-                {},
-                {"demo@tools": "v1"},
-                "Plugin changes: 1 plugin added.",
-                id="added-singular",
-            ),
-            pytest.param(
-                {},
-                {"demo@tools": "v1", "extra@tools": "v1"},
-                "Plugin changes: 2 plugins added.",
-                id="added-plural",
-            ),
-            pytest.param(
-                {"demo@tools": "v1"},
-                {},
-                "Plugin changes: 1 plugin removed.",
-                id="removed",
-            ),
-            pytest.param(
-                {"demo@tools": "v1"},
-                {"demo@tools": "v2"},
-                "Plugin changes: 1 plugin changed.",
-                id="changed",
-            ),
-            pytest.param(
-                {"demo@tools": "v1", "gone@tools": "v1"},
-                {"demo@tools": "v2", "new@tools": "v1"},
-                "Plugin changes: 1 plugin added, 1 plugin removed, 1 plugin changed.",
-                id="added-removed-changed",
-            ),
-        ],
-    )
-    async def test_reload_report_summarizes_plugin_changes(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-        *,
-        old_versions: dict[str, str],
-        new_versions: dict[str, str],
-        expected: str,
-    ) -> None:
-        """`/reload` summarizes added/removed/changed plugins against the baseline."""
-        old = {
-            plugin_id: _test_plugin_fingerprint(version)
-            for plugin_id, version in old_versions.items()
-        }
-        new = {
-            plugin_id: _test_plugin_fingerprint(version)
-            for plugin_id, version in new_versions.items()
-        }
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch, old=old, new=new
-        )
-
-        assert expected in text
-
-    async def test_reload_report_omits_changes_on_first_reload(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """The first `/reload` has no baseline, so it omits the changes line."""
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old=None,
-            new={"demo@tools": _test_plugin_fingerprint("v1")},
-        )
-
-        assert "Plugin changes:" not in text
-
-    async def test_reload_fingerprints_plugins_off_ui_thread(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """`/reload` must not recursively scan plugin files on the UI thread."""
-        ui_thread = threading.get_ident()
-        fingerprint_threads: list[int] = []
-
-        await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old={},
-            new={},
-            fingerprint_threads=fingerprint_threads,
-        )
-
-        assert len(fingerprint_threads) == 1
-        assert fingerprint_threads[0] != ui_thread
-
-    async def test_reload_reports_mcp_login_for_new_plugin(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """New HTTP MCP plugins retain their post-reload sign-in guidance."""
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        plugin = PluginInstance(
-            plugin_id="linear@tools",
-            name="linear",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=PluginManifest(
-                name="linear",
-                display_name="Linear",
-                version="1.0",
-                component_paths={},
-                inline_mcp={
-                    "mcpServers": {
-                        "linear": {
-                            "type": "http",
-                            "url": "https://mcp.example.com",
-                        }
-                    }
-                },
-            ),
-            inventory=ComponentInventory(),
-        )
-
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old={},
-            new={plugin.plugin_id: _test_plugin_fingerprint("v1")},
-            plugins=(plugin,),
-        )
-
-        assert "Sign in to Linear via `/mcp`." in text
-
-    async def test_reload_omits_sign_in_on_first_reload(
-        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-    ) -> None:
-        """First `/reload` has no baseline, so sign-in guidance is suppressed too."""
-        from deepagents_code.plugins.models import (
-            ComponentInventory,
-            PluginInstance,
-            PluginManifest,
-        )
-
-        plugin = PluginInstance(
-            plugin_id="linear@tools",
-            name="linear",
-            marketplace="tools",
-            version="1.0",
-            root=tmp_path,
-            data_dir=tmp_path / "data",
-            manifest=PluginManifest(
-                name="linear",
-                display_name="Linear",
-                version="1.0",
-                component_paths={},
-                inline_mcp={
-                    "mcpServers": {
-                        "linear": {"type": "http", "url": "https://mcp.example.com"}
-                    }
-                },
-            ),
-            inventory=ComponentInventory(),
-        )
-
-        text = await self._reload_transcript_with_fingerprints(
-            monkeypatch,
-            old=None,
-            new={plugin.plugin_id: _test_plugin_fingerprint("v1")},
-            plugins=(plugin,),
-        )
-
-        assert "Sign in to" not in text
 
     async def test_reload_reports_plugin_discovery_failure(
         self, monkeypatch: pytest.MonkeyPatch
@@ -2682,3 +2523,162 @@ class TestReloadPluginsViaReload:
             await app._run_reload()
 
             assert [message.text for message in app._pending_messages] == ["follow up"]
+
+
+class TestConfigGenerationAdvancesOnlyOnReload:
+    """Config files are read once into one generation; `/reload` advances it.
+
+    The whole point of a single process-wide generation is that no two readers
+    disagree, which means a hand edit is deliberately inert until an explicit
+    reload. Both halves need pinning: without the first assertion a future
+    change could reintroduce per-call file reads and nothing would notice;
+    without the second, `/reload` could stop refreshing the shared resolver and
+    every reader would be frozen for the life of the process.
+    """
+
+    def test_hand_edit_is_inert_until_reload(self, tmp_path: Path) -> None:
+        """A settings edit takes effect on `/reload`, not before."""
+        from deepagents_code.config import is_memory_auto_save_enabled
+
+        # `_isolate_state_dir` redirects `DEFAULT_CONFIG_PATH` here, and the
+        # path is stable across this test — so the resolver cache key does not
+        # change and staleness is genuinely observable.
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nauto_save = true\n", encoding="utf-8")
+
+        credentials = Credentials.from_environment()
+        assert is_memory_auto_save_enabled() is True
+
+        config_path.write_text("[memory]\nauto_save = false\n", encoding="utf-8")
+        assert is_memory_auto_save_enabled() is True, (
+            "a hand edit must not change a value mid-session"
+        )
+
+        credentials.reload_from_environment()
+        assert is_memory_auto_save_enabled() is False, (
+            "`/reload` must advance the shared generation"
+        )
+
+    def test_preview_does_not_advance_the_generation(self, tmp_path: Path) -> None:
+        """A dry run must not swap the config every other reader observes."""
+        from deepagents_code.config import is_memory_auto_save_enabled
+
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("[memory]\nauto_save = true\n", encoding="utf-8")
+
+        credentials = Credentials.from_environment()
+        assert is_memory_auto_save_enabled() is True
+
+        config_path.write_text("[memory]\nauto_save = false\n", encoding="utf-8")
+        credentials.preview_reload_from_environment()
+
+        assert is_memory_auto_save_enabled() is True, (
+            "a preview must leave the in-force generation untouched"
+        )
+
+
+class TestClearCachesDropsEveryConfigView:
+    """`clear_caches` must drop every module cache holding `config.toml`.
+
+    `[threads]` is cached separately from the `[models]` snapshot, and its read
+    path deliberately has no invalidator -- so `clear_caches` is the only thing
+    standing between a `/reload` and a value frozen for the process lifetime.
+    The four in-app thread writers invalidate it themselves, which is why
+    dropping it here regressed only hand edits and left the suite green.
+    """
+
+
+class TestDiagnosticDedupIsPerGeneration:
+    """A repeated `/reload` of a still-broken file must keep reporting it.
+
+    The dedup exists so one `dcode config` sweep over the whole manifest
+    reports a bad file once instead of once per option. Scoped to the process
+    it also silenced the second `/reload` -- the reason string is identical --
+    which is the edit-and-retry loop where the user most needs the message.
+    """
+
+    def test_reload_lets_the_same_rejection_be_reported_again(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """The same corrupt file warns once per generation, not once ever."""
+        import logging
+
+        from deepagents_code import model_config
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = get_config_resolver()
+        resolver.get(option)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+
+        def reload_and_count() -> int:
+            resolver.reload()
+            with caplog.at_level(
+                logging.WARNING, logger="deepagents_code.config_manifest"
+            ):
+                caplog.clear()
+                _emit_ranked_diagnostics(option, resolver.get(option))
+            return len(caplog.records)
+
+        assert reload_and_count() == 1
+        # Second attempt, same failure, same reason string.
+        assert reload_and_count() == 1
+
+    def test_one_generation_still_reports_a_bad_file_once(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Within a generation the sweep stays deduplicated."""
+        import logging
+
+        from deepagents_code import model_config
+        from deepagents_code.config_manifest import (
+            _emit_ranked_diagnostics,
+            get_option,
+        )
+        from deepagents_code.configuration.resolver import get_config_resolver
+
+        config_path = model_config.DEFAULT_CONFIG_PATH
+        config_path.write_text('[shell]\nallow_list = ["ls"]\n', encoding="utf-8")
+        option = get_option("shell.allow_list")
+        assert option is not None
+        resolver = get_config_resolver()
+        resolver.get(option)
+
+        config_path.write_text("[shell\n", encoding="utf-8")
+        resolver.reload()
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config_manifest"):
+            caplog.clear()
+            for _ in range(5):
+                _emit_ranked_diagnostics(option, resolver.get(option))
+
+        assert len(caplog.records) == 1
+
+
+def test_managed_reload_block_is_found_behind_another_change_entry() -> None:
+    """The block notice is recovered by content, not by list position.
+
+    Every caller treats "no block" as "the reload applied", and `/restart`
+    mounts "Restart complete." on that basis. Reading only `changes[0]` made
+    all four call sites depend on the notice staying first, so one entry
+    prepended ahead of it would report a refused refresh as a successful one.
+    """
+    from deepagents_code.config import (
+        MANAGED_RELOAD_BLOCKED_PREFIX,
+        managed_reload_block,
+    )
+
+    notice = f"{MANAGED_RELOAD_BLOCKED_PREFIX}managed policy could not be refreshed"
+
+    assert managed_reload_block([notice]) == notice
+    assert managed_reload_block(["project_root changed", notice]) == notice
+    assert managed_reload_block(["project_root changed"]) is None
+    assert managed_reload_block([]) is None

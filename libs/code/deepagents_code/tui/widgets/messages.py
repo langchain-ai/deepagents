@@ -10,7 +10,7 @@ import textwrap
 from dataclasses import dataclass
 from pathlib import Path
 from time import time
-from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple
+from typing import TYPE_CHECKING, Any, ClassVar, Literal, NamedTuple, cast
 
 from textual import on
 from textual.containers import Horizontal, Vertical, VerticalScroll
@@ -22,6 +22,7 @@ from textual.message import Message
 from textual.message_pump import NoActiveAppError
 from textual.reactive import var
 from textual.selection import Selection
+from textual.strip import Strip
 from textual.style import Style as TStyle
 from textual.widgets import Static
 
@@ -30,6 +31,8 @@ from deepagents_code._ask_user_types import (
     ASK_USER_ANSWERED_SUMMARY,
     ASK_USER_FAILED_SUMMARY,
     AskUserRowSummary,
+    Question,
+    render_ask_user_transcript_for_display,
 )
 from deepagents_code.config import (
     MODE_DISPLAY_GLYPHS,
@@ -83,9 +86,12 @@ if TYPE_CHECKING:
         RenderResult,
     )
     from textual.app import ComposeResult
+    from textual.content import _FormattedLine
+    from textual.css.styles import RulesMap
     from textual.css.types import PointerShape
     from textual.events import MouseMove
     from textual.timer import Timer
+    from textual.visual import RenderOptions
     from textual.widget import Widget
     from textual.widgets import Markdown
     from textual.widgets._markdown import MarkdownStream
@@ -291,6 +297,15 @@ _STATUS_CLASSES: frozenset[str] = frozenset(
     {"-status-success", "-status-error", "-status-rejected", "-status-skipped"}
 )
 
+_TOOL_ROW_ACTION_CLASS: str = "-row-actionable"
+"""Marks a `ToolCallMessage` whose row click toggles something.
+
+Gates the hover border in `ToolCallMessage.DEFAULT_CSS` and the ASCII
+variant in `app.tcss`; both selectors name the literal, so a rename here
+must reach them too (`test_hover_rule_targets_the_row_action_class` covers
+the former).
+"""
+
 
 _SUCCESS_EXIT_RE = re.compile(r"\n?\[Command succeeded with exit code 0\]\s*$")
 """Strip the SDK's `[Command succeeded with exit code 0]` trailer from tool output."""
@@ -478,6 +493,132 @@ def _truncate_for_display(text: str) -> str:
     return _collapse_user_message(text).text
 
 
+class _UserMessageContent(Content):
+    """Content visual that wraps prompt bodies beside a fixed two-cell gutter."""
+
+    _PREFIX_WIDTH = 2
+
+    @classmethod
+    def from_content(cls, content: Content) -> _UserMessageContent:
+        """Promote styled content without changing its text or spans.
+
+        Returns:
+            Hanging-indent content with the same text and spans.
+        """
+        return cls(
+            content.plain,
+            list(content.spans),
+            strip_control_codes=False,
+        )
+
+    @classmethod
+    def _body_selection(cls, selection: Selection | None) -> Selection | None:
+        """Translate selection offsets after removing the first-line prefix.
+
+        Returns:
+            Selection expressed in body-relative coordinates.
+        """
+        if selection is None:
+            return None
+
+        def translate(offset: Offset | None) -> Offset | None:
+            if offset is None or offset.y != 0:
+                return offset
+            return Offset(max(0, offset.x - cls._PREFIX_WIDTH), 0)
+
+        return Selection(translate(selection.start), translate(selection.end))
+
+    def _render_lines(
+        self,
+        width: int,
+        options: RenderOptions,
+        selection: Selection | None,
+    ) -> list[_FormattedLine]:
+        """Wrap this content with the active widget rendering options.
+
+        Returns:
+            Formatted physical lines ready for strip rendering.
+        """
+        get_rule = options.rules.get
+        return super()._wrap_and_format(
+            width,
+            align=get_rule("text_align", "left"),
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+            tab_size=8,
+            selection=selection,
+            selection_style=options.selection_style,
+            post_style=options.post_style,
+            get_style=options.get_style,
+        )
+
+    def _measure_lines(self, width: int, rules: RulesMap) -> list[_FormattedLine]:
+        """Wrap unstyled content for auto-height measurement.
+
+        Returns:
+            Formatted lines used to derive the widget height.
+        """
+        get_rule = rules.get
+        return super()._wrap_and_format(
+            width,
+            overflow=get_rule("text_overflow", "fold"),
+            no_wrap=get_rule("text_wrap", "wrap") == "nowrap",
+            line_pad=get_rule("line_pad", 0),
+        )
+
+    def get_height(self, rules: RulesMap, width: int) -> int:
+        """Measure body wrapping at the width left beside the prompt gutter.
+
+        Returns:
+            Number of rendered lines required at `width`.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().get_height(rules, width)
+        body = type(self)(self.plain[self._PREFIX_WIDTH :])
+        return len(body._measure_lines(width - self._PREFIX_WIDTH, rules))
+
+    def render_strips(
+        self,
+        width: int,
+        height: int | None,
+        style: TStyle,
+        options: RenderOptions,
+    ) -> list[Strip]:
+        """Render the prefix once and reserve its gutter on subsequent lines.
+
+        Returns:
+            Rendered strips with a fixed prompt gutter.
+        """
+        if width <= self._PREFIX_WIDTH:
+            return super().render_strips(width, height, style, options)
+
+        prefix = type(self).from_content(self[: self._PREFIX_WIDTH])
+        body = type(self).from_content(self[self._PREFIX_WIDTH :])
+        prefix_lines = prefix._render_lines(
+            self._PREFIX_WIDTH,
+            options,
+            options.selection,
+        )
+        body_lines = body._render_lines(
+            width - self._PREFIX_WIDTH,
+            options,
+            self._body_selection(options.selection),
+        )
+        for line in body_lines:
+            if line.y == 0:
+                line.x += self._PREFIX_WIDTH
+
+        prefix_strip = Strip(*prefix_lines[0].to_strip(style))
+        body_strips = [Strip(*line.to_strip(style)) for line in body_lines]
+        indent = Strip.blank(self._PREFIX_WIDTH, style.background_style.rich_style)
+        strips = [
+            Strip.join((prefix_strip, body_strips[0])),
+            *(Strip.join((indent, line)) for line in body_strips[1:]),
+        ]
+        return strips if height is None else strips[:height]
+
+
 class UserMessage(Static):
     """Widget displaying a user message.
 
@@ -504,9 +645,9 @@ class UserMessage(Static):
     DEFAULT_CSS = """
     UserMessage {
         height: auto;
-        padding: 0 1;
+        padding: 1 1 1 0;
         margin: 0 0 1 0;
-        background: transparent;
+        background: $primary 15%;
         border-left: wide $primary;
         /* The expand affordance carries `@click` meta, which Textual styles as
            a link (underline, and bold on an accent block when hovered).
@@ -790,7 +931,8 @@ class UserMessage(Static):
         else:
             amount = f"+{collapsed.hidden_chars:,} characters"
         return Content.styled(
-            f"{ellipsis} {amount} · click or Ctrl+O to show full message",
+            f"{ellipsis} {amount} {get_glyphs().separator} "
+            "click or Ctrl+O to show full message",
             cls._hint_style(),
         )
 
@@ -823,12 +965,12 @@ class UserMessage(Static):
 
         if isinstance(collapse, _UserMessageFull):
             self._append_highlighted_body(parts, body, colors=colors)
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         if self._expanded:
             self._append_highlighted_body(parts, body, colors=colors)
             parts.extend(("\n", self._expand_hint_content()))
-            return Content.assemble(*parts)
+            return _UserMessageContent.from_content(Content.assemble(*parts))
 
         # Collapsed: head + clickable elision line + tail. The middle marker is
         # the affordance (not a second trailing line) so the collapse stays
@@ -838,7 +980,7 @@ class UserMessage(Static):
         self._append_highlighted_body(parts, collapse.head, colors=colors)
         parts.extend(("\n", self._collapse_hint_content(collapse), "\n"))
         self._append_highlighted_body(parts, collapse.tail, colors=colors)
-        return Content.assemble(*parts)
+        return _UserMessageContent.from_content(Content.assemble(*parts))
 
     def on_mouse_move(self, event: MouseMove) -> None:
         """Match the pointer shape to the cell under the mouse."""
@@ -1002,7 +1144,7 @@ class SkillMessage(Vertical):
     DEFAULT_CSS = """
     SkillMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $skill;
@@ -1231,7 +1373,48 @@ class SkillMessage(Vertical):
             self.toggle_body()
 
 
-class AssistantMessage(Vertical):
+class _StreamedTextParts:
+    """Chunk buffering shared by the streamed-text message widgets.
+
+    `AssistantMessage` and `ReasoningMessage` both accumulate streamed
+    fragments in a rope that is joined only on access, and both coalesce their
+    renders on a single throttled timer. Holding that contract in one place
+    keeps the two from drifting.
+    """
+
+    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
+    """Seconds between coalesced flushes of streamed text to the widget."""
+
+    def __init__(self, content: str = "", **kwargs: Any) -> None:
+        """Initialize the streamed-text buffer.
+
+        Args:
+            content: Initial content, if the text is already complete.
+            **kwargs: Additional arguments passed to the widget base.
+        """
+        super().__init__(**kwargs)
+        self._content_parts: list[str] = [content] if content else []
+        self._flush_timer: Timer | None = None
+
+    @property
+    def _content(self) -> str:
+        """Full message text, materialized from streamed chunks on access."""
+        if len(self._content_parts) > 1:
+            self._content_parts = ["".join(self._content_parts)]
+        return self._content_parts[0] if self._content_parts else ""
+
+    @_content.setter
+    def _content(self, value: str) -> None:
+        self._content_parts = [value] if value else []
+
+    def _stop_flush_timer(self) -> None:
+        """Cancel the coalescing flush timer if it is running."""
+        if self._flush_timer is not None:
+            self._flush_timer.stop()
+            self._flush_timer = None
+
+
+class AssistantMessage(_StreamedTextParts, Vertical):
     """Widget displaying an assistant message with markdown support.
 
     Uses MarkdownStream for smoother streaming instead of re-rendering
@@ -1243,15 +1426,13 @@ class AssistantMessage(Vertical):
     update) re-yields the stale value and wrapped fenced-code bodies vanish.
     A full re-parse rebuilds every fence with correct internal state.
 
-    Streamed tokens are coalesced in `_pending_append` and flushed to the
-    `MarkdownStream` on a throttled timer (`_STREAM_FLUSH_INTERVAL`). Writing
-    every token immediately forced a markdown re-parse per chunk on the UI
-    event loop, which starved keyboard input while the model streamed.
-    Batching the writes keeps the event loop free so typing stays responsive.
+    The first streamed fragment is written immediately so the response appears
+    without waiting for `_STREAM_FLUSH_INTERVAL`. Later tokens are coalesced in
+    `_pending_append` and flushed to the `MarkdownStream` on a throttled timer.
+    Writing every token immediately forced a markdown re-parse per chunk on the
+    UI event loop, which starved keyboard input while the model streamed;
+    batching subsequent writes keeps typing responsive.
     """
-
-    _STREAM_FLUSH_INTERVAL: ClassVar[float] = 0.1
-    """Seconds between coalesced flushes of streamed text to the markdown widget."""
 
     DEFAULT_CSS = """
     AssistantMessage {
@@ -1280,30 +1461,17 @@ class AssistantMessage(Vertical):
         Args:
             content: Initial markdown content
             local_only: `True` when the content came from the client rather
-                than the agent — currently only non-incognito `!` shell
-                output, which borrows this widget for its markdown rendering
-                and streaming. Callers that ask "did the agent do anything in
+                than the agent — currently `!` and `!!` shell output, both of
+                which borrow this widget for its markdown rendering and
+                streaming. Callers that ask "did the agent do anything in
                 this thread" must not count such a message.
             **kwargs: Additional arguments passed to parent
         """
-        super().__init__(**kwargs)
+        super().__init__(content, **kwargs)
         self._local_only = local_only
-        self._content_parts: list[str] = [content] if content else []
         self._markdown: Markdown | None = None
         self._stream: MarkdownStream | None = None
         self._pending_append = ""
-        self._flush_timer: Timer | None = None
-
-    @property
-    def _content(self) -> str:
-        """Full message text, materialized from streamed chunks on access."""
-        if len(self._content_parts) > 1:
-            self._content_parts = ["".join(self._content_parts)]
-        return self._content_parts[0] if self._content_parts else ""
-
-    @_content.setter
-    def _content(self, value: str) -> None:
-        self._content_parts = [value] if value else []
 
     def compose(self) -> ComposeResult:  # noqa: PLR6301  # Textual widget method convention
         """Compose the assistant message layout.
@@ -1359,11 +1527,11 @@ class AssistantMessage(Vertical):
         return self._stream
 
     async def append_content(self, text: str) -> None:
-        """Append streamed content, coalescing writes onto a throttled timer.
+        """Append streamed content, then coalesce later writes on a timer.
 
-        Tokens are buffered in `_pending_append` and written to the
-        `MarkdownStream` at most once per `_STREAM_FLUSH_INTERVAL` so the UI
-        event loop stays free to process keypresses while the model streams.
+        The first fragment is written immediately. Later fragments are buffered
+        and written at most once per `_STREAM_FLUSH_INTERVAL` so the UI event
+        loop stays free to process keypresses while the model streams.
 
         Args:
             text: Text to append
@@ -1373,6 +1541,7 @@ class AssistantMessage(Vertical):
         self._content_parts.append(text)
         self._pending_append += text
         if self._flush_timer is None:
+            await self._flush_pending_append()
             self._flush_timer = self.set_interval(
                 self._STREAM_FLUSH_INTERVAL, self._flush_pending_append
             )
@@ -1396,12 +1565,6 @@ class AssistantMessage(Vertical):
         except Exception:  # a render hiccup must not crash the app
             self._pending_append = pending + self._pending_append
             logger.exception("Failed to flush streamed markdown fragment")
-
-    def _stop_flush_timer(self) -> None:
-        """Cancel the coalescing flush timer if it is running."""
-        if self._flush_timer is not None:
-            self._flush_timer.stop()
-            self._flush_timer = None
 
     async def write_initial_content(self) -> None:
         """Write initial content if provided at construction time."""
@@ -1435,6 +1598,175 @@ class AssistantMessage(Vertical):
         self._content = content
         if self._markdown:
             await self._markdown.update(content)
+
+
+class _ReasoningToggle(Static):
+    """Clickable header for a reasoning message."""
+
+
+class ReasoningMessage(_StreamedTextParts, Vertical):
+    """Collapsible plain-text provider-visible reasoning."""
+
+    DEFAULT_CSS = """
+    ReasoningMessage {
+        height: auto;
+        padding: 0 1;
+        margin: 0 0 1 0;
+        color: $text-muted;
+    }
+    ReasoningMessage #reasoning-body { display: none; padding: 0 1; }
+    ReasoningMessage.-expanded #reasoning-body { display: block; }
+    ReasoningMessage #reasoning-hint { color: $text-muted; text-style: italic; }
+    """
+
+    _expanded: var[bool] = var(True, toggle_class="-expanded")
+
+    class ExpansionChanged(Message):
+        """Report a reasoning expansion-state change."""
+
+        def __init__(self, widget: ReasoningMessage, expanded: bool) -> None:
+            """Initialize an expansion-state event."""
+            super().__init__()
+            self.widget = widget
+            self.expanded = expanded
+
+    def __init__(self, content: str = "", **kwargs: Any) -> None:
+        """Initialize a reasoning message."""
+        super().__init__(content, **kwargs)
+        self._render_pending = False
+        self._streaming = not content
+        self._body: Static | None = None
+        self._hint: Static | None = None
+        # Last (has_content, expanded) pair written to the hint, so a 10 Hz
+        # streaming flush does not rebuild an unchanged line every tick.
+        self._hint_state: tuple[bool, bool] | None = None
+        self._deferred_expanded = True
+        # Last expansion value published to the message store. Deduping against
+        # it keeps the reactive's initialization watcher and the deferred restore
+        # from re-emitting a value the store already holds. Seeded to the
+        # `_expanded` default so a fresh mount publishes nothing.
+        self._published_expanded = True
+
+    def compose(self) -> ComposeResult:
+        """Compose the reasoning message.
+
+        Yields:
+            Header, plain-text body, and toggle hint widgets.
+        """
+        yield _ReasoningToggle(Content.styled("Reasoning", "bold"))
+        yield Static(Content(self._content), id="reasoning-body")
+        # A toggle, not a plain Static: the hint says "click", so clicking the
+        # hint itself has to work as well as clicking the header.
+        yield _ReasoningToggle(id="reasoning-hint")
+
+    @property
+    def has_content(self) -> bool:
+        """Whether there is reasoning text worth revealing."""
+        content = self._content
+        return bool(content) and not content.isspace()
+
+    def on_mount(self) -> None:
+        """Restore deferred expansion state and render content."""
+        # The store already holds the restored state, so record it as published
+        # first; the assignment below then dedupes instead of re-emitting it.
+        self._published_expanded = self._deferred_expanded
+        self._expanded = self._deferred_expanded
+        self._render_reasoning()
+
+    def _render_reasoning(self) -> None:
+        """Repaint the body and hint.
+
+        No-ops while detached, where the composed content is already correct and
+        `on_mount` renders again. A failed query past that point is a real bug,
+        so it raises into `_flush_pending_render` and the hydration handlers
+        rather than being suppressed here.
+        """
+        if not self.is_attached:
+            return
+        if self._body is None or self._hint is None:
+            # Cached rather than re-queried: this runs on every streaming tick.
+            self._body = self.query_one("#reasoning-body", Static)
+            self._hint = self.query_one("#reasoning-hint", Static)
+        content = self._content
+        has_content = bool(content) and not content.isspace()
+        self._body.update(Content(content))
+        hint_state = (has_content, self._expanded)
+        if hint_state == self._hint_state:
+            return
+        self._hint_state = hint_state
+        self._hint.display = has_content
+        if not has_content:
+            return
+        action = "hide" if self._expanded else "show"
+        self._hint.update(
+            Content.styled(f"click or Ctrl+O to {action} reasoning", "dim italic")
+        )
+
+    async def append_content(self, text: str) -> None:
+        """Append reasoning text and coalesce later renders on a timer."""
+        if not text:
+            return
+        self._content_parts.append(text)
+        self._render_pending = True
+        if self._flush_timer is None:
+            self._flush_pending_render()
+            self._flush_timer = self.set_interval(
+                self._STREAM_FLUSH_INTERVAL, self._flush_pending_render
+            )
+
+    def _flush_pending_render(self) -> None:
+        """Render buffered reasoning fragments in one complete update."""
+        if not self._render_pending:
+            return
+        self._render_pending = False
+        try:
+            self._render_reasoning()
+        except Exception:  # a render hiccup must not crash the app
+            self._render_pending = True
+            logger.exception("Failed to flush streamed reasoning fragments")
+
+    async def stop_stream(self) -> None:
+        """Finalize and collapse the active reasoning phase."""
+        self._stop_flush_timer()
+        self._streaming = False
+        self._expanded = False
+        self._render_pending = True
+        self._flush_pending_render()
+
+    async def set_content(self, content: str) -> None:
+        """Replace the complete plain-text reasoning content."""
+        self._stop_flush_timer()
+        self._render_pending = False
+        self._streaming = False
+        self._content = content
+        self._render_reasoning()
+
+    def toggle_expanded(self) -> None:
+        """Toggle the reasoning body visibility."""
+        if not self.has_content:
+            return
+        self._expanded = not self._expanded
+        self._render_reasoning()
+
+    def watch__expanded(self, expanded: bool) -> None:
+        """Publish user-driven expansion changes for transcript persistence.
+
+        Gated on `is_mounted`, which stays `False` until after `on_mount`
+        returns. That drops both writes the store already knows about -- the
+        reactive's initialization watcher and the deferred restore -- without
+        depending on which of the two Textual runs first, and it keeps
+        `_expanded` set in pre-mount test setup from posting on a detached
+        widget (`NoActiveAppError`). `_published_expanded` then dedupes a
+        re-publish of a value already sent.
+        """
+        if self.is_mounted and expanded != self._published_expanded:
+            self._published_expanded = expanded
+            self.post_message(self.ExpansionChanged(self, expanded))
+
+    @on(Click, "_ReasoningToggle")
+    def _on_toggle_click(self, event: Click) -> None:
+        event.stop()
+        self.toggle_expanded()
 
 
 _ToolStatus = Literal["pending", "running", "success", "error", "rejected", "skipped"]
@@ -1482,7 +1814,7 @@ class ToolCallMessage(Vertical):
     DEFAULT_CSS = """
     ToolCallMessage {
         height: auto;
-        padding: 0 1;
+        padding: 0 1 0 0;
         margin: 0 0 1 0;
         background: transparent;
         border-left: wide $tool;
@@ -1536,6 +1868,7 @@ class ToolCallMessage(Vertical):
         layout: horizontal;
         height: auto;
         width: 1fr;
+        margin-left: 2;
     }
 
     /* Fixed gutter holds the output glyph so soft-wrapped content lines stay
@@ -1584,11 +1917,11 @@ class ToolCallMessage(Vertical):
         background: $warning 8%;
     }
 
-    ToolCallMessage:hover {
+    ToolCallMessage.-row-actionable:hover {
         border-left: wide $tool-hover;
     }
     """
-    """Left border tracks tool lifecycle; hover brightens for interactivity."""
+    """Left border tracks tool lifecycle; actionable rows brighten on hover."""
 
     _PREVIEW_LINES = 6
     """Maximum number of lines to show in preview mode."""
@@ -1667,6 +2000,9 @@ class ToolCallMessage(Vertical):
         # One-shot guard so `_format_ask_user_output` reports unusable `questions`
         # args once per widget rather than on every re-render.
         self._ask_user_args_warned: bool = False
+        # One-shot guard so `_format_ask_user_output` reports a transcript it
+        # could not unpack once per widget rather than on every re-render.
+        self._ask_user_display_warned: bool = False
         # Deferred state for hydration (set by MessageData.to_widget)
         self._deferred_status: str | None = None
         self._deferred_output: str | None = None
@@ -1775,6 +2111,7 @@ class ToolCallMessage(Vertical):
 
         # Restore deferred state if this widget was hydrated from data
         self._restore_deferred_state()
+        self._sync_row_actionability()
         # `to_widget` sets `_diff_superseded` before mount, but not every
         # `_restore_deferred_state` branch applies visibility. Applied here so
         # hiding does not depend on which branch a tool takes.
@@ -2078,6 +2415,8 @@ class ToolCallMessage(Vertical):
         self._status_widget.update(
             Content.styled(f"Took {format_duration(duration)}", "dim")
         )
+        if self._hint_widget is not None:
+            self.move_child(self._status_widget, after=self._hint_widget)
         self._status_widget.display = True
 
     def _show_success_status(self) -> None:
@@ -2341,6 +2680,44 @@ class ToolCallMessage(Vertical):
                 _TOOL_SUPERSEDED_ACCESSORY_CLASS,
             )
 
+    @property
+    def has_row_action(self) -> bool:
+        """Whether clicking this row can reveal or hide additional detail.
+
+        Kept in exact lockstep with `on_click`'s routing: every term here must
+        reach a toggle there, or the row brightens on hover over a click that
+        does nothing — the bug this predicate exists to prevent. The reverse
+        also holds, so `on_click` can return early on a False.
+
+        `on_click` guards its output branch with an extra `self._output` check,
+        but that cannot strand a True: `_has_expandable_output` strips `_output`
+        first and returns False when it is empty, so `has_expandable_output`
+        already implies a truthy `_output`.
+        """
+        return (
+            self.has_expandable_output
+            or self.has_expandable_args
+            or self.has_expandable_task_desc
+        )
+
+    def _sync_row_actionability(self) -> None:
+        """Keep the hover affordance aligned with the row's click behavior.
+
+        Called from `on_mount` and from every exit of `_update_output_display`.
+        That set is sufficient rather than arbitrary: `_args` is assigned once
+        in `__init__` and never mutated, so `has_expandable_args` and
+        `has_expandable_task_desc` are fixed after construction, and every write
+        to `_output`/`_status` that can move `has_expandable_output` routes
+        through `_update_output_display`. `set_rejected`/`set_skipped` are the
+        exception and need no sync, because a row reaching them carries no
+        output for the status flip to reinterpret.
+
+        Anything that starts mutating `_args`, or that sets output outside
+        `_update_output_display`, must call this too or the row keeps a hover
+        border over a dead click.
+        """
+        self.set_class(self.has_row_action, _TOOL_ROW_ACTION_CLASS)
+
     def toggle_output(self) -> None:
         """Toggle expansion of the tool's preview/full output."""
         if not self._output:
@@ -2380,8 +2757,23 @@ class ToolCallMessage(Vertical):
         unexpandable result sitting below a multi-line, collapsible code block,
         and the old "output wins whenever it exists" rule left that code block
         stuck.
+
+        A row with nothing to toggle handles nothing and lets the click bubble
+        (see `has_row_action`); the routing below applies only to actionable
+        rows.
         """
-        event.stop()  # Prevent click from bubbling up and scrolling
+        if not self.has_row_action:
+            # Deliberate: an inert row should behave like transcript
+            # background, so the click reaches `DeepAgentsApp.on_click` and
+            # refocuses the chat input — matching `AssistantMessage`, which has
+            # no handler at all. `_ChatScroll` sets `FOCUS_ON_CLICK = False`,
+            # so bubbling cannot scroll the transcript, and tool group members
+            # are DOM siblings rather than children, so it cannot reach
+            # `ToolGroupSummary.on_click` and collapse the group either.
+            return
+        # Actionable rows own their click: stopping it keeps the transcript from
+        # scrolling and the chat input from stealing focus mid-toggle.
+        event.stop()
         if self.has_expandable_task_desc and self._click_targets_task_desc_region(
             event.widget
         ):
@@ -3422,7 +3814,7 @@ class ToolCallMessage(Vertical):
         Returns:
             The question count, or zero unless `questions` is a non-empty list of
                 dicts each carrying non-blank `question` text. Deliberately looser
-                than `ask_user._validate_questions` — it accepts payloads that
+                than the `ask_user` tool schema — it accepts payloads the schema
                 rejects, such as an unknown `type` or a `choices`/`type` mismatch —
                 because it only needs to guard the fields the count reads. Of the
                 three paths that populate `_args`, only the `ask_user` interrupt
@@ -3451,7 +3843,9 @@ class ToolCallMessage(Vertical):
         The inline question widget is unmounted once answered, so this row is the
         only place the answers stay visible in the live session — the thread's
         own `ToolMessage` is what a reload re-renders from. Collapsed, the row
-        keeps a one-line summary; expanded, it shows what was sent back.
+        keeps a one-line summary; expanded, it shows what was sent back, except
+        that `multi_select` answers are unpacked from their JSON encoding for
+        legibility.
 
         The summary is derived from the recorded status, never from the answer
         text (the question count only labels the expand affordance). The
@@ -3463,9 +3857,12 @@ class ToolCallMessage(Vertical):
 
         Returns:
             FormattedOutput with the status-derived summary when `is_preview`, or
-                the output rendered literally when expanded. A row holding only a
-                fallback summary advertises no expansion. Falls back to generic
-                formatting when the structured question args are unavailable.
+                the output when expanded — rendered literally unless
+                `render_ask_user_transcript_for_display` can unpack a
+                `multi_select` answer, which rewrites nothing else. A row holding
+                only a fallback summary advertises no expansion. Falls back to
+                generic formatting when the structured question args are
+                unavailable.
         """
         question_count = self._ask_user_question_count()
         if question_count == 0:
@@ -3492,6 +3889,37 @@ class ToolCallMessage(Vertical):
             return FormattedOutput(content=Content.styled(output, "dim"))
 
         if not is_preview:
+            # Unpack `multi_select` JSON arrays for the reader. Anything that
+            # does not parse as exactly these questions falls back to the
+            # authoritative text, so the row is never worse than literal.
+            #
+            # Gating on an actual `multi_select` is what makes the log below
+            # worth emitting: without it every text-only transcript would report
+            # a `None` that means nothing. It still covers two cases — a
+            # transcript that did not parse, and one that parsed but held no
+            # decodable array (a cancelled prompt puts placeholders in every
+            # slot) — so this is debug, not a warning.
+            # `_ask_user_question_count` already proved `questions` is a list of
+            # dicts.
+            questions = self._args.get("questions")
+            if isinstance(questions, list) and any(
+                isinstance(question, dict) and question.get("type") == "multi_select"
+                for question in questions
+            ):
+                display = render_ask_user_transcript_for_display(
+                    cast("list[Question]", questions), output
+                )
+                if display is not None:
+                    return FormattedOutput(content=Content(display))
+                if not self._ask_user_display_warned:
+                    # Once per widget: this runs on every re-render, and the
+                    # condition cannot change without a new `_args` or output.
+                    self._ask_user_display_warned = True
+                    logger.debug(
+                        "ask_user transcript over %d question(s) had no "
+                        "multi_select answer to unpack; rendering it literally",
+                        len(questions),
+                    )
             return FormattedOutput(content=Content(output))
 
         if self._status == "error":
@@ -3518,6 +3946,11 @@ class ToolCallMessage(Vertical):
             or not self._full_row
             or not self._hint_widget
         ):
+            # Syncs like every other exit: emptying `_output` drops the row's
+            # output action, and without this the row keeps a hover border over
+            # a click that no longer does anything. Reached pre-mount too, where
+            # `on_mount` syncs again afterwards, so the duplicate is harmless.
+            self._sync_row_actionability()
             return
 
         output_stripped = self._output.strip()
@@ -3550,6 +3983,7 @@ class ToolCallMessage(Vertical):
             self._preview_row.display = False
             self._full_row.display = False
             self._hint_widget.display = False
+            self._sync_row_actionability()
             return
 
         if self._expanded:
@@ -3593,6 +4027,7 @@ class ToolCallMessage(Vertical):
                     )
                 )
                 self._hint_widget.display = True
+                self._sync_row_actionability()
                 return
             # Truncate the preview only when the output is large enough to
             # warrant it; `_ALWAYS_PREVIEW_TOOLS` use their compact preview
@@ -3622,6 +4057,8 @@ class ToolCallMessage(Vertical):
                 self._hint_widget.display = True
             else:
                 self._hint_widget.display = False
+
+        self._sync_row_actionability()
 
     def _output_hint_keys(self) -> str:
         """Affordances to advertise in the output expand/collapse hint.
@@ -5695,7 +6132,9 @@ class SummarizationMessage(AppMessage):
         self._raw_message = message
         # Pass the default text to AppMessage for _content serialization;
         # render() supplies theme-aware styling at display time.
-        super().__init__(message or "✓ Conversation offloaded", **kwargs)
+        super().__init__(
+            message or f"{get_glyphs().checkmark} Conversation offloaded", **kwargs
+        )
 
     def render(self) -> Content:
         """Render with theme-aware colors.
@@ -5705,7 +6144,10 @@ class SummarizationMessage(AppMessage):
         """
         colors = theme.get_theme_colors(self)
         if self._raw_message is None:
-            return Content.styled("✓ Conversation offloaded", f"bold {colors.primary}")
+            return Content.styled(
+                f"{get_glyphs().checkmark} Conversation offloaded",
+                f"bold {colors.primary}",
+            )
         if isinstance(self._raw_message, Content):
             return self._raw_message
         return Content.styled(self._raw_message, f"bold {colors.primary}")

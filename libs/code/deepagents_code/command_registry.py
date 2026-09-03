@@ -56,6 +56,9 @@ class SlashCommand:
     aliases: tuple[str, ...] = ()
     """Alternative names (e.g. `("/q",)` for `/quit`)."""
 
+    experimental: bool = False
+    """Whether autocomplete requires experimental mode."""
+
     def to_entry(self) -> CommandEntry:
         """Project this command into a `CommandEntry` for autocomplete.
 
@@ -115,7 +118,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/clear",
-        description="Clear the chat and start a new thread",
+        description="Start a fresh thread",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="reset",
     ),
@@ -131,6 +134,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="tokens window usage remaining offload compact",
     ),
     SlashCommand(
+        name="/context-doctor",
+        description="Audit what a session injects and its estimated token cost",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="tokens prompt skills memory mcp schemas bloat",
+    ),
+    SlashCommand(
         name="/cost",
         description="Show estimated thread cost",
         bypass_tier=BypassTier.QUEUED,
@@ -138,7 +147,7 @@ COMMANDS: tuple[SlashCommand, ...] = (
     ),
     SlashCommand(
         name="/force-clear",
-        description="Stop active work, clear the chat, and start a new thread",
+        description="Recover a stuck session with a fresh thread",
         bypass_tier=BypassTier.ALWAYS,
         hidden_keywords="reset interrupt",
     ),
@@ -181,13 +190,26 @@ COMMANDS: tuple[SlashCommand, ...] = (
         hidden_keywords="plugin marketplace skills mcp enable disable install",
     ),
     SlashCommand(
+        name="/prompts",
+        description="Search and reuse a previous prompt",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="history clipboard recent recall submitted",
+    ),
+    SlashCommand(
         name="/model",
         description="Switch models or edit model settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
     ),
     SlashCommand(
+        name="/summarization-model",
+        description="Set the model used for context-compaction summaries",
+        bypass_tier=BypassTier.IMMEDIATE_UI,
+        hidden_keywords="compact summary summarize",
+        argument_hint="[<spec>|clear]",
+    ),
+    SlashCommand(
         name="/notifications",
-        description="Configure warning notifications",
+        description="Review notifications and configure warning settings",
         bypass_tier=BypassTier.IMMEDIATE_UI,
         hidden_keywords="warnings alerts suppress startup yolo",
     ),
@@ -235,6 +257,12 @@ COMMANDS: tuple[SlashCommand, ...] = (
         description="Show token usage",
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="cost",
+    ),
+    SlashCommand(
+        name="/extensions",
+        description="List loaded Python extensions and their provenance",
+        bypass_tier=BypassTier.QUEUED,
+        experimental=True,
     ),
     SlashCommand(
         name="/tools",
@@ -293,6 +321,13 @@ COMMANDS: tuple[SlashCommand, ...] = (
         bypass_tier=BypassTier.QUEUED,
         hidden_keywords="extra extras add provider sandbox dependency",
         argument_hint="<extra> [--force]",
+    ),
+    SlashCommand(
+        name="/uninstall",
+        description="Remove an installed optional extra",
+        bypass_tier=BypassTier.QUEUED,
+        hidden_keywords="extra extras remove delete provider sandbox dependency",
+        argument_hint="<extra>",
     ),
     SlashCommand(
         name="/auto-update",
@@ -467,7 +502,14 @@ def get_slash_commands() -> list[CommandEntry]:
     Returns:
         Autocomplete entries derived from `COMMANDS`.
     """
-    return [command.to_entry() for command in COMMANDS]
+    from deepagents_code._env_vars import EXPERIMENTAL, is_env_truthy
+
+    experimental = is_env_truthy(EXPERIMENTAL)
+    return [
+        command.to_entry()
+        for command in COMMANDS
+        if experimental or not command.experimental
+    ]
 
 
 def parse_skill_command(command: str) -> tuple[str, str]:

@@ -74,6 +74,8 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import ContentBlock, SystemMessage
@@ -182,6 +184,9 @@ class MemoryMiddleware(AgentMiddleware[MemoryState, ContextT, ResponseT]):
     prompt. Supports multiple sources that are combined together. See
     constructor for the full argument list.
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
+    """Omit hook inputs from traces by default; set a `TracePolicy` to override."""
 
     state_schema = MemoryState
 

@@ -36,9 +36,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
     from deepagents_code.config_manifest import ConfigOption
+    from deepagents_code.configuration.service import ManagedHealth
     from deepagents_code.output import OutputFormat
 
 logger = logging.getLogger(__name__)
+
+_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV = "LANGGRAPH_DEFAULT_RECURSION_LIMIT"
 
 
 def _lazy_ui_help(fn_name: str) -> Callable[[], None]:
@@ -143,6 +146,21 @@ def setup_config_parser(
 # --- Resolution -------------------------------------------------------------
 
 
+def _load_managed_generation() -> tuple[dict[str, Any], ManagedHealth]:
+    """Load managed data and diagnostics from one provider snapshot.
+
+    Returns:
+        Parsed managed data and health evaluated from that exact generation.
+    """
+    from deepagents_code.configuration.service import (
+        get_managed_snapshot,
+        managed_snapshot_health,
+    )
+
+    snapshot = get_managed_snapshot(refresh=True)
+    return snapshot.data, managed_snapshot_health(snapshot)
+
+
 @dataclass(frozen=True, slots=True)
 class _StoredCredentialView:
     """Snapshot of the `/auth` credential store for one command invocation.
@@ -204,11 +222,24 @@ def _load_stored_credentials() -> _StoredCredentialView:
     return _StoredCredentialView(keys=keys)
 
 
+def _langgraph_default_recursion_limit() -> tuple[bool, str, object]:
+    """Return the configured LangGraph recursion default, if any."""
+    raw = os.environ.get(_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV)
+    if raw is None:
+        return False, "default", None
+    source = f"env ({_LANGGRAPH_DEFAULT_RECURSION_LIMIT_ENV})"
+    try:
+        return True, source, int(raw)
+    except ValueError:
+        return True, f"{source}; invalid", raw
+
+
 def _resolve(
-    option: ConfigOption,
+    option: ConfigOption[object],
     toml_data: dict[str, Any],
     *,
     stored: _StoredCredentialView | None = None,
+    managed_toml_data: dict[str, Any],
 ) -> tuple[bool, str, object]:
     """Resolve an option for display, reporting what the runtime actually reads.
 
@@ -216,7 +247,8 @@ def _resolve(
     env override wins (the model factory reads it via `resolve_env_var` even
     after `apply_stored_credentials` bridges a stored key onto the canonical
     var), then a key stored via `/auth`, then the canonical env/`config.toml`.
-    Everything else delegates straight to `config_manifest.resolve_scalar`.
+    Everything else delegates straight to the ranked resolver built from the
+    caller's snapshots.
 
     Args:
         option: The option to resolve.
@@ -225,18 +257,40 @@ def _resolve(
             read on demand — fine for one-off calls, but callers resolving many
             options should load it once and pass it so `auth.json` is parsed a
             single time.
+        managed_toml_data: Managed-provider snapshot for this command
+            generation. Required: the retired `resolve_ranked_scalar` loaded
+            the file when this was omitted, so a default here would report the
+            user tier as effective while policy actually decides. An
+            invocation with no policy installed passes an empty table, which
+            says something different from "not supplied".
 
     Returns:
         `(is_set, source, value)`, where `is_set` is `False` when the value
         came from the typed default.
     """
     from deepagents_code.config_manifest import (
+        _emit_ranked_diagnostics,
+        _ranked_source,
         resolve_auto_classifier_model_with_source,
         resolve_auto_classifier_timeout_with_source,
-        resolve_scalar,
+        resolve_startup_mode_with_source,
+    )
+    from deepagents_code.configuration.resolver import (
+        installed_cli_provider,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import (
+        TomlSnapshot,
     )
     from deepagents_code.model_config import ProviderAuthSource
 
+    # No managed branch for credentials: every `Credentials` option is built
+    # without `toml_keys` (see `_credential_options`), and resolution
+    # consults managed policy only for an option that has them. A managed
+    # check here could never fire, while implying to a reader that policy can
+    # supply a credential. `test_no_credential_option_reads_managed_policy`
+    # fails if that ever changes, so this can be reconsidered deliberately
+    # rather than found by a reader.
     if (
         option.group == "Credentials"
         and option.provider is not None
@@ -249,27 +303,57 @@ def _resolve(
             return True, ProviderAuthSource.STORED.value, key
 
     if option.key == "models.auto_classifier":
-        # A blank env var vetoes `config.toml` for this option, so `resolve_scalar`
-        # alone would report a classifier the runtime does not use. Share the
+        # A blank env var vetoes `config.toml` for this option, so plain
+        # resolution would report a classifier the runtime does not use. Share the
         # runtime's resolver instead — this option decides which model reviews
         # gated actions, so a wrong reading here is a security-relevant lie.
-        spec, source = resolve_auto_classifier_model_with_source(toml_data=toml_data)
+        spec, source = resolve_auto_classifier_model_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
         return source != "default", source, spec
 
     if option.key == "models.auto_classifier_timeout":
-        # `resolve_scalar` alone would credit an out-of-range env value that the
+        # Plain resolution would credit an out-of-range env value that the
         # runtime rejects; use the bounded resolver so the display matches what
         # the middleware actually enforces.
         timeout, source = resolve_auto_classifier_timeout_with_source(
-            toml_data=toml_data
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
         )
         return source != "default", source, timeout
 
-    value, source = resolve_scalar(option, toml_data=toml_data)
-    return source != "default", source, value
+    if option.key == "startup.mode":
+        # The manifest default that plain resolution returns ignores the
+        # app-managed `[startup].recent` fallback that `load_startup_mode`
+        # restores on a bare launch. Report the effective mode instead, so
+        # introspection matches what the next bare launch reads from the file.
+        mode, source = resolve_startup_mode_with_source(
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
+        return source != "default", source, mode
+
+    # The `config` command reports one generation: the caller snapshots the
+    # managed and user files once per invocation and every option resolves
+    # against those exact tables, so this builds an ad-hoc resolver from the
+    # supplied snapshots rather than reading the shared process cache. The CLI
+    # tier is the exception: it is process-wide rather than part of the file
+    # generation, so it carries over -- without it this command reports
+    # `default` for the very flags the user just passed.
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", managed_toml_data),
+        user=TomlSnapshot.from_table("config.toml", toml_data),
+        cli_provider=installed_cli_provider(),
+    ).get(option)
+    _emit_ranked_diagnostics(option, resolved)
+    source = _ranked_source(resolved)
+    if option.key == "runtime.recursion_limit" and source == "default":
+        return _langgraph_default_recursion_limit()
+    return source != "default", source, resolved.value
 
 
-def _has_prefixed_env_override(option: ConfigOption) -> bool:
+def _has_prefixed_env_override(option: ConfigOption[object]) -> bool:
     """Return whether an option's `DEEPAGENTS_CODE_` env var is present."""
     if option.env_var is None:
         return False
@@ -279,7 +363,7 @@ def _has_prefixed_env_override(option: ConfigOption) -> bool:
     return f"{prefix}{option.env_var}" in os.environ
 
 
-def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
+def _display_value(option: ConfigOption[object], *, is_set: bool, value: object) -> str:
     """Render an option value for human output, redacting secrets.
 
     Returns:
@@ -314,11 +398,14 @@ def _display_value(option: ConfigOption, *, is_set: bool, value: object) -> str:
         text = _with_availability(option, text)
     max_len = 60
     if len(text) > max_len:
-        return text[: max_len - 1] + "\N{HORIZONTAL ELLIPSIS}"
+        from deepagents_code.config import get_glyphs
+
+        ellipsis = get_glyphs().ellipsis
+        return text[: max_len - len(ellipsis)] + ellipsis
     return text
 
 
-def _source_label(source: str, *, option: ConfigOption | None = None) -> str:
+def _source_label(source: str, *, option: ConfigOption[object] | None = None) -> str:
     """Render the source column for human output.
 
     Returns:
@@ -339,7 +426,7 @@ def _env_source_name(source: str) -> str | None:
     return source[len(prefix) : -1]
 
 
-def _with_availability(option: ConfigOption, text: str) -> str:
+def _with_availability(option: ConfigOption[object], text: str) -> str:
     """Append provider availability to a credential display value when needed.
 
     Returns:
@@ -360,7 +447,7 @@ def _charset_display_value() -> str:
     return f"auto (using {label} glyphs)"
 
 
-def _missing_extra_hint(option: ConfigOption) -> bool:
+def _missing_extra_hint(option: ConfigOption[object]) -> bool:
     """Return whether a credential option's provider integration is unavailable."""
     if option.group != "Credentials" or option.dependency_module is None:
         return False
@@ -375,7 +462,7 @@ class ResolvedOption(NamedTuple):
     call site the way a bare positional tuple can.
     """
 
-    option: ConfigOption
+    option: ConfigOption[object]
     """The option being described."""
 
     is_set: bool
@@ -394,7 +481,7 @@ class ResolvedOption(NamedTuple):
 # --- Commands ---------------------------------------------------------------
 
 
-def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
+def _catalog_fields(option: ConfigOption[object]) -> dict[str, Any]:
     """Return the static catalog fields `--verbose` folds into a JSON payload.
 
     Shared by the bare-`config`/section rows and the single-key payload so the
@@ -413,14 +500,86 @@ def _catalog_fields(option: ConfigOption) -> dict[str, Any]:
     }
 
 
+def _option_provenance(
+    option: ConfigOption[object],
+    *,
+    source: str,
+    toml_data: dict[str, Any] | None,
+    managed_toml_data: dict[str, Any] | None,
+) -> dict[str, str]:
+    """Build redaction-safe effective or per-leaf provenance for JSON output.
+
+    Returns:
+        Effective or dotted leaf-to-source mapping.
+    """
+    from deepagents_code.config_manifest import OptionKind
+    from deepagents_code.configuration.resolver import (
+        installed_cli_provider,
+        resolver_from_snapshots,
+    )
+    from deepagents_code.configuration.types import (
+        TomlSnapshot,
+    )
+
+    if (
+        option.redacted
+        or option.kind is not OptionKind.STRUCTURED
+        or option.toml_keys is None
+    ):
+        return {"effective": source}
+    # Per-leaf provenance must describe the same generation `_resolve` just
+    # reported, so it resolves against the caller's snapshots rather than the
+    # shared process cache. The process-wide CLI tier carries over, matching
+    # `_resolve` above.
+    resolved = resolver_from_snapshots(
+        managed=TomlSnapshot.from_table("managed config", managed_toml_data or {}),
+        user=TomlSnapshot.from_table("config.toml", toml_data or {}),
+        cli_provider=installed_cli_provider(),
+    ).get(option)
+    ranks_by_path: dict[tuple[str, ...], list[int]] = {}
+    for rank, paths in resolved.provenance.items():
+        for path in paths:
+            ranks_by_path.setdefault(path, []).append(rank)
+    if not ranks_by_path:
+        return {"effective": source}
+    return {
+        _provenance_path(path) if path else "effective": " + ".join(
+            resolved.provider_status[rank].name for rank in sorted(ranks)
+        )
+        for path, ranks in sorted(ranks_by_path.items())
+    }
+
+
+def _provenance_path(path: tuple[str, ...]) -> str:
+    """Render a tuple path without aliasing quoted dotted TOML keys.
+
+    Args:
+        path: Structured-option leaf path.
+
+    Returns:
+        TOML-style dotted path with non-bare segments quoted.
+    """
+    import json
+
+    rendered: list[str] = []
+    for part in path:
+        bare = bool(part) and all(
+            char.isascii() and (char.isalnum() or char in "_-") for char in part
+        )
+        rendered.append(part if bare else json.dumps(part, ensure_ascii=False))
+    return ".".join(rendered)
+
+
 def _config_json_row(
-    option: ConfigOption,
+    option: ConfigOption[object],
     *,
     is_set: bool,
     source: str,
     value: object,
     store_error: str | None,
     include_catalog: bool,
+    toml_data: dict[str, Any] | None = None,
+    managed_toml_data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build one `config --json` row, redacting secrets and flagging errors.
 
@@ -443,6 +602,12 @@ def _config_json_row(
     }
     if include_catalog:
         row.update(_catalog_fields(option))
+        row["provenance"] = _option_provenance(
+            option,
+            source=source,
+            toml_data=toml_data,
+            managed_toml_data=managed_toml_data,
+        )
     if store_error and option.group == "Credentials":
         row["store_error"] = store_error
     return row
@@ -463,18 +628,30 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
         Process exit code (`0` on success).
     """
     from deepagents_code.config import _ensure_bootstrap
-    from deepagents_code.config_manifest import get_config_options, load_config_toml
+    from deepagents_code.config_manifest import (
+        get_config_options,
+        load_config_toml,
+    )
 
     # Load `.env` files into the environment so resolution reflects what the
     # app actually reads, not just shell exports.
     _ensure_bootstrap()
     toml_data = load_config_toml()
+    managed_toml_data, health = _load_managed_generation()
     # Read the credential store once; `_resolve` reuses this snapshot rather than
     # re-parsing `auth.json` per credential option.
     stored = _load_stored_credentials()
 
     resolved = [
-        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored))
+        ResolvedOption(
+            opt,
+            *_resolve(
+                opt,
+                toml_data,
+                stored=stored,
+                managed_toml_data=managed_toml_data,
+            ),
+        )
         for opt in get_config_options()
     ]
 
@@ -492,6 +669,8 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
                     value=row.value,
                     store_error=stored.error,
                     include_catalog=include_catalog,
+                    toml_data=toml_data,
+                    managed_toml_data=managed_toml_data,
                 )
                 for row in resolved
             ],
@@ -499,28 +678,86 @@ def _run_config(output_format: OutputFormat, *, verbose: bool) -> int:
         return 0
 
     if verbose:
-        _print_config_verbose(resolved, store_error=stored.error)
+        _print_config_verbose(
+            resolved,
+            store_error=stored.error,
+            health=health,
+        )
     else:
-        _print_config_table(resolved, store_error=stored.error)
+        _print_config_table(
+            resolved,
+            store_error=stored.error,
+            health=health,
+        )
     return 0
 
 
-def _print_store_warning(store_error: str | None) -> None:
-    """Print a warning when the `/auth` credential store was unreadable."""
-    if not store_error:
-        return
+def _managed_health_warning(health: ManagedHealth | None = None) -> str | None:
+    """Return a notice when managed policy exists but cannot be applied.
+
+    `load_managed_config_toml` yields an empty mapping for a broken file, so
+    every option would otherwise render as `config.toml`/`env`/`default` and
+    an administrator debugging "why is my policy not applying" would be shown
+    a clean table.
+
+    A file that parses can still be unenforceable, which is the other half of
+    exit 78. Checking only parse health left that case with no warning at all.
+
+    Returns:
+        A user-facing notice, or `None` when managed policy is enforceable.
+    """
+    if health is None:
+        # Standalone callers still refresh. Command flows pass the generation
+        # they already used for values so status and violations cannot diverge.
+        from deepagents_code.configuration.service import managed_health
+
+        health = managed_health(refresh=True)
+    status = health.status
+    if not status.usable:
+        detail = f": {status.detail}" if status.detail else ""
+        return (
+            f"managed config at {status.path} is {status.health.value.lower()}"
+            f"{detail}; the values below do not reflect managed policy."
+        )
+    if health.violations:
+        return (
+            f"managed config at {status.path} rejects "
+            f"{', '.join(health.violations)}; an agent launch will refuse to "
+            "start until an administrator corrects the value."
+        )
+    if health.rejections:
+        # The values below are correct — these keys fell through to the user
+        # tier by design. Say so, because the warning that records it cannot
+        # reach a terminal.
+        return (
+            f"managed config at {status.path} declares "
+            f"{', '.join(health.rejections)} with a value that cannot be read; "
+            "those keys are ignored and the values below come from a lower "
+            "source."
+        )
+    return None
+
+
+def _print_store_warning(
+    store_error: str | None, *, health: ManagedHealth | None = None
+) -> None:
+    """Print warnings for an unreadable credential store or managed config."""
     from rich.markup import escape
 
     from deepagents_code.config import console
 
-    console.print(f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False)
-    console.print()
+    warnings = [text for text in (_managed_health_warning(health), store_error) if text]
+    for text in warnings:
+        console.print(f"[yellow]Warning:[/yellow] {escape(text)}", highlight=False)
+    if warnings:
+        console.print()
 
 
 def _print_config_table(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
+    health: ManagedHealth | None = None,
 ) -> None:
     """Render the compact effective-value table, grouped by section."""
     from rich.table import Table
@@ -530,7 +767,7 @@ def _print_config_table(
     from deepagents_code.config_manifest import iter_groups
 
     console.print()
-    _print_store_warning(store_error)
+    _print_store_warning(store_error, health=health)
     groups = list(iter_groups(row.option for row in resolved))
     for index, group in enumerate(groups):
         if index:
@@ -560,6 +797,7 @@ def _print_config_verbose(
     resolved: Sequence[ResolvedOption],
     *,
     store_error: str | None = None,
+    health: ManagedHealth | None = None,
 ) -> None:
     """Render the effective value plus description and how-to-set per option."""
     from rich.markup import escape
@@ -568,7 +806,7 @@ def _print_config_verbose(
     from deepagents_code.config_manifest import iter_groups
 
     console.print()
-    _print_store_warning(store_error)
+    _print_store_warning(store_error, health=health)
     groups = list(iter_groups(row.option for row in resolved))
     for index, group in enumerate(groups):
         if index:
@@ -637,7 +875,7 @@ class _Selection(NamedTuple):
             alone — hence carrying it rather than re-deriving it.
     """
 
-    options: tuple[ConfigOption, ...]
+    options: tuple[ConfigOption[object], ...]
     is_exact: bool
 
 
@@ -687,7 +925,10 @@ def _report_unknown_get_key(key: str, output_format: OutputFormat) -> int:
 
 
 def _run_get_section(
-    options: Sequence[ConfigOption], output_format: OutputFormat, *, verbose: bool
+    options: Sequence[ConfigOption[object]],
+    output_format: OutputFormat,
+    *,
+    verbose: bool,
 ) -> int:
     """Resolve and print every option in a matched section.
 
@@ -707,10 +948,13 @@ def _run_get_section(
         Process exit code (`0` on success).
     """
     from deepagents_code.config import _ensure_bootstrap
-    from deepagents_code.config_manifest import load_config_toml
+    from deepagents_code.config_manifest import (
+        load_config_toml,
+    )
 
     _ensure_bootstrap()
     toml_data = load_config_toml()
+    managed_toml_data, health = _load_managed_generation()
     # Only credential options consult the store, so skip the read (and its
     # warning) when the section holds none.
     stored = (
@@ -719,7 +963,16 @@ def _run_get_section(
         else None
     )
     resolved = [
-        ResolvedOption(opt, *_resolve(opt, toml_data, stored=stored)) for opt in options
+        ResolvedOption(
+            opt,
+            *_resolve(
+                opt,
+                toml_data,
+                stored=stored,
+                managed_toml_data=managed_toml_data,
+            ),
+        )
+        for opt in options
     ]
     store_error = stored.error if stored is not None else None
 
@@ -734,6 +987,8 @@ def _run_get_section(
                     value=row.value,
                     store_error=store_error,
                     include_catalog=verbose,
+                    toml_data=toml_data,
+                    managed_toml_data=managed_toml_data,
                 )
                 for row in resolved
             ],
@@ -741,9 +996,9 @@ def _run_get_section(
         return 0
 
     if verbose:
-        _print_config_verbose(resolved, store_error=store_error)
+        _print_config_verbose(resolved, store_error=store_error, health=health)
     else:
-        _print_config_table(resolved, store_error=store_error)
+        _print_config_table(resolved, store_error=store_error, health=health)
     return 0
 
 
@@ -776,14 +1031,22 @@ def _run_get(
     option = selection.options[0]
 
     from deepagents_code.config import _ensure_bootstrap
-    from deepagents_code.config_manifest import load_config_toml
+    from deepagents_code.config_manifest import (
+        load_config_toml,
+    )
 
     _ensure_bootstrap()
     toml_data = load_config_toml()
+    managed_toml_data, health = _load_managed_generation()
     # Only credential options consult the store, so skip the read (and its
     # warning) for everything else.
     stored = _load_stored_credentials() if option.group == "Credentials" else None
-    is_set, source, value = _resolve(option, toml_data, stored=stored)
+    is_set, source, value = _resolve(
+        option,
+        toml_data,
+        stored=stored,
+        managed_toml_data=managed_toml_data,
+    )
     store_error = stored.error if stored is not None else None
 
     if output_format == "json":
@@ -798,8 +1061,17 @@ def _run_get(
         # consumers tell a single-key response from a section list.
         if verbose:
             payload.update(_catalog_fields(option))
+            payload["provenance"] = _option_provenance(
+                option,
+                source=source,
+                toml_data=toml_data,
+                managed_toml_data=managed_toml_data,
+            )
         if store_error:
             payload["store_error"] = store_error
+        managed_warning = _managed_health_warning(health)
+        if managed_warning:
+            payload["managed_config_error"] = managed_warning
         write_json("config get", payload)
         return 0
 
@@ -818,11 +1090,47 @@ def _run_get(
         # detail lines `_print_config_verbose` emits.
         console.print(f"  {option.summary}", highlight=False, style="dim")
         console.print(f"  {_sources_line(option)}", highlight=False, style="dim")
-    if store_error:
-        console.print(
-            f"[yellow]Warning:[/yellow] {escape(store_error)}", highlight=False
-        )
+    for text in (_managed_health_warning(health), store_error):
+        if text:
+            console.print(f"[yellow]Warning:[/yellow] {escape(text)}", highlight=False)
     return 0
+
+
+_MANAGED_PATH_LABEL = "managed config"
+"""Row label for the managed file, matched by `_config_path_status`."""
+
+
+def _config_path_status(
+    label: str,
+    *,
+    exists: bool,
+    health: ManagedHealth | None = None,
+    project_dotenv_enabled: bool = True,
+) -> str:
+    """Return a diagnostic status for one config-path row.
+
+    The managed row reports parse health rather than mere existence, so a
+    corrupt file is not shown as present and fine. A file that parses but
+    declares an unenforceable key is reported as rejected, because it is the
+    other half of exit 78 and read as `ok` before. The project `.env` row is
+    reported as `disabled` when `startup.read_project_dotenv` is off: the file
+    exists on disk but is skipped at bootstrap, and `ok` would wrongly imply it
+    is a live config source.
+
+    Returns:
+        A short status word for the row.
+    """
+    if label == _MANAGED_PATH_LABEL:
+        if health is None:
+            from deepagents_code.configuration.service import managed_health
+
+            health = managed_health(refresh=True)
+        if health.status.usable and health.violations:
+            return "rejected"
+        return health.status.health.value.lower()
+    if label == "project .env" and not project_dotenv_enabled:
+        return "disabled"
+    return "ok" if exists else "missing"
 
 
 def _run_path(output_format: OutputFormat) -> int:
@@ -832,12 +1140,29 @@ def _run_path(output_format: OutputFormat) -> int:
         Process exit code (`0` on success).
     """
     paths = _config_paths()
+    _, health = _load_managed_generation()
+    # The project `.env` is listed whether or not it is loaded; when
+    # `startup.read_project_dotenv` is off the file exists on disk but is skipped
+    # at bootstrap, so its row is reported as disabled rather than a live source.
+    from deepagents_code.config_manifest import resolve_read_project_dotenv
+
+    project_dotenv_enabled = resolve_read_project_dotenv()
 
     if output_format == "json":
         write_json(
             "config path",
             [
-                {"label": label, "path": str(path), "exists": exists}
+                {
+                    "label": label,
+                    "path": str(path),
+                    "exists": exists,
+                    "status": _config_path_status(
+                        label,
+                        exists=exists,
+                        health=health,
+                        project_dotenv_enabled=project_dotenv_enabled,
+                    ),
+                }
                 for label, path, exists in paths
             ],
         )
@@ -848,7 +1173,18 @@ def _run_path(output_format: OutputFormat) -> int:
     console.print()
     console.print("[bold]Config locations[/bold]")
     for label, path, exists in paths:
-        marker = "[green]exists[/green]" if exists else "[dim]missing[/dim]"
+        status = _config_path_status(
+            label,
+            exists=exists,
+            health=health,
+            project_dotenv_enabled=project_dotenv_enabled,
+        )
+        if status in {"ok", "missing"}:
+            marker = "[green]ok[/green]" if status == "ok" else "[dim]missing[/dim]"
+        elif status == "disabled":
+            marker = "[yellow]disabled[/yellow]"
+        else:
+            marker = f"[red]{status}[/red]"
         console.print(f"  {label:<22} {path}  ({marker})", highlight=False)
     console.print()
     return 0
@@ -880,13 +1216,15 @@ def run_config_command(args: argparse.Namespace) -> int:
 # --- Helpers ----------------------------------------------------------------
 
 
-def _sources_line(option: ConfigOption) -> str:
+def _sources_line(option: ConfigOption[object]) -> str:
     """Render a compact 'set via' line for the verbose (`--verbose`) view.
 
     Returns:
         A human-readable description of where the option can be set.
     """
     parts: list[str] = []
+    if option.toml_path:
+        parts.append(f"managed toml {option.toml_path}")
     if option.env_var:
         parts.append(f"env {option.env_var}")
     if option.toml_path:
@@ -907,6 +1245,7 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
     from pathlib import Path
 
     from deepagents_code.config import _GLOBAL_DOTENV_PATH, _find_dotenv_from_start_path
+    from deepagents_code.configuration.paths import managed_config_path
     from deepagents_code.hooks.loading import project_hooks_path
     from deepagents_code.model_config import (
         DEFAULT_CONFIG_PATH,
@@ -921,6 +1260,7 @@ def _config_paths() -> list[tuple[str, Any, bool]]:
     project_root = project_context.project_root or project_context.user_cwd
 
     candidates: list[tuple[str, Path | None]] = [
+        (_MANAGED_PATH_LABEL, managed_config_path()),
         ("config.toml", DEFAULT_CONFIG_PATH),
         ("project .env", project_dotenv),
         ("global .env", _GLOBAL_DOTENV_PATH),

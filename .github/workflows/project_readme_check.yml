@@ -1,0 +1,200 @@
+# Pre-merge blocking check for edits to project landing-page READMEs.
+#
+# Why this exists:
+#   The root README and each package's `readme = "README.md"` (declared in
+#   every libs/*/pyproject.toml) are landing pages — they are what lands on
+#   PyPI and what a first-time reader sees. Incidental edits inside a feature
+#   or fix PR change that public face without anyone reviewing it as a
+#   documentation change. This check blocks a PR that touches one unless the
+#   edit is declared or acknowledged.
+#
+# What it checks:
+#   The PR title's Conventional Commit *type*, not the PR's contents. A
+#   `docs:` title exempts the PR. That is a proxy for intent, not a content
+#   check: a `docs:` PR may still change code, and this gate will not notice.
+#   Reviewing what a `docs:` PR actually contains stays a human job.
+#
+# Bypasses:
+#   - A `docs` title type passes: the README edit is the point of the PR.
+#   - Apply the `readme: acknowledged` label to confirm the landing-page
+#     changes are intentional in a non-docs PR. The check re-runs on
+#     `labeled`/`unlabeled`, so the red clears without a new commit. Removing
+#     the label re-arms the block.
+#
+# To actually gate merges, add this check to the branch's required status
+# checks. It is deliberately NOT wired into `ci.yml`'s `ci_success` aggregate:
+# the escape hatches are a title edit and a label toggle, which require the
+# `edited`/`labeled`/`unlabeled` trigger types, and `on:` is workflow-wide.
+# Adding those types to ci.yml would make all ~30 of its lint/test jobs fire
+# on every label change repo-wide — and because ci.yml sets
+# `concurrency: cancel-in-progress` on a group keyed by `github.ref` (shared
+# by every event on a PR), applying the acknowledgment label would cancel and
+# restart the entire in-flight matrix. Keeping the gate in its own cheap
+# workflow is what lets it subscribe to those events. Same reasoning and same
+# trigger list as pr_lint.yml and pr_scope_file_check.yml.
+#
+# Trust model:
+#   - The detector runs from the PR *base* branch, never the PR head, so a PR
+#     cannot edit check_project_readmes.py to print an empty result and
+#     self-bypass the gate — which would defeat it for the exact PRs it must
+#     block. The PR title (event payload) and the changed-file list (API) are
+#     supplied separately and are authoritative regardless of that checkout.
+#   - `ref: github.base_ref` resolves the base *branch name* at run time
+#     rather than pinning `github.event.pull_request.base.sha`. The payload's
+#     base sha is a snapshot that `labeled`/`unlabeled`/`edited` events do not
+#     refresh, so pinning it would keep reading a pre-merge revision on every
+#     PR opened before this gate landed — and on that revision the detector is
+#     absent, which used to mean "pass". Resolving the branch tip means the
+#     bootstrap fallback below stops being reachable the moment the detector
+#     is on the base branch, instead of lingering per-PR.
+#   - This closes the detector-edit vector but does not make the gate
+#     un-bypassable: under `pull_request` the workflow file itself comes from
+#     the PR head, so a PR that edits *this file* can still neuter the check.
+#     Integrity therefore also depends on branch protection (this job as a
+#     required status check) and on review of `.github/workflows/` edits.
+#
+# Limitations:
+#   - Runs under `pull_request` (not `pull_request_target`), so fork PRs get a
+#     read-only token. The sticky comment is skipped entirely on forks and the
+#     verdict goes to the job summary and the check's failure message instead;
+#     see `publish` in .github/scripts/checks/readme-gate.js. No secrets are
+#     exposed to PR-author-controlled code.
+#   - The title can be changed after the check goes green (including at
+#     squash-merge time), and the gate does not re-verify at merge.
+
+name: "📄 Project README check"
+
+on:
+  pull_request:
+    # `edited` so retitling to `docs:` clears the block, and
+    # `labeled`/`unlabeled` so toggling `readme: acknowledged` re-runs the
+    # check. Without these three the only escape hatches would need a new
+    # commit to take effect, leaving the PR red and unmergeable in the
+    # meantime.
+    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+
+permissions:
+  contents: read
+  # For the sticky comment. Fork PRs get read-only regardless; the job handles
+  # that rather than relying on this grant.
+  pull-requests: write
+
+concurrency:
+  group: project-readme-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  project-readme-check:
+    name: "validate project README edits are declared"
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      # Trusted copy: the base branch tip, which the PR cannot write to.
+      - name: "📋 Checkout detector from trusted base branch"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.base_ref }}
+          path: .readme-check-base
+          sparse-checkout: |
+            .github/scripts/checks/check_project_readmes.py
+            .github/scripts/checks/readme-gate.js
+          persist-credentials: false
+
+      # Bootstrap window: the detector does not exist on the base branch until
+      # this change lands, so the checkout above is empty on the PR that
+      # introduces it and there is nothing to run. Only for that window, fall
+      # back to the PR's own copy and RUN it — an author-controlled detector is
+      # strictly better than none, and a PR that neuters it could equally just
+      # delete this workflow file, which `pull_request` already permits. What
+      # this must never do is silently pass: if neither copy exists the job
+      # fails closed (see the detect step), so a deleted or renamed detector
+      # surfaces as a red check rather than a gate that quietly stops running.
+      - name: "📋 Checkout detector from PR (bootstrap fallback)"
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: .readme-check-pr
+          sparse-checkout: |
+            .github/scripts/checks/check_project_readmes.py
+            .github/scripts/checks/readme-gate.js
+          persist-credentials: false
+
+      - name: "🐍 Setup Python 3.11"
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.11"
+
+      # Pick base or (bootstrap) PR sources once, so the two github-script
+      # steps below can `require` a stable path instead of repeating the
+      # fallback. Failing here — neither copy present — is the fail-closed
+      # backstop that keeps a deleted detector from silently disabling the
+      # gate.
+      - name: "Resolve gate sources"
+        run: |
+          set -euo pipefail
+          base=".readme-check-base/.github/scripts/checks"
+          pr=".readme-check-pr/.github/scripts/checks"
+          if [[ -f "$base/check_project_readmes.py" && -f "$base/readme-gate.js" ]]; then
+            src="$base"
+          elif [[ -f "$pr/check_project_readmes.py" && -f "$pr/readme-gate.js" ]]; then
+            echo "::warning::README gate sources not found on the base branch; running the PR's copy (bootstrap window). If you see this after the gate landed on main, they were moved or deleted."
+            src="$pr"
+          else
+            echo "::error::README gate sources are missing from both the base branch and this PR; the gate cannot run. Failing closed."
+            exit 1
+          fi
+          mkdir -p .readme-gate
+          cp "$src/check_project_readmes.py" "$src/readme-gate.js" .readme-gate/
+
+      - name: "Collect changed files"
+        id: collect
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const fs = require('fs');
+            const { collectChangedPaths } = require('./.readme-gate/readme-gate.js');
+            const collected = await collectChangedPaths({ github, context, core });
+            if (!collected) return;
+            fs.writeFileSync('changed_files.json', JSON.stringify(collected.paths));
+            core.setOutput('truncated', String(collected.truncated));
+
+      - name: "Detect protected README edits"
+        id: detect
+        env:
+          # Via env, never `${{ }}` interpolation into the script body: a PR
+          # title is author-controlled and would otherwise be a shell
+          # injection vector.
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          set -euo pipefail
+          result=$(python .readme-gate/check_project_readmes.py "$PR_TITLE" < changed_files.json)
+          # Heredoc rather than a single-line output: the payload is JSON. Its
+          # only variable parts are a `[a-z]+` title type and paths drawn from
+          # a fixed allowlist, so the delimiter cannot be forged.
+          {
+            echo "result<<__README_EOF__"
+            echo "$result"
+            echo "__README_EOF__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: "Comment and enforce acknowledgment"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          RESULT: ${{ steps.detect.outputs.result }}
+          TRUNCATED: ${{ steps.collect.outputs.truncated }}
+        with:
+          script: |
+            const { enforce } = require('./.readme-gate/readme-gate.js');
+            let result;
+            try {
+              result = JSON.parse(process.env.RESULT || '');
+            } catch (error) {
+              core.setFailed(`README detector returned invalid JSON: ${error.message}`);
+              return;
+            }
+            await enforce({
+              github,
+              context,
+              core,
+              result,
+              truncated: process.env.TRUNCATED === 'true',
+            });

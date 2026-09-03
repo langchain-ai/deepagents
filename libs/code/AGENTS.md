@@ -1,6 +1,6 @@
 # `libs/code` agent guide
 
-`deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface. Forked from `deepagents-cli` at the 0.1.0 split.
+`deepagents-code` is the interactive coding agent — the Textual REPL, headless `-x` mode, MCP integration, skills, sandbox bootstrap, and slash-command surface.
 
 For monorepo-wide conventions (commit titles, lint, testing, docs, CI, benchmarks), see the root `AGENTS.md`. For a high-level map of the package (client/server processes, request lifecycle, module map), see `ARCHITECTURE.md`.
 
@@ -78,7 +78,7 @@ Apply these rules to new UI; do not treat them as a mandate to refactor existing
 - Use `textual.pilot` for async UI testing - see [Testing guide](https://textual.textualize.io/guide/testing/)
 - Snapshot testing available for visual regression - see repo `notes/snapshot_testing.md`
 - For modal flows, test the real interaction path with keypresses when possible. Unit tests that call action methods or resume handlers directly can miss focus and modal-stack bugs.
-- A modal test that pushes the screen onto a bare `App` host cannot catch app-level key interception. The app owns a priority `shift+tab -> toggle_auto_approve` binding (`app.py`) that wins dispatch over any screen binding; `action_toggle_auto_approve` routes the key to the active screen. Cursor-style modals (highlighted rows, no focusable children) just implement `action_move_up` — the router's `_SupportsReverseNav` protocol branch picks them up automatically. The protocol matches on method *presence*, so enrollment is opt-out, not opt-in: a screen that defines `action_move_up` for its own arrow keys gets `shift+tab` reverse-nav whether or not it was written with that key in mind. Screens needing different behavior (`focus_previous`, tab bars) — or none — need an explicit branch *above* the protocol check in `action_toggle_auto_approve`. Either way, add an app-level regression test in `test_app.py` that presses `shift+tab` through the real `DeepAgentsApp` dispatch, or the modal will silently swallow the key.
+- A modal test that pushes the screen onto a bare `App` host cannot catch app-level key interception. The app owns a priority `shift+tab -> toggle_auto_approve` binding (`app.py`) that wins dispatch over any screen binding; `action_toggle_auto_approve` routes the key to the active screen. Cursor-style modals (highlighted rows, no focusable children) just implement `action_move_up` — the router's `_SupportsReverseNav` protocol branch picks them up automatically. The protocol matches on method *presence*, so enrollment is opt-out, not opt-in: a screen that defines `action_move_up` for its own arrow keys gets `shift+tab` reverse-nav whether or not it was written with that key in mind. Screens needing different behavior (`focus_previous`, tab bars) — or none — need an explicit branch *above* the protocol check in `action_toggle_auto_approve`. Add an app-level regression test in `test_app.py` when a screen needs behavior other than swallowing the key.
 - Do not open another modal or refocus the base chat input directly inside a modal dismiss callback. Preserve the non-blocking `push_screen(..., callback)` flow and schedule follow-up UI work with `call_after_refresh` so the dismissing modal fully unwinds first.
 - Be cautious replacing `push_screen(..., callback)` with an awaited modal result inside slash-command handlers; awaiting can block the Textual message pump and break keyboard navigation in the active modal. Slash commands are dispatched from `on_chat_input_submitted`, which is awaited inline on that pump, so a modal awaited anywhere in the call chain never receives the keys that would resolve it and looks frozen.
 - When a command genuinely needs an awaited modal result, hand the continuation to `_schedule_off_message_pump` so the handler returns first. A detached continuation runs outside the handler's `try/except` and is cancelled at app exit, so it must catch its own exceptions and mount its own failure message — otherwise the failure reaches only `_log_task_exception` and the user sees no outcome at all — and it must tolerate cancellation part-way through, including mid-subprocess. Anything that mutates the running tool environment must also take `_environment_mutation_lock`, since the handler no longer serializes commands by blocking.
@@ -126,7 +126,7 @@ Debug logging is configured **once**, on the `deepagents_code` package logger, b
 
 - Do **not** add per-module `configure_debug_logging(logger)` calls. They are redundant now that the package logger is configured at import, and they reintroduce the duplicate-handler problem the single-config approach solves.
 - Every module should create its logger with `logging.getLogger(__name__)` so it stays inside the `deepagents_code.*` hierarchy and inherits the package handler. Don't set `logger.propagate = False` or attach your own handlers.
-- The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy; that path is a single env-var read, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_FILE` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
+- The **file** handler only attaches when `DEEPAGENTS_CODE_DEBUG` is truthy and the active thread is known; that path is a small env-var read and filesystem operation, so it's safe on the startup hot path. See `DEVELOPMENT.md` for the `DEEPAGENTS_CODE_DEBUG` / `DEEPAGENTS_CODE_DEBUG_DIRECTORY` / `DEEPAGENTS_CODE_LOG_LEVEL` env vars.
 - Separately, an **always-on in-memory ring buffer** (`_debug_buffer.install_log_buffer`, called from `__init__.py` right before `configure_debug_logging`) attaches unconditionally at import so the in-app Debug Console (`Ctrl+\`) can tail recent `deepagents_code.*` records without file logging. It captures `INFO` and above by default (or `DEEPAGENTS_CODE_LOG_LEVEL`), and may lower the package logger to `INFO` for the process lifetime. It never spills to the terminal (a handler is always found, so `lastResort` is skipped) and is bounded (a `deque` of 1000 records *per log level*), so it's cheap enough to keep on. Because it installs *before* `configure_debug_logging`, warnings that helper emits at startup are captured and visible in the console.
 
 ## CLI help screen
@@ -139,7 +139,7 @@ Hints that tell the user to run something (for example the teardown `-r <thread>
 
 ## Splash screen tips
 
-When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+x to compose prompts in your external editor"`).
+When adding a user-facing CLI feature (new slash command, keybinding, workflow), add a corresponding entry to the `_TIPS` dict in `deepagents_code/tui/widgets/startup_tip.py`, mapping the tip text to a relative selection weight (higher = shown more often). One tip is chosen at random above the input on startup to help users discover features. Keep tips short and action-oriented (e.g., `"Press ctrl+g to compose prompts in your external editor"`).
 
 ## Slash commands
 
@@ -153,8 +153,8 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 
 1. `deepagents_code/model_config.py` — add `"provider_name": "ENV_VAR_NAME"` to `PROVIDER_API_KEY_ENV`
 2. `deepagents_code/model_config.py` — if the provider reads a *dedicated* endpoint env var, add `"provider_name": ("CANONICAL_BASE_URL", "ALTERNATE", ...)` to `PROVIDER_BASE_URL_ENV` (see guidelines below); omit the provider entirely when it has no provider-specific endpoint variable
-3. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
-4. `deepagents_code/model_config.py` — add `"provider_name"` to `RETRY_PARAM_BY_PROVIDER` if the provider's chat model accepts `max_retries`
+3. `deepagents_code/model_config.py` — add `"provider_name": "max_retries"` (or the provider's actual retry-count constructor kwarg) to `RETRY_PARAM_BY_PROVIDER`. dcode's model-node middleware owns the retry budget, so this entry is the disable-list that forces the provider's own SDK retry loop off; omitting it lets the SDK retries multiply the middleware's attempts. Verify the kwarg name against the integration's constructor — leave the provider out only when it exposes no integer retry-count kwarg. Check what the kwarg counts: retries are disabled with the default zero, but a kwarg counting *total attempts* needs an entry in `RETRY_DISABLE_VALUE_BY_PROVIDER` (see `google_genai`), because zero attempts either restores the SDK default or is coerced back to one
+4. `pyproject.toml` — add `provider = ["langchain-provider>=X.Y.Z,<N.0.0"]` to `[project.optional-dependencies]` and include it in the `all-providers` composite extra
 5. `deepagents_code/tui/widgets/auth.py` — add `"provider_name": "Display Name"` to `PROVIDER_DISPLAY_NAMES` so the `/auth` UI shows a branded label instead of the title-cased key, and (if the provider issues API keys from a self-serve page) `"provider_name": "https://…"` to `PROVIDER_API_KEY_URLS` so the prompt links straight to the key page
 6. `tests/unit_tests/test_model_config.py` — add `assert PROVIDER_API_KEY_ENV["provider_name"] == "ENV_VAR_NAME"` to `TestProviderApiKeyEnv.test_contains_major_providers`, and pin any `PROVIDER_BASE_URL_ENV` entry with a matching assertion
 
@@ -170,6 +170,6 @@ To add a new slash command: (1) add a `SlashCommand` entry to `COMMANDS`, (2) se
 **Not required** unless the provider's models have a distinctive name prefix (like `gpt-*`, `claude*`, `gemini*`):
 
 - `detect_provider()` in `config.py` — only needed for auto-detection from bare model names
-- `Settings.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
+- `Credentials.has_*` property in `config.py` — only needed if referenced by `detect_provider()` fallback logic
 
 Model discovery, credential checking, and UI integration are automatic once `PROVIDER_API_KEY_ENV` is populated and the `langchain-*` package is installed.

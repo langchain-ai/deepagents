@@ -46,6 +46,19 @@ def test_store_backend_crud_and_search():
     assert {i["path"] for i in g} == {i["path"] for i in g2}
 
 
+def test_store_backend_reports_utf8_file_size_in_bytes() -> None:
+    """`ls` and `glob` report UTF-8 byte sizes rather than character counts."""
+    mem_store = InMemoryStore()
+    be = StoreBackend(store=mem_store, namespace=lambda _rt: ("filesystem",))
+    content = "hello 😀 €"
+    expected_size = len(content.encode("utf-8"))
+
+    be.write("/unicode.txt", content)
+
+    assert be.ls("/").entries[0]["size"] == expected_size
+    assert be.glob("*.txt", path="/").matches[0]["size"] == expected_size
+
+
 def test_store_backend_read_surfaces_pagination_metadata():
     """`StoreBackend.read` propagates the pagination metadata from `slice_read_response`."""
     mem_store = InMemoryStore()

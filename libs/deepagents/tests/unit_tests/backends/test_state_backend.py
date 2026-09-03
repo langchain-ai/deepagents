@@ -83,6 +83,18 @@ def test_state_backend_reads_legacy_list_content(monkeypatch: pytest.MonkeyPatch
     assert files["/legacy.txt"]["content"] == legacy_content
 
 
+def test_state_backend_reports_utf8_file_size_in_bytes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`ls` and `glob` report UTF-8 byte sizes rather than character counts."""
+    backend = StateBackend()
+    content = "hello 😀 €"
+    files = {"/unicode.txt": {"content": content, "encoding": "utf-8"}}
+    monkeypatch.setattr(backend, "_read_files", lambda: files)
+    expected_size = len(content.encode("utf-8"))
+
+    assert backend.ls("/").entries[0]["size"] == expected_size
+    assert backend.glob("*.txt", path="/").matches[0]["size"] == expected_size
+
+
 def test_state_backend_reads_legacy_list_content_for_non_text_path(monkeypatch: pytest.MonkeyPatch) -> None:
     backend = StateBackend()
     legacy_content = ["aGVsbG8="]

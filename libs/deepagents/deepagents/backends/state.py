@@ -27,6 +27,7 @@ from deepagents.backends.utils import (
     _get_backend_read_file_type,
     _glob_search_files,
     create_file_data,
+    file_data_size,
     file_data_to_string,
     grep_matches_from_files,
     perform_string_replacement,
@@ -156,7 +157,7 @@ class StateBackend(BackendProtocol):
                 continue
 
             # This is a file directly in the current directory
-            size = len(file_data_to_string(fd))
+            size = file_data_size(fd)
             infos.append(
                 {
                     "path": k,
@@ -308,7 +309,7 @@ class StateBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(file_data_to_string(fd)) if fd else 0
+            size = file_data_size(fd) if fd else 0
             infos.append(
                 {
                     "path": p,

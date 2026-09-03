@@ -132,6 +132,7 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
     getContent: [],
     getRef: [],
     graphql: [],
+    reactionEvents: [],
     updateComment: [],
     updatePr: [],
     updateRef: [],
@@ -176,6 +177,16 @@ function makeGithub({ pr = releasePr(), comments = [], permission = 'write', adm
             comment.updated_at = APPLIED_UPDATED_AT;
           }
           return { data: comment ?? { id: params.comment_id, updated_at: APPLIED_UPDATED_AT, user: BOT, body: params.body } };
+        },
+      },
+      reactions: {
+        createForIssueComment: async params => {
+          calls.reactionEvents.push({ action: 'create', params });
+          return { data: { id: 501 } };
+        },
+        deleteForIssueComment: async params => {
+          calls.reactionEvents.push({ action: 'delete', params });
+          return { status: 204 };
         },
       },
       repos: {
@@ -433,7 +444,7 @@ test('manual commands ignore comments authored by the configured bot', async () 
   assert.equal(run.calls.createComment.length, 0);
 });
 
-test('an accepted manual command is acknowledged immediately', async () => {
+test('an accepted manual command defers acknowledgment to the privileged job', async () => {
   const context = {
     eventName: 'issue_comment',
     repo: { owner: 'langchain-ai', repo: 'deepagents' },
@@ -447,40 +458,7 @@ test('an accepted manual command is acknowledged immediately', async () => {
   const result = await releaseNotes.validateTrigger({ github: run.github, context, core: makeCore() });
   assert.equal(result.shouldRun, true);
   assert.equal(result.command, 'draft');
-  assert.equal(run.calls.createComment.length, 1);
-  assert.match(run.calls.createComment[0].body, /Running `draft` for the `deepagents-code` release PR/);
-  // The ack must land on the PR that carried the command, not merely somewhere.
-  assert.equal(run.calls.createComment[0].owner, 'langchain-ai');
-  assert.equal(run.calls.createComment[0].repo, 'deepagents');
-  assert.equal(run.calls.createComment[0].issue_number, 123);
-  // A mention would make the ack re-trigger the workflow on itself.
-  assert.doesNotMatch(run.calls.createComment[0].body, /@release-bot/);
-});
-
-test('a failed acknowledgment still runs the command', async () => {
-  const context = {
-    eventName: 'issue_comment',
-    repo: { owner: 'langchain-ai', repo: 'deepagents' },
-    payload: {
-      action: 'created',
-      issue: { number: 123, pull_request: {} },
-      comment: { body: '@release-bot apply', user: { login: 'maintainer' }, author_association: 'MEMBER' },
-    },
-  };
-  // A non-Error rejection is the sharp case: reading `.message` off it unguarded
-  // throws out of the catch and drops a command that passed every gate.
-  for (const thrown of [new Error('secondary rate limit'), 'secondary rate limit']) {
-    const run = makeGithub({
-      permission: 'write',
-      onCreateComment: () => { throw thrown; },
-    });
-    const core = makeCore();
-    const result = await releaseNotes.validateTrigger({ github: run.github, context, core });
-    assert.equal(result.shouldRun, true);
-    assert.equal(result.command, 'apply');
-    assert.equal(core.warnings.length, 1);
-    assert.match(core.warnings[0], /Failed to post acknowledgment comment for apply on PR #123: secondary rate limit/);
-  }
+  assert.equal(run.calls.createComment.length, 0);
 });
 
 test('ready_for_review automatically validates as draft command', async () => {
@@ -1363,6 +1341,58 @@ test('postDraft fails when the installation App is not the configured bot', asyn
   assert.equal(wrongUser.calls.updateComment.length, 0);
 });
 
+test('command reactions move from eyes to rocket after successful work', async () => {
+  const { github, calls } = makeGithub();
+  const params = {
+    github,
+    owner: 'langchain-ai',
+    repo: 'deepagents',
+    commentId: 77,
+    ...BOT_AUTH,
+  };
+
+  const reactionId = await releaseNotes.acknowledgeCommand(params);
+  assert.equal(reactionId, 501);
+  await releaseNotes.completeCommand({ ...params, reactionId });
+
+  assert.deepEqual(calls.reactionEvents, [
+    {
+      action: 'create',
+      params: {
+        owner: 'langchain-ai', repo: 'deepagents', comment_id: 77, content: 'eyes',
+      },
+    },
+    {
+      action: 'delete',
+      params: {
+        owner: 'langchain-ai', repo: 'deepagents', comment_id: 77, reaction_id: 501,
+      },
+    },
+    {
+      action: 'create',
+      params: {
+        owner: 'langchain-ai', repo: 'deepagents', comment_id: 77, content: 'rocket',
+      },
+    },
+  ]);
+});
+
+test('command reactions reject a token minted for another App', async () => {
+  const { github, calls } = makeGithub();
+  await assert.rejects(
+    releaseNotes.acknowledgeCommand({
+      github,
+      owner: 'langchain-ai',
+      repo: 'deepagents',
+      commentId: 77,
+      ...BOT_AUTH,
+      appSlug: 'someone-else',
+    }),
+    /token was minted for someone-else\[bot\]/,
+  );
+  assert.deepEqual(calls.reactionEvents, []);
+});
+
 test('required check fails when curated draft or applied metadata is missing', async () => {
   const { github } = makeGithub({ comments: [] });
   const core = makeCore();
@@ -1864,10 +1894,7 @@ test('manual commands run for maintainers and admins', async () => {
   const maintainResult = await releaseNotes.validateTrigger({ github: maintain.github, context, core: makeCore() });
   assert.equal(maintainResult.shouldRun, true);
   assert.equal(maintainResult.command, 'apply');
-  // This payload carries no `author_association`, so `canNotify` is false: the
-  // ack fires on write permission alone, unlike every rejection reply.
-  assert.equal(maintain.calls.createComment.length, 1);
-  assert.match(maintain.calls.createComment[0].body, /Running `apply`/);
+  assert.equal(maintain.calls.createComment.length, 0);
 
   // The admin flag grants access even when the permission string is not in the set.
   const admin = makeGithub({ permission: 'read', adminFlag: true });
@@ -1896,11 +1923,7 @@ test('validateTrigger surfaces draft instructions and drops apply instructions',
   assert.equal(draftResult.shouldRun, true);
   assert.equal(draftResult.command, 'draft');
   assert.equal(draftResult.instructions, 'emphasize the breaking SDK change');
-  // The ack is a plain reply; instructions ride along in the result, not the
-  // comment, so untrusted text never gets echoed back onto the PR.
-  assert.equal(draftRun.calls.createComment.length, 1);
-  assert.match(draftRun.calls.createComment[0].body, /Running `draft`/);
-  assert.doesNotMatch(draftRun.calls.createComment[0].body, /emphasize the breaking SDK change/);
+  assert.equal(draftRun.calls.createComment.length, 0);
 
   // Instructions after `apply` never reach the workflow: apply republishes the
   // stored draft, so the gate reports no instructions for it.

@@ -6571,7 +6571,11 @@ class DeepAgentsApp(App):
         """Mount one durable update message per target version this session.
 
         Returns:
-            Whether the message was mounted.
+            Whether the message was mounted now. `False` means the version was
+            already surfaced this session *or* the mount failed (no transcript
+            container). Callers must not record the notification in either case;
+            to tell the two apart, test membership in
+            `_update_message_versions`.
         """
         if latest in self._update_message_versions:
             return False
@@ -6672,14 +6676,26 @@ class DeepAgentsApp(App):
                     format_installed_age_suffix,
                     cli_version,
                 )
-                mounted = await self._mount_update_message(
-                    latest,
+                message = (
                     f"Update available: v{latest}{release_age}. "
                     f"Currently installed: {cli_version}{installed_age}. "
-                    "Quit and relaunch dcode to install the update automatically.",
+                    "Quit and relaunch dcode to install the update automatically."
                 )
-                if mounted:
+                if await self._mount_update_message(latest, message):
                     await asyncio.to_thread(mark_update_notified, latest)
+                elif latest not in self._update_message_versions:
+                    # The mount failed rather than deduplicating. This branch
+                    # registers no notice, so without the toast it replaced the
+                    # user would learn nothing about the pending update.
+                    logger.warning(
+                        "Could not mount the update message; falling back to a toast"
+                    )
+                    self.notify(
+                        message,
+                        severity="information",
+                        timeout=12,
+                        markup=False,
+                    )
                 return
 
             if not await asyncio.to_thread(should_notify_update, latest):

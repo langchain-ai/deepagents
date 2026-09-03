@@ -19195,6 +19195,125 @@ class TestNotificationCenterIntegration:
         app.notify.assert_not_called()  # ty: ignore
         mark_notified.assert_called_once_with("9.9.9")
 
+    async def test_auto_update_mounts_durable_restart_prompt(self) -> None:
+        """With auto-update on, the restart prompt is a message, not a toast."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=7,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.mark_update_notified",
+            ) as mark_notified,
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+                messages = [message.render().plain for message in app.query(AppMessage)]
+
+        assert messages == [
+            (
+                f"Update available: v9.9.9. Currently installed: {__version__}. "
+                "Quit and relaunch dcode to install the update automatically."
+            )
+        ]
+        app.notify.assert_not_called()  # ty: ignore
+        mark_notified.assert_called_once_with("9.9.9")
+
+    async def test_auto_update_falls_back_to_a_toast_when_the_mount_fails(
+        self,
+    ) -> None:
+        """A failed mount still reaches the user; the version stays unnotified."""
+        with patch(
+            "deepagents_code.update_check.is_installation_stale",
+            return_value=False,
+        ):
+            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore
+
+        with (
+            patch(
+                "deepagents_code.config._is_editable_install",
+                return_value=False,
+            ),
+            patch(
+                "deepagents_code.update_check.is_update_available",
+                return_value=(True, "9.9.9"),
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=7,
+            ),
+            patch(
+                "deepagents_code.update_check.is_auto_update_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.should_notify_update",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.mark_update_notified",
+            ) as mark_notified,
+            patch(
+                "deepagents_code.update_check.format_release_age_parenthetical",
+                return_value="",
+            ),
+            patch(
+                "deepagents_code.update_check.format_installed_age_suffix",
+                return_value="",
+            ),
+            patch.object(
+                app,
+                "_mount_message",
+                new=AsyncMock(return_value=False),
+            ),
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+
+        mark_notified.assert_not_called()
+        assert app._update_message_versions == set()
+        app.notify.assert_called_once()  # ty: ignore
+        assert "Quit and relaunch dcode" in app.notify.call_args.args[0]  # ty: ignore
+
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
         from deepagents_code.tui.widgets.update_available import UpdateAvailableScreen

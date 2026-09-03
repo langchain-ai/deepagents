@@ -1096,6 +1096,18 @@ def _create_test_temp_artifact(
     return state, artifact
 
 
+def test_workspace_credentials_are_known_secrets(tmp_path: Path) -> None:
+    """Auto redaction includes secrets from the workspace snapshot."""
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"execute": config},
+        worktree_root=tmp_path,
+        environ={"WORKSPACE_API_KEY": "workspace-secret-value"},
+    )
+
+    assert "workspace-secret-value" in middleware._known_secrets
+
+
 def test_sanitize_auto_reason_redacts_secrets_urls_and_control_text() -> None:
     reason = (
         "TOKEN=supersecret https://user:pass@example.com/path?q=value\x1b[31m\n"

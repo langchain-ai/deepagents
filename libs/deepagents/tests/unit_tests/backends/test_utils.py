@@ -290,6 +290,20 @@ class TestGlobSearchFiles:
         assert "/foo/c.md" in result
         assert "/foo/b.txt" not in result
 
+    def test_missing_modified_at_does_not_raise(self) -> None:
+        """`modified_at` is NotRequired on FileData, so glob must not assume it.
+
+        Seeded state can carry files without timestamps; matching should still
+        return them instead of raising KeyError.
+        """
+        files = {
+            "/a.py": {"content": "x", "encoding": "utf-8"},
+            "/b.py": {"content": "y", "encoding": "utf-8"},
+        }
+        result = _glob_search_files(files, "*.py", "/")
+        assert "/a.py" in result
+        assert "/b.py" in result
+
 
 class TestCompileGrepIncludeGlobRefusals:
     """Refusals are a public `ValueError` subtype backends can catch precisely."""
@@ -404,6 +418,29 @@ class TestPerformStringReplacement:
     def test_basic_single_replacement(self) -> None:
         result = perform_string_replacement("hello world", "world", "there")
         assert result == ("hello there", 1)
+
+    def test_empty_old_string_returns_error(self) -> None:
+        """Empty `old_string` is never a valid search target.
+
+        `str.count("")` returns `len(content)+1`, so without this guard a
+        non-empty file always reports a spurious multiple-occurrences error,
+        and `replace_all=True` inserts `new_string` between every character.
+        """
+        result = perform_string_replacement("hello world", "", "x")
+        assert isinstance(result, str)
+        assert "old_string cannot be empty" in result
+
+    def test_empty_old_string_with_replace_all_returns_error(self) -> None:
+        """The `replace_all` path must never run `content.replace("", new)`."""
+        result = perform_string_replacement("hello world", "", "x", replace_all=True)
+        assert isinstance(result, str)
+        assert "old_string cannot be empty" in result
+
+    def test_empty_old_string_on_empty_file_returns_error(self) -> None:
+        """An empty file must not silently "succeed" an empty search."""
+        result = perform_string_replacement("", "", "x")
+        assert isinstance(result, str)
+        assert "old_string cannot be empty" in result
 
     def test_not_found_returns_error_string(self) -> None:
         result = perform_string_replacement("hello world", "missing", "x")

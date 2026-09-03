@@ -44,7 +44,7 @@ from deepagents.backends.protocol import (
     WriteResult,
     execute_accepts_timeout,
 )
-from deepagents.backends.utils import _get_backend_read_file_type, normalize_read_bounds
+from deepagents.backends.utils import EMPTY_OLD_STRING_ERROR, _get_backend_read_file_type, normalize_read_bounds
 
 logger = logging.getLogger(__name__)
 
@@ -1672,6 +1672,9 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
             `EditResult` with `path` and `occurrences` on success, or `error`
                 on failure.
         """
+        if not old_string:
+            return EditResult(error=EMPTY_OLD_STRING_ERROR)
+
         payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
 
         if payload_size <= _EDIT_INLINE_MAX_BYTES:
@@ -1687,6 +1690,9 @@ class BaseSandbox(SandboxBackendProtocol, ABC):
         replace_all: bool = False,  # noqa: FBT001, FBT002
     ) -> EditResult:
         """Async version of `edit`, delegating to `aexecute` and `aupload_files`."""
+        if not old_string:
+            return EditResult(error=EMPTY_OLD_STRING_ERROR)
+
         payload_size = len(old_string.encode("utf-8")) + len(new_string.encode("utf-8"))
         if payload_size <= _EDIT_INLINE_MAX_BYTES:
             return await self._aedit_inline(file_path, old_string, new_string, replace_all)

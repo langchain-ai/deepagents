@@ -1,3 +1,3 @@
 # Files
 
-- [Testing Guide](testing-guide.md) - Test topology and execution guidance for the Deep Agents SDK, dcode, ACP, Talon, and evaluation suite. Use the owning package entrypoint and preserve the offline-unit, networked-integration, and warnings-as-errors boundaries.
+- [Testing Guide](testing-guide.md) - Package-specific pytest topology and execution policy for Deep Agents, dcode, ACP, Talon, and evals. It explains the offline unit boundary, warnings-as-errors policy, asynchronous tests, benchmarks, and credentialed live evaluations.

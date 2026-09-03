@@ -251,6 +251,15 @@ setting it (see `config._PROJECT_DOTENV_DENIED_ENV_KEYS`); only the user's
 shell, launch env, or global `~/.deepagents/.env` can.
 """
 
+FORKED_SUBAGENTS = "DEEPAGENTS_CODE_FORKED_SUBAGENTS"
+"""Whether dcode's built-in `general-purpose` subagent runs in fork mode.
+
+On by default. Set to a falsy value to make the subagent receive only the delegated
+task instead of inheriting the parent agent's conversation and state. Parsed by
+`is_env_truthy`; set this only through the launching shell or global
+`~/.deepagents/.env`, never a project `.env`.
+"""
+
 EXPERIMENTAL = "DEEPAGENTS_CODE_EXPERIMENTAL"
 """Opt into experimental, unstable dcode behavior.
 

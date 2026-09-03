@@ -26,10 +26,14 @@ from pydantic import Field
 
 from deepagents_code._cli_context import CLIContextSchema
 from deepagents_code._constants import SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
+from deepagents_code.goal_rubric import (
+    RubricGraderState,
+    _rubric_grader_messages,
+    _rubric_grader_state,
+)
 from deepagents_code.reliable_rubric import (
     ReliableRubricMiddleware,
     ReliableRubricState,
-    _without_internal_control_messages,
 )
 from deepagents_code.resume_state import INHERIT_RUBRIC_MODEL
 
@@ -222,6 +226,15 @@ def _tool_satisfied_result() -> dict[str, Any]:
     }
 
 
+def _rubric(**kwargs: Any) -> ReliableRubricMiddleware:
+    return ReliableRubricMiddleware(
+        grader_state_schema=RubricGraderState,
+        prepare_messages_for_grader=_rubric_grader_messages,
+        build_grader_state=_rubric_grader_state,
+        **kwargs,
+    )
+
+
 class TestReliableRubricMiddleware:
     def test_displayed_max_iterations_default_matches_sdk(self) -> None:
         """Drift guard for the TUI-display duplicate of the SDK default.
@@ -229,7 +242,7 @@ class TestReliableRubricMiddleware:
         The constant must equal the `RubricMiddleware` default that the app
         actually instantiates.
         """
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
 
         assert middleware.max_iterations == SDK_DEFAULT_RUBRIC_MAX_ITERATIONS
 
@@ -255,16 +268,16 @@ class TestReliableRubricMiddleware:
             },
         )
 
-        filtered = _without_internal_control_messages(state)
+        filtered = _rubric_grader_messages(state["messages"])
 
-        assert filtered["messages"] == [visible, summary]
+        assert filtered == [visible, summary]
         assert state["messages"] == [visible, state_notice, continuation, summary]
 
     def test_sync_grade_preserves_trace_metadata_and_context(
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        middleware = _rubric(model="anthropic:claude-sonnet-4-6")
         grader = MagicMock()
         grader.invoke.return_value = _tool_satisfied_result()
         middleware._grader = grader
@@ -310,7 +323,7 @@ class TestReliableRubricMiddleware:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="anthropic:claude-sonnet-4-6")
+        middleware = _rubric(model="anthropic:claude-sonnet-4-6")
         grader = AsyncMock()
         grader.ainvoke.return_value = _tool_satisfied_result()
         middleware._grader = grader
@@ -351,7 +364,7 @@ class TestReliableRubricMiddleware:
     def test_inherits_sdk_coverage_retry_sync(self) -> None:
         # The SDK's coverage retry still fires when the grader under-reports its
         # criteria; this is separate from model transport retries.
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = MagicMock()
         grader.invoke.side_effect = [
             _under_reported_result(),
@@ -366,7 +379,7 @@ class TestReliableRubricMiddleware:
         assert "1 of the 2 criteria" in _grader_payload(grader.invoke.call_args_list[1])
 
     async def test_inherits_sdk_coverage_retry_async(self) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grader = AsyncMock()
         grader.ainvoke.side_effect = [
             _under_reported_result(),
@@ -386,7 +399,7 @@ class TestReliableRubricMiddleware:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="fake-model")
+        middleware = _rubric(model="fake-model")
         grade = AsyncMock(side_effect=GraphInterrupt(()))
         monkeypatch.setattr(middleware, "_agrade", grade)
         context = {"approval_mode": "yolo"}
@@ -438,7 +451,7 @@ class TestReliableRubricMiddleware:
                 ]
             )
         )
-        rubric = ReliableRubricMiddleware(
+        rubric = _rubric(
             model=grader_model,
             tools=[inspect_external],
             grader_middleware=[HumanInTheLoopMiddleware({"inspect_external": True})],
@@ -491,9 +504,7 @@ class TestReliableRubricMiddleware:
             "hooks_server_events": ["PreToolUse"],
             "prompt_id": "prompt-1",
         }
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=True
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=True)
 
         selected = middleware._grader_context(cast("Any", {}), payload)
 
@@ -513,9 +524,7 @@ class TestReliableRubricMiddleware:
 
     def test_grader_context_copies_parent_mutable_containers(self) -> None:
         """Concurrent grader calls must not share containers with the parent."""
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=True
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=True)
         parent = CLIContextSchema(
             model="openai:gpt-5.5",
             model_params={"temperature": 0.2},
@@ -535,7 +544,7 @@ class TestReliableRubricMiddleware:
         self,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
-        middleware = ReliableRubricMiddleware(model="startup:model")
+        middleware = _rubric(model="startup:model")
         grader = AsyncMock()
         grader.ainvoke.side_effect = TimeoutError("provider timed out")
         middleware._grader = grader
@@ -567,9 +576,7 @@ class TestReliableRubricMiddleware:
 
     def test_inherit_clears_stale_params_after_main_model_fallback(self) -> None:
         """A failed runtime switch records its fallback without new params."""
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=True
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=True)
         state = cast(
             "Any",
             {
@@ -589,9 +596,7 @@ class TestReliableRubricMiddleware:
 
     def test_inherit_keeps_parent_model_and_params_together(self) -> None:
         """A thread's first grading pass has no `_model_spec` checkpointed yet."""
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=True
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=True)
         parent = CLIContextSchema(
             model="openai:gpt-5.5",
             model_params={"temperature": 0.2},
@@ -617,9 +622,7 @@ class TestReliableRubricMiddleware:
         expected_params: dict[str, Any],
     ) -> None:
         """Malformed inherited metadata must not prevent rubric grading."""
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=True
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=True)
         state = cast(
             "Any",
             {
@@ -654,9 +657,7 @@ class TestReliableRubricMiddleware:
         expected_model: str,
         expected_params: dict[str, Any],
     ) -> None:
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=inherit_main
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=inherit_main)
         state = cast(
             "Any",
             {
@@ -681,7 +682,7 @@ class TestReliableRubricMiddleware:
         assert parent.model_params == {"max_tokens": 1}
 
     def test_startup_dedicated_model_ignores_main_context(self) -> None:
-        middleware = ReliableRubricMiddleware(
+        middleware = _rubric(
             model="anthropic:claude-sonnet-4-6", inherit_main_model=False
         )
         parent = CLIContextSchema(
@@ -717,9 +718,7 @@ class TestReliableRubricMiddleware:
         self, caplog: pytest.LogCaptureFixture
     ) -> None:
         """Defaults drop `approval_mode`, so a wiring bug must not be silent."""
-        middleware = ReliableRubricMiddleware(
-            model="startup:model", inherit_main_model=True
-        )
+        middleware = _rubric(model="startup:model", inherit_main_model=True)
 
         with caplog.at_level("WARNING", logger="deepagents_code.reliable_rubric"):
             selected = middleware._grader_context(cast("Any", {}), object())

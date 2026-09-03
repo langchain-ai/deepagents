@@ -4,8 +4,8 @@ okf_version: "0.2"
 
 # Files
 
-- [Quickstart & Wiki Map](quickstart.md) - Repository orientation for the independently versioned Deep Agents packages and a task-routing map for SDK work, dcode, ACP, evaluations, operations, and tests. Use this page to choose an owning package and detailed guide before changing behavior.
-- [Runtime Behavior & Findings](runtime-behavior.md) - Source-grounded operational behavior for dcode and the Deep Agents SDK, with explicit separation between code-derived checks and trace observations. Covers execution limits, recoverable tool behavior, accounting, context compaction, and model retries.
+- [Quickstart & Wiki Map](quickstart.md) - Repository orientation for the independently versioned Deep Agents packages, their supported Python ranges, declared first-party dependencies, and a task-routing map for SDK work, dcode, integrations, operations, and tests. Use this page to choose an owner and detailed guide before changing behavior.
+- [Runtime Behavior & Findings](runtime-behavior.md) - Current source-derived runtime observations for dcode sessions, usage and cost accounting, headless execution, limits, compaction, and retries. These findings describe the inspected implementation rather than production rates or architecture guarantees.
 
 # Directories
 

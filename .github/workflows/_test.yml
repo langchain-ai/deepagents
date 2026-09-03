@@ -84,6 +84,12 @@ jobs:
           cache-suffix: test-${{ inputs.working-directory }}
           working-directory: ${{ inputs.working-directory }}
 
+      - name: "🟩 Set up Node for Talon"
+        if: inputs.working-directory == 'libs/talon'
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v6
+        with:
+          node-version: "24"
+
       - name: "📦 Install Test Dependencies"
         shell: bash
         run: uv sync --group test

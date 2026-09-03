@@ -2111,6 +2111,29 @@ class TestRunTextualCliAsyncMcp:
             == INHERIT_CLASSIFIER_MODEL
         )
 
+    def test_provider_classifier_resolver_preserves_precedence(self) -> None:
+        """Late provider resolution preserves explicit and fail-closed choices."""
+        from deepagents_code._cli_context import INHERIT_CLASSIFIER_MODEL
+        from deepagents_code.config import resolve_auto_classifier_model_for_provider
+
+        with patch(
+            "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+            return_value=(None, "malformed configured classifier"),
+        ):
+            assert (
+                resolve_auto_classifier_model_for_provider("openai")
+                == INHERIT_CLASSIFIER_MODEL
+            )
+
+        explicit = "anthropic:claude-sonnet-5"
+        with patch(
+            "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+        ) as resolve_config:
+            assert resolve_auto_classifier_model_for_provider("openai", explicit) == (
+                explicit
+            )
+        resolve_config.assert_not_called()
+
     def test_classifier_policy_is_a_no_op_without_an_allowlist(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -2125,6 +2148,64 @@ class TestRunTextualCliAsyncMcp:
         )
 
         assert _classifier_model_after_policy("openai:anything") == "openai:anything"
+
+    @pytest.mark.parametrize(
+        ("main_model", "classifier"),
+        [
+            ("anthropic:claude-opus-5", "anthropic:claude-sonnet-5"),
+            ("google_genai:gemini-3.1-pro", "google_genai:gemini-3.8-flash"),
+            ("google_vertexai:gemini-3.1-pro", "google_vertexai:gemini-3.8-flash"),
+            ("openai:gpt-5.6-sol", "openai:gpt-5.6-luna"),
+            ("openai_codex:gpt-5.6-sol", "openai_codex:gpt-5.6-luna"),
+            ("xai:grok-4.5", None),
+        ],
+    )
+    async def test_defaults_auto_classifier_by_main_provider(
+        self, main_model: str, classifier: str | None
+    ) -> None:
+        """An unset classifier uses the provider's lower-latency model."""
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
+            patch(
+                "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+                return_value=(None, None),
+            ),
+            patch(
+                "deepagents_code.main._auto_classifier_spec_problem", return_value=None
+            ),
+        ):
+            await run_textual_cli_async("agent", model_name=main_model)
+
+        assert captured_kwargs["server_kwargs"]["auto_classifier_model"] == classifier
+
+    async def test_unusable_config_does_not_enable_provider_default(self) -> None:
+        """A malformed configured classifier keeps the fail-closed inherit fallback."""
+        app_result = AppResult(return_code=0, thread_id="thread-123")
+        captured_kwargs: dict[str, Any] = {}
+
+        async def _run_textual_app_stub(**kwargs: Any) -> AppResult:
+            captured_kwargs.update(kwargs)
+            await asyncio.sleep(0)
+            return app_result
+
+        with (
+            patch("deepagents_code.app.run_textual_app", new=_run_textual_app_stub),
+            patch(
+                "deepagents_code.config.resolve_auto_classifier_model_with_problem",
+                return_value=(None, "configured classifier is invalid"),
+            ),
+        ):
+            await run_textual_cli_async("agent", model_name="openai:gpt-5.6-sol")
+
+        assert captured_kwargs["server_kwargs"]["auto_classifier_model"] is None
 
     async def test_explicit_auto_classifier_precedes_config(self) -> None:
         """The CLI classifier remains authoritative over env/TOML config."""

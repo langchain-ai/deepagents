@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
     "deepagents>=0.7.0",
     "deepagents-code>=0.1.30,<1.0.0",
+    "discord.py>=2.4.0,<3.0.0",
     "langchain-mcp-adapters>=0.3.2,<1.0.0",
 ]
 
@@ -66,6 +67,8 @@ package = true
 packages = ["deepagents_talon"]
 artifacts = [
     "deepagents_talon/channels/whatsapp_bridge/bridge.js",
+    "deepagents_talon/channels/whatsapp_bridge/id_compat.js",
+    "deepagents_talon/channels/whatsapp_bridge/package-lock.json",
     "deepagents_talon/channels/whatsapp_bridge/package.json",
 ]
 
@@ -128,5 +131,10 @@ filterwarnings = [
     # at import time, which Python 3.14 deprecates. Nothing here can act on it --
     # it fires before any of our code runs and is fixed by upgrading the SDK.
     "ignore:'_UnionGenericAlias' is deprecated:DeprecationWarning:google\\.genai\\.types",
+    # `discord.py`'s voice-playback module unconditionally imports the stdlib
+    # `audioop` module (removed in Python 3.13, hence deprecated on 3.12) even
+    # though talon never uses Discord voice features. Nothing here can act on
+    # it -- it fires at `import discord` before any of our code runs.
+    "ignore:'audioop' is deprecated:DeprecationWarning:discord\\.player",
 ]
 asyncio_mode = "auto"

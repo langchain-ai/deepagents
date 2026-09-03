@@ -3482,6 +3482,15 @@ class DeepAgentsApp(App):
         `_restore_startup_tip_after_resume_fallback` uses to mount the tip.
         """
 
+        self._startup_history_ready = asyncio.Event()
+        """Whether startup can safely append messages after restored history.
+
+        Resumed history bulk-loads into the message store and scrolls to its
+        tail, so startup notices wait for this signal instead of being buried.
+        """
+        if not self._initial_resume_requested:
+            self._startup_history_ready.set()
+
         self._startup_tip_dismissed = False
         """Whether the startup tip has been dismissed and must not be remounted."""
 
@@ -6543,6 +6552,9 @@ class DeepAgentsApp(App):
         Returns:
             Whether the message was mounted.
         """
+        if latest in self._update_message_versions:
+            return False
+        await self._startup_history_ready.wait()
         if latest in self._update_message_versions:
             return False
         if not await self._mount_message(AppMessage(message)):
@@ -10638,6 +10650,7 @@ class DeepAgentsApp(App):
                 # keep the status bar showing "Resuming" after the transcript
                 # is already restored. Also fires when `should_load_history` is
                 # false, since nothing is being restored on that path either.
+                self._startup_history_ready.set()
                 self._clear_resume_indicator()
             if not should_load_history and self._has_initial_submission():
                 try:
@@ -10682,8 +10695,9 @@ class DeepAgentsApp(App):
                 initial_submitted = True
         finally:
             self._startup_sequence_running = False
-            # Normally cleared right after history loading; this covers setup
+            # Normally settled right after history loading; these cover setup
             # that fails before reaching it.
+            self._startup_history_ready.set()
             self._clear_resume_indicator()
 
         # Drain after the sequence completes. When an initial submission was

@@ -459,6 +459,42 @@ class TestStartupSequence:
             assert app._restoring_resumed_history is False
             assert app._status_bar.connection_state == ""
 
+    async def test_update_message_waits_for_resumed_history(self) -> None:
+        """A startup update notice mounts below restored transcript history."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+        )
+        history_started = asyncio.Event()
+        release_history = asyncio.Event()
+        order: list[str] = []
+
+        async def load_history(**_kwargs: object) -> None:
+            history_started.set()
+            await release_history.wait()
+            order.append("history")
+
+        async def mount_message(_message: object) -> bool:  # noqa: RUF029
+            order.append("update")
+            return True
+
+        app._load_thread_history = load_history  # ty: ignore
+        app._mount_message = mount_message  # ty: ignore[invalid-assignment]
+
+        update_task = asyncio.create_task(
+            app._mount_update_message("9.9.9", "Update available"),
+        )
+        startup_task = asyncio.create_task(app._run_session_start_sequence())
+        await history_started.wait()
+        assert not update_task.done()
+
+        release_history.set()
+        mounted, _ = await asyncio.gather(update_task, startup_task)
+
+        assert mounted is True
+        assert order == ["history", "update"]
+
     async def test_resuming_status_clears_when_session_init_fails(self) -> None:
         """Resume progress should clear when startup aborts before history loading."""
         app = DeepAgentsApp(

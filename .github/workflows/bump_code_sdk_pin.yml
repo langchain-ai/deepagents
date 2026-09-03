@@ -248,11 +248,11 @@ jobs:
             # before regenerating it. The merge appends a commit; the branch
             # is never force-pushed, so review history and existing review
             # comments on the PR stay valid.
-            # Merge the remote-tracking ref. `actions/checkout` creates a
-            # local branch only for the ref it checks out, so a local
-            # `$DEFAULT_BRANCH` exists only on a default-branch dispatch and
-            # the merge fails outright on any other. A local ref would also
-            # pin the dispatched commit rather than the current tip.
+            # Merge the remote-tracking ref after refreshing it, so the merge
+            # uses the current tip of the default branch rather than whatever
+            # `actions/checkout` materialized at dispatch time. A stale
+            # dispatch ref would silently merge an old commit here.
+            git fetch origin "$DEFAULT_BRANCH"
             if ! git merge --no-edit "origin/$DEFAULT_BRANCH"; then
               mapfile -t conflicts < <(git diff --name-only --diff-filter=U)
               if [ "${#conflicts[@]}" -eq 0 ]; then

@@ -56,6 +56,10 @@ class MCPConfigError(ValueError):
     """An MCP configuration is malformed or unsafe."""
 
 
+class _MCPLoginRequiredError(MCPConfigError):
+    """An MCP server requires OAuth login before loading tools."""
+
+
 @dataclass(frozen=True, slots=True)
 class MCPToolInfo:
     """Metadata for one MCP tool."""
@@ -151,7 +155,9 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 MCPServerInfo(
                     name=name,
                     transport=transport,
-                    status="error",
+                    status="unauthenticated"
+                    if isinstance(exc, _MCPLoginRequiredError)
+                    else "error",
                     error=str(exc),
                 )
             )
@@ -162,9 +168,16 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 name=name,
                 transport=transport,
                 tools=tuple(
-                    MCPToolInfo(name=tool.name, description=tool.description or "")
+                    MCPToolInfo(
+                        name=tool.name,
+                        description=tool.description or "",
+                        input_schema=copy.deepcopy(tool.args_schema)
+                        if isinstance(tool.args_schema, dict)
+                        else None,
+                    )
                     for tool in loaded
                 ),
+                uses_oauth=server.get("auth") == "oauth",
             )
         )
     tools.sort(key=lambda tool: tool.name)
@@ -346,7 +359,7 @@ async def _remote_connection(name: str, server: Mapping[str, object], transport:
         storage = FileTokenStorage(name, server_url=url)
         if await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
-            raise MCPConfigError(msg)
+            raise _MCPLoginRequiredError(msg)
         connection["auth"] = build_oauth_provider(
             server_name=name,
             server_url=url,

@@ -262,7 +262,21 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
 
     loaded = await provider.load()
 
-    assert [tool.name for tool in loaded.tools] == ["authenticate_mcp_server"]
+    assert [tool.name for tool in loaded.tools] == [
+        "get_mcp_server_status",
+        "authenticate_mcp_server",
+    ]
+    status_tool = loaded.tools[0]
+    assert status_tool.description == (
+        "Report configured MCP server availability. Current servers: notion (unauthenticated)."
+    )
+    assert status_tool.invoke({}) == (
+        {
+            "server_name": "notion",
+            "status": "unauthenticated",
+            "can_authenticate": True,
+        },
+    )
     assert loaded.servers[0].status == "unauthenticated"
     assert loaded.servers[0].uses_oauth is True
     schema = loaded.tools[0].tool_call_schema.model_json_schema()
@@ -531,6 +545,18 @@ async def test_server_connection_error_is_reported(
     assert result.tools == ()
     assert result.servers[0].status == "error"
     assert result.servers[0].error == "connection failed"
+
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    loaded = await provider.load()
+    status_tool = loaded.tools[0]
+    assert status_tool.description == (
+        "Report configured MCP server availability. Current servers: remote (error)."
+    )
+    assert status_tool.invoke({}) == (
+        {"server_name": "remote", "status": "error", "can_authenticate": False},
+    )
+    assert "connection failed" not in status_tool.description
+    assert "connection failed" not in str(status_tool.invoke({}))
 
 
 @pytest.mark.parametrize(

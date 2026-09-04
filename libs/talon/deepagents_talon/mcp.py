@@ -166,12 +166,12 @@ class MCPToolProvider:
         self._oauth_servers = frozenset(
             server.name for server in loaded.servers if server.uses_oauth
         )
-        if not self._oauth_servers:
-            return loaded
-        return MCPTools(
-            tools=(*loaded.tools, self._authorization_tool()),
-            servers=loaded.servers,
-        )
+        tools = tuple(loaded.tools)
+        if loaded.servers:
+            tools = (*tools, self._status_tool(loaded.servers))
+        if self._oauth_servers:
+            tools = (*tools, self._authorization_tool())
+        return MCPTools(tools=tools, servers=loaded.servers)
 
     async def refresh_if_needed(self) -> Sequence[BaseTool] | None:
         """Reload MCP schemas once after an authorization changes credentials."""
@@ -183,6 +183,29 @@ class MCPToolProvider:
             tools = (await self.load()).tools
             self._dirty = False
             return tools
+
+    def _status_tool(self, servers: Sequence[MCPServerInfo]) -> BaseTool:
+        statuses = tuple(
+            {
+                "server_name": server.name,
+                "status": server.status,
+                "can_authenticate": server.uses_oauth,
+            }
+            for server in servers
+        )
+        summary = (
+            ", ".join(f"{status['server_name']} ({status['status']})" for status in statuses)
+            or "none configured"
+        )
+
+        @tool(
+            "get_mcp_server_status",
+            description=f"Report configured MCP server availability. Current servers: {summary}.",
+        )
+        def get_mcp_server_status() -> tuple[dict[str, object], ...]:
+            return statuses
+
+        return get_mcp_server_status
 
     def _authorization_tool(self) -> BaseTool:
         @tool(

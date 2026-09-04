@@ -101,6 +101,46 @@ class TestRuntimeDotenvReload:
             config_mod._bootstrap_state.user_langsmith_env = original_user
             config_mod._dotenv_loaded_values.clear()
 
+    def test_reload_keeps_settings_when_the_carrier_is_unusable(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An undecodable carrier leaves LangSmith settings alone, and reports."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.setenv(config_mod._USER_LANGSMITH_ENV_CARRIER, "{not json")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "in-process-key")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        # A stale mapping that would otherwise be written over `os.environ`.
+        config_mod._bootstrap_state.launch_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._bootstrap_state.user_langsmith_env = dict.fromkeys(
+            config_mod._USER_LANGSMITH_ENV_VARS
+        )
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            changes = runtime.reload_from_environment(start_path=tmp_path)
+
+            assert os.environ["LANGSMITH_API_KEY"] == "in-process-key"
+            assert any("could not be read" in change for change in changes)
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
+
     def test_reload_from_environment_refreshes_loaded_project_dotenv_values(
         self,
         tmp_path: Path,

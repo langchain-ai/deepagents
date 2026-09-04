@@ -3809,23 +3809,39 @@ class Credentials:
 
         Returns:
             A list of human-readable change descriptions. Empty when nothing
-            changed; a single notice when managed policy blocked the reload.
+            changed; a single notice when managed policy blocked the reload. A
+            notice also leads the list when the LangSmith carrier was unusable
+            and the current settings were kept.
         """
         active = self.active
         previous = {field: getattr(active, field) for field in _RELOADABLE_FIELDS}
         previous.update(_remembered_resolver_reload_values())
         _resolver_with_reload_overrides()
         encoded = os.environ.get(_USER_LANGSMITH_ENV_CARRIER)
+        carrier_notice: str | None = None
+        restore_launch = True
         if encoded is not None:
             carried = _decode_user_langsmith_env(encoded)
-            if carried is not None:
+            if carried is None:
+                # Applying the mapping anyway would reset this process's
+                # LangSmith identity from data already known to be unusable.
+                # Leave the environment alone and say so: a reload that
+                # silently changes credentials is the hard kind to debug.
+                restore_launch = False
+                carrier_notice = (
+                    "Kept the current LangSmith settings: your launch settings "
+                    "could not be read (restart dcode if this persists)"
+                )
+                logger.warning("%s", carrier_notice)
+            else:
                 launch, _ = carried
                 _bootstrap_state.launch_langsmith_env = launch
-        for var, value in _bootstrap_state.launch_langsmith_env.items():
-            if value is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = value
+        if restore_launch:
+            for var, value in _bootstrap_state.launch_langsmith_env.items():
+                if value is None:
+                    os.environ.pop(var, None)
+                else:
+                    os.environ[var] = value
         _load_dotenv(
             start_path=start_path,
             refresh_loaded=True,
@@ -3873,6 +3889,8 @@ class Credentials:
 
         reset_env_resolution_log()
         changes = self._format_reload_changes(previous, refreshed)
+        if carrier_notice is not None:
+            changes = [carrier_notice, *changes]
         if managed_reload_block([blocked] if blocked else []) is None:
             self._active = replacement
         return [blocked, *changes] if blocked else changes

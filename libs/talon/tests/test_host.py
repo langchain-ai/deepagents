@@ -28,6 +28,7 @@ from deepagents_talon.authorization import (
     AuthorizationCompleted,
     AuthorizationURL,
     CallbackURLRequested,
+    DeviceCode,
 )
 
 
@@ -206,6 +207,26 @@ class ExpiringAuthorizationAgent(BlockingAgent):
         return AgentResult(text="authorization:expired")
 
 
+class DeviceAuthorizationAgent(BlockingAgent):
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        assert request.authorization_handler is not None
+        binding = AuthorizationBinding(
+            server_name="github",
+            invocation_id="tool-call-device",
+            expires_at=asyncio.get_running_loop().time() + 30,
+        )
+        await request.authorization_handler(
+            DeviceCode(
+                binding=binding,
+                verification_uri="https://github.com/login/device",
+                user_code="ABCD-1234",
+            )
+        )
+        await self.released.wait()
+        return AgentResult(text="authorization:completed")
+
+
 def _config(tmp_path: Path, env: dict[str, str] | None = None) -> TalonConfig:
     return TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test", **(env or {})}, base_home=tmp_path)
 
@@ -353,6 +374,49 @@ async def test_stop_cancels_pending_channel_authorization(tmp_path: Path) -> Non
     )
 
     assert host._pending_authorizations == {}
+    assert channel.sent[-1] == ("chat", "Stopped current run.")
+    await host.stop()
+
+
+async def test_follow_up_preserves_pending_device_authorization(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = DeviceAuthorizationAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    active = host._tasks["chat"]
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="cancel it", sender_id="attacker"),
+    )
+    assert channel.sent[-1] == (
+        "chat",
+        "Only the operator who started this authorization can complete it.",
+    )
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="any update?", sender_id="operator"),
+    )
+
+    assert host._tasks["chat"] is active
+    assert not active.done()
+    assert [request.text for request in agent.requests] == ["login"]
+    assert channel.sent[-1] == (
+        "chat",
+        "Complete authorization for MCP server `github` in your browser, or send `/stop`.",
+    )
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="/stop", sender_id="operator"),
+    )
+    assert active.cancelled()
+    assert host._authorization_flows == {}
     assert channel.sent[-1] == ("chat", "Stopped current run.")
     await host.stop()
 

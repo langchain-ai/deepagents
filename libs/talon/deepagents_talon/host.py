@@ -132,6 +132,14 @@ class _PendingAuthorization:
 
 
 @dataclass(frozen=True, slots=True)
+class _AuthorizationFlow:
+    binding: AuthorizationBinding
+    provider: str
+    channel_conversation_id: str
+    sender_id: str
+
+
+@dataclass(frozen=True, slots=True)
 class _ReactionAudit:
     reaction: ChannelReaction
     provider: str
@@ -174,7 +182,7 @@ class TalonHost:
         self._conversation_resets: dict[str, int] = {}
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
-        self._authorization_flows: dict[str, AuthorizationBinding] = {}
+        self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
         self._stopped = asyncio.Event()
         self._running = False
@@ -679,7 +687,13 @@ class TalonHost:
         if isinstance(event, CallbackURLRequested):
             return await self._await_authorization_callback(event, agent_conversation_id)
         if isinstance(event, DeviceCode):
-            self._register_authorization_flow(agent_conversation_id, event.binding)
+            self._register_authorization_flow(
+                agent_conversation_id,
+                event.binding,
+                provider=provider,
+                channel_conversation_id=reply_conversation_id,
+                sender_id=sender_id,
+            )
             await send_with_retry(
                 lambda: channel.send_message(
                     reply_conversation_id,
@@ -743,7 +757,12 @@ class TalonHost:
             sender_id=sender_id,
         )
         self._pending_authorizations[agent_conversation_id] = pending
-        self._authorization_flows[agent_conversation_id] = event.binding
+        self._authorization_flows[agent_conversation_id] = _AuthorizationFlow(
+            binding=event.binding,
+            provider=provider,
+            channel_conversation_id=reply_conversation_id,
+            sender_id=sender_id,
+        )
         result = await send_with_retry(
             lambda: channel.send_message(
                 reply_conversation_id,
@@ -798,14 +817,23 @@ class TalonHost:
         callback_url = _callback_url(message.text)
         pending = self._pending_authorizations.get(agent_conversation_id)
         if pending is None:
-            if callback_url is None:
-                return False
-            await send_with_retry(
-                lambda: channel.send_message(
-                    message.conversation_id,
-                    "No matching MCP authorization request is pending.",
+            flow = self._authorization_flows.get(agent_conversation_id)
+            if flow is not None:
+                await self._remind_device_authorization(
+                    channel,
+                    message,
+                    provider=provider,
+                    flow=flow,
                 )
-            )
+            elif callback_url is None:
+                return False
+            else:
+                await send_with_retry(
+                    lambda: channel.send_message(
+                        message.conversation_id,
+                        "No matching MCP authorization request is pending.",
+                    )
+                )
             return True
         if (
             provider != pending.provider
@@ -836,10 +864,37 @@ class TalonHost:
             pending.future.set_result(callback_url)
         return True
 
+    async def _remind_device_authorization(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        *,
+        provider: str,
+        flow: _AuthorizationFlow,
+    ) -> None:
+        if (
+            provider != flow.provider
+            or message.conversation_id != flow.channel_conversation_id
+            or message.sender_id != flow.sender_id
+        ):
+            text = "Only the operator who started this authorization can complete it."
+        elif asyncio.get_running_loop().time() >= flow.binding.expires_at:
+            text = f"Authorization for MCP server `{flow.binding.server_name}` has expired."
+        else:
+            text = (
+                f"Complete authorization for MCP server `{flow.binding.server_name}` "
+                "in your browser, or send `/stop`."
+            )
+        await send_with_retry(lambda: channel.send_message(message.conversation_id, text))
+
     def _register_authorization_flow(
         self,
         agent_conversation_id: str,
         binding: AuthorizationBinding,
+        *,
+        provider: str,
+        channel_conversation_id: str,
+        sender_id: str,
     ) -> None:
         if binding.expires_at <= asyncio.get_running_loop().time():
             msg = "MCP authorization request expired"
@@ -847,14 +902,20 @@ class TalonHost:
         if agent_conversation_id in self._authorization_flows:
             msg = "Another MCP authorization request is already pending"
             raise RuntimeError(msg)
-        self._authorization_flows[agent_conversation_id] = binding
+        self._authorization_flows[agent_conversation_id] = _AuthorizationFlow(
+            binding=binding,
+            provider=provider,
+            channel_conversation_id=channel_conversation_id,
+            sender_id=sender_id,
+        )
 
     def _finish_authorization_flow(
         self,
         agent_conversation_id: str,
         binding: AuthorizationBinding,
     ) -> None:
-        if self._authorization_flows.get(agent_conversation_id) != binding:
+        flow = self._authorization_flows.get(agent_conversation_id)
+        if flow is None or flow.binding != binding:
             msg = "MCP authorization status does not match the active invocation"
             raise RuntimeError(msg)
         del self._authorization_flows[agent_conversation_id]

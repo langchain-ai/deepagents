@@ -327,6 +327,93 @@ class TestServerGraph:
         }
 
 
+class TestWorkspaceEnvironmentBinding:
+    """The workspace snapshot must actually be bound around construction.
+
+    Every other `_make_graphs` test stubs `deepagents_code.config`, including
+    `use_environment`, while each consumer test patches `active_environment`
+    directly. Both ends are mocked, so nothing exercises the wire between them:
+    dropping the `with use_environment(...)` block leaves `active_environment()`
+    falling back to `os.environ` with no error and no failing test, and sandbox
+    setup would expand the server's own secrets.
+    """
+
+    async def test_consumers_read_the_workspace_env_during_construction(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The real config module binds the workspace `.env` for consumers."""
+        import deepagents_code.agent as agent_mod
+        import deepagents_code.config as config_mod
+        import deepagents_code.integrations.sandbox_factory as sandbox_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text(
+            "WORKSPACE_ONLY=from-workspace-dotenv\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("WORKSPACE_ONLY", raising=False)
+        monkeypatch.setenv("SERVER_ONLY", "from-server-process")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        seen: dict[str, object] = {}
+
+        def _record(label: str) -> None:
+            environment = config_mod.active_environment()
+            seen[label] = environment.get("WORKSPACE_ONLY")
+            seen[f"{label}_server_leak"] = environment.get("SERVER_ONLY")
+
+        graph_obj = object()
+
+        def _create_cli_agent(**_kwargs: object) -> tuple[object, object]:
+            _record("agent")
+            return graph_obj, _backend_with_offload(object())
+
+        def _create_model(*_args: object, **_kwargs: object) -> object:
+            _record("model")
+            return SimpleNamespace(
+                model=object(),
+                provider="openai",
+                apply_to_runtime_state=lambda: None,
+                model_retries=5,
+                cli_max_retries=None,
+            )
+
+        def _create_sandbox(*_args: object, **_kwargs: object) -> object:
+            _record("sandbox")
+            return MagicMock()
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(
+            no_mcp=True,
+            cwd=str(workspace),
+            project_root=str(workspace),
+            sandbox_type="vercel",
+        )
+
+        with (
+            patch.object(agent_mod, "create_cli_agent", _create_cli_agent),
+            patch.object(agent_mod, "load_async_subagents", lambda **_: None),
+            patch.object(config_mod, "create_model", _create_model),
+            patch.object(sandbox_mod, "create_sandbox", _create_sandbox),
+            patch.object(
+                module, "_criteria_context_tools", lambda *_args, **_kwargs: []
+            ),
+        ):
+            runtime = await module._make_graphs(config_override=config)
+
+        assert runtime.agent is graph_obj
+        # Each consumer read the workspace `.env`, not the server process env.
+        assert seen["model"] == "from-workspace-dotenv"
+        assert seen["agent"] == "from-workspace-dotenv"
+        assert seen["sandbox"] == "from-workspace-dotenv"
+        # The server's own environment still shows through where unshadowed.
+        assert seen["agent_server_leak"] == "from-server-process"
+        # And the workspace value never reached the process.
+        assert "WORKSPACE_ONLY" not in os.environ
+
+
 def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
     """Resolve a workspace binding for `cwd`, creating the directory first."""
     from deepagents_code.workspace import resolve_workspace

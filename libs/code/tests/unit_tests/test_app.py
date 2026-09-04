@@ -78,6 +78,7 @@ from deepagents_code.app import (
     _GoalGradeObservation,
     _ServerRespawnResult,
     _ThreadHistoryPayload,
+    _ThreadsResumeTarget,
     _warn_discarded_goal_channels,
 )
 from deepagents_code.cold_cache import (
@@ -17260,6 +17261,31 @@ class TestRestartServerForAgentSwap:
             assert any("Switched to researcher" in s for s in plain)
             assert any("dcode -r old-thread" in s and "to resume" in s for s in plain)
 
+    async def test_cross_agent_resume_blocked_before_confirmation(self) -> None:
+        """Policy rejection occurs before an agent confirmation or restart."""
+        app, server_proc = self._make_app()
+        mounted: list[object] = []
+
+        with (
+            patch.object(
+                app,
+                "_thread_resume_block",
+                AsyncMock(return_value="Thread stale-thread cannot be resumed."),
+            ),
+            patch.object(app, "_mount_message", side_effect=mounted.append),
+            patch.object(app, "push_screen_wait", new_callable=AsyncMock) as confirm,
+        ):
+            await app._confirm_then_resume_cross_agent_thread(
+                _ThreadsResumeTarget("stale-thread", "researcher")
+            )
+
+        confirm.assert_not_awaited()
+        server_proc.restart.assert_not_awaited()
+        assert any(
+            "cannot be resumed" in str(getattr(message, "_content", message))
+            for message in mounted
+        )
+
     async def test_cross_agent_resume_targets_thread_without_persisting_agent(
         self,
     ) -> None:
@@ -17615,6 +17641,72 @@ class TestResolveResumeThread:
             server_kwargs=None,
             server_proc=None,
         )
+
+    async def test_launch_resume_blocked_before_cutoff(self) -> None:
+        """A stale launch-time target falls back before mutating resume state."""
+        app = self._make_app("agent")
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._connecting = True
+            app._resuming = True
+            app._resume_thread_intent = "stale-thread"
+            with (
+                patch(
+                    "deepagents_code.sessions.thread_exists",
+                    AsyncMock(return_value=True),
+                ),
+                patch.object(
+                    app,
+                    "_thread_resume_block",
+                    AsyncMock(return_value="Thread stale-thread cannot be resumed."),
+                ),
+            ):
+                await app._resolve_resume_thread()
+
+            assert app._lc_thread_id != "stale-thread"
+            assert app._resuming is False
+            assert app._should_adopt_resumed_model is False
+
+    async def test_resume_policy_allows_cutoff_boundary_and_blocks_older(self) -> None:
+        """The cutoff is inclusive and unverifiable timestamps fail closed."""
+        from deepagents_code.config_manifest import get_option
+        from deepagents_code.configuration.resolver import resolver_from_snapshots
+        from deepagents_code.configuration.types import TomlSnapshot
+
+        app = self._make_app("agent")
+        resolver = resolver_from_snapshots(
+            managed=TomlSnapshot.from_table(
+                "managed config",
+                {"threads": {"resume_after": "2026-06-01T12:00:00+00:00"}},
+            ),
+            user=TomlSnapshot.declaring_nothing("config.toml"),
+        )
+        option = get_option("threads.resume_after")
+        assert option is not None
+        assert resolver.get(option).value == "2026-06-01T12:00:00+00:00"
+
+        with (
+            patch(
+                "deepagents_code.configuration.resolver.get_config_resolver",
+                return_value=resolver,
+            ),
+            patch(
+                "deepagents_code.sessions.get_thread_updated_at",
+                AsyncMock(
+                    side_effect=[
+                        "2026-06-01T12:00:00+00:00",
+                        "2026-06-01T11:59:59+00:00",
+                        "not-a-timestamp",
+                    ]
+                ),
+            ),
+        ):
+            assert await app._thread_resume_block("boundary") is None
+            assert "before" in (await app._thread_resume_block("older") or "")
+            assert "could not be verified" in (
+                await app._thread_resume_block("unknown") or ""
+            )
 
     async def test_specific_thread_resume_leaves_default_alone(self) -> None:
         """`-r <thread>` from a different agent updates session id only."""

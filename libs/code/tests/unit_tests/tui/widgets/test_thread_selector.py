@@ -1208,6 +1208,28 @@ class TestResumeThread:
         assert len(mounted) == 1
         assert "no active session" in _get_widget_text(mounted[0])
 
+    async def test_managed_cutoff_blocks_switch_without_mutation(self) -> None:
+        """A blocked target leaves the current thread and transcript untouched."""
+        app = DeepAgentsApp(thread_id="current-thread")
+        app._agent = MagicMock()
+        app._session_state = _mock_session_state("current-thread")
+        mounted: list[Static] = []
+        _app_test_double(app)._mount_message = AsyncMock(
+            side_effect=lambda widget: mounted.append(widget)
+        )
+        _app_test_double(app)._thread_resume_block = AsyncMock(
+            return_value="Thread stale-thread cannot be resumed."
+        )
+        clear_messages = AsyncMock()
+        _app_test_double(app)._clear_messages = clear_messages
+
+        await app._resume_thread("stale-thread")
+
+        assert app._session_state.thread_id == "current-thread"
+        assert app._lc_thread_id == "current-thread"
+        clear_messages.assert_not_awaited()
+        assert "cannot be resumed" in _get_widget_text(mounted[0])
+
     async def test_already_switching_shows_message(self) -> None:
         """_resume_thread should reject concurrent thread switches."""
         app = DeepAgentsApp()

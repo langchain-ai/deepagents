@@ -18,6 +18,7 @@ import webbrowser
 from collections import deque
 from contextlib import asynccontextmanager, contextmanager, suppress
 from dataclasses import dataclass, field, replace
+from datetime import datetime
 from itertools import groupby
 from pathlib import Path
 from typing import (
@@ -5747,6 +5748,39 @@ class DeepAgentsApp(App):
         with _DEEPAGENTS_IMPORT_LOCK:
             return self._discover_skills_and_roots()
 
+    @staticmethod
+    async def _thread_resume_block(thread_id: str) -> str | None:
+        """Return why configured policy blocks resuming a thread, if applicable."""
+        from deepagents_code.config_manifest import get_option, normalize_iso_datetime
+        from deepagents_code.configuration.resolver import get_config_resolver
+        from deepagents_code.sessions import get_thread_updated_at
+
+        option = get_option("threads.resume_after")
+        if option is None:
+            return None
+        cutoff_value = get_config_resolver().get(option).value
+        if not isinstance(cutoff_value, str):
+            return None
+
+        updated_value = await get_thread_updated_at(thread_id)
+        normalized = normalize_iso_datetime(updated_value)
+        if normalized is None:
+            logger.warning(
+                "Blocking resume for thread %s: missing or invalid updated_at %r",
+                thread_id,
+                updated_value,
+            )
+            return (
+                f"Thread {thread_id} cannot be resumed because its last-updated "
+                "time could not be verified."
+            )
+        if datetime.fromisoformat(normalized) < datetime.fromisoformat(cutoff_value):
+            return (
+                f"Thread {thread_id} cannot be resumed because it was last updated "
+                f"before {cutoff_value}."
+            )
+        return None
+
     async def _resolve_resume_thread(self) -> None:
         """Resolve a `-r` resume intent into a concrete thread ID.
 
@@ -5809,6 +5843,19 @@ class DeepAgentsApp(App):
                 if similar:
                     hint += f" Did you mean: {', '.join(str(t) for t in similar)}?"
                 self.notify(hint, severity="warning", timeout=6, markup=False)
+                return
+
+            if blocked := await self._thread_resume_block(candidate):
+                self._lc_thread_id = generate_thread_id()
+                self._initial_resume_requested = False
+                self._resuming = False
+                self._sync_status_connection()
+                self.notify(
+                    f"{blocked} Starting new session.",
+                    severity="warning",
+                    timeout=8,
+                    markup=False,
+                )
                 return
 
             # Commit the resolved thread before the cwd-switch offer so a
@@ -28064,6 +28111,9 @@ class DeepAgentsApp(App):
             asyncio.CancelledError: If app shutdown cancels the detached flow.
         """
         active_agent = self._assistant_id or DEFAULT_ASSISTANT_ID
+        if blocked := await self._thread_resume_block(target.thread_id):
+            await self._mount_message(AppMessage(blocked))
+            return
         if self._server_kwargs is None:
             command = f"{invoked_name()} -r {target.thread_id}"
             await self._mount_message(
@@ -29085,6 +29135,17 @@ class DeepAgentsApp(App):
             await self._mount_message(AppMessage("Thread switch already in progress."))
             return
 
+        self._thread_switching = True
+        try:
+            blocked = await self._thread_resume_block(thread_id)
+        except BaseException:
+            self._thread_switching = False
+            raise
+        if blocked:
+            self._thread_switching = False
+            await self._mount_message(AppMessage(blocked))
+            return
+
         # Save previous state for rollback on failure
         prev_thread_id = self._lc_thread_id
         prev_session_thread = self._session_state.thread_id
@@ -29102,9 +29163,9 @@ class DeepAgentsApp(App):
             abort="thread_switch",
         )
         if cwd_choice == "abort":
+            self._thread_switching = False
             return
 
-        self._thread_switching = True
         if self._chat_input:
             self._chat_input.set_cursor_active(active=False)
 

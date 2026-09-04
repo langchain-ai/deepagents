@@ -84,12 +84,9 @@ class MCPTools:
 
 
 def mcp_config_path(config: TalonConfig) -> Path:
-    """Return the configured, assistant-local, or standard user MCP path."""
+    """Return the configured MCP path or Talon's standard user path."""
     configured = config.env.get(_MCP_CONFIG_ENV) or os.environ.get(_MCP_CONFIG_ENV)
-    if configured:
-        return Path(configured).expanduser()
-    assistant_path = config.manifest_dir / ".mcp.json"
-    return assistant_path if _is_file(assistant_path) else Path.home() / _DEFAULT_MCP_CONFIG
+    return Path(configured).expanduser() if configured else Path.home() / _DEFAULT_MCP_CONFIG
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:

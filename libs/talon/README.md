@@ -193,53 +193,10 @@ different assistant for the import, or `--target-dir <dir>` to write all
 imported files under an explicit directory.
 
 The importer writes Fleet prompts, skills, and subagent prompts. Fleet
-`tools.json` is read only as import input and is not copied into the Talon agent
-directory. Fleet `config.json` is ignored. Talon does not support the old Fleet
-direct-run startup path or its environment variables; import the zip first, then
-run Talon against the materialized local assistant.
-
-When Fleet MCP tools are present, the importer writes `.mcp.json` in the target
-agent directory. This is the runtime MCP config loaded by Talon and contains the
-sanitized OAuth server entries from the Fleet export. The importer also writes
-`.mcp.json.setup` as a human-readable setup handoff for the operator:
-
-```json
-{
-  "mcpServers": {
-    "fleet-tools": {
-      "type": "http",
-      "url": "https://tools.example.com/mcp",
-      "auth": "oauth",
-      "allowedTools": ["github_get_file", "github_create_pull_request"]
-    }
-  }
-}
-```
-
-For non-OAuth servers or local edits, keep credentials in environment variables
-or another local secret source rather than in committed files:
-
-```json
-{
-  "mcpServers": {
-    "internal-tools": {
-      "command": "internal-mcp-server",
-      "args": ["--token-env", "INTERNAL_MCP_TOKEN"]
-    }
-  }
-}
-```
-
-If the Fleet export contains interrupt-enabled tools, the import summary prints
-the recommended `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` value. Set that value when
-starting Talon so those tools continue to require channel approval:
-
-```bash
-DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=github_create_pull_request,github_update_file \
-AGENT_ASSISTANT_ID=local \
-AGENT_MODEL=<provider>:<model-id> \
-deepagents-talon --telegram
-```
+`tools.json` and `config.json` are ignored and are not copied into the Talon agent
+directory. Talon does not support the old Fleet direct-run startup path or its
+environment variables; import the zip first, then run Talon against the
+materialized local assistant.
 
 ## Cron Observability
 

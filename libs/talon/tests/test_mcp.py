@@ -164,17 +164,6 @@ async def test_server_connection_error_is_reported(
     assert result.servers[0].error == "connection failed"
 
 
-def test_mcp_config_path_prefers_assistant_import(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    home = tmp_path / "home"
-    monkeypatch.setattr("deepagents_talon.mcp.Path.home", lambda: home)
-    config = _config(tmp_path)
-    _write_config(config.manifest_dir / ".mcp.json", {})
-
-    assert mcp_config_path(config) == config.manifest_dir / ".mcp.json"
-
-
 async def test_tool_allowlist_filters_loaded_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

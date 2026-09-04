@@ -7,11 +7,7 @@ from typing import TYPE_CHECKING, ClassVar
 import pytest
 
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.mcp import (
-    MCPConfigError,
-    discover_mcp_config_paths,
-    load_mcp_tools,
-)
+from deepagents_talon.mcp import MCPConfigError, load_mcp_tools, mcp_config_path
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -51,26 +47,21 @@ def _config(tmp_path: Path, env: dict[str, str] | None = None) -> TalonConfig:
     )
 
 
-def test_discover_mcp_config_paths_preserves_precedence(
+def test_mcp_config_path_uses_standard_path_or_env_override(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     home = tmp_path / "home"
-    workspace = tmp_path / "workspace"
     monkeypatch.setattr("deepagents_talon.mcp.Path.home", lambda: home)
-    user = home / ".deepagents" / ".mcp.json"
-    project_subdir = workspace / ".deepagents" / ".mcp.json"
-    project_root = workspace / ".mcp.json"
-    for path in (user, project_subdir, project_root):
-        _write_config(path, {})
 
-    assert discover_mcp_config_paths(_config(tmp_path)) == [
-        user,
-        project_subdir,
-        project_root,
-    ]
+    assert mcp_config_path(_config(tmp_path)) == home / ".deepagents" / ".mcp.json"
+
+    custom = tmp_path / "custom.mcp.json"
+    assert (
+        mcp_config_path(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(custom)})) == custom
+    )
 
 
-async def test_load_mcp_tools_uses_user_config_by_default(
+async def test_load_mcp_tools_uses_standard_config(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     FakeMCPClient.calls.clear()
@@ -81,11 +72,6 @@ async def test_load_mcp_tools_uses_user_config_by_default(
         home / ".deepagents" / ".mcp.json",
         {"remote": {"type": "http", "url": "https://example.com/mcp"}},
     )
-    _write_config(
-        tmp_path / "workspace" / ".mcp.json",
-        {"project": {"command": "project-command"}},
-    )
-
     result = await load_mcp_tools(_config(tmp_path))
 
     assert [tool.name for tool in result.tools] == ["remote_read"]
@@ -96,34 +82,6 @@ async def test_load_mcp_tools_uses_user_config_by_default(
             "url": "https://example.com/mcp",
             "timeout": 30.0,
         }
-    }
-
-
-async def test_load_mcp_tools_layers_trusted_project_configs(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    FakeMCPClient.calls.clear()
-    home = tmp_path / "home"
-    monkeypatch.setattr("deepagents_talon.mcp.Path.home", lambda: home)
-    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", FakeMCPClient)
-    _write_config(
-        home / ".deepagents" / ".mcp.json",
-        {"shared": {"command": "user"}},
-    )
-    _write_config(
-        tmp_path / "workspace" / ".deepagents" / ".mcp.json",
-        {"subdir": {"command": "subdir"}},
-    )
-    _write_config(
-        tmp_path / "workspace" / ".mcp.json",
-        {"shared": {"command": "project"}},
-    )
-
-    result = await load_mcp_tools(_config(tmp_path, {"DEEPAGENTS_TALON_TRUST_PROJECT_MCP": "true"}))
-
-    assert [server.name for server in result.servers] == ["shared", "subdir"]
-    assert FakeMCPClient.calls[0]["connections"] == {
-        "shared": {"transport": "stdio", "command": "project", "args": []}
     }
 
 

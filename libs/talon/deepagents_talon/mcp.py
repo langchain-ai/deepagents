@@ -29,15 +29,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_MCP_CONFIG_ENV_KEYS = ("DEEPAGENTS_TALON_MCP_CONFIG", "MCP_CONFIG")
-_TRUST_PROJECT_MCP_ENV = "DEEPAGENTS_TALON_TRUST_PROJECT_MCP"
-_WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
+_MCP_CONFIG_ENV = "DEEPAGENTS_TALON_MCP_CONFIG"
 _MCP_LOAD_TIMEOUT_SECONDS = 30
-_MCP_CONFIG_DISCOVERY_PATHS = (
-    ("~/.deepagents/.mcp.json", "user-level"),
-    ("<project-root>/.deepagents/.mcp.json", "project subdir"),
-    ("<project-root>/.mcp.json", "project root"),
-)
+_DEFAULT_MCP_CONFIG = Path(".deepagents/.mcp.json")
 _ENV_REF = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^{}]*))?\}")
 _SERVER_NAME = re.compile(r"[A-Za-z0-9_-]+")
 _DANGEROUS_STDIO_ENV = frozenset(
@@ -86,33 +80,18 @@ class MCPTools:
     servers: Sequence[MCPServerInfo]
 
 
-def discover_mcp_config_paths(config: TalonConfig) -> list[Path]:
-    """Return existing MCP config files from lowest to highest precedence."""
-    return [path for path in _mcp_config_paths(config) if _is_file(path)]
+def mcp_config_path(config: TalonConfig) -> Path:
+    """Return the configured MCP path or Talon's standard user path."""
+    configured = config.env.get(_MCP_CONFIG_ENV) or os.environ.get(_MCP_CONFIG_ENV)
+    return Path(configured).expanduser() if configured else Path.home() / _DEFAULT_MCP_CONFIG
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     """Load configured MCP tools for a Talon runtime."""
-    explicit = _first_env_value(config.env)
-    if explicit is not None:
-        paths = [_explicit_path(explicit)]
-    else:
-        discovered = discover_mcp_config_paths(config)
-        paths = [path for path in discovered if _is_user_config(path)]
-        project = [path for path in discovered if not _is_user_config(path)]
-        if project and _env_enabled(config.env, _TRUST_PROJECT_MCP_ENV):
-            paths.extend(project)
-        elif project:
-            logger.warning(
-                "Ignoring project MCP config; set %s=true to trust it",
-                _TRUST_PROJECT_MCP_ENV,
-            )
-    if not paths:
+    path = mcp_config_path(config)
+    if not _is_file(path):
         return MCPTools(tools=(), servers=())
-
-    servers: dict[str, dict[str, object]] = {}
-    for path in paths:
-        servers.update(_load_config(path, config.env))
+    servers = _load_config(path, config.env)
 
     tools: list[BaseTool] = []
     infos: list[MCPServerInfo] = []
@@ -153,62 +132,11 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
 
 
 def print_mcp_config_paths(config: TalonConfig) -> None:
-    """Print Talon MCP config discovery paths."""
-    found = {path.resolve() for path in discover_mcp_config_paths(config)}
-    rows = [
-        (display, label, path)
-        for (display, label), path in zip(
-            _MCP_CONFIG_DISCOVERY_PATHS, _mcp_config_paths(config), strict=True
-        )
-    ]
-    width = max(len(display) for display, _, _ in rows)
-    print("MCP config discovery paths (lowest to highest precedence):")  # noqa: T201
-    for display, label, path in rows:
-        marker = "found" if path.resolve() in found else "missing"
-        print(f"  [{marker:>7}]  {display:<{width}}  ({label})")  # noqa: T201
-    print()  # noqa: T201
-    print("<project-root> = nearest ancestor with `.git`, else the workspace.")  # noqa: T201
-    print(  # noqa: T201
-        f"Project configs require {_TRUST_PROJECT_MCP_ENV}=true unless selected explicitly."
-    )
-
-
-def _explicit_path(value: str) -> Path:
-    return Path(value).expanduser()
-
-
-def _mcp_config_paths(config: TalonConfig) -> tuple[Path, Path, Path]:
-    workspace = Path(config.env.get(_WORKSPACE_ENV, Path.cwd())).expanduser().resolve()
-    project_root = next(
-        (path for path in (workspace, *workspace.parents) if (path / ".git").is_dir()),
-        workspace,
-    )
-    return (
-        Path.home() / ".deepagents" / ".mcp.json",
-        project_root / ".deepagents" / ".mcp.json",
-        project_root / ".mcp.json",
-    )
-
-
-def _is_user_config(path: Path) -> bool:
-    return path.resolve() == (Path.home() / ".deepagents" / ".mcp.json").resolve()
-
-
-def _first_env_value(env: Mapping[str, str]) -> str | None:
-    for key in _MCP_CONFIG_ENV_KEYS:
-        value = env.get(key) or os.environ.get(key)
-        if value:
-            return value
-    return None
-
-
-def _env_enabled(env: Mapping[str, str], key: str) -> bool:
-    return (env.get(key) or os.environ.get(key, "")).strip().lower() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }
+    """Print the MCP config path used by Talon."""
+    path = mcp_config_path(config)
+    marker = "found" if _is_file(path) else "missing"
+    print(f"MCP config: [{marker}] {path}")  # noqa: T201
+    print(f"Override with {_MCP_CONFIG_ENV}.")  # noqa: T201
 
 
 def _load_config(path: Path, env: Mapping[str, str]) -> dict[str, dict[str, object]]:

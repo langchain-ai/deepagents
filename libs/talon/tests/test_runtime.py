@@ -194,6 +194,46 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
     assert current_authorization_handler() is None
 
 
+async def test_runtime_reloads_mcp_tools_transactionally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[RecordingGraph] = []
+
+    def fake_create_deep_agent(**_kwargs: Any) -> RecordingGraph:
+        graph = RecordingGraph()
+        created.append(graph)
+        if len(created) == 3:
+            msg = "invalid replacement graph"
+            raise RuntimeError(msg)
+        return graph
+
+    async def reload_tools() -> list[Callable[..., object]]:
+        return [refreshed_tool]
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        tools=[custom_tool],
+        reload_tools=reload_tools,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    await runtime.reload_mcp_configuration()
+
+    assert runtime.tools == (refreshed_tool,)
+    assert runtime._graph is created[1]
+
+    previous_graph = runtime._graph
+    with pytest.raises(RuntimeError, match="invalid replacement graph"):
+        await runtime.reload_mcp_configuration()
+
+    assert runtime.tools == (refreshed_tool,)
+    assert runtime._graph is previous_graph
+
+
 async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,

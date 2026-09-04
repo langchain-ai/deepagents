@@ -37,6 +37,7 @@ from deepagents_talon.interfaces import (
     ChannelMessage,
     ChannelReaction,
     CronScheduler,
+    MCPReloadableRuntime,
     ReactionChannelAdapter,
     ToolApprovalDecision,
     ToolApprovalRequest,
@@ -65,7 +66,11 @@ logger = logging.getLogger(__name__)
 
 _STOP_COMMAND = "/stop"
 _NEW_COMMAND = "/new"
+_MCP_RELOAD_COMMAND = "/mcp-reload"
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
+_MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
+_MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
+_MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -275,6 +280,10 @@ class TalonHost:
                 )
                 return
 
+            if command == _MCP_RELOAD_COMMAND:
+                await self._reload_mcp_configuration(channel, channel_conversation_id)
+                return
+
             pending = self._pending_tool_approvals.get(agent_conversation_id)
             if pending is not None:
                 authorized = pending.sender_id is None or message.sender_id == pending.sender_id
@@ -297,6 +306,23 @@ class TalonHost:
                 agent_conversation_id,
                 provider,
             )
+
+    async def _reload_mcp_configuration(
+        self,
+        channel: ChannelAdapter,
+        conversation_id: str,
+    ) -> None:
+        if not isinstance(self.agent, MCPReloadableRuntime):
+            message = _MCP_RELOAD_UNAVAILABLE_MESSAGE
+        else:
+            try:
+                await self.agent.reload_mcp_configuration()
+            except Exception:  # noqa: BLE001  # Do not disclose config or transport errors.
+                logger.warning("MCP configuration reload failed", exc_info=True)
+                message = _MCP_RELOAD_FAILURE_MESSAGE
+            else:
+                message = _MCP_RELOAD_SUCCESS_MESSAGE
+        await send_with_retry(lambda: channel.send_message(conversation_id, message))
 
     async def receive_reaction(self, channel: ChannelAdapter, reaction: ChannelReaction) -> None:
         """Handle one inbound channel reaction.

@@ -228,6 +228,7 @@ async def _agent_runtime(
         model=config.model,
         tools=mcp.tools,
         refresh_tools=mcp_provider.refresh_if_needed,
+        reload_tools=mcp_provider.reload,
         assistant_dir=config.manifest_dir,
         subagents=async_subagents or None,
         cron_store=cron_store,

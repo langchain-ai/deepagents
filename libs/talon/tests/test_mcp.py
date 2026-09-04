@@ -99,6 +99,19 @@ def _config(tmp_path: Path, env: dict[str, str] | None = None) -> TalonConfig:
     )
 
 
+async def _assert_refresh_scheduled(
+    provider: MCPToolProvider,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def load() -> SimpleNamespace:
+        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+
+    monkeypatch.setattr(provider, "load", load)
+    refreshed = await provider.refresh_if_needed()
+    assert refreshed is not None
+    assert [tool.name for tool in refreshed] == ["refreshed"]
+
+
 def test_mcp_metadata_contracts_are_talon_owned() -> None:
     tool = MCPToolInfo(
         name="search",
@@ -317,6 +330,7 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     assert [tool.name for tool in loaded.tools] == [
         "get_mcp_server_status",
         "authenticate_mcp_server",
+        "reload_mcp_configuration",
     ]
     status_tool = loaded.tools[0]
     assert status_tool.description == (
@@ -343,12 +357,38 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     assert await provider._authenticate("unconfigured", "tool-call") == {"status": "failed"}
 
 
+async def test_mcp_reload_tool_schedules_refresh_without_configuration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MCPToolProvider(
+        _config(
+            tmp_path,
+            {"DEEPAGENTS_TALON_MCP_CONFIG": str(tmp_path / "missing.json")},
+        )
+    )
+    reload_tool = (await provider.load()).tools[0]
+
+    result = reload_tool.invoke({})
+
+    assert reload_tool.name == "reload_mcp_configuration"
+    assert result == {"status": "scheduled", "available": "next_turn"}
+
+    async def load() -> SimpleNamespace:
+        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+
+    monkeypatch.setattr(provider, "load", load)
+    refreshed = await provider.refresh_if_needed()
+    assert refreshed is not None
+    assert [tool.name for tool in refreshed] == ["refreshed"]
+
+
 async def test_mcp_tool_provider_serializes_concurrent_refreshes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = MCPToolProvider(_config(tmp_path))
-    provider._dirty = True
+    provider.request_refresh()
     load_started = asyncio.Event()
     release_load = asyncio.Event()
 
@@ -373,6 +413,58 @@ async def test_mcp_tool_provider_serializes_concurrent_refreshes(
     assert second_result is None
 
 
+async def test_mcp_tool_provider_preserves_refresh_requested_during_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MCPToolProvider(_config(tmp_path))
+    provider.request_refresh()
+    load_started = asyncio.Event()
+    release_load = asyncio.Event()
+    loads = 0
+
+    async def load() -> SimpleNamespace:
+        nonlocal loads
+        loads += 1
+        if loads == 1:
+            load_started.set()
+            await release_load.wait()
+        return SimpleNamespace(tools=(DummyTool(f"refreshed-{loads}"),))
+
+    monkeypatch.setattr(provider, "load", load)
+    first = asyncio.create_task(provider.refresh_if_needed())
+    await load_started.wait()
+    provider.request_refresh()
+    release_load.set()
+
+    first_result = await first
+    second_result = await provider.refresh_if_needed()
+
+    assert first_result is not None
+    assert second_result is not None
+    assert [tool.name for tool in first_result] == ["refreshed-1"]
+    assert [tool.name for tool in second_result] == ["refreshed-2"]
+
+
+async def test_mcp_tool_provider_does_not_retry_failed_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MCPToolProvider(_config(tmp_path))
+    provider.request_refresh()
+
+    async def load() -> SimpleNamespace:
+        message = "invalid MCP configuration"
+        raise MCPConfigError(message)
+
+    monkeypatch.setattr(provider, "load", load)
+
+    with pytest.raises(MCPConfigError, match="invalid MCP configuration"):
+        await provider.refresh_if_needed()
+
+    assert await provider.refresh_if_needed() is None
+
+
 async def test_mcp_tool_provider_reports_existing_authorization_without_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -393,7 +485,7 @@ async def test_mcp_tool_provider_reports_existing_authorization_without_refresh(
     result = await provider._authenticate("notion", "tool-call")
 
     assert result == {"status": "already_authenticated", "server_name": "notion"}
-    assert provider._dirty is False
+    assert await provider.refresh_if_needed() is None
 
 
 async def test_mcp_tool_provider_forces_explicit_reauthentication(
@@ -437,7 +529,7 @@ async def test_mcp_tool_provider_forces_explicit_reauthentication(
 
     assert forced == [True]
     assert result == {"status": "completed", "server_name": "notion"}
-    assert provider._dirty is True
+    await _assert_refresh_scheduled(provider, monkeypatch)
 
 
 def _provider_with_post_persistence_error(
@@ -488,7 +580,7 @@ async def test_mcp_tool_provider_refreshes_after_credentials_persist(
         reset_authorization_handler(token)
 
     assert result == {"status": "completed", "server_name": "notion"}
-    assert provider._dirty is True
+    await _assert_refresh_scheduled(provider, monkeypatch)
     assert [type(event) for event in events] == [AuthorizationCompleted]
     assert isinstance(events[0], AuthorizationCompleted)
     assert events[0].terminal is True
@@ -516,7 +608,7 @@ async def test_mcp_tool_provider_propagates_cancellation_after_credentials_persi
     finally:
         reset_authorization_handler(token)
 
-    assert provider._dirty is True
+    await _assert_refresh_scheduled(provider, monkeypatch)
     assert [type(event) for event in events] == [AuthorizationCompleted]
 
 

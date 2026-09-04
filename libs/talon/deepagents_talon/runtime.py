@@ -219,6 +219,7 @@ class DeepAgentRuntime:
             web, and cron tools.
         refresh_tools: Optional callback that supplies replacement runtime tools
             after an external authorization changes their availability.
+        reload_tools: Optional callback that reloads runtime tools on demand.
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
             is supplied, `AGENTS.md` is loaded from that directory.
         subagents: Optional subagent specs available to the main agent.
@@ -250,6 +251,8 @@ class DeepAgentRuntime:
         model: str,
         tools: Sequence[BaseTool | Callable[..., object]] = (),
         refresh_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]] | None]]
+        | None = None,
+        reload_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]]]]
         | None = None,
         system_prompt: str | None = None,
         subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
@@ -283,6 +286,7 @@ class DeepAgentRuntime:
         self.model = model
         self.tools = tuple(tools)
         self.refresh_tools = refresh_tools
+        self.reload_tools = reload_tools
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
         self._has_async_subagents = _has_async_subagents(self.subagents)
@@ -300,13 +304,17 @@ class DeepAgentRuntime:
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self._graph: object | None = None
+        self._tools_lock = asyncio.Lock()
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
         self._graph = self._create_graph()
 
-    def _create_graph(self) -> object:
-        tools = self._build_tools()
+    def _create_graph(
+        self,
+        runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+    ) -> object:
+        tools = self._build_tools(runtime_tools)
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         middleware = list(self.middleware)
@@ -397,25 +405,44 @@ class DeepAgentRuntime:
     async def _refresh_runtime_tools(self) -> None:
         if self.refresh_tools is None:
             return
-        refreshed = await self.refresh_tools()
-        if refreshed is None:
-            return
-        self.tools = tuple(refreshed)
-        self._graph = self._create_graph()
+        async with self._tools_lock:
+            refreshed = await self.refresh_tools()
+            if refreshed is not None:
+                self._replace_runtime_tools(refreshed)
+
+    async def reload_mcp_configuration(self) -> None:
+        """Reload MCP tools without restarting the Talon runtime."""
+        if self.reload_tools is None:
+            msg = "MCP configuration reload is unavailable"
+            raise RuntimeError(msg)
+        async with self._tools_lock:
+            self._replace_runtime_tools(await self.reload_tools())
+
+    def _replace_runtime_tools(
+        self,
+        tools: Sequence[BaseTool | Callable[..., object]],
+    ) -> None:
+        replacement = tuple(tools)
+        graph = self._create_graph(replacement)
+        self.tools = replacement
+        self._graph = graph
 
     def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
         if not agent_activity_logging_enabled(self.env):
             return None
         return AgentActivityCallback(logger, request.conversation_id)
 
-    def _build_tools(self) -> list[BaseTool | Callable[..., object]]:
+    def _build_tools(
+        self,
+        runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+    ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time]
         if self.include_web_tools:
             tools.extend([fetch_url, web_search])
         if self.cron_store is not None:
             cron = CronTools(store=self.cron_store, origin=_current_cron_origin)
             tools.extend(cron.as_langchain_tools())
-        tools.extend(self.tools)
+        tools.extend(self.tools if runtime_tools is None else runtime_tools)
         return tools
 
     async def _invoke_until_text(

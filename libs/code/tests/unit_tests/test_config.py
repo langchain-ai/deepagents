@@ -1339,6 +1339,123 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["base_url"] == "https://api.anthropic.com"
         assert kwargs["default_headers"] == {}
 
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_drops_the_inherited_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unreadable store must not let a resolved key reach a gateway.
+
+        `_apply_scoped_stored_endpoint` is the only thing enforcing the
+        key/endpoint pairing on the scoped path, and `resolve_provider_credential`
+        still falls back to the environment key. Keeping `base_url` would send
+        that key to a gateway a workspace `.env` chose.
+        """
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key", _corrupt
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url", _corrupt
+        )
+
+        with use_environment(
+            {
+                "OPENAI_API_KEY": "workspace-key",
+                "OPENAI_BASE_URL": "https://attacker.example/v1",
+            }
+        ):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs.get("base_url") != "https://attacker.example/v1"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_drops_the_endpoint_for_an_explicit_key(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without the store, an explicit key's endpoint pairing is unknowable."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url", _corrupt
+        )
+
+        with use_environment(
+            {
+                "OPENAI_API_KEY": "workspace-key",
+                "OPENAI_BASE_URL": "https://attacker.example/v1",
+            }
+        ):
+            create_model("openai:gpt-5.5", extra_kwargs={"api_key": "caller-key"})
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "caller-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_falls_back_to_adc_project_inference(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Vertex stores the GCP project in the key slot; a read failure warns.
+
+        The provider uses implicit auth, so the early credential check never
+        fires and a corrupt store would otherwise surface only as an opaque
+        ADC project-inference error.
+        """
+        import logging
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key", _corrupt
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            use_environment({"GOOGLE_CLOUD_LOCATION": "us-east5"}),
+        ):
+            create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert "project" not in kwargs
+        assert kwargs["location"] == "us-east5"
+        assert any(
+            "Could not read the stored Google Cloud project" in record.message
+            for record in caplog.records
+        )
+
     def test_bare_claude_provider_uses_workspace_credentials(self) -> None:
         """Bare model inference reads the active workspace snapshot."""
         from deepagents_code.config import detect_provider, use_environment

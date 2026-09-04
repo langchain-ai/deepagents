@@ -2774,15 +2774,21 @@ class TestCreateCliAgentProjectContext:
         monkeypatch.setenv("LANGSMITH_API_KEY", "lsv2_agent_override")
         monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://agent.example.com")
         monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
-        values = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
-        values["LANGSMITH_PROFILE"] = "oauth"
-        values["LANGSMITH_CONFIG_FILE"] = "/tmp/langsmith.json"
+        # Give the two mechanisms different values, so neither one alone can
+        # satisfy the assertions below. `LANGSMITH_PROFILE` comes from the
+        # launch shell and must win over the project `.env`;
+        # `LANGSMITH_CONFIG_FILE` is set only in the project `.env`.
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_PROFILE"] = "oauth"
         (tmp_path / ".env").write_text(
-            "LANGSMITH_PROFILE=oauth\nLANGSMITH_CONFIG_FILE=/tmp/langsmith.json\n"
+            "LANGSMITH_PROFILE=from-dotenv\nLANGSMITH_CONFIG_FILE=/tmp/langsmith.json\n"
         )
         monkeypatch.setenv(
             config_mod._USER_LANGSMITH_ENV_CARRIER,
-            json.dumps({"launch": dict.fromkeys(values), "user": values}),
+            json.dumps({"launch": launch, "user": dict(launch)}),
         )
         config_mod._bootstrap_state.done = True
 

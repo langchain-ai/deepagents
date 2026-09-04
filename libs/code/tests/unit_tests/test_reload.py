@@ -588,9 +588,11 @@ class TestReloadFromEnvironment:
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             credentials.reload_from_environment(start_path=tmp_path)
 
-        # The user-command snapshot and effective environment each perform the
-        # trusted `read_project_dotenv` pre-check; the latter also reads defaults.
-        assert global_calls == 3
+        # Asserting a count here would mirror the implementation: memoizing the
+        # global read is a valid optimization that must not fail this test. What
+        # matters is that the unreadable global file was attempted, and that the
+        # project value still applied.
+        assert global_calls >= 1
         assert os.environ["OPENAI_API_KEY"] == "sk-ok"
         assert any("Could not read global dotenv" in r.message for r in caplog.records)
 

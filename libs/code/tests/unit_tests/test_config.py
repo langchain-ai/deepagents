@@ -101,6 +101,50 @@ class TestRuntimeDotenvReload:
             config_mod._bootstrap_state.user_langsmith_env = original_user
             config_mod._dotenv_loaded_values.clear()
 
+    def test_reload_restores_the_launch_value_over_an_agent_override(
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Reload un-does the agent's in-process override from the carrier."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setattr(
+            config_mod,
+            "_GLOBAL_DOTENV_PATH",
+            tmp_path / "missing-global.env",
+        )
+        monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+        # What the agent put on the canonical var in this process.
+        monkeypatch.setenv("LANGSMITH_API_KEY", "agent-override")
+        monkeypatch.setenv("LANGSMITH_PROFILE", "agent-profile")
+
+        # The user's launch environment: a different key, and no profile at all.
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = "user-key"
+        monkeypatch.setenv(
+            config_mod._USER_LANGSMITH_ENV_CARRIER,
+            json.dumps({"launch": launch, "user": dict(launch)}),
+        )
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._dotenv_loaded_values.clear()
+
+        try:
+            runtime = Credentials.from_environment(start_path=tmp_path)
+
+            runtime.reload_from_environment(start_path=tmp_path)
+
+            assert os.environ["LANGSMITH_API_KEY"] == "user-key"
+            # `None` in the carrier means the user had none: remove it.
+            assert "LANGSMITH_PROFILE" not in os.environ
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._dotenv_loaded_values.clear()
+
     def test_reload_keeps_settings_when_the_carrier_is_unusable(
         self,
         tmp_path: Path,
@@ -4469,6 +4513,73 @@ class TestDetectProvider:
             credentials.anthropic_api_key = None
 
 
+class TestPrefixedLangsmithBridge:
+    """Bridging a prefixed override onto the canonical SDK name."""
+
+    def test_conflicting_values_warn_once_per_pair(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Only a genuine conflict warns, and it names both variables."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
+
+        monkeypatch.delenv(SUPPRESS_ENV_OVERRIDE_WARNING, raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "canonical-key")
+        # Same value on both: agreement is not a conflict.
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            config_mod._apply_prefixed_langsmith_env()
+
+        conflicts = [
+            record
+            for record in caplog.records
+            if "are both set to different values" in record.getMessage()
+        ]
+        assert len(conflicts) == 1
+        assert "LANGSMITH_API_KEY" in conflicts[0].getMessage()
+        # The prefixed value is the one that takes effect.
+        assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
+
+    def test_the_warning_can_be_suppressed(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """`_apply_prefixed_langsmith_env` now runs on every reload."""
+        import os
+
+        import deepagents_code.config as config_mod
+        from deepagents_code._env_vars import SUPPRESS_ENV_OVERRIDE_WARNING
+
+        monkeypatch.setenv(SUPPRESS_ENV_OVERRIDE_WARNING, "1")
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "prefixed-key")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "canonical-key")
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            config_mod._apply_prefixed_langsmith_env()
+
+        assert "are both set to different values" not in caplog.text
+        assert os.environ["LANGSMITH_API_KEY"] == "prefixed-key"
+
+    def test_an_empty_prefixed_value_still_propagates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """`FOO=""` is an explicit disable, not an absent override."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_TRACING", "")
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+
+        config_mod._apply_prefixed_langsmith_env()
+
+        assert os.environ["LANGSMITH_TRACING"] == ""
+
+
 class TestTracingEnvironmentReconcile:
     """The LangSmith SDK reads `os.environ`, so the snapshot is published."""
 
@@ -4654,6 +4765,35 @@ class TestUserLangsmithEnvironment:
         assert env["PATH"] == "/usr/bin"
         # The user is told, on stderr, not only in the buffered debug log.
         assert "without LangSmith credentials" in capsys.readouterr().err
+
+    def test_launch_shell_outranks_the_project_dotenv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Launch beats project `.env`, and the global `.env` is excluded."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text(
+            "LANGSMITH_API_KEY=project-key\nLANGSMITH_PROJECT=project-only\n"
+        )
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("LANGSMITH_TRACING=true\n")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        launch["LANGSMITH_API_KEY"] = "launch-key"
+        carrier = json.dumps({"launch": launch, "user": dict(launch)})
+
+        env = {config_mod._USER_LANGSMITH_ENV_CARRIER: carrier}
+        config_mod.restore_user_langsmith_env(env, start_path=project)
+
+        # Both sources set the key; the launch shell wins.
+        assert env["LANGSMITH_API_KEY"] == "launch-key"
+        # Only the project file sets this one, so it fills in.
+        assert env["LANGSMITH_PROJECT"] == "project-only"
+        # The global profile `.env` configures the agent, not user commands.
+        assert "LANGSMITH_TRACING" not in env
 
     def test_unreadable_project_dotenv_keeps_the_carried_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

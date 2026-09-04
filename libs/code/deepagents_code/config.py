@@ -84,19 +84,6 @@ class _BootstrapState:
     original_langsmith_project: str | None = None
     """Caller's `LANGSMITH_PROJECT` before the app overrides it for traces."""
 
-    original_tracing_api_keys: dict[str, str | None] = dataclass_field(
-        default_factory=dict
-    )
-    """Caller's tracing API keys before Deep Agents Code overwrites them.
-
-    Two bootstrap steps can overwrite the canonical `LANGSMITH_API_KEY` (and
-    its `LANGCHAIN_API_KEY` alias): the `DEEPAGENTS_CODE_`-prefixed override and
-    the `/auth`-stored key bridged on by `apply_stored_langsmith_auth`. Both run
-    after this snapshot is captured. Without saving the originals, shell
-    subprocesses inherit the agent's session key and the caller's own value is
-    irrecoverable in-process.
-    """
-
     launch_langsmith_env: dict[str, str | None] = dataclass_field(default_factory=dict)
     """LangSmith values inherited from the user's launch environment."""
 
@@ -1199,24 +1186,6 @@ def _disable_set_tracing_flags() -> list[str]:
     return disabled
 
 
-def restore_user_tracing_api_keys(env: dict[str, str]) -> None:
-    """Restore caller tracing API keys in an environment passed to user code.
-
-    Reverts both bootstrap overwrites of the canonical LangSmith key — the
-    `DEEPAGENTS_CODE_`-prefixed override and the `/auth`-stored key — so shell
-    subprocesses receive the caller's own key rather than the agent's session
-    key. See `original_tracing_api_keys` for the rationale.
-
-    Args:
-        env: Environment mapping prepared for a child/user subprocess.
-    """
-    for var, value in _bootstrap_state.original_tracing_api_keys.items():
-        if value is None:
-            env.pop(var, None)
-        else:
-            env[var] = value
-
-
 def _validate_user_langsmith_env(value: object) -> dict[str, str | None] | None:
     """Validate one complete LangSmith selector mapping from the carrier.
 
@@ -1697,9 +1666,6 @@ def _ensure_bootstrap() -> None:
             _bootstrap_state.original_langsmith_project = os.environ.get(
                 "LANGSMITH_PROJECT"
             )
-            _bootstrap_state.original_tracing_api_keys = {
-                var: os.environ.get(var) for var in _TRACING_API_KEY_ENV_VARS
-            }
 
             # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation

@@ -30,6 +30,10 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from deepagents_code.tools import fetch_url, web_search
+from deepagents_talon.authorization import (
+    reset_authorization_handler,
+    set_authorization_handler,
+)
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -211,6 +215,8 @@ class DeepAgentRuntime:
     Args:
         model: Chat model identifier for `create_deep_agent`.
         tools: Runtime tools exposed to the agent in addition to web and cron tools.
+        refresh_tools: Optional callback that supplies replacement runtime tools
+            after an external authorization changes their availability.
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
             is supplied, `AGENTS.md` is loaded from that directory.
         subagents: Optional subagent specs available to the main agent.
@@ -241,6 +247,8 @@ class DeepAgentRuntime:
         *,
         model: str,
         tools: Sequence[BaseTool | Callable[..., object]] = (),
+        refresh_tools: Callable[[], Awaitable[Sequence[BaseTool | Callable[..., object]] | None]]
+        | None = None,
         system_prompt: str | None = None,
         subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
         assistant_dir: Path | None = None,
@@ -272,6 +280,7 @@ class DeepAgentRuntime:
 
         self.model = model
         self.tools = tuple(tools)
+        self.refresh_tools = refresh_tools
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
         self._has_async_subagents = _has_async_subagents(self.subagents)
@@ -292,13 +301,16 @@ class DeepAgentRuntime:
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
+        self._graph = self._create_graph()
+
+    def _create_graph(self) -> object:
         tools = self._build_tools()
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         middleware = list(self.middleware)
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
-        self._graph = create_deep_agent(
+        return create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
@@ -328,6 +340,7 @@ class DeepAgentRuntime:
         if self._graph is None:
             msg = "DeepAgentRuntime must be started before recovery"
             raise RuntimeError(msg)
+
         config = {"configurable": {"thread_id": conversation_id}}
         get_state = getattr(self._graph, "aget_state", None)
         update_state = getattr(self._graph, "aupdate_state", None)
@@ -360,10 +373,12 @@ class DeepAgentRuntime:
             msg = "DeepAgentRuntime must be started before invoke"
             raise RuntimeError(msg)
 
+        await self._refresh_runtime_tools()
         activity = self._activity_callback(request)
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
         token = _CRON_ORIGIN.set(_cron_origin_from_request(request))
+        authorization_token = set_authorization_handler(request.authorization_handler)
         try:
             text = await self._invoke_until_text(request, activity)
         except BaseException as error:
@@ -371,10 +386,20 @@ class DeepAgentRuntime:
                 activity.run_failed(error)
             raise
         finally:
+            reset_authorization_handler(authorization_token)
             _CRON_ORIGIN.reset(token)
         if activity is not None:
             activity.run_completed(text)
         return AgentResult(text=text)
+
+    async def _refresh_runtime_tools(self) -> None:
+        if self.refresh_tools is None:
+            return
+        refreshed = await self.refresh_tools()
+        if refreshed is None:
+            return
+        self.tools = tuple(refreshed)
+        self._graph = self._create_graph()
 
     def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
         if not agent_activity_logging_enabled(self.env):

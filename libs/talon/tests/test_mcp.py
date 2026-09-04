@@ -3,19 +3,41 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import pytest
+from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
+from mcp.shared.auth import OAuthToken
+from mcp.types import CallToolResult
 
+from deepagents_talon.authorization import (
+    AuthorizationBinding,
+    AuthorizationCompleted,
+    AuthorizationEvent,
+    AuthorizationURL,
+    CallbackURLRequested,
+    current_authorization_attempt,
+    reset_authorization_handler,
+    set_authorization_handler,
+)
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import (
     MCPConfigError,
     MCPServerInfo,
     MCPToolInfo,
+    MCPToolProvider,
+    _authorization_interceptor,
+    _connection,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
+)
+from deepagents_talon.mcp_auth import (
+    FileTokenStorage,
+    MCPAuthorizationError,
+    build_oauth_provider,
 )
 
 if TYPE_CHECKING:
@@ -45,6 +67,18 @@ class FakeMCPClient:
                 {"type": "object", "properties": {"path": {"type": "string"}}},
             )
         ]
+
+
+def _oauth_token() -> OAuthToken:
+    return OAuthToken(access_token="secret-token")  # noqa: S106
+
+
+async def _no_tokens() -> None:
+    return None
+
+
+async def _stored_tokens() -> OAuthToken:
+    return _oauth_token()
 
 
 def _write_config(path: Path, servers: dict[str, object]) -> None:
@@ -155,6 +189,285 @@ async def test_load_mcp_tools_uses_standard_config(
     }
 
 
+async def test_mcp_interceptor_resumes_same_bound_invocation_without_secret_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://mcp.example")
+    provider = build_oauth_provider(
+        server_name="notion",
+        server_url="https://mcp.example",
+        storage=storage,
+        interactive=False,
+    )
+    events: list[AuthorizationEvent] = []
+    callback = "http://localhost:3000/callback?code=secret-code&state=secret-state"
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        events.append(event)
+        return callback if isinstance(event, CallbackURLRequested) else None
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+        await redirect_handler("https://auth.example/authorize?state=secret-state")
+        assert await callback_handler() == ("secret-code", "secret-state")
+        await storage.set_tokens(_oauth_token())
+        return CallToolResult(content=[])
+
+    token = set_authorization_handler(authorize)
+    try:
+        result = await _authorization_interceptor(
+            MCPToolCallRequest(
+                name="search",
+                args={},
+                server_name="notion",
+                runtime=SimpleNamespace(tool_call_id="tool-call-42"),
+            ),
+            execute,
+        )
+    finally:
+        reset_authorization_handler(token)
+
+    assert result.content == []
+    assert [event.type for event in events] == [
+        "authorization_url",
+        "callback_url_requested",
+        "completed",
+    ]
+    assert all(event.binding.invocation_id == "tool-call-42" for event in events)
+    assert isinstance(events[0], AuthorizationURL)
+    assert isinstance(events[-1], AuthorizationCompleted)
+    assert "secret-state" not in repr(events[0])
+    assert "secret-code" not in repr(events)
+
+
+async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _no_tokens(),
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+
+    loaded = await provider.load()
+
+    assert [tool.name for tool in loaded.tools] == [
+        "get_mcp_server_status",
+        "authenticate_mcp_server",
+    ]
+    status_tool = loaded.tools[0]
+    assert status_tool.description == (
+        "Report configured MCP server availability. Current servers: notion (unauthenticated)."
+    )
+    assert status_tool.invoke({}) == (
+        {
+            "server_name": "notion",
+            "status": "unauthenticated",
+            "can_authenticate": True,
+        },
+    )
+    assert loaded.servers[0].status == "unauthenticated"
+    assert loaded.servers[0].uses_oauth is True
+    schema = loaded.tools[1].tool_call_schema.model_json_schema()
+    assert schema["properties"]["reauthenticate"] == {
+        "default": False,
+        "description": (
+            "Set true only when the user explicitly asks to log in again or switch accounts."
+        ),
+        "title": "Reauthenticate",
+        "type": "boolean",
+    }
+    assert await provider._authenticate("unconfigured", "tool-call") == {"status": "failed"}
+
+
+async def test_mcp_tool_provider_serializes_concurrent_refreshes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MCPToolProvider(_config(tmp_path))
+    provider._dirty = True
+    load_started = asyncio.Event()
+    release_load = asyncio.Event()
+
+    async def load() -> SimpleNamespace:
+        load_started.set()
+        await release_load.wait()
+        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+
+    monkeypatch.setattr(provider, "load", load)
+    first = asyncio.create_task(provider.refresh_if_needed())
+    await load_started.wait()
+    second = asyncio.create_task(provider.refresh_if_needed())
+    await asyncio.sleep(0)
+
+    assert not second.done()
+
+    release_load.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result is not None
+    assert [tool.name for tool in first_result] == ["refreshed"]
+    assert second_result is None
+
+
+async def test_mcp_tool_provider_reports_existing_authorization_without_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+
+    async def open_existing_session(_client: object, _server_name: str) -> None:
+        return None
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", open_existing_session)
+
+    result = await provider._authenticate("notion", "tool-call")
+
+    assert result == {"status": "already_authenticated", "server_name": "notion"}
+    assert provider._dirty is False
+
+
+async def test_mcp_tool_provider_forces_explicit_reauthentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+    forced: list[bool] = []
+
+    async def connection(
+        _server_name: str,
+        _server: object,
+        *,
+        channel_authorization: bool,
+        force_authorization: bool,
+    ) -> tuple[dict[str, object], str]:
+        assert channel_authorization is True
+        forced.append(force_authorization)
+        return {}, "streamable_http"
+
+    async def complete_authorization(_client: object, _server_name: str) -> None:
+        attempt = current_authorization_attempt()
+        assert attempt is not None
+        attempt.binding = AuthorizationBinding(
+            server_name="notion",
+            invocation_id="tool-call",
+            expires_at=asyncio.get_running_loop().time() + 30,
+        )
+        attempt.completed = True
+
+    monkeypatch.setattr("deepagents_talon.mcp._connection", connection)
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_authorization)
+
+    result = await provider._authenticate("notion", "tool-call", reauthenticate=True)
+
+    assert forced == [True]
+    assert result == {"status": "completed", "server_name": "notion"}
+    assert provider._dirty is True
+
+
+def _provider_with_post_persistence_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> MCPToolProvider:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+
+    async def complete_then_fail(_client: object, _server_name: str) -> None:
+        attempt = current_authorization_attempt()
+        assert attempt is not None
+        attempt.binding = AuthorizationBinding(
+            server_name="notion",
+            invocation_id="tool-call",
+            expires_at=asyncio.get_running_loop().time() + 30,
+        )
+        attempt.completed = True
+        raise exception_type
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_then_fail)
+    return provider
+
+
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyError])
+async def test_mcp_tool_provider_refreshes_after_credentials_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    provider = _provider_with_post_persistence_error(tmp_path, monkeypatch, exception_type)
+    events: list[AuthorizationEvent] = []
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        events.append(event)
+        return None
+
+    token = set_authorization_handler(authorize)
+    try:
+        result = await provider._authenticate("notion", "tool-call")
+    finally:
+        reset_authorization_handler(token)
+
+    assert result == {"status": "completed", "server_name": "notion"}
+    assert provider._dirty is True
+    assert [type(event) for event in events] == [AuthorizationCompleted]
+    assert isinstance(events[0], AuthorizationCompleted)
+    assert events[0].terminal is True
+
+
+async def test_mcp_tool_provider_propagates_cancellation_after_credentials_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_with_post_persistence_error(
+        tmp_path,
+        monkeypatch,
+        asyncio.CancelledError,
+    )
+    events: list[AuthorizationEvent] = []
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        events.append(event)
+        return None
+
+    token = set_authorization_handler(authorize)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await provider._authenticate("notion", "tool-call")
+    finally:
+        reset_authorization_handler(token)
+
+    assert provider._dirty is True
+    assert [type(event) for event in events] == [AuthorizationCompleted]
+
+
 async def test_explicit_config_interpolates_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -232,6 +545,85 @@ async def test_server_connection_error_is_reported(
     assert result.tools == ()
     assert result.servers[0].status == "error"
     assert result.servers[0].error == "connection failed"
+
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    loaded = await provider.load()
+    status_tool = loaded.tools[0]
+    assert status_tool.description == (
+        "Report configured MCP server availability. Current servers: remote (error)."
+    )
+    assert status_tool.invoke({}) == (
+        {"server_name": "remote", "status": "error", "can_authenticate": False},
+    )
+    assert "connection failed" not in status_tool.description
+    assert "connection failed" not in str(status_tool.invoke({}))
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        MCPAuthorizationError("authorization detail must not escape"),
+        ExceptionGroup(
+            "nested task group detail must not escape",
+            [MCPAuthorizationError("nested authorization detail must not escape")],
+        ),
+    ],
+)
+async def test_wrapped_channel_authorization_error_does_not_abort_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    wrapped: Exception,
+) -> None:
+    class AuthorizationRequiredClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            assert server_name == "notion"
+            raise wrapped
+
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", AuthorizationRequiredClient)
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _stored_tokens(),
+    )
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert result.tools == ()
+    assert result.servers[0].status == "unauthenticated"
+    assert result.servers[0].error == "MCP server 'notion' needs authentication"
+    assert result.servers[0].uses_oauth is True
+    assert "detail must not escape" not in caplog.text
+
+
+async def test_unrelated_exception_group_remains_server_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GroupedFailureClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            assert server_name == "remote"
+            msg = "nested detail"
+            group_msg = "internal detail"
+            raise ExceptionGroup(group_msg, [RuntimeError(msg)])
+
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", GroupedFailureClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert result.tools == ()
+    assert result.servers[0].status == "error"
+    assert result.servers[0].error == "ExceptionGroup"
 
 
 async def test_unexpected_server_error_does_not_block_other_servers(
@@ -322,6 +714,36 @@ async def test_oauth_connection_uses_stored_credentials(
     assert isinstance(connection, dict)
     assert connection["remote"]["auth"] is provider
     assert result.servers[0].uses_oauth is True
+
+
+async def test_forced_oauth_connection_bypasses_stored_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object()
+
+    class ForcedStorage:
+        def __init__(
+            self,
+            server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool,
+        ) -> None:
+            assert (server_name, server_url) == ("remote", "https://example.com/mcp")
+            assert force_authorization is True
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", ForcedStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+
+    connection, transport = await _connection(
+        "remote",
+        {"url": "https://example.com/mcp", "auth": "oauth"},
+        channel_authorization=True,
+        force_authorization=True,
+    )
+
+    assert transport == "streamable_http"
+    assert connection["auth"] is provider
 
 
 async def test_oauth_without_stored_credentials_requires_login(

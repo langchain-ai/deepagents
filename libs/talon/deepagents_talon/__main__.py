@@ -26,7 +26,7 @@ from deepagents_talon.fleet_import import (
     import_fleet_zip,
 )
 from deepagents_talon.host import TalonHost
-from deepagents_talon.mcp import load_mcp_tools, login_mcp_server, print_mcp_config_paths
+from deepagents_talon.mcp import MCPToolProvider, login_mcp_server, print_mcp_config_paths
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -217,7 +217,8 @@ async def _agent_runtime(
         return EchoAgentRuntime()
 
     async_subagents = tuple(load_async_subagents())
-    mcp = await load_mcp_tools(config)
+    mcp_provider = MCPToolProvider(config)
+    mcp = await mcp_provider.load()
     for server in mcp.servers:
         if server.error is not None:
             logger.warning("MCP server %s failed: %s", server.name, server.error)
@@ -226,6 +227,7 @@ async def _agent_runtime(
     return DeepAgentRuntime(
         model=config.model,
         tools=mcp.tools,
+        refresh_tools=mcp_provider.refresh_if_needed,
         assistant_dir=config.manifest_dir,
         subagents=async_subagents or None,
         cron_store=cron_store,

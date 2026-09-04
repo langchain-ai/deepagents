@@ -15,24 +15,38 @@ import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import TYPE_CHECKING, Annotated, Literal, cast
 
 from httpx import HTTPError
+from langchain_core.tools import InjectedToolCallId, tool
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.client.auth import OAuthFlowError
 from mcp.shared.exceptions import McpError
 
+from deepagents_talon.authorization import (
+    AuthorizationAttempt,
+    AuthorizationCompleted,
+    AuthorizationFailed,
+    AuthorizationFailureReason,
+    current_authorization_handler,
+    reset_authorization_attempt,
+    reset_authorization_invocation,
+    set_authorization_attempt,
+    set_authorization_invocation,
+)
 from deepagents_talon.mcp_auth import (
     FileTokenStorage,
+    MCPAuthorizationError,
     build_oauth_provider,
     format_login_error,
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Mapping, Sequence
 
     from langchain_core.tools import BaseTool
     from langchain_mcp_adapters.client import Connection
+    from langchain_mcp_adapters.interceptors import MCPToolCallRequest, MCPToolCallResult
 
     from deepagents_talon.config import TalonConfig
 
@@ -64,6 +78,14 @@ class MCPConfigError(ValueError):
 
 class _MCPLoginRequiredError(MCPConfigError):
     """An MCP server requires OAuth login before loading tools."""
+
+
+def _authentication_required(exc: BaseException) -> bool:
+    if isinstance(exc, (_MCPLoginRequiredError, MCPAuthorizationError)):
+        return True
+    if isinstance(exc, ExceptionGroup):
+        return any(_authentication_required(nested) for nested in exc.exceptions)
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +150,159 @@ class MCPTools:
     servers: Sequence[MCPServerInfo]
 
 
+class MCPToolProvider:
+    """Load MCP tools and refresh them after first-time channel authorization."""
+
+    def __init__(self, config: TalonConfig) -> None:
+        """Bind the provider to one Talon configuration."""
+        self._config = config
+        self._oauth_servers: frozenset[str] = frozenset()
+        self._dirty = False
+        self._lock = asyncio.Lock()
+
+    async def load(self) -> MCPTools:
+        """Load tools and include the narrow proactive authorization capability."""
+        loaded = await load_mcp_tools(self._config)
+        self._oauth_servers = frozenset(
+            server.name for server in loaded.servers if server.uses_oauth
+        )
+        tools = tuple(loaded.tools)
+        if loaded.servers:
+            tools = (*tools, self._status_tool(loaded.servers))
+        if self._oauth_servers:
+            tools = (*tools, self._authorization_tool())
+        return MCPTools(tools=tools, servers=loaded.servers)
+
+    async def refresh_if_needed(self) -> Sequence[BaseTool] | None:
+        """Reload MCP schemas once after an authorization changes credentials."""
+        if not self._dirty:
+            return None
+        async with self._lock:
+            if not self._dirty:
+                return None
+            tools = (await self.load()).tools
+            self._dirty = False
+            return tools
+
+    def _status_tool(self, servers: Sequence[MCPServerInfo]) -> BaseTool:
+        statuses: tuple[dict[str, object], ...] = tuple(
+            {
+                "server_name": server.name,
+                "status": server.status,
+                "can_authenticate": server.uses_oauth,
+            }
+            for server in servers
+        )
+        summary = (
+            ", ".join(f"{status['server_name']} ({status['status']})" for status in statuses)
+            or "none configured"
+        )
+
+        @tool(
+            "get_mcp_server_status",
+            description=f"Report configured MCP server availability. Current servers: {summary}.",
+        )
+        def get_mcp_server_status() -> tuple[dict[str, object], ...]:
+            return statuses
+
+        return get_mcp_server_status
+
+    def _authorization_tool(self) -> BaseTool:
+        @tool(
+            "authenticate_mcp_server",
+            description=(
+                "Authenticate a configured OAuth MCP server through the current Talon channel. "
+                "Use only the configured server name; authorization links are handled by Talon. "
+                "If current credentials work, returns already_authenticated without starting "
+                "a new authorization flow. Set reauthenticate only when the user explicitly "
+                "asks to log in again or switch accounts."
+            ),
+        )
+        async def authenticate_mcp_server(
+            server_name: str,
+            tool_call_id: Annotated[str, InjectedToolCallId],
+            *,
+            reauthenticate: Annotated[
+                bool,
+                "Set true only when the user explicitly asks to log in again or switch accounts.",
+            ] = False,
+        ) -> dict[str, str]:
+            return await self._authenticate(
+                server_name,
+                tool_call_id,
+                reauthenticate=reauthenticate,
+            )
+
+        return authenticate_mcp_server
+
+    async def _authenticate(
+        self,
+        server_name: str,
+        invocation_id: str,
+        *,
+        reauthenticate: bool = False,
+    ) -> dict[str, str]:
+        if server_name not in self._oauth_servers:
+            return {"status": "failed"}
+        attempt = AuthorizationAttempt(terminal=True)
+        try:
+            path = mcp_config_path(self._config)
+            servers = _load_config(path, self._config.env)
+            server = servers.get(server_name)
+            if server is None or server.get("auth") != "oauth":
+                return {"status": "failed", "server_name": server_name}
+            connection, transport = await _connection(
+                server_name,
+                server,
+                channel_authorization=True,
+                force_authorization=reauthenticate,
+            )
+            if transport not in {"sse", "streamable_http"}:
+                return {"status": "failed", "server_name": server_name}
+            client = MultiServerMCPClient({server_name: connection})
+            await _run_authorized(
+                invocation_id,
+                lambda: _open_mcp_session(client, server_name),
+                attempt=attempt,
+            )
+        except asyncio.CancelledError:
+            if attempt.completed:
+                self._dirty = True
+            raise
+        except (
+            HTTPError,
+            McpError,
+            OAuthFlowError,
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            TypeError,
+            ValueError,
+        ):
+            if not attempt.completed:
+                return {"status": "failed", "server_name": server_name}
+            logger.debug(
+                "MCP authorization session failed after credentials persisted",
+                exc_info=True,
+            )
+        except Exception:
+            if not attempt.completed:
+                raise
+            logger.debug(
+                "MCP authorization session failed after credentials persisted",
+                exc_info=True,
+            )
+        status = (
+            "completed"
+            if attempt.completed
+            else "already_authenticated"
+            if attempt.binding is None
+            else "failed"
+        )
+        self._dirty = self._dirty or attempt.completed
+        return {"status": status, "server_name": server_name}
+
+
 def mcp_config_path(config: TalonConfig) -> Path:
     """Return the configured MCP path or Talon's standard user path."""
     configured = config.env.get(_MCP_CONFIG_ENV) or os.environ.get(_MCP_CONFIG_ENV)
@@ -148,7 +323,10 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
         try:
             connection, transport = await _connection(name, server)
             client = MultiServerMCPClient(
-                {name: connection}, tool_name_prefix=True, handle_tool_errors=True
+                {name: connection},
+                tool_interceptors=[_authorization_interceptor],
+                tool_name_prefix=True,
+                handle_tool_errors=True,
             )
             loaded = await asyncio.wait_for(
                 client.get_tools(server_name=name),
@@ -156,6 +334,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
             )
             loaded = _filter_tools(name, server, loaded)
         except (
+            ExceptionGroup,
             HTTPError,
             McpError,
             OAuthFlowError,
@@ -164,15 +343,22 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
             TimeoutError,
             ValueError,
         ) as exc:
-            logger.warning("MCP server %s failed to load: %s", name, exc)
+            authentication_required = _authentication_required(exc)
+            error = (
+                f"MCP server {name!r} needs authentication"
+                if authentication_required
+                else format_login_error(exc)
+                if isinstance(exc, ExceptionGroup)
+                else str(exc)
+            )
+            logger.warning("MCP server %s failed to load: %s", name, error)
             infos.append(
                 MCPServerInfo(
                     name=name,
                     transport=transport,
-                    status="unauthenticated"
-                    if isinstance(exc, _MCPLoginRequiredError)
-                    else "error",
-                    error=str(exc),
+                    status="unauthenticated" if authentication_required else "error",
+                    error=error,
+                    uses_oauth=server.get("auth") == "oauth",
                 )
             )
             continue
@@ -243,6 +429,78 @@ async def login_mcp_server(
 async def _open_mcp_session(client: MultiServerMCPClient, server_name: str) -> None:
     async with client.session(server_name):
         pass
+
+
+async def _authorization_interceptor(
+    request: MCPToolCallRequest,
+    handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
+) -> MCPToolCallResult:
+    """Bind OAuth prompts to the exact LangGraph MCP tool invocation."""
+    invocation_id = getattr(request.runtime, "tool_call_id", None)
+    normalized_id = invocation_id if isinstance(invocation_id, str) and invocation_id else None
+    return await _run_authorized(normalized_id, lambda: handler(request))
+
+
+async def _run_authorized[AuthorizedResult](
+    invocation_id: str | None,
+    operation: Callable[[], Awaitable[AuthorizedResult]],
+    *,
+    attempt: AuthorizationAttempt | None = None,
+) -> AuthorizedResult:
+    attempt = attempt or AuthorizationAttempt()
+    invocation_token = set_authorization_invocation(invocation_id)
+    attempt_token = set_authorization_attempt(attempt)
+    try:
+        result = await operation()
+    except asyncio.CancelledError:
+        await _finish_authorization(
+            attempt,
+            reason=None if attempt.completed else "cancelled",
+        )
+        raise
+    except Exception as exc:
+        if attempt.completed:
+            await _finish_authorization(attempt)
+            raise
+        if attempt.binding is not None:
+            await _finish_authorization(attempt, reason=_authorization_failure_reason(exc))
+            msg = "MCP authorization failed"
+            raise MCPAuthorizationError(msg) from None
+        raise
+    else:
+        await _finish_authorization(attempt)
+        return result
+    finally:
+        reset_authorization_attempt(attempt_token)
+        reset_authorization_invocation(invocation_token)
+
+
+async def _finish_authorization(
+    attempt: AuthorizationAttempt,
+    *,
+    reason: AuthorizationFailureReason | None = None,
+) -> None:
+    binding = attempt.binding
+    handler = current_authorization_handler()
+    if binding is None or handler is None:
+        return
+    event = (
+        AuthorizationCompleted(binding=binding, terminal=attempt.terminal)
+        if attempt.completed and reason is None
+        else AuthorizationFailed(binding=binding, reason=reason or "error")
+    )
+    try:
+        await handler(event)
+    except Exception:  # noqa: BLE001  # status delivery cannot expose or undo OAuth state.
+        return
+
+
+def _authorization_failure_reason(exc: Exception) -> AuthorizationFailureReason:
+    if isinstance(exc, TimeoutError):
+        return "expired"
+    if isinstance(exc, MCPAuthorizationError):
+        return "invalid_callback"
+    return "error"
 
 
 def _load_config(path: Path, env: Mapping[str, str]) -> dict[str, dict[str, object]]:
@@ -328,7 +586,12 @@ def _resolve_string(value: object, field: str, env: Mapping[str, str]) -> str:
 
 
 async def _connection(
-    name: str, server: Mapping[str, object], *, interactive: bool = False
+    name: str,
+    server: Mapping[str, object],
+    *,
+    interactive: bool = False,
+    channel_authorization: bool = False,
+    force_authorization: bool = False,
 ) -> tuple[Connection, str]:
     raw_transport = server.get("transport", server.get("type"))
     if raw_transport is None:
@@ -342,7 +605,17 @@ async def _connection(
     if transport == "stdio":
         return _stdio_connection(name, server), transport
     if transport in {"sse", "streamable_http"}:
-        return await _remote_connection(name, server, transport, interactive=interactive), transport
+        return (
+            await _remote_connection(
+                name,
+                server,
+                transport,
+                interactive=interactive,
+                channel_authorization=channel_authorization,
+                force_authorization=force_authorization,
+            ),
+            transport,
+        )
     msg = f"MCP server {name!r} uses unsupported transport {raw_transport!r}"
     raise MCPConfigError(msg)
 
@@ -388,8 +661,14 @@ def _validate_stdio_env(name: str, values: object) -> None:
         raise MCPConfigError(msg)
 
 
-async def _remote_connection(
-    name: str, server: Mapping[str, object], transport: str, *, interactive: bool = False
+async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes explicit.
+    name: str,
+    server: Mapping[str, object],
+    transport: str,
+    *,
+    interactive: bool = False,
+    channel_authorization: bool = False,
+    force_authorization: bool = False,
 ) -> Connection:
     url = server.get("url")
     headers = server.get("headers")
@@ -413,8 +692,12 @@ async def _remote_connection(
         ):
             msg = f"MCP server {name!r} cannot combine OAuth with an Authorization header"
             raise MCPConfigError(msg)
-        storage = FileTokenStorage(name, server_url=url)
-        if not interactive and await storage.get_tokens() is None:
+        storage = (
+            FileTokenStorage(name, server_url=url, force_authorization=True)
+            if force_authorization
+            else FileTokenStorage(name, server_url=url)
+        )
+        if not interactive and not channel_authorization and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
         connection["auth"] = build_oauth_provider(

@@ -23,8 +23,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-CRON_STORE_VERSION = 2
-"""Schema version of `jobs.json`. A file at any other version is discarded."""
+CRON_STORE_VERSION = 1
+"""Schema version of `jobs.json`.
+
+A file at any other version is discarded, including the unversioned bare list
+that predates this envelope -- treated as v0, since it was never numbered.
+"""
 
 MIN_GRANULARITY_MINUTES = 1
 MAX_SCHEDULE_TEXT_LENGTH = 200

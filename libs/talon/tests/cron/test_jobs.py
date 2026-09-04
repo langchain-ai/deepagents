@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
@@ -368,14 +369,14 @@ def test_timestamps_round_trip_at_second_precision(tmp_path) -> None:
 @pytest.mark.parametrize(
     "payload",
     [
-        pytest.param("[]", id="v1_bare_list"),
-        pytest.param('{"version": 1, "jobs": []}', id="older_version"),
+        pytest.param("[]", id="v0_bare_list"),
+        pytest.param('{"version": 0, "jobs": []}', id="older_version"),
         pytest.param('{"version": 99, "jobs": []}', id="newer_version"),
         pytest.param('{"jobs": []}', id="missing_version"),
         pytest.param("not json at all", id="malformed_json"),
-        pytest.param('{"version": 2, "jobs": {}}', id="jobs_not_a_list"),
-        pytest.param('{"version": 2, "jobs": [{"id": 5}]}', id="malformed_record"),
-        pytest.param('{"version": 2, "jobs": [{"id": "x", "enabled": "yes"}]}', id="wrong_type"),
+        pytest.param('{"version": 1, "jobs": {}}', id="jobs_not_a_list"),
+        pytest.param('{"version": 1, "jobs": [{"id": 5}]}', id="malformed_record"),
+        pytest.param('{"version": 1, "jobs": [{"id": "x", "enabled": "yes"}]}', id="wrong_type"),
     ],
 )
 def test_unreadable_store_reads_empty_without_raising(tmp_path, payload: str) -> None:
@@ -390,7 +391,7 @@ def test_unreadable_store_reads_empty_without_raising(tmp_path, payload: str) ->
 def test_next_write_heals_an_unreadable_store(tmp_path) -> None:
     store = _store(tmp_path)
     store.cron_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-    store.path.write_text('{"version": 1, "jobs": []}', encoding="utf-8")
+    store.path.write_text("[]", encoding="utf-8")
 
     created = store.create_job(
         prompt="check status",
@@ -556,3 +557,46 @@ def test_cache_stays_coherent_across_a_job_fire(tmp_path) -> None:
     assert on_disk.last_status == "ok"
     assert on_disk.next_run_at == now + timedelta(minutes=30)
     assert store.due_jobs(now=fired) == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        pytest.param("[]", "expected a JSON object", id="v0_bare_list"),
+        pytest.param('{"version": 0, "jobs": []}', "schema version", id="older_version"),
+        pytest.param('{"jobs": []}', "schema version", id="missing_version"),
+        pytest.param("not json", "not valid JSON", id="malformed_json"),
+        pytest.param('{"version": 1, "jobs": {}}', "must be a list", id="jobs_not_a_list"),
+        pytest.param(
+            '{"version": 1, "jobs": [{"id": 5}]}', "record is malformed", id="malformed_record"
+        ),
+    ],
+)
+def test_discard_names_the_reason(tmp_path, caplog, payload: str, reason: str) -> None:
+    """Pin which check rejected the file.
+
+    Without this, renumbering `CRON_STORE_VERSION` can leave the content-level
+    cases short-circuiting at the version check: they still read empty, so a
+    pass/fail assertion alone stays green while testing nothing.
+    """
+    store = _store(tmp_path)
+    store.cron_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    store.path.write_text(payload, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.cron.jobs"):
+        assert store.list_jobs() == []
+
+    assert reason in caplog.text
+
+
+def test_current_version_is_accepted(tmp_path) -> None:
+    store = _store(tmp_path)
+    created = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("in 30m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+
+    assert payload["version"] == 1
+    assert [job.id for job in _store(tmp_path).list_jobs()] == [created.id]

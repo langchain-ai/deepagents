@@ -565,6 +565,50 @@ class TestWorkspaceRuntime:
 
         make.assert_awaited_once()
 
+    async def test_cached_runtime_rejects_revoked_extension_trust(
+        self, tmp_path
+    ) -> None:
+        """Revoking trust must invalidate a runtime built while it was granted.
+
+        `trust_project_extensions` is the one project policy field not derived
+        from the environment: `resolve_workspace` re-reads it from the
+        persisted trust store. `ServerConfig.from_env()` is identical across
+        both calls here, so the server-config fingerprint check cannot fire and
+        only the project-policy comparison can catch the revocation. Without
+        it, a runtime keeps executing project Python the user has untrusted.
+        """
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        launch_config = ServerConfig(cwd=str(launch), project_root=str(launch))
+        runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=runtime)
+        trust = "deepagents_code.extensions.trust.is_project_extensions_trusted"
+
+        with patch(trust, return_value=True):
+            binding = _bind(launch_config, other)
+
+        with (
+            patch(trust, return_value=True),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        # The user revokes trust. Nothing about the environment changes.
+        with (
+            patch(trust, return_value=False),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_awaited_once()
+
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
         from deepagents_code.workspace import WorkspaceConflictError
 

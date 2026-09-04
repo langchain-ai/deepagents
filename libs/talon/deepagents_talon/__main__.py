@@ -136,10 +136,7 @@ def _add_import_fleet_parser(
         epilog=(
             "Usage: deepagents-talon import-fleet <fleet-export.zip> "
             "[--assistant-id <id>] [--target-dir <dir>]\n\n"
-            ".mcp.json is generated as the runtime MCP config file; "
-            ".mcp.json.setup is a human-readable setup handoff for operators. "
-            "Fleet config.json is "
-            "ignored, Fleet tools.json is import input only, and old Fleet direct-run "
+            "Fleet config.json and tools.json are ignored, and old Fleet direct-run "
             "environment variables are unsupported. Use import-fleet before running "
             "the Talon host."
         ),

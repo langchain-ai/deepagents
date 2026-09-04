@@ -279,7 +279,7 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     )
     assert loaded.servers[0].status == "unauthenticated"
     assert loaded.servers[0].uses_oauth is True
-    schema = loaded.tools[0].tool_call_schema.model_json_schema()
+    schema = loaded.tools[1].tool_call_schema.model_json_schema()
     assert schema["properties"]["reauthenticate"] == {
         "default": False,
         "description": (

@@ -1407,6 +1407,27 @@ async def get_most_recent(
             return row[0] if row else None
 
 
+async def get_thread_updated_at(thread_id: str) -> str | None:
+    """Get the latest stored update timestamp for a thread.
+
+    Returns:
+        The ISO timestamp, or `None` when none is stored.
+    """
+    async with _connect() as conn:
+        if not await _table_exists(conn, "checkpoints"):
+            return None
+
+        query = """
+            SELECT MAX(json_extract(metadata, '$.updated_at'))
+            FROM checkpoints
+            WHERE thread_id = ?
+        """
+        async with conn.execute(query, (thread_id,)) as cursor:
+            row = await cursor.fetchone()
+            value = row[0] if row else None
+            return value if isinstance(value, str) and value else None
+
+
 async def get_thread_agent(thread_id: str) -> str | None:
     """Get agent_name for a thread.
 

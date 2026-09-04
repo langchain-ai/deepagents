@@ -12,7 +12,7 @@ shared process resolver and the `config` CLI command builds one from the
 generation it snapshots, so introspection can never drift from what the app
 actually reads. Resolution precedence mirrors the loaders: managed TOML beats
 `DEEPAGENTS_CODE_`-prefixed and canonical env, env beats user `config.toml`,
-and the typed default is the final fallback. A malformed numeric/list/PTC
+and the typed default is the final fallback. A malformed numeric/list/PTC/ISO
 value, an unrecognized boolean token, or a wrong-typed TOML value is logged
 and falls back to the next layer rather than raising, so one bad entry does
 not discard valid sibling policy.
@@ -37,6 +37,7 @@ import logging
 import math
 import os
 from dataclasses import dataclass
+from datetime import UTC, date, datetime
 from enum import Enum, StrEnum
 from functools import lru_cache
 from typing import (
@@ -154,6 +155,37 @@ VALID_CURSOR_STYLES: frozenset[str] = frozenset(get_args(CursorStyle))
 """Allowlist derived from `CursorStyle` so the two never drift."""
 
 
+def normalize_iso_datetime(value: object) -> str | None:
+    """Normalize an ISO 8601 date or aware datetime to a UTC timestamp.
+
+    Returns:
+        The normalized timestamp, or `None` when the value is invalid.
+    """
+    parsed: datetime
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, date):
+        parsed = datetime.combine(value, datetime.min.time(), tzinfo=UTC)
+    elif isinstance(value, str):
+        text = value.strip()
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return None
+        if parsed.tzinfo is None:
+            try:
+                parsed = datetime.combine(
+                    date.fromisoformat(text), datetime.min.time(), tzinfo=UTC
+                )
+            except ValueError:
+                return None
+    else:
+        return None
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        return None
+    return parsed.astimezone(UTC).isoformat()
+
+
 class OptionKind(Enum):
     """How an option's raw env/TOML value is coerced to a typed value.
 
@@ -196,6 +228,9 @@ class OptionKind(Enum):
 
     NON_EMPTY_STR = "non_empty_str"
     """A string stripped of surrounding whitespace; blank values are unset."""
+
+    ISO_DATETIME = "iso_datetime"
+    """An ISO 8601 date or timezone-aware datetime normalized to UTC."""
 
     MODEL_LIST_DELEGATE = "model_list"
     """Validates a list of `provider:model` specs and `provider:*` wildcards."""
@@ -245,6 +280,7 @@ _KIND_TYPE_LABEL: dict[OptionKind, str] = {
     OptionKind.FLOAT: "float",
     OptionKind.STR: "str",
     OptionKind.NON_EMPTY_STR: "non-empty str",
+    OptionKind.ISO_DATETIME: "ISO 8601 date or timezone-aware datetime",
     OptionKind.MODEL_LIST_DELEGATE: "list[provider:model]",
     OptionKind.EXTENSION_TRUST_DELEGATE: "str",
     OptionKind.LOG_LEVEL_DELEGATE: "str",
@@ -375,6 +411,7 @@ type _BoolKind = Literal[OptionKind.BOOL, OptionKind.BOOL_PRESENCE]
 type _StrKind = Literal[
     OptionKind.STR,
     OptionKind.NON_EMPTY_STR,
+    OptionKind.ISO_DATETIME,
     OptionKind.CURSOR_STYLE_DELEGATE,
     OptionKind.EXTENSION_TRUST_DELEGATE,
     OptionKind.STARTUP_MODE_DELEGATE,
@@ -2653,6 +2690,16 @@ _STATIC_OPTIONS: tuple[ConfigOption[object], ...] = (
         kind=OptionKind.INT,
         default=COMPACT_ON_RESUME_THRESHOLD_DEFAULT,
         toml_keys=("threads", "compact_on_resume_threshold"),
+    ),
+    ConfigOption(
+        key="threads.resume_after",
+        group="Threads",
+        summary=(
+            "Block resuming threads last updated before this ISO 8601 date or "
+            "timezone-aware datetime."
+        ),
+        kind=OptionKind.ISO_DATETIME,
+        toml_keys=("threads", "resume_after"),
     ),
     ConfigOption(
         key="threads.relative_time",

@@ -162,6 +162,34 @@ class TestThreadFunctions:
             tid = asyncio.run(sessions.get_most_recent())
             assert tid is None
 
+    def test_get_thread_updated_at_returns_latest_value(self, temp_db):
+        """The resume-policy lookup uses the thread's newest update time."""
+        conn = sqlite3.connect(str(temp_db))
+        conn.execute(
+            "INSERT INTO checkpoints "
+            "(thread_id, checkpoint_ns, checkpoint_id, metadata) "
+            "VALUES (?, '', ?, ?)",
+            (
+                "thread2",
+                "zz_latest",
+                json.dumps({"updated_at": "2026-06-01T12:00:00+00:00"}),
+            ),
+        )
+        conn.commit()
+        conn.close()
+
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            updated_at = asyncio.run(sessions.get_thread_updated_at("thread2"))
+
+        assert updated_at == "2026-06-01T12:00:00+00:00"
+
+    def test_get_thread_updated_at_returns_none_when_missing(self, temp_db):
+        """A thread with no update timestamp cannot be verified."""
+        with patch.object(sessions, "get_db_path", return_value=temp_db):
+            updated_at = asyncio.run(sessions.get_thread_updated_at("missing"))
+
+        assert updated_at is None
+
     def test_get_thread_cwd(self, temp_db):
         """Get thread cwd returns the stored working directory."""
         with patch.object(sessions, "get_db_path", return_value=temp_db):

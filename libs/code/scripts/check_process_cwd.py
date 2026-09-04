@@ -103,8 +103,9 @@ _ALLOWLIST: dict[CallSite, str] = {
         "client/non_interactive.py", "run_non_interactive", "Path.cwd", "0f2377b6"
     ): "The headless client sends its directory in run context.",
     CallSite(
-        "config.py", "_preview_dotenv_environ", "Path.cwd", "e3f140b7"
-    ): "The client-side tracing diagnostic previews the local dotenv file.",
+        "config.py", "_dotenv_environment", "Path.cwd", "e3f140b7"
+    ): "Workspace server callers pass `start_path`; client processes fall back "
+    "to their own launch directory, which is the correct project directory there.",
     CallSite(
         "config.py", "_get_git_branch", "Path.cwd", "7a7a7e4f"
     ): "Client stream metadata describes the local checkout.",
@@ -118,8 +119,12 @@ _ALLOWLIST: dict[CallSite, str] = {
         "config.py", "build_stream_config", "Path.cwd", "7a7a7e4f"
     ): "The client builds tracing metadata before sending a run.",
     CallSite(
-        "config.py", "Credentials.from_environment", "find_project_root", "a0389172"
-    ): "The skills CLI omits `start_path`. Bootstrap supplies the launch directory.",
+        "config.py",
+        "Credentials.snapshot_from_environment",
+        "find_project_root",
+        "8eea0706",
+    ): "The skills CLI omits `start_path`. Bootstrap supplies the launch "
+    "directory. Server callers pass the workspace path.",
     CallSite(
         "config.py", "Credentials._reload_values", "find_project_root", "a0389172"
     ): "Client reloads may omit `start_path`; server callers supply workspace context.",

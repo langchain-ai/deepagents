@@ -12,6 +12,8 @@ from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from deepagents_talon.authorization import AuthorizationHandler
+
 
 @dataclass(frozen=True, slots=True)
 class ChannelMessage:
@@ -129,12 +131,20 @@ class AgentRequest:
         metadata: Runtime context supplied by the triggering component.
         approval_handler: Optional callback used by runtimes that surface
             tool approval interrupts over the originating channel.
+        authorization_handler: Optional callback used for authorization events
+            that must be handled outside model context.
     """
 
     conversation_id: str
     text: str
     metadata: Mapping[str, object] = field(default_factory=dict)
     approval_handler: ToolApprovalHandler | None = field(
+        default=None,
+        kw_only=True,
+        repr=False,
+        compare=False,
+    )
+    authorization_handler: AuthorizationHandler | None = field(
         default=None,
         kw_only=True,
         repr=False,

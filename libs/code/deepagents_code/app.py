@@ -234,8 +234,8 @@ _DEFERRED_START_NOTICE = (
 )
 
 _AUTO_CLASSIFIER_RECOMMENDED_MODELS = {
-    "anthropic:claude-haiku-4-5": "Claude Haiku 4.5",
-    "google_genai:gemini-3.7-flash": "Gemini 3.7 Flash",
+    "anthropic:claude-sonnet-5": "Claude Sonnet 5",
+    "google_genai:gemini-3.8-flash": "Gemini 3.8 Flash",
     "openai:gpt-5.6-luna": "GPT-5.6 Luna",
 }
 """Lower-latency models recommended for repeated Auto action reviews."""
@@ -3899,6 +3899,9 @@ class DeepAgentsApp(App):
         so "no override" and "review with the main agent model" are different
         statements. This flag puts `INHERIT_CLASSIFIER_MODEL` on the run context
         for the latter."""
+
+        self._auto_classifier_model_is_retry_default: bool = False
+        """Whether deferred-startup retry derived the classifier from its provider."""
 
         self._active_goal: str | None = None
         """Goal objective accepted by the user and backed by the active rubric."""
@@ -19789,7 +19792,8 @@ class DeepAgentsApp(App):
             return True
 
         await self._ensure_transcript_spacers(messages)
-        await self._hydrate_all_messages_below()
+        if not await self._move_transcript_window_to_tail(messages):
+            return False
 
         # Eagerly fold tool calls into a single live summary so they are
         # collapsed from the moment they start, rather than rendering verbose
@@ -19866,14 +19870,70 @@ class DeepAgentsApp(App):
 
         return True
 
-    async def _hydrate_all_messages_below(self) -> None:
-        """Mount any hidden tail before appending fresh transcript output."""
-        while self._message_store.has_messages_below:
-            before = self._message_store.get_visible_range()[1]
-            await self._hydrate_messages("below")
-            after = self._message_store.get_visible_range()[1]
-            if after == before:
-                break
+    async def _move_transcript_window_to_tail(
+        self, messages_container: Container
+    ) -> bool:
+        """Replace an outdated mounted window with the bounded transcript tail.
+
+        Returns:
+            Whether the mounted window reached the store tail.
+        """
+        if not self._message_store.has_messages_below:
+            return True
+        tail = self._message_store.get_tail_window(self._message_store.WINDOW_SIZE)
+        if tail is None:
+            while self._message_store.has_messages_below:
+                before = self._message_store.get_visible_range()[1]
+                await self._hydrate_messages("below")
+                if self._message_store.get_visible_range()[1] == before:
+                    return False
+            return True
+
+        generation = self._transcript_generation
+        mounted_ids = {data.id for data in self._message_store.get_visible_messages()}
+        tail_ids = {data.id for data in tail}
+        entries = [
+            self._build_hydration_entry(data)
+            for data in tail
+            if data.id not in mounted_ids
+        ]
+        obsolete_ids = mounted_ids - tail_ids
+        obsolete_footer_ids = {
+            _message_timestamp_footer_id(message_id) for message_id in obsolete_ids
+        }
+        obsolete = [
+            child
+            for child in messages_container.children
+            if child.id in obsolete_ids
+            or child.id in obsolete_footer_ids
+            or isinstance(child, ToolGroupSummary)
+        ]
+
+        if not await self._mount_hydration_batch(
+            messages_container,
+            entries,
+            generation=generation,
+        ):
+            return False
+        if generation != self._transcript_generation:
+            return False
+
+        moved = self._message_store.move_visible_window_to_tail(
+            self._message_store.WINDOW_SIZE
+        )
+        if moved is None:
+            hydrated_nodes = [
+                node
+                for widget, _data, footer in entries
+                for node in ((widget, footer) if footer is not None else (widget,))
+            ]
+            await messages_container.remove_children(hydrated_nodes)
+            return False
+        await messages_container.remove_children(obsolete)
+        self._schedule_message_height_measurements([data.id for data in moved])
+        self._sync_transcript_spacers(messages_container)
+        await self._regroup_completed_tools()
+        return True
 
     async def _prune_messages(
         self,
@@ -22240,6 +22300,7 @@ class DeepAgentsApp(App):
 
         self._auto_classifier_model = display
         self._auto_classifier_model_cleared = display is None
+        self._auto_classifier_model_is_retry_default = False
         if self._server_kwargs is not None:
             self._server_kwargs["auto_classifier_model"] = display
 
@@ -29729,6 +29790,21 @@ class DeepAgentsApp(App):
         display = model_spec
         if provider and not parsed:
             display = f"{provider}:{model_name}"
+        if provider and (
+            self._auto_classifier_model_is_retry_default
+            or (
+                self._server_kwargs.get("auto_classifier_model") is None
+                and not self._auto_classifier_model_cleared
+            )
+        ):
+            from deepagents_code.config import (
+                resolve_auto_classifier_model_for_provider,
+            )
+
+            classifier_model = resolve_auto_classifier_model_for_provider(provider)
+            self._auto_classifier_model = classifier_model
+            self._server_kwargs["auto_classifier_model"] = classifier_model
+            self._auto_classifier_model_is_retry_default = True
 
         new_model_kwargs: dict[str, Any] = {
             "model_spec": display,

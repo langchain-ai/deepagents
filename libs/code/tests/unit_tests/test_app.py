@@ -11153,47 +11153,162 @@ class TestMessageTimestampFooters:
                 app.query_one("#spacer-0", UserMessage)
             assert app.query_one("#spacer-4", UserMessage)
 
-    async def test_mount_message_hydrates_hidden_tail_before_append(
+    async def test_mount_message_moves_directly_to_bounded_tail(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """New live output should not skip messages hidden below the window."""
-        from deepagents_code.tui.widgets.message_store import MessageType
+        """New live output should mount only the bounded tail before appending."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            for index in range(5):
-                await app._mount_message(UserMessage(f"m{index}", id=f"tail-{index}"))
-            await pilot.pause()
-
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            archived = [
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"m{index}",
+                    id=f"tail-{index}",
+                )
+                for index in range(100)
+            ]
+            app._message_store.bulk_load(archived)
+            entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
             messages = app.query_one("#messages", Container)
-            await app._prune_messages("below", messages)
+            assert await app._mount_hydration_batch(
+                messages,
+                entries,
+                generation=app._transcript_generation,
+            )
+            await app._ensure_transcript_spacers(messages)
+            app._message_store._visible_start = 10
+            app._message_store._visible_end = 13
+            tail_nodes = [
+                child
+                for child in messages.children
+                if child.id
+                and any(
+                    child.id.startswith(f"tail-{index}") for index in range(97, 100)
+                )
+            ]
+            await messages.remove_children(tail_nodes)
+            middle_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                middle_entries,
+                generation=app._transcript_generation,
+            )
             await pilot.pause()
 
-            assert app._message_store.has_messages_below
-            with pytest.raises(NoMatches):
-                app.query_one("#tail-3", UserMessage)
+            hydrate_calls = 0
 
+            async def count_hydration(
+                direction: Literal["above", "below"], *, count: int | None = None
+            ) -> int:
+                nonlocal hydrate_calls
+                hydrate_calls += 1
+                await asyncio.sleep(0)
+                assert direction in {"above", "below"}
+                assert count is None or count >= 0
+                return 0
+
+            monkeypatch.setattr(app, "_hydrate_messages", count_hydration)
             await app._mount_message(UserMessage("new", id="tail-new"))
             await pilot.pause()
 
-            assert not app._message_store.has_messages_below
+            assert hydrate_calls == 0
+            assert app._message_store.get_visible_range() == (97, 101)
             assert [
                 msg.id
                 for msg in app._message_store.get_all_messages()
                 if msg.type is MessageType.USER
-            ] == [
-                "tail-0",
-                "tail-1",
-                "tail-2",
-                "tail-3",
-                "tail-4",
-                "tail-new",
-            ]
-            for message_id in ["tail-3", "tail-4", "tail-new"]:
+            ] == [*[f"tail-{index}" for index in range(100)], "tail-new"]
+            for message_id in ["tail-97", "tail-98", "tail-99", "tail-new"]:
                 assert app.query_one(f"#{message_id}", UserMessage)
+            for message_id in ["tail-10", "tail-11", "tail-12", "tail-50"]:
+                with pytest.raises(NoMatches):
+                    app.query_one(f"#{message_id}", UserMessage)
+
+    async def test_mount_message_hydrates_tail_blocked_by_protected_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A protected old row keeps the store and mounted append in sync."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+            app._message_store.bulk_load(
+                [
+                    MessageData(
+                        type=MessageType.USER,
+                        content=f"m{index}",
+                        id=f"blocked-{index}",
+                    )
+                    for index in range(10)
+                ]
+            )
+            messages = app.query_one("#messages", Container)
+            tail_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                tail_entries,
+                generation=app._transcript_generation,
+            )
+            await app._ensure_transcript_spacers(messages)
+            await messages.remove_children(
+                [
+                    child
+                    for child in messages.children
+                    if child.id
+                    and any(
+                        child.id.startswith(f"blocked-{index}")
+                        for index in range(7, 10)
+                    )
+                ]
+            )
+            app._message_store._visible_start = 1
+            app._message_store._visible_end = 3
+            middle_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                middle_entries,
+                generation=app._transcript_generation,
+            )
+            app._message_store.protect_message("blocked-2")
+
+            assert await app._mount_message(UserMessage("new", id="blocked-new"))
+            await pilot.pause()
+
+            visible_ids = {
+                data.id for data in app._message_store.get_visible_messages()
+            }
+            mounted_ids = {
+                child.id
+                for child in messages.children
+                if child.id
+                in {
+                    *{f"blocked-{index}" for index in range(10)},
+                    "blocked-new",
+                }
+            }
+            assert app._message_store.get_visible_range() == (1, 11)
+            assert mounted_ids == visible_ids
+            assert len(app.query("#blocked-new")) == 1
 
     async def test_hydrate_below_replaces_unbuildable_message(
         self, monkeypatch: pytest.MonkeyPatch
@@ -16255,6 +16370,50 @@ class TestDeferredActions:
             assert app._reconnecting is True
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "reconnecting"
+
+    async def test_retry_startup_refreshes_provider_default_classifier(self) -> None:
+        """Deferred startup refreshes its classifier default across retries."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": None, "auto_classifier_model": None}
+            app._server_startup_deferred = True
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # ty: ignore
+            app.run_worker = MagicMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.UNKNOWN,
+                        provider="anthropic",
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config.resolve_auto_classifier_model_for_provider",
+                    side_effect=[
+                        "anthropic:claude-sonnet-5",
+                        "openai:gpt-5.6-luna",
+                    ],
+                ),
+            ):
+                started = await app._maybe_start_deferred_server_from_default()
+                assert app._auto_classifier_model == "anthropic:claude-sonnet-5"
+
+                await app._retry_startup_with_model("openai:gpt-5.6")
+
+            assert started is True
+            assert app._auto_classifier_model == "openai:gpt-5.6-luna"
+            assert app._server_kwargs["auto_classifier_model"] == "openai:gpt-5.6-luna"
 
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,

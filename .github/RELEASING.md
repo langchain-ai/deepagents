@@ -74,6 +74,8 @@ To ship without curated notes, add the `release: dangerously skip curated notes`
 
 #### Observing a `@release-bot` run
 
+For a valid manual `draft` or `apply` command, the bot reacts to the command comment with 👀 when processing starts, then replaces it with 🚀 after the command succeeds. A retained 👀 means the command was acknowledged but did not finish successfully; check the bot's failure comment or the workflow logs.
+
 A `@release-bot` comment triggers the "📝 Curate release notes" workflow on the `issue_comment` event, not on the PR's head branch, so it does **not** appear as a PR status check. To watch it:
 
 - Open the repo's **Actions** tab → select "📝 Curate release notes" in the left sidebar → select the run whose title matches your release PR.

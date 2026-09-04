@@ -1,11 +1,21 @@
 from __future__ import annotations
 
+import json
+import logging
 from datetime import UTC, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import pytest
 
-from deepagents_talon.cron import CronJobError, CronJobStore, CronOrigin, CronSchedule, CronTools
+from deepagents_talon.cron import (
+    CronJobError,
+    CronJobStore,
+    CronOrigin,
+    CronSchedule,
+    CronTools,
+    jobs as jobs_module,
+)
+from deepagents_talon.cron.jobs import CRON_STORE_VERSION
 
 
 def _store(tmp_path, assistant_id: str = "assistant") -> CronJobStore:
@@ -149,7 +159,7 @@ def test_parse_preserves_timezone_case_and_canonicalizes_display() -> None:
     schedule = CronSchedule.parse(f"DAILY At 8:00 {NEW_YORK}")
 
     assert schedule.timezone == NEW_YORK
-    assert schedule.local_time == "08:00"
+    assert (schedule.hour, schedule.minute) == (8, 0)
     assert schedule.display == f"daily at 08:00 {NEW_YORK}"
 
 
@@ -309,3 +319,284 @@ def test_interval_job_catches_up_after_long_downtime(tmp_path) -> None:
 
     assert claimed is not None
     assert claimed.next_run_at == back_online + timedelta(minutes=1)
+
+
+def test_store_writes_versioned_envelope(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse(f"daily at 08:00 {NEW_YORK}"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+
+    assert payload["version"] == CRON_STORE_VERSION
+    assert [entry["schedule"]["hour"] for entry in payload["jobs"]] == [8]
+    assert isinstance(payload["jobs"][0]["created_at"], int)
+
+
+def test_store_preserves_agent_schedule_phrasing(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse("every 2h"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    reloaded = _store(tmp_path).list_jobs()
+
+    assert reloaded[0].schedule.minutes == 120
+    assert reloaded[0].schedule.display == "every 2h"
+
+
+def test_timestamps_round_trip_at_second_precision(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, 30, 45, 123456, tzinfo=UTC)
+    store = _store(tmp_path)
+    created = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+
+    reloaded = _store(tmp_path).get_job(created.id)
+
+    assert reloaded is not None
+    assert reloaded.created_at == created.created_at
+    assert created.created_at == now.replace(microsecond=0)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param("[]", id="v0_bare_list"),
+        pytest.param('{"version": 0, "jobs": []}', id="older_version"),
+        pytest.param('{"version": 99, "jobs": []}', id="newer_version"),
+        pytest.param('{"jobs": []}', id="missing_version"),
+        pytest.param("not json at all", id="malformed_json"),
+        pytest.param('{"version": 1, "jobs": {}}', id="jobs_not_a_list"),
+        pytest.param('{"version": 1, "jobs": [{"id": 5}]}', id="malformed_record"),
+        pytest.param('{"version": 1, "jobs": [{"id": "x", "enabled": "yes"}]}', id="wrong_type"),
+    ],
+)
+def test_unreadable_store_reads_empty_without_raising(tmp_path, payload: str) -> None:
+    store = _store(tmp_path)
+    store.cron_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    store.path.write_text(payload, encoding="utf-8")
+
+    assert store.list_jobs() == []
+    assert store.due_jobs() == []
+
+
+def test_next_write_heals_an_unreadable_store(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.cron_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    store.path.write_text("[]", encoding="utf-8")
+
+    created = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("in 30m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+
+    assert [job.id for job in _store(tmp_path).list_jobs()] == [created.id]
+
+
+def test_reads_are_cached_until_the_file_changes(tmp_path, monkeypatch) -> None:
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    loads = 0
+    original = jobs_module.json.loads
+
+    def counting_loads(*args: object, **kwargs: object) -> object:
+        nonlocal loads
+        loads += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(jobs_module.json, "loads", counting_loads)
+
+    for _ in range(5):
+        assert len(store.list_jobs()) == 1
+
+    assert loads == 0, "a write seeds the cache, so unchanged reads must not reparse"
+
+    fresh = _store(tmp_path)
+    for _ in range(5):
+        assert len(fresh.list_jobs()) == 1
+
+    assert loads == 1, "a fresh store parses once, then serves the cache"
+
+
+def test_cache_reloads_after_an_external_write(tmp_path) -> None:
+    writer = _store(tmp_path)
+    reader = _store(tmp_path)
+    reader.create_job(
+        prompt="first",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    assert len(reader.list_jobs()) == 1
+
+    second = writer.create_job(
+        prompt="second",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+
+    assert second.id in {job.id for job in reader.list_jobs()}
+
+
+def test_read_does_not_expose_the_cached_list(tmp_path) -> None:
+    store = _store(tmp_path)
+    store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+
+    store.list_jobs().clear()
+
+    assert len(store.list_jobs()) == 1
+
+
+def test_wire_payload_keeps_readable_text(tmp_path) -> None:
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse(f"daily at 08:00 {NEW_YORK}"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+
+    wire = job.to_wire()
+
+    assert wire["schedule"]["local_time"] == "08:00"
+    assert wire["schedule"]["timezone"] == NEW_YORK
+    assert wire["created_at"] == job.created_at.isoformat()
+    assert "hour" not in wire["schedule"]
+
+
+@pytest.mark.parametrize(
+    "schedule",
+    [
+        pytest.param({"form": "daily", "kind": "recurring", "display": "d"}, id="missing_zone"),
+        pytest.param(
+            {
+                "form": "daily",
+                "kind": "recurring",
+                "display": "d",
+                "timezone": NEW_YORK,
+                "hour": 99,
+                "minute": 0,
+            },
+            id="hour_out_of_range",
+        ),
+        pytest.param(
+            {
+                "form": "at",
+                "kind": "one_shot",
+                "display": "d",
+                "timezone": NEW_YORK,
+                "hour": 8,
+                "minute": 0,
+                "year": 2026,
+                "month": 2,
+            },
+            id="partial_date",
+        ),
+        pytest.param(
+            {
+                "form": "at",
+                "kind": "one_shot",
+                "display": "d",
+                "timezone": NEW_YORK,
+                "hour": 8,
+                "minute": 0,
+                "year": 2026,
+                "month": 2,
+                "day": 30,
+            },
+            id="impossible_date",
+        ),
+        pytest.param(
+            {"form": "interval", "kind": "recurring", "display": "d", "minutes": True},
+            id="bool_is_not_a_count",
+        ),
+    ],
+)
+def test_malformed_schedule_raises_cron_job_error(schedule: dict) -> None:
+    with pytest.raises(CronJobError):
+        CronSchedule.from_dict(schedule)
+
+
+def test_cache_stays_coherent_across_a_job_fire(tmp_path) -> None:
+    now = datetime(2026, 1, 1, 12, tzinfo=UTC)
+    store = _store(tmp_path)
+    job = store.create_job(
+        prompt="heartbeat",
+        schedule=CronSchedule.parse("every 15m"),
+        origin=CronOrigin(conversation_id="chat"),
+        now=now,
+    )
+    fired = now + timedelta(minutes=15)
+
+    assert [due.id for due in store.due_jobs(now=fired)] == [job.id]
+    claimed = store.advance_next_run(job.id, now=fired)
+    assert claimed is not None
+    store.mark_job_run(job.id, status="ok", now=fired)
+
+    cached = store.get_job(job.id)
+    on_disk = _store(tmp_path).get_job(job.id)
+
+    assert cached is not None
+    assert on_disk is not None
+    assert cached == on_disk
+    assert on_disk.last_status == "ok"
+    assert on_disk.next_run_at == now + timedelta(minutes=30)
+    assert store.due_jobs(now=fired) == []
+
+
+@pytest.mark.parametrize(
+    ("payload", "reason"),
+    [
+        pytest.param("[]", "expected a JSON object", id="v0_bare_list"),
+        pytest.param('{"version": 0, "jobs": []}', "schema version", id="older_version"),
+        pytest.param('{"jobs": []}', "schema version", id="missing_version"),
+        pytest.param("not json", "not valid JSON", id="malformed_json"),
+        pytest.param('{"version": 1, "jobs": {}}', "must be a list", id="jobs_not_a_list"),
+        pytest.param(
+            '{"version": 1, "jobs": [{"id": 5}]}', "record is malformed", id="malformed_record"
+        ),
+    ],
+)
+def test_discard_names_the_reason(tmp_path, caplog, payload: str, reason: str) -> None:
+    """Pin which check rejected the file.
+
+    Without this, renumbering `CRON_STORE_VERSION` can leave the content-level
+    cases short-circuiting at the version check: they still read empty, so a
+    pass/fail assertion alone stays green while testing nothing.
+    """
+    store = _store(tmp_path)
+    store.cron_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    store.path.write_text(payload, encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING, logger="deepagents_talon.cron.jobs"):
+        assert store.list_jobs() == []
+
+    assert reason in caplog.text
+
+
+def test_current_version_is_accepted(tmp_path) -> None:
+    store = _store(tmp_path)
+    created = store.create_job(
+        prompt="check status",
+        schedule=CronSchedule.parse("in 30m"),
+        origin=CronOrigin(conversation_id="chat"),
+    )
+    payload = json.loads(store.path.read_text(encoding="utf-8"))
+
+    assert payload["version"] == 1
+    assert [job.id for job in _store(tmp_path).list_jobs()] == [created.id]

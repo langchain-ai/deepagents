@@ -641,6 +641,47 @@ def test_vercel_override_gate_reads_workspace_environment() -> None:
     }
 
 
+def test_vercel_uses_an_unprefixed_workspace_credential() -> None:
+    """Canonical `VERCEL_*` names from a workspace `.env` must not be dropped.
+
+    `_build_server_env` strips the client's project `.env` from the server
+    process, so these never reach the SDK's own `os.environ` read.
+    """
+    environment = {
+        "VERCEL_TOKEN": "workspace-token",
+        "VERCEL_PROJECT_ID": "workspace-project",
+        "VERCEL_TEAM_ID": "workspace-team",
+    }
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            side_effect=environment.get,
+        ),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        kwargs = _VercelProvider._resolve_sdk_kwargs()
+
+    assert kwargs == {
+        "token": "workspace-token",
+        "project_id": "workspace-project",
+        "team_id": "workspace-team",
+    }
+
+
+def test_vercel_delegates_when_the_workspace_configured_nothing() -> None:
+    """With no resolved credential the SDK keeps owning auth (OIDC)."""
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value={}),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            return_value=None,
+        ),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        assert _VercelProvider._resolve_sdk_kwargs() == {}
+
+
 def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     """A failed session must not masquerade as an applied workspace session."""
     mock_boto3 = MagicMock()

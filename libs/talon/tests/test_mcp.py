@@ -3,20 +3,35 @@ from __future__ import annotations
 import asyncio
 import json
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import pytest
+from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
+from mcp.shared.auth import OAuthToken
+from mcp.types import CallToolResult
 
+from deepagents_talon.authorization import (
+    AuthorizationCompleted,
+    AuthorizationEvent,
+    AuthorizationURL,
+    CallbackURLRequested,
+    reset_authorization_handler,
+    set_authorization_handler,
+)
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import (
     MCPConfigError,
     MCPServerInfo,
     MCPToolInfo,
+    MCPToolProvider,
+    _authorization_interceptor,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
 )
+from deepagents_talon.mcp_auth import FileTokenStorage, build_oauth_provider
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,6 +60,14 @@ class FakeMCPClient:
                 {"type": "object", "properties": {"path": {"type": "string"}}},
             )
         ]
+
+
+def _oauth_token() -> OAuthToken:
+    return OAuthToken(access_token="secret-token")  # noqa: S106
+
+
+async def _no_tokens() -> None:
+    return None
 
 
 def _write_config(path: Path, servers: dict[str, object]) -> None:
@@ -153,6 +176,85 @@ async def test_load_mcp_tools_uses_standard_config(
             "timeout": 30.0,
         }
     }
+
+
+async def test_mcp_interceptor_resumes_same_bound_invocation_without_secret_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://mcp.example")
+    provider = build_oauth_provider(
+        server_name="notion",
+        server_url="https://mcp.example",
+        storage=storage,
+        interactive=False,
+    )
+    events: list[AuthorizationEvent] = []
+    callback = "http://localhost:3000/callback?code=secret-code&state=secret-state"
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        events.append(event)
+        return callback if isinstance(event, CallbackURLRequested) else None
+
+    async def execute(_request: MCPToolCallRequest) -> CallToolResult:
+        redirect_handler = provider.context.redirect_handler
+        callback_handler = provider.context.callback_handler
+        assert redirect_handler is not None
+        assert callback_handler is not None
+        await redirect_handler("https://auth.example/authorize?state=secret-state")
+        assert await callback_handler() == ("secret-code", "secret-state")
+        await storage.set_tokens(_oauth_token())
+        return CallToolResult(content=[])
+
+    token = set_authorization_handler(authorize)
+    try:
+        result = await _authorization_interceptor(
+            MCPToolCallRequest(
+                name="search",
+                args={},
+                server_name="notion",
+                runtime=SimpleNamespace(tool_call_id="tool-call-42"),
+            ),
+            execute,
+        )
+    finally:
+        reset_authorization_handler(token)
+
+    assert result.content == []
+    assert [event.type for event in events] == [
+        "authorization_url",
+        "callback_url_requested",
+        "completed",
+    ]
+    assert all(event.binding.invocation_id == "tool-call-42" for event in events)
+    assert isinstance(events[0], AuthorizationURL)
+    assert isinstance(events[-1], AuthorizationCompleted)
+    assert "secret-state" not in repr(events[0])
+    assert "secret-code" not in repr(events)
+
+
+async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _no_tokens(),
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+
+    loaded = await provider.load()
+
+    assert [tool.name for tool in loaded.tools] == ["authenticate_mcp_server"]
+    assert loaded.servers[0].status == "unauthenticated"
+    assert loaded.servers[0].uses_oauth is True
+    assert await provider._authenticate("unconfigured", "tool-call") == {"status": "failed"}
 
 
 async def test_explicit_config_interpolates_environment(

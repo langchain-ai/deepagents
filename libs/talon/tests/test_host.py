@@ -20,7 +20,14 @@ from tests.conftest import RecordingChannel
 if TYPE_CHECKING:
     from pathlib import Path
 
-    import pytest
+import pytest
+
+from deepagents_talon.authorization import (
+    AuthorizationBinding,
+    AuthorizationCompleted,
+    AuthorizationURL,
+    CallbackURLRequested,
+)
 
 
 class RecordingScheduler:
@@ -143,6 +150,51 @@ class ApprovalAgent(BlockingAgent):
         return AgentResult(text=f"decision:{decision}")
 
 
+class AuthorizationAgent(BlockingAgent):
+    def __init__(self) -> None:
+        super().__init__()
+        self.callbacks: list[str] = []
+
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        if request.authorization_handler is None:
+            msg = "authorization handler was missing"
+            raise TypeError(msg)
+        binding = AuthorizationBinding(
+            server_name="notion",
+            invocation_id="tool-call-1",
+            expires_at=asyncio.get_running_loop().time() + 30,
+        )
+        await request.authorization_handler(
+            AuthorizationURL(
+                binding=binding,
+                url="https://auth.example/authorize?state=sensitive-state",
+            )
+        )
+        callback = await request.authorization_handler(CallbackURLRequested(binding=binding))
+        assert callback is not None
+        self.callbacks.append(callback)
+        await request.authorization_handler(AuthorizationCompleted(binding=binding))
+        return AgentResult(text="authorization:completed")
+
+
+class ExpiringAuthorizationAgent(BlockingAgent):
+    async def invoke(self, request: AgentRequest) -> AgentResult:
+        self.requests.append(request)
+        assert request.authorization_handler is not None
+        binding = AuthorizationBinding(
+            server_name="notion",
+            invocation_id="tool-call-expiring",
+            expires_at=asyncio.get_running_loop().time() + 0.01,
+        )
+        await request.authorization_handler(
+            AuthorizationURL(binding=binding, url="https://auth.example/authorize")
+        )
+        with pytest.raises(TimeoutError):
+            await request.authorization_handler(CallbackURLRequested(binding=binding))
+        return AgentResult(text="authorization:expired")
+
+
 def _config(tmp_path: Path, env: dict[str, str] | None = None) -> TalonConfig:
     return TalonConfig.from_env({"AGENT_ASSISTANT_ID": "test", **(env or {})}, base_home=tmp_path)
 
@@ -163,6 +215,97 @@ async def test_host_starts_and_stops_components(tmp_path: Path) -> None:
     assert channel.started is True
     assert channel.stopped is True
     assert channel.handler is not None
+
+
+@pytest.mark.parametrize("provider", ["whatsapp", "telegram"])
+async def test_channel_authorization_intercepts_bound_callback_outside_model(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+    provider: str,
+) -> None:
+    channel = RecordingChannel(provider=provider)
+    other_channel = RecordingChannel(provider="telegram" if provider == "whatsapp" else "whatsapp")
+    agent = AuthorizationAgent()
+    host = TalonHost(
+        config=_config(tmp_path),
+        agent=agent,
+        channels=[channel, other_channel],
+    )
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = "http://localhost:3000/callback?code=sensitive-code&state=sensitive-state"
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text=callback, sender_id="attacker"),
+    )
+    assert agent.callbacks == []
+    await host.receive_message(
+        other_channel,
+        ChannelMessage(conversation_id="chat", text=callback, sender_id="operator"),
+    )
+    assert agent.callbacks == []
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text=f"<{callback}>", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 4)
+    await host.stop()
+
+    assert [request.text for request in agent.requests] == ["login"]
+    assert agent.callbacks == [callback]
+    assert "sensitive-code" not in caplog.text
+    assert "sensitive-state" not in caplog.text
+    assert "Only the operator" in channel.sent[1][1]
+    assert other_channel.sent == [("chat", "No matching MCP authorization request is pending.")]
+    assert channel.sent[-2:] == [
+        ("chat", "MCP server `notion` is authorized."),
+        ("chat", "authorization:completed"),
+    ]
+
+
+async def test_stop_cancels_pending_channel_authorization(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = AuthorizationAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="/stop", sender_id="operator"),
+    )
+
+    assert host._pending_authorizations == {}
+    assert channel.sent[-1] == ("chat", "Stopped current run.")
+    await host.stop()
+
+
+async def test_channel_authorization_expires_and_cleans_pending_state(tmp_path: Path) -> None:
+    channel = RecordingChannel(provider="whatsapp")
+    agent = ExpiringAuthorizationAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await asyncio.sleep(0.02)
+    await _wait_for_sent_count(channel, 2)
+
+    assert channel.sent[-1] == ("chat", "authorization:expired")
+    assert host._pending_authorizations == {}
+    assert host._authorization_flows == {}
+    await host.stop()
 
 
 async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_path: Path) -> None:

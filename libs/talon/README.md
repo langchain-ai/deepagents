@@ -167,7 +167,16 @@ Talon loads MCP servers from `~/.deepagents/.mcp.json`. Set `DEEPAGENTS_TALON_MC
 }
 ```
 
-Run `deepagents-talon mcp config` to print the resolved config paths, and `deepagents-talon mcp login <server>` for OAuth-backed servers.
+Set `"auth": "oauth"` on a remote server to enable OAuth. From WhatsApp,
+Telegram, or another interactive channel, ask Talon to authenticate that configured
+server. Talon calls the narrow `authenticate_mcp_server` capability, sends the
+authorization link directly to the originating conversation, and waits for the same
+operator to paste the full callback URL. The authorization link and callback bypass
+the model context and traces. Newly discovered tools are available on the next channel
+turn after login completes.
+
+Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
+`deepagents-talon mcp login <server>` flow remains available as an alternative.
 
 Fleet zip exports can be materialized into a Talon-local agent directory before
 starting the host:

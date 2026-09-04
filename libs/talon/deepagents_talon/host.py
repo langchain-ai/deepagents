@@ -16,7 +16,17 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import FrameType
 from typing import TYPE_CHECKING, cast
+from urllib.parse import parse_qs, urlparse
 
+from deepagents_talon.authorization import (
+    AuthorizationBinding,
+    AuthorizationCompleted,
+    AuthorizationEvent,
+    AuthorizationFailed,
+    AuthorizationURL,
+    CallbackURLRequested,
+    DeviceCode,
+)
 from deepagents_talon.channels.base import outbound_media_root_from_env, send_with_retry
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -111,6 +121,16 @@ class _PendingToolApproval:
     sender_id: str | None
 
 
+@dataclass(slots=True)
+class _PendingAuthorization:
+    future: asyncio.Future[str]
+    binding: AuthorizationBinding
+    provider: str
+    channel_conversation_id: str
+    agent_conversation_id: str
+    sender_id: str
+
+
 @dataclass(frozen=True, slots=True)
 class _ReactionAudit:
     reaction: ChannelReaction
@@ -153,6 +173,8 @@ class TalonHost:
         self._blocked: set[str] = set()
         self._conversation_resets: dict[str, int] = {}
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
+        self._pending_authorizations: dict[str, _PendingAuthorization] = {}
+        self._authorization_flows: dict[str, AuthorizationBinding] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -258,6 +280,14 @@ class TalonHost:
                 if not authorized or _parse_tool_approval_reply(message.text) is not None:
                     await self._handle_tool_approval_reply(channel, message, pending)
                     return
+
+            if await self._intercept_authorization_message(
+                channel,
+                message,
+                provider=_channel_key(channel, provider),
+                agent_conversation_id=agent_conversation_id,
+            ):
+                return
 
             await self._replace_agent_turn(
                 channel,
@@ -379,11 +409,20 @@ class TalonHost:
                     reply_conversation_id=message.conversation_id,
                     sender_id=message.sender_id,
                 ),
+                authorization_handler=lambda event: self._handle_authorization_event(
+                    channel,
+                    event,
+                    provider=_channel_key(channel, turn.provider),
+                    reply_conversation_id=message.conversation_id,
+                    agent_conversation_id=agent_conversation_id,
+                    sender_id=message.sender_id,
+                ),
             )
         finally:
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await typing_task
+            self._clear_authorization(agent_conversation_id)
         async with self._locks[turn.conversation_root]:
             if (
                 self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
@@ -446,6 +485,7 @@ class TalonHost:
         metadata: dict[str, object],
         approval_handler: Callable[[ToolApprovalRequest], Awaitable[ToolApprovalDecision]]
         | None = None,
+        authorization_handler: Callable[[AuthorizationEvent], Awaitable[str | None]] | None = None,
     ) -> AgentResult:
         try:
             with langsmith_trace_context(
@@ -460,6 +500,7 @@ class TalonHost:
                         text=text,
                         metadata=metadata,
                         approval_handler=approval_handler,
+                        authorization_handler=authorization_handler,
                     ),
                 )
         except asyncio.CancelledError:
@@ -601,6 +642,224 @@ class TalonHost:
             if not pending.future.done():
                 pending.future.cancel()
         self._pending_tool_approvals.clear()
+        for pending in self._pending_authorizations.values():
+            if not pending.future.done():
+                pending.future.cancel()
+        self._pending_authorizations.clear()
+        self._authorization_flows.clear()
+
+    async def _handle_authorization_event(  # noqa: PLR0913  # binds all channel identities.
+        self,
+        channel: ChannelAdapter,
+        event: AuthorizationEvent,
+        *,
+        provider: str,
+        reply_conversation_id: str,
+        agent_conversation_id: str,
+        sender_id: str | None,
+    ) -> str | None:
+        if sender_id is None:
+            msg = "Channel authorization requires an identified operator"
+            raise RuntimeError(msg)
+        if isinstance(event, AuthorizationURL):
+            await self._begin_authorization(
+                channel,
+                event,
+                provider=provider,
+                reply_conversation_id=reply_conversation_id,
+                agent_conversation_id=agent_conversation_id,
+                sender_id=sender_id,
+            )
+            return None
+        if isinstance(event, CallbackURLRequested):
+            return await self._await_authorization_callback(event, agent_conversation_id)
+        if isinstance(event, DeviceCode):
+            self._register_authorization_flow(agent_conversation_id, event.binding)
+            await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    "\n".join(
+                        (
+                            f"Authorization required for MCP server `{event.binding.server_name}`.",
+                            f"Open: {event.verification_uri}",
+                            f"Enter code: `{event.user_code}`",
+                        )
+                    ),
+                )
+            )
+            return None
+        if isinstance(event, AuthorizationCompleted):
+            self._finish_authorization_flow(agent_conversation_id, event.binding)
+            await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    f"MCP server `{event.binding.server_name}` is authorized.",
+                )
+            )
+            return None
+        if isinstance(event, AuthorizationFailed):
+            self._finish_authorization_flow(agent_conversation_id, event.binding)
+            await send_with_retry(
+                lambda: channel.send_message(
+                    reply_conversation_id,
+                    f"Authorization for MCP server `{event.binding.server_name}` failed.",
+                )
+            )
+            return None
+        msg = "Unsupported authorization event"
+        raise TypeError(msg)
+
+    async def _begin_authorization(  # noqa: PLR0913  # persists all channel identities.
+        self,
+        channel: ChannelAdapter,
+        event: AuthorizationURL,
+        *,
+        provider: str,
+        reply_conversation_id: str,
+        agent_conversation_id: str,
+        sender_id: str,
+    ) -> None:
+        if event.binding.expires_at <= asyncio.get_running_loop().time():
+            msg = "MCP authorization request expired"
+            raise TimeoutError(msg)
+        existing = self._pending_authorizations.get(agent_conversation_id)
+        if existing is not None or agent_conversation_id in self._authorization_flows:
+            msg = "Another MCP authorization request is already pending"
+            raise RuntimeError(msg)
+        future = asyncio.get_running_loop().create_future()
+        pending = _PendingAuthorization(
+            future=future,
+            binding=event.binding,
+            provider=provider,
+            channel_conversation_id=reply_conversation_id,
+            agent_conversation_id=agent_conversation_id,
+            sender_id=sender_id,
+        )
+        self._pending_authorizations[agent_conversation_id] = pending
+        self._authorization_flows[agent_conversation_id] = event.binding
+        result = await send_with_retry(
+            lambda: channel.send_message(
+                reply_conversation_id,
+                "\n".join(
+                    (
+                        f"Authorization required for MCP server `{event.binding.server_name}`.",
+                        "Open this link and approve access:",
+                        event.url,
+                        "Then paste the full callback URL here.",
+                    )
+                ),
+            )
+        )
+        if not result.success:
+            if self._pending_authorizations.get(agent_conversation_id) is pending:
+                del self._pending_authorizations[agent_conversation_id]
+            self._authorization_flows.pop(agent_conversation_id, None)
+            msg = "Could not deliver MCP authorization request"
+            raise RuntimeError(msg)
+
+    async def _await_authorization_callback(
+        self,
+        event: CallbackURLRequested,
+        agent_conversation_id: str,
+    ) -> str:
+        pending = self._pending_authorizations.get(agent_conversation_id)
+        if pending is None or pending.binding != event.binding:
+            msg = "MCP authorization request does not match the active invocation"
+            raise RuntimeError(msg)
+        remaining = event.binding.expires_at - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            msg = "MCP authorization request expired"
+            raise TimeoutError(msg)
+        try:
+            return await asyncio.wait_for(asyncio.shield(pending.future), timeout=remaining)
+        finally:
+            if self._pending_authorizations.get(agent_conversation_id) is pending:
+                del self._pending_authorizations[agent_conversation_id]
+            if not pending.future.done():
+                pending.future.cancel()
+
+    async def _intercept_authorization_message(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        *,
+        provider: str,
+        agent_conversation_id: str,
+    ) -> bool:
+        callback_url = _callback_url(message.text)
+        pending = self._pending_authorizations.get(agent_conversation_id)
+        if pending is None:
+            if callback_url is None:
+                return False
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "No matching MCP authorization request is pending.",
+                )
+            )
+            return True
+        if (
+            provider != pending.provider
+            or message.conversation_id != pending.channel_conversation_id
+            or message.sender_id != pending.sender_id
+        ):
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "Only the operator who started this authorization can complete it.",
+                )
+            )
+            return True
+        if asyncio.get_running_loop().time() >= pending.binding.expires_at:
+            if not pending.future.done():
+                pending.future.cancel()
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "The MCP authorization request expired.",
+                )
+            )
+            return True
+        if callback_url is None:
+            await send_with_retry(
+                lambda: channel.send_message(
+                    message.conversation_id,
+                    "Paste the full callback URL to finish MCP authorization, or send `/stop`.",
+                )
+            )
+            return True
+        if not pending.future.done():
+            pending.future.set_result(callback_url)
+        return True
+
+    def _register_authorization_flow(
+        self,
+        agent_conversation_id: str,
+        binding: AuthorizationBinding,
+    ) -> None:
+        if binding.expires_at <= asyncio.get_running_loop().time():
+            msg = "MCP authorization request expired"
+            raise TimeoutError(msg)
+        if agent_conversation_id in self._authorization_flows:
+            msg = "Another MCP authorization request is already pending"
+            raise RuntimeError(msg)
+        self._authorization_flows[agent_conversation_id] = binding
+
+    def _finish_authorization_flow(
+        self,
+        agent_conversation_id: str,
+        binding: AuthorizationBinding,
+    ) -> None:
+        if self._authorization_flows.get(agent_conversation_id) != binding:
+            msg = "MCP authorization status does not match the active invocation"
+            raise RuntimeError(msg)
+        del self._authorization_flows[agent_conversation_id]
+
+    def _clear_authorization(self, agent_conversation_id: str) -> None:
+        pending = self._pending_authorizations.pop(agent_conversation_id, None)
+        if pending is not None and not pending.future.done():
+            pending.future.cancel()
+        self._authorization_flows.pop(agent_conversation_id, None)
 
     async def _request_tool_approval(
         self,
@@ -796,6 +1055,19 @@ def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:
         message_id=message.message_id,
         metadata={**message.metadata, "media_text_augmented": True},
     )
+
+
+def _callback_url(text: str) -> str | None:
+    candidate = text.strip()
+    if candidate.startswith("<") and candidate.endswith(">"):
+        candidate = candidate[1:-1].strip()
+    parsed = urlparse(candidate)
+    if parsed.scheme != "http" or parsed.netloc != "localhost:3000" or parsed.path != "/callback":
+        return None
+    query = parse_qs(parsed.query)
+    if not query.get("state") or not (query.get("code") or query.get("error")):
+        return None
+    return candidate
 
 
 def _command_name(text: str) -> str | None:

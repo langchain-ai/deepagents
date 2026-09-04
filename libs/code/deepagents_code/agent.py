@@ -114,7 +114,6 @@ from deepagents_code.config import (
     get_glyphs,
     get_langsmith_project_name,
     restore_user_langsmith_env,
-    restore_user_tracing_env,
     runtime_state,
 )
 from deepagents_code.configurable_model import ConfigurableModelMiddleware
@@ -2991,7 +2990,6 @@ def create_cli_agent(
             # agent-only credentials in the workspace environment.
             shell_env = dict(environment)
             shell_env["GIT_TERMINAL_PROMPT"] = "0"
-            restore_user_tracing_env(shell_env)
             restore_user_langsmith_env(shell_env, start_path=effective_cwd)
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.

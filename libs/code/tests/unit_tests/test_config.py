@@ -4751,7 +4751,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
@@ -4785,7 +4784,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_restore_user_tracing_api_keys_drops_unset_key(
@@ -4806,7 +4804,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
@@ -4835,7 +4832,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_restore_user_tracing_api_keys_pops_auth_stored_key(
@@ -4864,7 +4860,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
@@ -4908,7 +4903,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_warns_on_conflicting_override(
@@ -5158,7 +5152,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
@@ -5199,7 +5192,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_bootstrap_prefixed_langsmith_key_wins_over_stored_key(
@@ -5218,7 +5210,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
@@ -5250,7 +5241,6 @@ class TestLazySingletons:
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
     def test_scoped_tracing_opt_out_restores_user_tracing_for_shell_env(
@@ -5261,7 +5251,10 @@ class TestLazySingletons:
 
         import deepagents_code.config as config_mod
         from deepagents_code import auth_store
-        from deepagents_code.config import _ensure_bootstrap, restore_user_tracing_env
+        from deepagents_code.config import (
+            _ensure_bootstrap,
+            restore_user_langsmith_env,
+        )
 
         monkeypatch.setattr(
             "deepagents_code.model_config.DEFAULT_STATE_DIR", tmp_path / ".state"
@@ -5269,7 +5262,6 @@ class TestLazySingletons:
 
         original_done = config_mod._bootstrap_state.done
         original_ls = config_mod._bootstrap_state.original_langsmith_project
-        original_tracing = dict(config_mod._bootstrap_state.original_tracing_env)
         original_api_keys = dict(config_mod._bootstrap_state.original_tracing_api_keys)
         config_mod._bootstrap_state.done = False
 
@@ -5294,14 +5286,13 @@ class TestLazySingletons:
             assert os.environ["LANGCHAIN_TRACING_V2"] == "false"
 
             shell_env = os.environ.copy()
-            restore_user_tracing_env(shell_env)
+            restore_user_langsmith_env(shell_env)
 
             assert "LANGSMITH_TRACING" not in shell_env
             assert shell_env["LANGCHAIN_TRACING_V2"] == "true"
         finally:
             config_mod._bootstrap_state.done = original_done
             config_mod._bootstrap_state.original_langsmith_project = original_ls
-            config_mod._bootstrap_state.original_tracing_env = original_tracing
             config_mod._bootstrap_state.original_tracing_api_keys = original_api_keys
 
 

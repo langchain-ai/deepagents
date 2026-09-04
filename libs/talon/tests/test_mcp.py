@@ -289,12 +289,11 @@ async def test_mcp_tool_provider_serializes_concurrent_refreshes(
     assert second_result is None
 
 
-@pytest.mark.parametrize("exception_type", [RuntimeError, KeyError, asyncio.CancelledError])
-async def test_mcp_tool_provider_refreshes_after_credentials_persist(
+def _provider_with_post_persistence_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     exception_type: type[BaseException],
-) -> None:
+) -> MCPToolProvider:
     config_path = tmp_path / "oauth.mcp.json"
     _write_config(
         config_path,
@@ -302,7 +301,6 @@ async def test_mcp_tool_provider_refreshes_after_credentials_persist(
     )
     provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
     provider._oauth_servers = frozenset({"notion"})
-    events: list[AuthorizationEvent] = []
 
     async def complete_then_fail(_client: object, _server_name: str) -> None:
         attempt = current_authorization_attempt()
@@ -315,11 +313,23 @@ async def test_mcp_tool_provider_refreshes_after_credentials_persist(
         attempt.completed = True
         raise exception_type
 
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_then_fail)
+    return provider
+
+
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyError])
+async def test_mcp_tool_provider_refreshes_after_credentials_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    provider = _provider_with_post_persistence_error(tmp_path, monkeypatch, exception_type)
+    events: list[AuthorizationEvent] = []
+
     async def authorize(event: AuthorizationEvent) -> str | None:
         events.append(event)
         return None
 
-    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_then_fail)
     token = set_authorization_handler(authorize)
     try:
         result = await provider._authenticate("notion", "tool-call")
@@ -327,6 +337,32 @@ async def test_mcp_tool_provider_refreshes_after_credentials_persist(
         reset_authorization_handler(token)
 
     assert result == {"status": "completed", "server_name": "notion"}
+    assert provider._dirty is True
+    assert [type(event) for event in events] == [AuthorizationCompleted]
+
+
+async def test_mcp_tool_provider_propagates_cancellation_after_credentials_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _provider_with_post_persistence_error(
+        tmp_path,
+        monkeypatch,
+        asyncio.CancelledError,
+    )
+    events: list[AuthorizationEvent] = []
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        events.append(event)
+        return None
+
+    token = set_authorization_handler(authorize)
+    try:
+        with pytest.raises(asyncio.CancelledError):
+            await provider._authenticate("notion", "tool-call")
+    finally:
+        reset_authorization_handler(token)
+
     assert provider._dirty is True
     assert [type(event) for event in events] == [AuthorizationCompleted]
 

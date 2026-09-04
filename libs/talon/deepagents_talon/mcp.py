@@ -216,12 +216,9 @@ class MCPToolProvider:
                 attempt=attempt,
             )
         except asyncio.CancelledError:
-            if not attempt.completed:
-                raise
-            logger.debug(
-                "MCP authorization session was cancelled after credentials persisted",
-                exc_info=True,
-            )
+            if attempt.completed:
+                self._dirty = True
+            raise
         except (
             HTTPError,
             McpError,

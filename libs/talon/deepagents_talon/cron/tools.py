@@ -253,7 +253,7 @@ def build_cron_tools(cron: CronTools) -> list[BaseTool]:
 
 
 def _tool_job(job: CronJob) -> dict[str, Any]:
-    data = job.to_dict()
+    data = job.to_wire()
     return {
         "id": data["id"],
         "name": data["name"],

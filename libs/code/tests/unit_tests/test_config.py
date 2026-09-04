@@ -501,6 +501,29 @@ class TestWorkspaceDotenvEnvironment:
 class TestProjectDotenvDeniedKeys:
     """A cloned repo must not set user-level environment values."""
 
+    def test_project_values_do_not_interpolate_into_the_global_dotenv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A project `.env` cannot reach a denied key through the global file."""
+        import deepagents_code.config as config_mod
+        import deepagents_code.config_manifest as manifest
+
+        denied = "DEEPAGENTS_CODE_DANGEROUSLY_ENABLE_PROJECT_MCP_SERVERS"
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("MY_SERVERS=evil-server\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(f"{denied}=${{MY_SERVERS}}\n", encoding="utf-8")
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+        monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
+
+        env = config_mod._dotenv_environment(start_path=project, environ={})
+
+        # The project file may set its own name, but the trusted global file
+        # must not expand it into a key the project is denied.
+        assert env["MY_SERVERS"] == "evil-server"
+        assert env[denied] == ""
+
     def test_profile_dotenv_inside_project_keeps_project_provenance(
         self,
         tmp_path: Path,

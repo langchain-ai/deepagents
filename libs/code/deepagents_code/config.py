@@ -543,12 +543,18 @@ def _dotenv_environment(
         A new effective environment mapping.
     """
     env = {_environment_key(key): value for key, value in environ.items()}
+    # The baseline is the caller's environment, before any file contributes to
+    # it. Each file interpolates against this rather than against `env`, so one
+    # file's values can never expand into another's. Without it a project `.env`
+    # reaches keys it is denied (`_PROJECT_DOTENV_DENIED_ENV_KEYS`) by defining
+    # a name the trusted global `.env` interpolates.
+    baseline = dict(env)
 
     def apply_dotenv(dotenv_path: Path | None, *, is_project: bool) -> None:
         if dotenv_path is None:
             return
         try:
-            values = _dotenv_values_from(dotenv_path, env)
+            values = _dotenv_values_from(dotenv_path, baseline)
         except (OSError, ValueError):
             logger.warning(
                 "Could not read dotenv at %s; environment may be incomplete",
@@ -585,7 +591,9 @@ def _dotenv_environment(
     global_toggle: dict[str, str] = {}
     try:
         if not global_is_project and _GLOBAL_DOTENV_PATH.is_file():
-            raw = _dotenv_values_from(_GLOBAL_DOTENV_PATH, env).get(READ_PROJECT_DOTENV)
+            raw = _dotenv_values_from(_GLOBAL_DOTENV_PATH, baseline).get(
+                READ_PROJECT_DOTENV
+            )
             if raw is not None:
                 global_toggle[READ_PROJECT_DOTENV] = raw
     except (OSError, ValueError):

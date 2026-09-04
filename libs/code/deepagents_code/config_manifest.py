@@ -1974,6 +1974,26 @@ def _is_secret_env(name: str) -> bool:
     return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
+def _prefix_aware_fallbacks(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Expand canonical fallbacks in `resolve_env_var` lookup order.
+
+    Args:
+        names: Canonical fallback environment variable names.
+
+    Returns:
+        Prefixed and canonical spellings for each fallback, in precedence order.
+    """
+    return tuple(
+        candidate
+        for name in names
+        for candidate in (
+            (name,)
+            if name.startswith("DEEPAGENTS_CODE_")
+            else (f"DEEPAGENTS_CODE_{name}", name)
+        )
+    )
+
+
 def _credential_options() -> tuple[ConfigOption[object], ...]:
     """Build credential options from the canonical provider/key registries.
 
@@ -2007,7 +2027,9 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
                 summary=summary,
                 kind=OptionKind.STR,
                 env_var=env_var,
-                fallback_env_vars=SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ()),
+                fallback_env_vars=_prefix_aware_fallbacks(
+                    SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ())
+                ),
                 redacted=redacted,
                 provider=name,
                 dependency_module=dependency[0] if dependency else None,

@@ -10,10 +10,10 @@ import os
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 from mcp.client.auth import OAuthClientProvider
-from mcp.shared.auth import OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
+from mcp.shared.auth import AnyUrl, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
 from pydantic import ValidationError
 
 from deepagents_talon.authorization import (
@@ -29,8 +29,18 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
 _REDIRECT_URI = "http://localhost:3000/callback"
+_SLACK_MCP_CLIENT_ID = "4518649543379.10944517634130"
+_SLACK_REDIRECT_URI = "http://localhost:3118/callback"
+_OAUTH_CALLBACK_ENDPOINTS = frozenset(
+    {
+        ("http", "localhost:3000", "/callback"),
+        ("http", "localhost:3118", "/callback"),
+    }
+)
 _TOKEN_DIR = Path(".deepagents/mcp-tokens")
 _AUTHORIZATION_TIMEOUT_SECONDS = 10 * 60
+_ASCII_CONTROL_LIMIT = 32
+_ASCII_DELETE = 127
 
 
 class MCPAuthorizationError(RuntimeError):
@@ -58,6 +68,7 @@ class FileTokenStorage:
         digest = hashlib.sha256(server_url.encode()).hexdigest()[:12]
         self.path = Path.home() / _TOKEN_DIR / f"{server_name}-{digest}.json"
         self._force_authorization = force_authorization
+        self._pending_slack_team_id: str | None = None
 
     async def get_tokens(self) -> OAuthToken | None:
         """Return stored OAuth tokens."""
@@ -70,7 +81,11 @@ class FileTokenStorage:
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
         """Persist OAuth tokens."""
-        await asyncio.to_thread(self._update, "tokens", json.loads(tokens.model_dump_json()))
+        values: dict[str, object] = {"tokens": json.loads(tokens.model_dump_json())}
+        if self._pending_slack_team_id is not None:
+            values["slack_team_id"] = self._pending_slack_team_id
+        await asyncio.to_thread(self._update, values)
+        self._pending_slack_team_id = None
         attempt = current_authorization_attempt()
         if attempt is not None and attempt.binding is not None:
             attempt.completed = True
@@ -84,7 +99,20 @@ class FileTokenStorage:
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
         """Persist OAuth client registration."""
         value = json.loads(client_info.model_dump_json(exclude_none=True))
-        await asyncio.to_thread(self._update, "client_info", value)
+        await asyncio.to_thread(self._update, {"client_info": value})
+
+    async def get_slack_team_id(self) -> str | None:
+        """Return the Slack team ID associated with a successful login."""
+        data = await asyncio.to_thread(self._read)
+        raw = data.get("slack_team_id") if data is not None else None
+        if raw is not None and not isinstance(raw, str):
+            msg = f"Invalid Slack team ID in MCP credential file: {self.path}"
+            raise TypeError(msg)
+        return raw
+
+    def store_slack_team_id_with_tokens(self, team_id: str) -> None:
+        """Stage a Slack team ID for the next successful token write."""
+        self._pending_slack_team_id = team_id
 
     def _read(self) -> dict[str, object] | None:
         try:
@@ -96,12 +124,12 @@ class FileTokenStorage:
             raise TypeError(msg)
         return raw
 
-    def _update(self, key: str, value: object) -> None:
+    def _update(self, values: dict[str, object]) -> None:
         directory = self.path.parent
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.chmod(0o700)
         data = self._read() or {}
-        data[key] = value
+        data.update(values)
         descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".tokens-", text=True)
         try:
             os.fchmod(descriptor, 0o600)
@@ -116,28 +144,70 @@ class FileTokenStorage:
 
 
 def build_oauth_provider(
-    *, server_name: str, server_url: str, storage: FileTokenStorage, interactive: bool
+    *,
+    server_name: str,
+    server_url: str,
+    storage: FileTokenStorage,
+    interactive: bool,
+    slack_team_id: str | None = None,
 ) -> OAuthClientProvider:
-    """Build an MCP SDK OAuth provider for Talon."""
-    redirect, callback = _interactive_handlers() if interactive else _channel_handlers(server_name)
+    """Build an MCP SDK OAuth provider for Talon.
+
+    Args:
+        server_name: Configured MCP server name.
+        server_url: Remote MCP endpoint URL.
+        storage: Credential storage bound to the server identity.
+        interactive: Whether to use terminal instead of channel authorization.
+        slack_team_id: Optional Slack workspace to select during authorization.
+
+    Returns:
+        A configured MCP SDK OAuth provider.
+    """
+    is_slack = _is_slack_mcp_url(server_url)
+    redirect_uri = _SLACK_REDIRECT_URI if is_slack else _REDIRECT_URI
+    if interactive:
+        redirect, callback = _interactive_handlers(redirect_uri)
+    else:
+        redirect, callback = _channel_handlers(server_name, redirect_uri)
+    if is_slack and slack_team_id is not None:
+        redirect = _with_slack_team(redirect, slack_team_id)
     return OAuthClientProvider(
         server_url=server_url,
-        client_metadata=OAuthClientMetadata(
-            redirect_uris=[_REDIRECT_URI],
-            client_name="Deep Agents Talon",
-            grant_types=["authorization_code", "refresh_token"],
-            response_types=["code"],
-            token_endpoint_auth_method="none",  # noqa: S106
-        ),
+        client_metadata=_client_metadata(redirect_uri),
         storage=storage,
         redirect_handler=redirect,
         callback_handler=callback,
     )
 
 
-def _interactive_handlers() -> tuple[
-    Callable[[str], Awaitable[None]], Callable[[], Awaitable[tuple[str, str | None]]]
-]:
+async def prepare_oauth_login(
+    *, server_url: str, storage: FileTokenStorage, interactive: bool
+) -> str | None:
+    """Prepare provider-specific OAuth state before creating the SDK provider.
+
+    Args:
+        server_url: Remote MCP endpoint URL.
+        storage: Credential storage bound to the server identity.
+        interactive: Whether terminal prompts are available.
+
+    Returns:
+        The cached or newly entered Slack team ID for Slack, otherwise `None`.
+    """
+    if not _is_slack_mcp_url(server_url):
+        return None
+    await _preseed_slack_client_info(storage)
+    team_id = await storage.get_slack_team_id()
+    if team_id is not None or not interactive:
+        return team_id
+    team_id = await _prompt_slack_team_id()
+    if team_id is not None:
+        storage.store_slack_team_id_with_tokens(team_id)
+    return team_id
+
+
+def _interactive_handlers(
+    redirect_uri: str,
+) -> tuple[Callable[[str], Awaitable[None]], Callable[[], Awaitable[tuple[str, str | None]]]]:
     async def redirect(url: str) -> None:
         print("Open this URL in a browser and approve access:\n")  # noqa: T201
         print(f"  {url}\n")  # noqa: T201
@@ -148,13 +218,13 @@ def _interactive_handlers() -> tuple[
         except EOFError as exc:
             msg = "No callback URL received; re-run the login command."
             raise RuntimeError(msg) from exc
-        return _parse_callback_url(raw)
+        return _parse_callback_url(raw, redirect_uri)
 
     return redirect, callback
 
 
 def _channel_handlers(
-    server_name: str,
+    server_name: str, redirect_uri: str
 ) -> tuple[Callable[[str], Awaitable[None]], Callable[[], Awaitable[tuple[str, str | None]]]]:
     async def redirect(url: str) -> None:
         handler = current_authorization_handler()
@@ -182,14 +252,14 @@ def _channel_handlers(
         if not isinstance(raw, str):
             msg = "MCP authorization callback was not received"
             raise MCPAuthorizationError(msg)
-        return _parse_callback_url(raw)
+        return _parse_callback_url(raw, redirect_uri)
 
     return redirect, callback
 
 
-def _parse_callback_url(raw: str) -> tuple[str, str | None]:
+def _parse_callback_url(raw: str, redirect_uri: str = _REDIRECT_URI) -> tuple[str, str | None]:
     parsed = urlparse(raw.strip())
-    expected = urlparse(_REDIRECT_URI)
+    expected = urlparse(redirect_uri)
     if (parsed.scheme, parsed.netloc, parsed.path) != (
         expected.scheme,
         expected.netloc,
@@ -209,6 +279,99 @@ def _parse_callback_url(raw: str) -> tuple[str, str | None]:
     return code, state
 
 
+def extract_oauth_callback_url(text: str) -> str | None:
+    """Return a recognized Talon OAuth callback URL from a channel message.
+
+    Args:
+        text: Raw channel message text.
+
+    Returns:
+        The normalized callback URL, or `None` when the message is not a
+        recognized callback.
+    """
+    candidate = text.strip()
+    if candidate.startswith("<") and candidate.endswith(">"):
+        candidate = candidate[1:-1].strip()
+    if any(
+        ord(character) < _ASCII_CONTROL_LIMIT or ord(character) == _ASCII_DELETE
+        for character in candidate
+    ):
+        return None
+    try:
+        parsed = urlparse(candidate)
+    except ValueError:
+        return None
+    if (parsed.scheme, parsed.netloc, parsed.path) not in _OAUTH_CALLBACK_ENDPOINTS:
+        return None
+    query = parse_qs(parsed.query)
+    if not query.get("state") or not (query.get("code") or query.get("error")):
+        return None
+    return candidate
+
+
+def _is_slack_mcp_url(url: str) -> bool:
+    host = urlparse(url).hostname or ""
+    return host == "slack.com" or host.endswith(".slack.com")
+
+
+def _client_metadata(redirect_uri: str) -> OAuthClientMetadata:
+    return OAuthClientMetadata(
+        redirect_uris=[AnyUrl(redirect_uri)],
+        client_name="Deep Agents Talon",
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        token_endpoint_auth_method="none",  # noqa: S106
+    )
+
+
+async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
+    existing = await storage.get_client_info()
+    redirect_uris = existing.redirect_uris if existing is not None else None
+    current_redirect = str(redirect_uris[0]) if redirect_uris else None
+    if (
+        existing is not None
+        and existing.client_id == _SLACK_MCP_CLIENT_ID
+        and current_redirect == _SLACK_REDIRECT_URI
+    ):
+        return
+    client_info = OAuthClientInformationFull(
+        client_id=_SLACK_MCP_CLIENT_ID,
+        redirect_uris=[AnyUrl(_SLACK_REDIRECT_URI)],
+        grant_types=["authorization_code", "refresh_token"],
+        response_types=["code"],
+        token_endpoint_auth_method="none",  # noqa: S106
+    )
+    await storage.set_client_info(client_info)
+
+
+async def _prompt_slack_team_id() -> str | None:
+    try:
+        raw = await asyncio.to_thread(
+            input,
+            "Slack team ID to install the app into "
+            "(e.g. T01234567 — leave blank to pick on Slack's page): ",
+        )
+    except EOFError:
+        return None
+    return raw.strip() or None
+
+
+def _with_slack_team(
+    redirect: Callable[[str], Awaitable[None]], team_id: str
+) -> Callable[[str], Awaitable[None]]:
+    async def wrapped(url: str) -> None:
+        parsed = urlparse(url)
+        query = [
+            (key, value)
+            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key != "team"
+        ]
+        query.append(("team", team_id))
+        await redirect(urlunparse(parsed._replace(query=urlencode(query))))
+
+    return wrapped
+
+
 def format_login_error(exc: BaseException) -> str:
     """Return a credential-safe OAuth failure message."""
     if isinstance(exc, (OSError, ValidationError, TypeError, ValueError)):
@@ -220,5 +383,7 @@ __all__ = [
     "FileTokenStorage",
     "MCPAuthorizationError",
     "build_oauth_provider",
+    "extract_oauth_callback_url",
     "format_login_error",
+    "prepare_oauth_login",
 ]

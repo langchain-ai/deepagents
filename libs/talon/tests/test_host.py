@@ -249,7 +249,7 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
         ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
     )
     await _wait_for_sent_count(channel, 1)
-    callback = "http://localhost:3000/callback?code=sensitive-code&state=sensitive-state"
+    callback = "http://localhost:3118/callback?code=sensitive-code&state=sensitive-state"
     await host.receive_message(
         channel,
         ChannelMessage(conversation_id="chat", text=callback, sender_id="attacker"),

@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, ClassVar, Self
 
 import pytest
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
-from mcp.client.auth import OAuthFlowError
+from mcp.client.auth import OAuthClientProvider, OAuthFlowError
 from mcp.shared.auth import OAuthToken
 from mcp.types import CallToolResult
 
@@ -245,6 +245,34 @@ async def test_mcp_interceptor_resumes_same_bound_invocation_without_secret_outp
     assert isinstance(events[-1], AuthorizationCompleted)
     assert "secret-state" not in repr(events[0])
     assert "secret-code" not in repr(events)
+
+
+async def test_slack_connection_reuses_team_after_successful_login(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "T01234567")
+    output: list[str] = []
+    monkeypatch.setattr(
+        "builtins.print",
+        lambda *values, **_kwargs: output.extend(str(value) for value in values),
+    )
+
+    connection, _transport = await _connection(
+        "slack",
+        {"url": "https://slack.com/mcp", "auth": "oauth"},
+        interactive=True,
+    )
+    provider = connection["auth"]
+    assert isinstance(provider, OAuthClientProvider)
+    redirect = provider.context.redirect_handler
+    assert redirect is not None
+    await redirect("https://slack.com/oauth/v2/authorize?state=opaque")
+    assert any("team=T01234567" in line for line in output)
+
+    await provider.context.storage.set_tokens(_oauth_token())
+    stored = FileTokenStorage("slack", server_url="https://slack.com/mcp")
+    assert await stored.get_slack_team_id() == "T01234567"
 
 
 def test_normalize_mcp_arguments_omits_only_optional_empty_strings() -> None:

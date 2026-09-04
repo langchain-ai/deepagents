@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import stat
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, urlparse
 
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
@@ -11,7 +10,6 @@ from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from deepagents_talon.mcp_auth import (
     FileTokenStorage,
     MCPAuthorizationError,
-    _with_slack_team,
     build_oauth_provider,
     extract_oauth_callback_url,
     prepare_oauth_login,
@@ -122,71 +120,18 @@ def test_slack_provider_selection_requires_slack_hostname() -> None:
     ]
 
 
-async def test_slack_login_preseeds_public_client_and_persists_team_with_tokens(
+async def test_slack_login_preseeds_public_client(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "  T01234567  ")
     storage = FileTokenStorage("slack", server_url="https://slack.com/mcp")
 
-    team_id = await prepare_oauth_login(
-        server_url="https://slack.com/mcp",
-        storage=storage,
-        interactive=True,
-    )
+    await prepare_oauth_login(server_url="https://slack.com/mcp", storage=storage)
 
     client = await storage.get_client_info()
     assert client is not None
     assert client.client_id == "4518649543379.10944517634130"
     assert [str(uri) for uri in client.redirect_uris or []] == ["http://localhost:3118/callback"]
-    assert team_id == "T01234567"
-    assert await storage.get_slack_team_id() is None
-    assert "slack_team_id" not in json.loads(storage.path.read_text(encoding="utf-8"))
-
-    await storage.set_tokens(OAuthToken(access_token="secret"))  # noqa: S106
-
-    assert await storage.get_slack_team_id() == "T01234567"
-
-
-async def test_slack_login_reuses_team_without_prompt_or_rewriting_client(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
-    storage = FileTokenStorage("slack", server_url="https://slack.com/mcp")
-    storage.store_slack_team_id_with_tokens("T01234567")
-    await storage.set_tokens(OAuthToken(access_token="secret"))  # noqa: S106
-    await prepare_oauth_login(
-        server_url="https://slack.com/mcp",
-        storage=storage,
-        interactive=False,
-    )
-    modified_at = storage.path.stat().st_mtime_ns
-    monkeypatch.setattr(
-        "builtins.input",
-        lambda _prompt: pytest.fail("cached Slack team ID should skip the prompt"),
-    )
-
-    team_id = await prepare_oauth_login(
-        server_url="https://slack.com/mcp",
-        storage=storage,
-        interactive=True,
-    )
-
-    assert team_id == "T01234567"
-    assert storage.path.stat().st_mtime_ns == modified_at
-
-
-async def test_slack_team_query_is_encoded_and_replaces_existing_value() -> None:
-    urls: list[str] = []
-
-    async def capture(url: str) -> None:
-        urls.append(url)
-
-    redirect = _with_slack_team(capture, "T01 &")
-    await redirect("https://slack.com/oauth?state=opaque&team=old")
-
-    assert len(urls) == 1
-    assert parse_qs(urlparse(urls[0]).query) == {"state": ["opaque"], "team": ["T01 &"]}
 
 
 async def test_slack_provider_validates_registered_callback(

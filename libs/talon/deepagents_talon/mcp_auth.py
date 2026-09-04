@@ -10,7 +10,7 @@ import os
 import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
+from urllib.parse import parse_qs, urlparse
 
 from mcp.client.auth import OAuthClientProvider
 from mcp.shared.auth import AnyUrl, OAuthClientInformationFull, OAuthClientMetadata, OAuthToken
@@ -68,7 +68,6 @@ class FileTokenStorage:
         digest = hashlib.sha256(server_url.encode()).hexdigest()[:12]
         self.path = Path.home() / _TOKEN_DIR / f"{server_name}-{digest}.json"
         self._force_authorization = force_authorization
-        self._pending_slack_team_id: str | None = None
 
     async def get_tokens(self) -> OAuthToken | None:
         """Return stored OAuth tokens."""
@@ -81,11 +80,7 @@ class FileTokenStorage:
 
     async def set_tokens(self, tokens: OAuthToken) -> None:
         """Persist OAuth tokens."""
-        values: dict[str, object] = {"tokens": json.loads(tokens.model_dump_json())}
-        if self._pending_slack_team_id is not None:
-            values["slack_team_id"] = self._pending_slack_team_id
-        await asyncio.to_thread(self._update, values)
-        self._pending_slack_team_id = None
+        await asyncio.to_thread(self._update, "tokens", json.loads(tokens.model_dump_json()))
         attempt = current_authorization_attempt()
         if attempt is not None and attempt.binding is not None:
             attempt.completed = True
@@ -99,20 +94,7 @@ class FileTokenStorage:
     async def set_client_info(self, client_info: OAuthClientInformationFull) -> None:
         """Persist OAuth client registration."""
         value = json.loads(client_info.model_dump_json(exclude_none=True))
-        await asyncio.to_thread(self._update, {"client_info": value})
-
-    async def get_slack_team_id(self) -> str | None:
-        """Return the Slack team ID associated with a successful login."""
-        data = await asyncio.to_thread(self._read)
-        raw = data.get("slack_team_id") if data is not None else None
-        if raw is not None and not isinstance(raw, str):
-            msg = f"Invalid Slack team ID in MCP credential file: {self.path}"
-            raise TypeError(msg)
-        return raw
-
-    def store_slack_team_id_with_tokens(self, team_id: str) -> None:
-        """Stage a Slack team ID for the next successful token write."""
-        self._pending_slack_team_id = team_id
+        await asyncio.to_thread(self._update, "client_info", value)
 
     def _read(self) -> dict[str, object] | None:
         try:
@@ -124,12 +106,12 @@ class FileTokenStorage:
             raise TypeError(msg)
         return raw
 
-    def _update(self, values: dict[str, object]) -> None:
+    def _update(self, key: str, value: object) -> None:
         directory = self.path.parent
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         directory.chmod(0o700)
         data = self._read() or {}
-        data.update(values)
+        data[key] = value
         descriptor, temporary = tempfile.mkstemp(dir=directory, prefix=".tokens-", text=True)
         try:
             os.fchmod(descriptor, 0o600)
@@ -149,7 +131,6 @@ def build_oauth_provider(
     server_url: str,
     storage: FileTokenStorage,
     interactive: bool,
-    slack_team_id: str | None = None,
 ) -> OAuthClientProvider:
     """Build an MCP SDK OAuth provider for Talon.
 
@@ -158,7 +139,6 @@ def build_oauth_provider(
         server_url: Remote MCP endpoint URL.
         storage: Credential storage bound to the server identity.
         interactive: Whether to use terminal instead of channel authorization.
-        slack_team_id: Optional Slack workspace to select during authorization.
 
     Returns:
         A configured MCP SDK OAuth provider.
@@ -169,8 +149,6 @@ def build_oauth_provider(
         redirect, callback = _interactive_handlers(redirect_uri)
     else:
         redirect, callback = _channel_handlers(server_name, redirect_uri)
-    if is_slack and slack_team_id is not None:
-        redirect = _with_slack_team(redirect, slack_team_id)
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=_client_metadata(redirect_uri),
@@ -180,29 +158,15 @@ def build_oauth_provider(
     )
 
 
-async def prepare_oauth_login(
-    *, server_url: str, storage: FileTokenStorage, interactive: bool
-) -> str | None:
-    """Prepare provider-specific OAuth state before creating the SDK provider.
+async def prepare_oauth_login(*, server_url: str, storage: FileTokenStorage) -> None:
+    """Preseed provider-specific OAuth client information when required.
 
     Args:
         server_url: Remote MCP endpoint URL.
         storage: Credential storage bound to the server identity.
-        interactive: Whether terminal prompts are available.
-
-    Returns:
-        The cached or newly entered Slack team ID for Slack, otherwise `None`.
     """
-    if not _is_slack_mcp_url(server_url):
-        return None
-    await _preseed_slack_client_info(storage)
-    team_id = await storage.get_slack_team_id()
-    if team_id is not None or not interactive:
-        return team_id
-    team_id = await _prompt_slack_team_id()
-    if team_id is not None:
-        storage.store_slack_team_id_with_tokens(team_id)
-    return team_id
+    if _is_slack_mcp_url(server_url):
+        await _preseed_slack_client_info(storage)
 
 
 def _interactive_handlers(
@@ -342,34 +306,6 @@ async def _preseed_slack_client_info(storage: FileTokenStorage) -> None:
         token_endpoint_auth_method="none",  # noqa: S106
     )
     await storage.set_client_info(client_info)
-
-
-async def _prompt_slack_team_id() -> str | None:
-    try:
-        raw = await asyncio.to_thread(
-            input,
-            "Slack team ID to install the app into "
-            "(e.g. T01234567 — leave blank to pick on Slack's page): ",
-        )
-    except EOFError:
-        return None
-    return raw.strip() or None
-
-
-def _with_slack_team(
-    redirect: Callable[[str], Awaitable[None]], team_id: str
-) -> Callable[[str], Awaitable[None]]:
-    async def wrapped(url: str) -> None:
-        parsed = urlparse(url)
-        query = [
-            (key, value)
-            for key, value in parse_qsl(parsed.query, keep_blank_values=True)
-            if key != "team"
-        ]
-        query.append(("team", team_id))
-        await redirect(urlunparse(parsed._replace(query=urlencode(query))))
-
-    return wrapped
 
 
 def format_login_error(exc: BaseException) -> str:

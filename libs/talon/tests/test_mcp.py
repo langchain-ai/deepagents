@@ -28,8 +28,10 @@ from deepagents_talon.mcp import (
     MCPServerInfo,
     MCPToolInfo,
     MCPToolProvider,
+    _argument_normalization_interceptor,
     _authorization_interceptor,
     _connection,
+    _normalize_mcp_arguments,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
@@ -243,6 +245,56 @@ async def test_mcp_interceptor_resumes_same_bound_invocation_without_secret_outp
     assert isinstance(events[-1], AuthorizationCompleted)
     assert "secret-state" not in repr(events[0])
     assert "secret-code" not in repr(events)
+
+
+def test_normalize_mcp_arguments_omits_only_optional_empty_strings() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "query": {"type": "string"},
+            "integrationId": {"type": "string"},
+            "fetchMode": {"type": "object"},
+        },
+        "required": ["query"],
+    }
+
+    arguments = _normalize_mcp_arguments(
+        {"query": "", "integrationId": "", "fetchMode": {}}, schema
+    )
+
+    assert arguments == {"query": "", "fetchMode": {}}
+
+
+async def test_argument_normalization_interceptor_overrides_request_arguments() -> None:
+    request = MCPToolCallRequest(
+        name="listVulnerabilities",
+        args={"severity": "CRITICAL", "integrationId": ""},
+        server_name="vanta",
+    )
+    received: list[MCPToolCallRequest] = []
+    expected = CallToolResult(content=[])
+
+    async def execute(normalized: MCPToolCallRequest) -> CallToolResult:
+        received.append(normalized)
+        return expected
+
+    result = await _argument_normalization_interceptor(
+        request,
+        execute,
+        input_schemas={
+            "listVulnerabilities": {
+                "type": "object",
+                "properties": {
+                    "severity": {"type": "string"},
+                    "integrationId": {"type": "string"},
+                },
+            }
+        },
+    )
+
+    assert result is expected
+    assert received[0].args == {"severity": "CRITICAL"}
+    assert request.args == {"severity": "CRITICAL", "integrationId": ""}
 
 
 async def test_mcp_tool_provider_exposes_only_configured_server_authentication(

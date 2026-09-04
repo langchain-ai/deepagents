@@ -13,6 +13,7 @@ import shlex
 import shutil
 import sys
 import threading
+from collections import UserDict
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import (
@@ -488,6 +489,29 @@ def _environment_key(key: str) -> str:
     return key.upper() if sys.platform == "win32" else key
 
 
+class _InterpolationEnv(UserDict[str, "str | None"]):
+    """Interpolation mapping that normalizes reference names like the host.
+
+    Keys are stored normalized, but a `${...}` reference carries the name as
+    written. On Windows `${proxy_url}` must find `PROXY_URL`, the way a lookup
+    in `os.environ` would.
+    """
+
+    def __getitem__(self, key: str) -> str | None:
+        return self.data[_environment_key(key)]
+
+    def get(self, key: str, default: str | None = None) -> str | None:
+        """Look a reference name up through the host's key normalization.
+
+        `UserDict.get` reads `self.data` directly, so it has to be overridden
+        alongside `__getitem__`. `dotenv` resolves every reference with `get`.
+
+        Returns:
+            The stored value, or `default` when the name is absent.
+        """
+        return self.data.get(_environment_key(key), default)
+
+
 def _dotenv_values_from(
     dotenv_path: Path,
     environ: Mapping[str, str],
@@ -514,7 +538,9 @@ def _dotenv_values_from(
     resolved: dict[str, str | None] = {}
     # Built once: `resolved` only grows, and each new key is folded in below, so
     # later values see every earlier one without re-copying the environment.
-    interpolation_env: dict[str, str | None] = dict(environ)
+    interpolation_env = _InterpolationEnv(
+        {_environment_key(key): value for key, value in environ.items()}
+    )
     for parsed_key, value in parsed.items():
         key = _environment_key(parsed_key)
         resolved[key] = (

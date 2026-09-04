@@ -425,6 +425,27 @@ class TestWorkspaceDotenvEnvironment:
         assert "openai_api_key" not in from_dotenv
         assert from_shell["OPENAI_API_KEY"] == "shell-key"
 
+    def test_windows_interpolation_resolves_normalized_names(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A lowercase `${...}` reference finds the normalized key."""
+        import deepagents_code.config as config_mod
+        import deepagents_code.config_manifest as manifest
+
+        (tmp_path / ".env").write_text(
+            "proxy_url=http://proxy:8080\nHTTPS_PROXY=${proxy_url}\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+        monkeypatch.setattr(manifest, "resolve_read_project_dotenv", lambda **_: True)
+
+        env = config_mod._dotenv_environment(start_path=tmp_path, environ={})
+
+        assert env["HTTPS_PROXY"] == "http://proxy:8080"
+
     def test_preview_interpolates_prior_dotenv_values(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

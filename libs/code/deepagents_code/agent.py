@@ -2651,6 +2651,7 @@ def create_cli_agent(
     runtime_credentials = (
         credentials if credentials_snapshot is None else credentials_snapshot
     )
+    user_tracing_project = runtime_credentials.user_langchain_project
     if extension_registry is not None and not is_env_truthy(
         EXPERIMENTAL, environ=environment
     ):
@@ -2991,6 +2992,7 @@ def create_cli_agent(
             shell_env = dict(environment)
             shell_env["GIT_TERMINAL_PROMPT"] = "0"
             restore_user_langsmith_env(shell_env, start_path=effective_cwd)
+            user_tracing_project = shell_env.get("LANGSMITH_PROJECT")
             # Re-apply a launch-time PYTHONPATH that was stripped from the server
             # interpreter but relayed for approval-gated `execute` commands.
             _apply_inherited_pythonpath(shell_env)
@@ -3062,7 +3064,7 @@ def create_cli_agent(
                 backend=backend,
                 mcp_server_info=mcp_server_info,
                 tracing_project=get_langsmith_project_name(),
-                user_tracing_project=runtime_credentials.user_langchain_project,
+                user_tracing_project=user_tracing_project,
             )
         )
 

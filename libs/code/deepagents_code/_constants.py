@@ -44,6 +44,12 @@ is the drift guard that fails when the two diverge.
 FIREWORKS_PROVIDER_ID_PREFIX: Final[str] = "accounts/fireworks/"
 """Prefix used to infer Fireworks from fully-qualified IDs."""
 
+LANGSMITH_API_KEY_ENV_VARS: Final[tuple[str, ...]] = (
+    "LANGSMITH_API_KEY",
+    "LANGCHAIN_API_KEY",
+)
+"""Env vars LangSmith tracing reads for its API key, in precedence order."""
+
 FIREWORKS_MODEL_ID_PREFIXES: Final[tuple[str, ...]] = (
     "accounts/fireworks/models/",
     "accounts/fireworks/routers/",

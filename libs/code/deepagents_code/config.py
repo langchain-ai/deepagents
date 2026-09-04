@@ -28,7 +28,10 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 from urllib.parse import urlparse
 from urllib.request import url2pathname
 
-from deepagents_code._constants import FIREWORKS_PROVIDER_ID_PREFIX
+from deepagents_code._constants import (
+    FIREWORKS_PROVIDER_ID_PREFIX,
+    LANGSMITH_API_KEY_ENV_VARS,
+)
 from deepagents_code._env_vars import (
     AUTO_CLASSIFIER_MODEL,
     AUTO_CLASSIFIER_TIMEOUT,
@@ -672,7 +675,7 @@ _TRACING_ENABLE_ENV_VARS = (
 )
 """Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
 
-_TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
+_TRACING_API_KEY_ENV_VARS = LANGSMITH_API_KEY_ENV_VARS
 """Env vars that hold the LangSmith API key used for trace ingestion."""
 
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")

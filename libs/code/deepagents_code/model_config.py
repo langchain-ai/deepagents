@@ -26,6 +26,7 @@ from urllib.parse import urlparse
 import tomli_w
 
 from deepagents_code import _env_vars, auth_store
+from deepagents_code._constants import LANGSMITH_API_KEY_ENV_VARS
 from deepagents_code._git import find_git_common_dir
 from deepagents_code._paths import PATHS
 from deepagents_code.configuration.writer import USER_CONFIG_WRITE_LOCK
@@ -978,6 +979,11 @@ model as model providers, so they appear in the `/auth` manager and can be
 entered directly in the TUI instead of being exported as environment variables
 before launch.
 """
+
+SERVICE_API_KEY_FALLBACK_ENV_VARS: dict[str, tuple[str, ...]] = {
+    LANGSMITH_SERVICE: LANGSMITH_API_KEY_ENV_VARS[1:],
+}
+"""Ordered fallback env vars accepted by each non-model service runtime."""
 
 CODEX_PROVIDER = "openai_codex"
 """Provider name for `_ChatOpenAICodex` models authenticated via ChatGPT OAuth.
@@ -2805,9 +2811,31 @@ def get_service_auth_status(service: str) -> ProviderAuthStatus:
         `CONFIGURED` when a stored or env credential is set, else `MISSING`.
     """
     env_var = SERVICE_API_KEY_ENV[service]
-    configured = _resolve_configured(service, env_var)
-    if configured:
-        return configured
+    if _has_stored_credential(service):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=service,
+            env_var=env_var,
+            source=ProviderAuthSource.STORED,
+            detail="stored credential",
+        )
+    if resolve_env_var(env_var):
+        return ProviderAuthStatus(
+            state=ProviderAuthState.CONFIGURED,
+            provider=service,
+            env_var=resolved_env_var_name(env_var),
+            source=ProviderAuthSource.ENV,
+            detail="credentials set",
+        )
+    for fallback_env_var in SERVICE_API_KEY_FALLBACK_ENV_VARS.get(service, ()):
+        if resolve_env_var(fallback_env_var):
+            return ProviderAuthStatus(
+                state=ProviderAuthState.CONFIGURED,
+                provider=service,
+                env_var=resolved_env_var_name(fallback_env_var),
+                source=ProviderAuthSource.ENV,
+                detail="credentials set",
+            )
     return ProviderAuthStatus(
         state=ProviderAuthState.MISSING,
         provider=service,

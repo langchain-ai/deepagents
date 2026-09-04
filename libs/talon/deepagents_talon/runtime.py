@@ -20,7 +20,6 @@ import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
-from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from deepagents.middleware.summarization import (
     SummarizationToolMiddleware,
     create_summarization_tool_middleware,
@@ -588,16 +587,13 @@ class DeepAgentRuntime:
                 sources.append(path)
         return sources or None
 
-    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
         resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         if self.assistant_dir is not None:
             resolved.extend(_load_local_subagents(self.assistant_dir))
         if self.subagents is not None:
             resolved.extend(self.subagents)
-        if not any(subagent["name"] == GENERAL_PURPOSE_SUBAGENT["name"] for subagent in resolved):
-            general_purpose: SubAgent = {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"}
-            resolved.append(general_purpose)
-        return resolved
+        return resolved or None
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:

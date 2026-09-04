@@ -7,7 +7,6 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 from deepagents.backends import LocalShellBackend
-from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
@@ -272,7 +271,7 @@ async def test_runtime_wires_subagents(
 
     await runtime.start()
 
-    assert captured["subagents"] == [*subagents, {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"}]
+    assert captured["subagents"] == subagents
 
 
 async def test_runtime_requires_approval_for_async_subagent_tools(
@@ -302,10 +301,7 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
 
     await runtime.start()
 
-    assert captured["subagents"] == [
-        async_subagent,
-        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
-    ]
+    assert captured["subagents"] == [async_subagent]
     assert captured["interrupt_on"] == {
         "custom_tool": True,
         "start_async_task": False,
@@ -357,7 +353,6 @@ async def test_runtime_merges_local_and_async_subagents(
             "mode": "fork",
         },
         async_subagent,
-        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
     ]
 
 
@@ -410,7 +405,6 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
             "system_prompt": "Review carefully.",
             "mode": "fork",
         },
-        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
     ]
 
 
@@ -450,7 +444,6 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
             "system_prompt": "Research carefully.",
             "mode": "fork",
         },
-        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
     ]
 
 
@@ -523,7 +516,7 @@ async def test_runtime_skips_invalid_local_subagent_definitions(
 
     await runtime.start()
 
-    assert captured["subagents"] == [{**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"}]
+    assert captured["subagents"] is None
     assert "invalid name, description, or model" in caplog.text
 
 

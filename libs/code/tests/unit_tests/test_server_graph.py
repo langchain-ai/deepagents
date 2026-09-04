@@ -182,7 +182,6 @@ class TestServerGraph:
             tools, _, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
-                has_tavily=True,
                 tavily_api_key="workspace-key",
             )
 
@@ -224,6 +223,7 @@ class TestServerGraph:
             tools, mcp_server_info, mcp_tools = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
+                tavily_api_key=None,
             )
 
         assert tools == [fetch_tool, thread_tool]

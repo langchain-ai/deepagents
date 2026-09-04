@@ -8,7 +8,6 @@ import ipaddress
 import logging
 import socket
 import threading
-import weakref
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urljoin, urlparse
@@ -27,9 +26,13 @@ logger = logging.getLogger(__name__)
 
 _UNSET = object()
 _tavily_client: TavilyClient | object | None = _UNSET
-_workspace_web_search_tools: weakref.WeakValueDictionary[int, object] = (
-    weakref.WeakValueDictionary()
-)
+
+_WEB_SEARCH_MARKER = "deepagents_web_search"
+"""Tool-metadata key marking a workspace-bound `web_search` variant.
+
+Read by `is_web_search_tool`, the same way MCP read-only hints are read off
+tool metadata, so a variant does not have to be registered anywhere.
+"""
 
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
@@ -288,6 +291,31 @@ def _html_to_markdown_content(html: str, markdownify: Callable[[str], str]) -> s
     return parser.get_text()
 
 
+def _missing_tavily_key_error(query: object) -> dict[str, object]:
+    """Return the payload the model sees when no Tavily key is configured.
+
+    Shared by the built-in and workspace-bound variants: `is_web_search_tool`
+    treats them as one tool, so they have to fail identically.
+
+    Returns:
+        Error payload naming the env var to set.
+    """
+    return {
+        "error": "Tavily API key not configured. "
+        "Please set TAVILY_API_KEY environment variable.",
+        "query": query,
+    }
+
+
+def _missing_package_error(exc: ImportError) -> dict[str, str]:
+    """Return the payload the model sees when an optional package is absent.
+
+    Returns:
+        Error payload naming the missing package.
+    """
+    return {"error": f"Required package not installed: {exc.name}."}
+
+
 def _get_tavily_client() -> TavilyClient | None:
     """Get or initialize the lazy Tavily client singleton.
 
@@ -330,30 +358,33 @@ def create_web_search_tool(api_key: str) -> BaseTool:
     def workspace_web_search(**kwargs: Any) -> object:
         nonlocal client
         if not api_key:
-            return {
-                "error": "Tavily API key not configured. "
-                "Please set TAVILY_API_KEY environment variable.",
-                "query": kwargs.get("query"),
-            }
+            return _missing_tavily_key_error(kwargs.get("query"))
         if client is None:
             try:
                 from tavily import TavilyClient as _TavilyClient
 
                 client = _TavilyClient(api_key=api_key)
             except ImportError as exc:
-                return {"error": f"Required package not installed: {exc.name}."}
+                return _missing_package_error(exc)
         return _search_with_tavily(client, **kwargs)
 
-    _workspace_web_search_tools[id(workspace_web_search)] = workspace_web_search
+    workspace_web_search.metadata = {
+        **(workspace_web_search.metadata or {}),
+        _WEB_SEARCH_MARKER: True,
+    }
     return workspace_web_search
 
 
 def is_web_search_tool(candidate: object) -> bool:
-    """Return whether `candidate` is a built-in or workspace-bound search tool."""
-    return (
-        candidate is web_search
-        or _workspace_web_search_tools.get(id(candidate)) is candidate
-    )
+    """Return whether `candidate` is a built-in or workspace-bound search tool.
+
+    Returns:
+        `True` for the module-level tool or any variant the factory marked.
+    """
+    if candidate is web_search:
+        return True
+    metadata = getattr(candidate, "metadata", None) or {}
+    return metadata.get(_WEB_SEARCH_MARKER) is True
 
 
 @tool
@@ -404,11 +435,7 @@ def web_search(  # noqa: ANN201  # Return type depends on dynamic tool configura
     """
     client = _get_tavily_client()
     if client is None:
-        return {
-            "error": "Tavily API key not configured. "
-            "Please set TAVILY_API_KEY environment variable.",
-            "query": query,
-        }
+        return _missing_tavily_key_error(query)
     return _search_with_tavily(
         client,
         query=query,
@@ -441,7 +468,7 @@ def _search_with_tavily(
         )
         from tavily.errors import ForbiddenError, TimeoutError as TavilyTimeoutError
     except ImportError as exc:
-        return {"error": f"Required package not installed: {exc.name}."}
+        return _missing_package_error(exc)
 
     try:
         return client.search(

@@ -18,6 +18,7 @@ from rich.markup import escape as escape_markup
 
 from deepagents_code.config import (
     AWS_CREDENTIAL_ENV_SOURCES,
+    AWS_REGION_ENV_SOURCES,
     active_environment,
     console,
     get_glyphs,
@@ -31,7 +32,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import Generator
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -719,15 +720,6 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
-def _aws_session_kwargs(environment: Mapping[str, str]) -> dict[str, str]:
-    """Translate a workspace environment into explicit boto3 session arguments.
-
-    Returns:
-        Populated boto3 session keyword arguments.
-    """
-    return resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, environment.get)
-
-
 class _AgentCoreProvider(SandboxProvider):
     """AgentCore Code Interpreter sandbox provider.
 
@@ -747,17 +739,20 @@ class _AgentCoreProvider(SandboxProvider):
                 be resolved.
         """
         environment = active_environment()
-        self._region = region or environment.get(
-            "AWS_REGION", environment.get("AWS_DEFAULT_REGION", "us-west-2")
+        # Region resolves through the same table-driven helper as the
+        # credentials, so both follow the model path's source order.
+        aws_kwargs = resolve_env_kwargs(
+            {**AWS_CREDENTIAL_ENV_SOURCES, "region_name": AWS_REGION_ENV_SOURCES},
+            environment.get,
         )
+        self._region = region or aws_kwargs.get("region_name") or "us-west-2"
         self._session: Any = None
 
         # Validate AWS credentials early for a clear error message.
         try:
             import boto3  # ty: ignore[unresolved-import]
 
-            session_kwargs = _aws_session_kwargs(environment)
-            session_kwargs["region_name"] = self._region
+            session_kwargs = {**aws_kwargs, "region_name": self._region}
             self._session = boto3.Session(**session_kwargs)
             credentials = self._session.get_credentials()
             if credentials is None:

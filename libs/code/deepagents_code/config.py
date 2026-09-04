@@ -50,7 +50,13 @@ from deepagents_code._paths import (
 from deepagents_code._version import __version__
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator, Mapping, Sequence
+    from collections.abc import (
+        Callable,
+        Iterator,
+        Mapping,
+        MutableMapping,
+        Sequence,
+    )
 
     from langchain_core.runnables import RunnableConfig
 
@@ -174,6 +180,17 @@ set for their own commands and left any agent-side value in place.
 `LANGSMITH_GATEWAY_API_KEY` is deliberately absent: it authenticates model
 calls, not tracing, and nothing here overwrites it.
 """
+
+
+def _langsmith_selectors_from(env: Mapping[str, str]) -> dict[str, str | None]:
+    """Snapshot every supported LangSmith selector from `env`.
+
+    Returns:
+        One entry per selector, `None` where the var is absent so applying
+        the snapshot removes it rather than writing an empty value.
+    """
+    return {var: env.get(var) for var in _USER_LANGSMITH_ENV_VARS}
+
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -476,6 +493,19 @@ def active_environment() -> Mapping[str, str]:
     return os.environ if environment is None else environment
 
 
+def _environment_is_scoped() -> bool:
+    """Return whether a construction-scoped environment snapshot is bound.
+
+    Credential readers fork on this: under a workspace snapshot they resolve
+    from the snapshot, because the process-global caches describe the launch
+    environment instead.
+
+    Returns:
+        `True` while a `use_environment` block is active.
+    """
+    return _active_environment.get() is not None
+
+
 @contextmanager
 def use_environment(environ: Mapping[str, str] | None) -> Iterator[None]:
     """Bind an immutable environment snapshot for the duration of the block.
@@ -719,10 +749,35 @@ def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]
         Effective environment for the requested project path.
     """
     env = dict(os.environ)
-    for key, value in _dotenv_loaded_values.items():
+    _strip_dotenv_loaded_values(env)
+    return _dotenv_environment(start_path=start_path, environ=env)
+
+
+def _apply_env_values(
+    env: MutableMapping[str, str], values: Mapping[str, str | None]
+) -> None:
+    """Apply a resolved environment snapshot to `env` in place.
+
+    `None` is how every snapshot here spells "the user did not set this", so it
+    removes the key rather than writing an empty value -- an empty
+    `LANGSMITH_API_KEY` is not the same as an absent one to the SDK.
+    """
+    for key, value in values.items():
+        if value is None:
+            env.pop(key, None)
+        else:
+            env[key] = value
+
+
+def _strip_dotenv_loaded_values(env: MutableMapping[str, str]) -> None:
+    """Remove values this loader injected, keeping any modified since.
+
+    Callers that build a child environment or reload the stack have to start
+    from the shell's own values rather than from a previous application.
+    """
+    for key, value in list(_dotenv_loaded_values.items()):
         if env.get(key) == value:
             env.pop(key)
-    return _dotenv_environment(start_path=start_path, environ=env)
 
 
 def _resolve_env_var_from(env: Mapping[str, str], name: str) -> str | None:
@@ -776,44 +831,52 @@ def _load_dotenv(
         Whether dotenv loading injected at least one value.
     """
     if refresh_loaded:
-        for key, value in list(_dotenv_loaded_values.items()):
-            if os.environ.get(key) == value:
-                os.environ.pop(key)
+        _strip_dotenv_loaded_values(os.environ)
         _dotenv_loaded_values.clear()
 
     baseline = dict(os.environ)
     if capture_user_langsmith:
         _initialize_launch_langsmith_env(baseline)
-    project = _dotenv_environment(
-        start_path=start_path,
-        environ=baseline,
-        include_global=False,
-    )
     effective = _dotenv_environment(start_path=start_path, environ=baseline)
     for key, value in effective.items():
         if key not in baseline:
             os.environ[key] = value
             _dotenv_loaded_values[key] = value
     if capture_user_langsmith:
-        _bootstrap_state.user_langsmith_env = {
-            var: project.get(var) for var in _USER_LANGSMITH_ENV_VARS
-        }
+        # The project layer alone, because the global profile `.env` configures
+        # the agent rather than the user's own commands. Reads `baseline`, a
+        # copy, so the `os.environ` writes above do not change the result.
+        project = _dotenv_environment(
+            start_path=start_path,
+            environ=baseline,
+            include_global=False,
+        )
+        _bootstrap_state.user_langsmith_env = _langsmith_selectors_from(project)
     return bool(effective.keys() - baseline.keys())
 
 
 _TRACING_API_KEY_ENV_VARS = ("LANGSMITH_API_KEY", "LANGCHAIN_API_KEY")
 """Env vars that hold the LangSmith API key used for trace ingestion."""
 
+_TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
+"""Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
+
+`dcode doctor` runs before `_apply_prefixed_langsmith_env` bridges these to
+their canonical names, so it must resolve them prefix-aware (via
+`resolve_env_var`) to predict the runtime's effective state.
+
+The remaining flags in `_TRACING_ENABLE_ENV_VARS` are not bridged, so only
+their canonical form takes effect.
+"""
+
 _PREFIXED_LANGSMITH_ENV_VARS = (
     *_TRACING_API_KEY_ENV_VARS,
-    "LANGSMITH_TRACING",
-    "LANGCHAIN_TRACING_V2",
+    *_TRACING_BRIDGED_ENABLE_ENV_VARS,
 )
 """LangSmith vars bridged from app-prefixed overrides to SDK names.
 
-Keep the tracing flags here in sync with `_TRACING_BRIDGED_ENABLE_ENV_VARS`,
-which `dcode doctor` reads to predict the same bridging. Adding a flag to one
-and not the other makes the prediction disagree with the runtime, silently.
+Derived from `_TRACING_BRIDGED_ENABLE_ENV_VARS` so `dcode doctor`, which reads
+that tuple to predict the bridging, cannot disagree with the runtime.
 """
 
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
@@ -924,12 +987,13 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
     Args:
         environ: The active workspace environment snapshot.
     """
-    for var in _TRACING_RECONCILED_ENV_VARS:
-        value = _resolve_env_var_from(environ, var)
-        if value is None:
-            os.environ.pop(var, None)
-        else:
-            os.environ[var] = value
+    _apply_env_values(
+        os.environ,
+        {
+            var: _resolve_env_var_from(environ, var)
+            for var in _TRACING_RECONCILED_ENV_VARS
+        },
+    )
     _clear_langsmith_env_caches()
 
 
@@ -1258,9 +1322,7 @@ def _initialize_launch_langsmith_env(env: Mapping[str, str]) -> None:
     """Capture a missing launch snapshot from an environment baseline."""
     if _validate_user_langsmith_env(_bootstrap_state.launch_langsmith_env) is not None:
         return
-    _bootstrap_state.launch_langsmith_env = {
-        var: env.get(var) for var in _USER_LANGSMITH_ENV_VARS
-    }
+    _bootstrap_state.launch_langsmith_env = _langsmith_selectors_from(env)
 
 
 def _decode_user_langsmith_env(
@@ -1380,11 +1442,7 @@ def restore_user_langsmith_env(
 
     for var in _USER_LANGSMITH_ENV_VARS:
         env.pop(f"{_ENV_PREFIX}{var}", None)
-        value = launch.get(var)
-        if value is None:
-            env.pop(var, None)
-        else:
-            env[var] = value
+    _apply_env_values(env, launch)
     if start_path is not None:
         unreadable: list[Path] = []
         recomputed = _dotenv_environment(
@@ -1406,12 +1464,7 @@ def restore_user_langsmith_env(
             )
         else:
             values = recomputed
-    for var in _USER_LANGSMITH_ENV_VARS:
-        value = values.get(var)
-        if value is None:
-            env.pop(var, None)
-        else:
-            env[var] = value
+    _apply_env_values(env, {var: values.get(var) for var in _USER_LANGSMITH_ENV_VARS})
 
 
 def _disable_orphaned_tracing() -> None:
@@ -1720,9 +1773,9 @@ def _ensure_bootstrap() -> None:
 
             ctx = _get_server_project_context()
             _bootstrap_state.start_path = ctx.user_cwd if ctx else None
-            _bootstrap_state.launch_langsmith_env = {
-                var: os.environ.get(var) for var in _USER_LANGSMITH_ENV_VARS
-            }
+            _bootstrap_state.launch_langsmith_env = _langsmith_selectors_from(
+                os.environ
+            )
             _bootstrap_state.user_langsmith_env = dict(
                 _bootstrap_state.launch_langsmith_env
             )
@@ -3924,11 +3977,7 @@ class Credentials:
                 launch, _ = carried
                 _bootstrap_state.launch_langsmith_env = launch
         if restore_launch:
-            for var, value in _bootstrap_state.launch_langsmith_env.items():
-                if value is None:
-                    os.environ.pop(var, None)
-                else:
-                    os.environ[var] = value
+            _apply_env_values(os.environ, _bootstrap_state.launch_langsmith_env)
         _load_dotenv(
             start_path=start_path,
             refresh_loaded=True,
@@ -4192,20 +4241,17 @@ def get_langsmith_project_name() -> str | None:
     if not (langsmith_key and _tracing_enabled()):
         return None
 
-    environ = active_environment()
-    if _active_environment.get() is not None:
-        from deepagents_code._env_vars import LANGSMITH_PROJECT
+    from deepagents_code._env_vars import LANGSMITH_PROJECT
 
-        return (
-            _resolve_env_var_from(environ, LANGSMITH_PROJECT)
-            or environ.get("LANGSMITH_PROJECT")
-            or LANGSMITH_PROJECT_DEFAULT
-        )
-    return (
-        _get_credentials().deepagents_langchain_project
-        or environ.get("LANGSMITH_PROJECT")
-        or LANGSMITH_PROJECT_DEFAULT
+    environ = active_environment()
+    # The process-global credentials describe the launch environment, so a
+    # workspace snapshot has to resolve the override itself.
+    override = (
+        _resolve_env_var_from(environ, LANGSMITH_PROJECT)
+        if _environment_is_scoped()
+        else _get_credentials().deepagents_langchain_project
     )
+    return override or environ.get("LANGSMITH_PROJECT") or LANGSMITH_PROJECT_DEFAULT
 
 
 @dataclass(frozen=True)
@@ -4577,18 +4623,24 @@ def configure_langsmith_secret_redaction() -> bool:
     from deepagents_code._env_vars import LANGSMITH_REDACT
 
     env = active_environment()
-    # Cheap env-var checks first so the common (tracing-off) startup path skips
-    # the TOML read in `is_langsmith_redaction_enabled`. These are plain env
-    # reads with no failure mode of their own, so they stay outside the
-    # fail-closed boundary: if there is no upload target, there is nothing to
-    # protect.
-    if not (_tracing_enabled_from(env) and _tracing_can_upload_from(env)):
+    # The tracing checks come first so the common (tracing-off) startup path
+    # skips the TOML read in `is_langsmith_redaction_enabled`. They stay outside
+    # the fail-closed boundary: if there is no upload target, there is nothing
+    # to protect.
+    #
+    # Resolved into locals, and short-circuited, because
+    # `_tracing_can_upload_from` reads the LangSmith profile config from disk --
+    # asking it twice, or asking it at all with the flag off, is startup I/O for
+    # an answer that changes nothing.
+    tracing_enabled = _tracing_enabled_from(env)
+    can_upload = tracing_enabled and _tracing_can_upload_from(env)
+    if not can_upload:
         # Distinguish "nothing to protect" from "declined": without this, a
         # missing redacting client looks the same either way after the fact.
         logger.debug(
             "Skipping secret redaction: tracing enabled=%s, upload target=%s",
-            _tracing_enabled_from(env),
-            _tracing_can_upload_from(env),
+            tracing_enabled,
+            False if tracing_enabled else "not checked",
         )
         return False
 
@@ -4742,19 +4794,6 @@ def _get_first_langsmith_replica_project(extras: list[str]) -> str | None:
             extras[1:],
         )
     return extras[0]
-
-
-_TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
-"""Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
-
-`dcode doctor` runs before `_apply_prefixed_langsmith_env` bridges these to
-their canonical names, so it must resolve them prefix-aware (via
-`resolve_env_var`) to predict the runtime's effective state. Keep in sync with
-`_PREFIXED_LANGSMITH_ENV_VARS`, the list that bridging actually walks.
-
-The remaining flags in `_TRACING_ENABLE_ENV_VARS` are not bridged, so only
-their canonical form takes effect.
-"""
 
 
 def _tracing_enabled_from(env: Mapping[str, str]) -> bool:
@@ -5353,7 +5392,7 @@ def _detection_credentials() -> Credentials | CredentialsSnapshot:
         A workspace-scoped snapshot when an environment is bound, otherwise the
         cached process-global credentials.
     """
-    if _active_environment.get() is not None:
+    if _environment_is_scoped():
         return Credentials.snapshot_from_environment()
     return _get_credentials()
 
@@ -5600,8 +5639,15 @@ Shared with `integrations.sandbox_factory` so a new AWS credential source is
 added in one place rather than drifting between the model and sandbox paths.
 """
 
+AWS_REGION_ENV_SOURCES = ("AWS_REGION", "AWS_DEFAULT_REGION")
+"""Canonical AWS region sources, in resolution order.
+
+Shared with `integrations.sandbox_factory` for the same reason as
+`AWS_CREDENTIAL_ENV_SOURCES`: one place to add a source.
+"""
+
 _AWS_MODEL_SDK_ENV_KWARGS = {
-    "region_name": ("AWS_REGION", "AWS_DEFAULT_REGION"),
+    "region_name": AWS_REGION_ENV_SOURCES,
     # LangChain constructors spell the profile argument differently to boto3.
     "credentials_profile_name": AWS_CREDENTIAL_ENV_SOURCES["profile_name"],
     **{
@@ -5693,10 +5739,21 @@ def _ensure_cli_openrouter_profile_registered() -> None:
 
 
 def _apply_azure_sdk_endpoint(kwargs: dict[str, Any]) -> None:
-    """Forward the Azure endpoint under the constructor's current field name."""
-    from deepagents_code.model_config import resolve_env_var
+    """Forward the Azure endpoint under the constructor's current field name.
 
-    endpoint = resolve_env_var("AZURE_OPENAI_ENDPOINT")
+    Reads the endpoint through `get_base_url_env_vars` rather than a literal
+    name so the user's `base_url_env` override is honored here too.
+    """
+    from deepagents_code.model_config import get_base_url_env_vars, resolve_env_var
+
+    endpoint = next(
+        (
+            value
+            for name in get_base_url_env_vars("azure_openai")
+            if (value := resolve_env_var(name))
+        ),
+        None,
+    )
     if endpoint and kwargs.get("base_url") == endpoint:
         kwargs.pop("base_url")
     if endpoint and "base_url" not in kwargs:
@@ -5858,7 +5915,7 @@ def _apply_google_anthropic_vertex_kwargs(
 
     project = resolve_env_var("GOOGLE_CLOUD_PROJECT")
     location = resolve_env_var("GOOGLE_CLOUD_LOCATION")
-    if _active_environment.get() is not None:
+    if _environment_is_scoped():
         from deepagents_code.model_config import auth_store
 
         try:
@@ -6348,13 +6405,18 @@ def create_model(
     # Stored API keys (added via `/auth`) take effect by being copied onto
     # the env var name LangChain reads. Apply before the credential check so
     # `has_provider_credentials` and the downstream SDK see the same value.
+    #
+    # Bound unconditionally: both names are read again further down, where a
+    # binding that existed only on the `if provider:` branch would be a latent
+    # `UnboundLocalError`.
+    scoped_environment = _environment_is_scoped()
+    stored_credential: str | None = None
     if provider:
         # Flag a key/endpoint resolved from different env tiers *before*
         # `apply_stored_credentials` bridges stored values onto plain env vars,
         # so the check sees the user's raw env intent rather than post-bridge
         # state. Diagnostic only -- never alters resolution.
         warn_on_split_credential_source(provider)
-        scoped_environment = _active_environment.get() is not None
         if not scoped_environment:
             apply_stored_credentials(provider)
         stored_credential = resolve_provider_credential(provider)

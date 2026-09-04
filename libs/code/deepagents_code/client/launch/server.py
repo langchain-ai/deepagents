@@ -30,8 +30,8 @@ from deepagents_code._paths import (
 from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     _USER_LANGSMITH_ENV_CARRIER,
-    _dotenv_loaded_values,
     _encode_user_langsmith_env,
+    _strip_dotenv_loaded_values,
 )
 
 if TYPE_CHECKING:
@@ -406,9 +406,7 @@ def _build_server_env() -> dict[str, str]:
         Environment dict for `subprocess.Popen`.
     """
     env = os.environ.copy()
-    for key, value in _dotenv_loaded_values.items():
-        if env.get(key) == value:
-            env.pop(key)
+    _strip_dotenv_loaded_values(env)
     export_profile_env(env)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
     env["LANGGRAPH_AUTH_TYPE"] = "noop"

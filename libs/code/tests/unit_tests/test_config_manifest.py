@@ -688,7 +688,10 @@ def test_resolve_langsmith_service_prefers_stored(monkeypatch):
     option = get_option("credentials.langsmith")
     assert option is not None
     assert option.redacted is True
-    assert option.fallback_env_vars == ("LANGCHAIN_API_KEY",)
+    assert option.fallback_env_vars == (
+        "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+        "LANGCHAIN_API_KEY",
+    )
     is_set, source, value = _resolve(option, {}, managed_toml_data={})
     assert is_set is True
     assert source == "stored"
@@ -714,6 +717,7 @@ def test_resolve_langsmith_falls_back_to_langchain_api_key(monkeypatch):
     """LangSmith credential display reports the runtime fallback source."""
     monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
     monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", raising=False)
     monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
     option = get_option("credentials.langsmith")
     assert option is not None
@@ -723,9 +727,24 @@ def test_resolve_langsmith_falls_back_to_langchain_api_key(monkeypatch):
     assert value == "from-fallback"
 
 
+def test_resolve_langsmith_falls_back_to_prefixed_langchain_api_key(monkeypatch):
+    """LangSmith credential display honors the prefixed runtime fallback."""
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "from-prefix")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "env (DEEPAGENTS_CODE_LANGCHAIN_API_KEY)"
+    assert value == "from-prefix"
+
+
 def test_resolve_langsmith_primary_env_wins_over_fallback(monkeypatch):
     """The primary LangSmith env var retains precedence over its fallback."""
     monkeypatch.setenv("LANGSMITH_API_KEY", "from-primary")
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGCHAIN_API_KEY", "from-prefix")
     monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
     option = get_option("credentials.langsmith")
     assert option is not None

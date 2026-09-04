@@ -33,7 +33,11 @@ from deepagents_talon.mcp import (
     login_mcp_server,
     mcp_config_path,
 )
-from deepagents_talon.mcp_auth import FileTokenStorage, build_oauth_provider
+from deepagents_talon.mcp_auth import (
+    FileTokenStorage,
+    MCPAuthorizationError,
+    build_oauth_provider,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -70,6 +74,10 @@ def _oauth_token() -> OAuthToken:
 
 async def _no_tokens() -> None:
     return None
+
+
+async def _stored_tokens() -> OAuthToken:
+    return _oauth_token()
 
 
 def _write_config(path: Path, servers: dict[str, object]) -> None:
@@ -444,6 +452,73 @@ async def test_server_connection_error_is_reported(
     assert result.tools == ()
     assert result.servers[0].status == "error"
     assert result.servers[0].error == "connection failed"
+
+
+@pytest.mark.parametrize(
+    "wrapped",
+    [
+        MCPAuthorizationError("authorization detail must not escape"),
+        ExceptionGroup(
+            "nested task group detail must not escape",
+            [MCPAuthorizationError("nested authorization detail must not escape")],
+        ),
+    ],
+)
+async def test_wrapped_channel_authorization_error_does_not_abort_startup(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    wrapped: Exception,
+) -> None:
+    class AuthorizationRequiredClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            assert server_name == "notion"
+            raise wrapped
+
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", AuthorizationRequiredClient)
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _stored_tokens(),
+    )
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert result.tools == ()
+    assert result.servers[0].status == "unauthenticated"
+    assert result.servers[0].error == "MCP server 'notion' needs authentication"
+    assert result.servers[0].uses_oauth is True
+    assert "detail must not escape" not in caplog.text
+
+
+async def test_unrelated_exception_group_remains_server_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class GroupedFailureClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            assert server_name == "remote"
+            msg = "nested detail"
+            group_msg = "internal detail"
+            raise ExceptionGroup(group_msg, [RuntimeError(msg)])
+
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", GroupedFailureClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert result.tools == ()
+    assert result.servers[0].status == "error"
+    assert result.servers[0].error == "ExceptionGroup"
 
 
 async def test_unexpected_server_error_does_not_block_other_servers(

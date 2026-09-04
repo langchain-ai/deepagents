@@ -80,6 +80,14 @@ class _MCPLoginRequiredError(MCPConfigError):
     """An MCP server requires OAuth login before loading tools."""
 
 
+def _authentication_required(exc: BaseException) -> bool:
+    if isinstance(exc, (_MCPLoginRequiredError, MCPAuthorizationError)):
+        return True
+    if isinstance(exc, ExceptionGroup):
+        return any(_authentication_required(nested) for nested in exc.exceptions)
+    return False
+
+
 @dataclass(frozen=True, slots=True)
 class MCPToolInfo:
     """Metadata for one MCP tool."""
@@ -277,6 +285,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
             )
             loaded = _filter_tools(name, server, loaded)
         except (
+            ExceptionGroup,
             HTTPError,
             McpError,
             OAuthFlowError,
@@ -285,15 +294,21 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
             TimeoutError,
             ValueError,
         ) as exc:
-            logger.warning("MCP server %s failed to load: %s", name, exc)
+            authentication_required = _authentication_required(exc)
+            error = (
+                f"MCP server {name!r} needs authentication"
+                if authentication_required
+                else format_login_error(exc)
+                if isinstance(exc, ExceptionGroup)
+                else str(exc)
+            )
+            logger.warning("MCP server %s failed to load: %s", name, error)
             infos.append(
                 MCPServerInfo(
                     name=name,
                     transport=transport,
-                    status="unauthenticated"
-                    if isinstance(exc, _MCPLoginRequiredError)
-                    else "error",
-                    error=str(exc),
+                    status="unauthenticated" if authentication_required else "error",
+                    error=error,
                     uses_oauth=server.get("auth") == "oauth",
                 )
             )

@@ -9,15 +9,18 @@ from typing import TYPE_CHECKING, ClassVar, Self
 import pytest
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
-from mcp.shared.auth import OAuthToken
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.types import CallToolResult
+from pydantic import SecretStr
 
 from deepagents_talon.authorization import (
+    AuthorizationAttempt,
     AuthorizationBinding,
     AuthorizationCompleted,
     AuthorizationEvent,
     AuthorizationURL,
     CallbackURLRequested,
+    DeviceCode,
     current_authorization_attempt,
     reset_authorization_handler,
     set_authorization_handler,
@@ -32,6 +35,7 @@ from deepagents_talon.mcp import (
     _authorization_interceptor,
     _connection,
     _normalize_mcp_arguments,
+    _run_authorized,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
@@ -39,6 +43,8 @@ from deepagents_talon.mcp import (
 from deepagents_talon.mcp_auth import (
     FileTokenStorage,
     MCPAuthorizationError,
+    _DeviceCodeResponse,
+    _present_device_code,
     build_oauth_provider,
 )
 
@@ -247,6 +253,52 @@ async def test_mcp_interceptor_resumes_same_bound_invocation_without_secret_outp
     assert "secret-code" not in repr(events)
 
 
+async def test_github_device_code_is_bound_outside_model_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("github", server_url="https://api.githubcopilot.com/mcp")
+    device = _DeviceCodeResponse(
+        device_code=SecretStr("device-secret"),
+        user_code=SecretStr("ABCD-1234"),
+        verification_uri="https://github.com/login/device",
+        expires_in=120,
+    )
+    events: list[AuthorizationEvent] = []
+
+    async def authorize(event: AuthorizationEvent) -> None:
+        events.append(event)
+
+    async def execute() -> None:
+        await _present_device_code(
+            "github",
+            device,
+            deadline=asyncio.get_running_loop().time() + 120,
+            interactive=False,
+        )
+        await storage.set_tokens_and_client_info(
+            _oauth_token(),
+            OAuthClientInformationFull(
+                redirect_uris=["http://localhost/callback"],
+                client_id="client-id",
+            ),
+        )
+
+    attempt = AuthorizationAttempt(terminal=True)
+    token = set_authorization_handler(authorize)
+    try:
+        await _run_authorized("tool-call-42", execute, attempt=attempt)
+    finally:
+        reset_authorization_handler(token)
+
+    assert [type(event) for event in events] == [DeviceCode, AuthorizationCompleted]
+    assert all(event.binding.invocation_id == "tool-call-42" for event in events)
+    assert attempt.completed is True
+    assert "ABCD-1234" not in repr(events[0])
+    assert "github.com/login/device" not in repr(events[0])
+
+
 def test_normalize_mcp_arguments_omits_only_optional_empty_strings() -> None:
     schema = {
         "type": "object",
@@ -417,6 +469,7 @@ async def test_mcp_tool_provider_forces_explicit_reauthentication(
         force_authorization: bool,
     ) -> tuple[dict[str, object], str]:
         assert channel_authorization is True
+        assert current_authorization_attempt() is not None
         forced.append(force_authorization)
         return {}, "streamable_http"
 
@@ -766,6 +819,70 @@ async def test_oauth_connection_uses_stored_credentials(
     assert isinstance(connection, dict)
     assert connection["remote"]["auth"] is provider
     assert result.servers[0].uses_oauth is True
+
+
+async def test_github_oauth_connection_runs_device_flow_when_needed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object()
+    authorized: list[tuple[str, bool]] = []
+
+    class EmptyStorage:
+        def __init__(self, server_name: str, *, server_url: str) -> None:
+            assert (server_name, server_url) == (
+                "github",
+                "https://api.githubcopilot.com/mcp",
+            )
+
+        async def get_tokens(self) -> None:
+            return None
+
+    async def authorize(server_name: str, _storage: object, *, interactive: bool) -> None:
+        authorized.append((server_name, interactive))
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.authorize_github_mcp", authorize)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+
+    connection, transport = await _connection(
+        "github",
+        {"url": "https://api.githubcopilot.com/mcp", "auth": "oauth"},
+        interactive=True,
+    )
+
+    assert transport == "streamable_http"
+    assert connection["auth"] is provider
+    assert authorized == [("github", True)]
+
+
+async def test_github_oauth_connection_reuses_stored_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object()
+
+    class StoredStorage:
+        def __init__(self, _server_name: str, *, server_url: str) -> None:
+            assert server_url == "https://api.githubcopilot.com/mcp"
+
+        async def get_tokens(self) -> OAuthToken:
+            return _oauth_token()
+
+    async def unexpected_authorization(*_args: object, **_kwargs: object) -> None:
+        pytest.fail("stored GitHub credentials must not restart device authorization")
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", StoredStorage)
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.authorize_github_mcp",
+        unexpected_authorization,
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+
+    connection, _ = await _connection(
+        "github",
+        {"url": "https://api.githubcopilot.com/mcp", "auth": "oauth"},
+    )
+
+    assert connection["auth"] is provider
 
 
 async def test_forced_oauth_connection_bypasses_stored_credentials(

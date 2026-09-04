@@ -38,8 +38,10 @@ from deepagents_talon.authorization import (
 from deepagents_talon.mcp_auth import (
     FileTokenStorage,
     MCPAuthorizationError,
+    authorize_github_mcp,
     build_oauth_provider,
     format_login_error,
+    is_github_mcp_url,
 )
 
 if TYPE_CHECKING:
@@ -252,20 +254,18 @@ class MCPToolProvider:
             server = servers.get(server_name)
             if server is None or server.get("auth") != "oauth":
                 return {"status": "failed", "server_name": server_name}
-            connection, transport = await _connection(
-                server_name,
-                server,
-                channel_authorization=True,
-                force_authorization=reauthenticate,
-            )
-            if transport not in {"sse", "streamable_http"}:
-                return {"status": "failed", "server_name": server_name}
-            client = MultiServerMCPClient({server_name: connection})
-            await _run_authorized(
+
+            opened = await _run_authorized(
                 invocation_id,
-                lambda: _open_mcp_session(client, server_name),
+                lambda: _open_authenticated_session(
+                    server_name,
+                    server,
+                    force_authorization=reauthenticate,
+                ),
                 attempt=attempt,
             )
+            if not opened:
+                return {"status": "failed", "server_name": server_name}
         except asyncio.CancelledError:
             if attempt.completed:
                 self._dirty = True
@@ -445,6 +445,25 @@ async def login_mcp_server(
 async def _open_mcp_session(client: MultiServerMCPClient, server_name: str) -> None:
     async with client.session(server_name):
         pass
+
+
+async def _open_authenticated_session(
+    server_name: str,
+    server: Mapping[str, object],
+    *,
+    force_authorization: bool,
+) -> bool:
+    connection, transport = await _connection(
+        server_name,
+        server,
+        channel_authorization=True,
+        force_authorization=force_authorization,
+    )
+    if transport not in {"sse", "streamable_http"}:
+        return False
+    client = MultiServerMCPClient({server_name: connection})
+    await _open_mcp_session(client, server_name)
+    return True
 
 
 async def _authorization_interceptor(
@@ -755,7 +774,14 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
             if force_authorization
             else FileTokenStorage(name, server_url=url)
         )
-        if not interactive and not channel_authorization and await storage.get_tokens() is None:
+        can_authorize = interactive or channel_authorization
+        github_mcp = is_github_mcp_url(url)
+        tokens = await storage.get_tokens() if github_mcp else None
+        if github_mcp and tokens is None and can_authorize:
+            await authorize_github_mcp(name, storage, interactive=interactive)
+        elif not can_authorize and (
+            tokens is None if github_mcp else await storage.get_tokens() is None
+        ):
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
         connection["auth"] = build_oauth_provider(

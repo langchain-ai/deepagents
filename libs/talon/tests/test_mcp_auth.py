@@ -4,10 +4,18 @@ import json
 import stat
 from typing import TYPE_CHECKING
 
+import httpx
 import pytest
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
+from pydantic import SecretStr
 
-from deepagents_talon.mcp_auth import FileTokenStorage, build_oauth_provider
+from deepagents_talon.mcp_auth import (
+    FileTokenStorage,
+    _DeviceCodeResponse,
+    _run_github_device_flow,
+    build_oauth_provider,
+    is_github_mcp_url,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -34,6 +42,27 @@ async def test_file_token_storage_round_trip_and_permissions(
     assert await storage.get_client_info() == client
     assert stat.S_IMODE(storage.path.stat().st_mode) == 0o600
     assert stat.S_IMODE(storage.path.parent.stat().st_mode) == 0o700
+
+
+async def test_file_token_storage_writes_tokens_and_client_info_together(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("github", server_url="https://api.githubcopilot.com/mcp")
+    tokens = OAuthToken(access_token="secret")  # noqa: S106
+    client = OAuthClientInformationFull(
+        redirect_uris=["http://localhost/callback"],
+        client_id="client-id",
+    )
+
+    await storage.set_tokens_and_client_info(tokens, client)
+
+    assert await storage.get_tokens() == tokens
+    assert await storage.get_client_info() == client
+    assert set(json.loads(storage.path.read_text(encoding="utf-8"))) == {
+        "tokens",
+        "client_info",
+    }
 
 
 async def test_forced_authorization_preserves_stored_tokens_until_replaced(
@@ -103,3 +132,86 @@ async def test_malformed_credential_file_does_not_expose_contents(
         await storage.get_tokens()
 
     assert "secret" not in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        ("https://api.githubcopilot.com/mcp", True),
+        ("https://API.GITHUBCOPILOT.COM/mcp", True),
+        ("https://api.githubcopilot.com.evil.example/mcp", False),
+        ("https://githubcopilot.com/mcp", False),
+    ],
+)
+def test_github_mcp_url_matching_is_host_exact(url: str, expected: object) -> None:
+    assert is_github_mcp_url(url) is expected
+
+
+async def test_github_device_flow_polls_pending_and_slow_down(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    responses = iter(
+        [
+            httpx.Response(
+                200,
+                json={
+                    "device_code": "device-secret",
+                    "user_code": "ABCD-1234",
+                    "verification_uri": "https://github.com/login/device",
+                    "expires_in": 120,
+                    "interval": 1,
+                },
+            ),
+            httpx.Response(400, json={"error": "authorization_pending"}),
+            httpx.Response(200, json={"error": "slow_down"}),
+            httpx.Response(200, json={"access_token": "access-secret", "token_type": "bearer"}),
+        ]
+    )
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        response = next(responses)
+        response.request = request
+        return response
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handle), timeout=30.0)
+    monkeypatch.setattr("deepagents_talon.mcp_auth.httpx.AsyncClient", lambda **_kwargs: client)
+    monkeypatch.setattr(
+        "deepagents_talon.mcp_auth.validate_safe_url",
+        lambda url, **_kwargs: url,
+    )
+    sleeps: list[float] = []
+
+    async def sleep(delay: float) -> None:
+        sleeps.append(delay)
+
+    monkeypatch.setattr("deepagents_talon.mcp_auth.asyncio.sleep", sleep)
+
+    token = await _run_github_device_flow("github", interactive=True)
+
+    assert token.access_token == "access-secret"  # noqa: S105
+    assert sleeps == [1, 1, 6]
+    assert [request.url.path for request in requests] == [
+        "/login/device/code",
+        "/login/oauth/access_token",
+        "/login/oauth/access_token",
+        "/login/oauth/access_token",
+    ]
+    output = capsys.readouterr().out
+    assert "https://github.com/login/device" in output
+    assert "ABCD-1234" in output
+    assert "device-secret" not in output
+
+
+def test_device_response_credentials_are_redacted() -> None:
+    response = _DeviceCodeResponse(
+        device_code=SecretStr("device-secret"),
+        user_code=SecretStr("user-secret"),
+        verification_uri="https://github.com/login/device",
+        expires_in=120,
+    )
+
+    assert "device-secret" not in repr(response)
+    assert "user-secret" not in repr(response)

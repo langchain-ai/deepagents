@@ -1174,16 +1174,30 @@ def apply_inherited_user_tracing(env: dict[str, str]) -> bool:
         logger.warning(
             "Could not parse relayed caller tracing environment; dropping the "
             "agent's tracing variables from shell commands instead of "
-            "restoring the caller's."
+            "restoring the caller's.",
+            exc_info=True,
         )
         originals = None
+    allowed = {*_TRACING_ENABLE_ENV_VARS, *_TRACING_API_KEY_ENV_VARS}
     if not isinstance(originals, dict):
         # Fail closed: without the caller's values, removing the agent's is
         # still better than passing the agent session key to user commands.
-        for var in (*_TRACING_ENABLE_ENV_VARS, *_TRACING_API_KEY_ENV_VARS):
+        for var in allowed:
             env.pop(var, None)
         return True
-    for var, value in originals.items():
+    # Only tracing variables may cross this relay. The carrier is denied from
+    # every `.env` and popped before export, so nothing should reach here that
+    # is not on the list -- but this is the one place a serialized blob becomes
+    # shell environment, so the keys are constrained rather than trusted.
+    if unexpected := originals.keys() - allowed:
+        logger.warning(
+            "Ignoring unexpected key(s) in the relayed caller tracing "
+            "environment: %s. Only LangSmith tracing flags and keys are "
+            "relayed.",
+            ", ".join(sorted(unexpected)),
+        )
+    for var in allowed & originals.keys():
+        value = originals[var]
         if value is None:
             env.pop(var, None)
         else:

@@ -5485,7 +5485,7 @@ def _apply_azure_sdk_endpoint(kwargs: dict[str, Any]) -> None:
     if kwargs.get("base_url") == endpoint:
         kwargs.pop("base_url")
     if "base_url" not in kwargs:
-        kwargs["azure_endpoint"] = endpoint
+        kwargs.setdefault("azure_endpoint", endpoint)
 
 
 def _apply_provider_sdk_environment(

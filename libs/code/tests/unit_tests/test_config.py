@@ -3880,6 +3880,36 @@ class TestGetProviderKwargsConfigFallback:
             kwargs = _get_provider_kwargs("google_genai")
             assert kwargs == {}
 
+    def test_azure_env_endpoint_does_not_replace_configured_azure_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """`AZURE_OPENAI_ENDPOINT` fills in but never replaces `azure_endpoint`.
+
+        A `config.toml` `[models.providers.azure_openai.params]` literal reaches
+        `_apply_azure_sdk_endpoint` before the environment default is applied,
+        so an explicit endpoint must win over the env var just as the other
+        SDK environment defaults in `_apply_provider_sdk_environment` use
+        `setdefault`. The `base_url` -> `azure_endpoint` translation still runs
+        when the env var matches a configured `base_url`.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.azure_openai.params]
+azure_endpoint = "https://configured.openai.azure.com/"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"AZURE_OPENAI_ENDPOINT": "https://env.openai.azure.com/"},
+                clear=True,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("azure_openai")
+
+        assert kwargs["azure_endpoint"] == "https://configured.openai.azure.com/"
+        assert "base_url" not in kwargs
+
     def test_merges_config_params(self, tmp_path: Path) -> None:
         """Merges params from config with base_url and api_key."""
         config_path = tmp_path / "config.toml"

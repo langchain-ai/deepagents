@@ -4638,8 +4638,8 @@ class DeepAgentsApp(App):
         config = ServerConfig.from_env()
         agent.set_workspace(
             self._cwd,
-            config.to_workspace_payload(),
-            config_fingerprint=config.workspace_fingerprint(),
+            config.to_session_workspace_claim(),
+            config_fingerprint=config.session_workspace_fingerprint(),
         )
         return agent
 

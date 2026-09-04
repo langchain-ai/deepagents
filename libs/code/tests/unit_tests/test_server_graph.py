@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import importlib
 import os
 import sys
@@ -10,6 +11,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from blockbuster import blockbuster_ctx
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
@@ -106,6 +108,7 @@ class TestServerGraph:
                 fetch_url,
             ],
             [mcp_tool],
+            [fetch_url, web_search],
         )
 
         assert len(result) == 3
@@ -144,6 +147,7 @@ class TestServerGraph:
         result = module._criteria_context_tools(
             [mutating, fetch_url, readonly, unannotated, web_search, ambiguous],
             [readonly, mutating, unannotated, ambiguous],
+            [fetch_url, web_search],
         )
 
         assert result == [fetch_url, readonly, web_search]
@@ -179,11 +183,13 @@ class TestServerGraph:
             "deepagents_code.tools.create_web_search_tool",
             return_value=bound_tool,
         ) as create:
-            tools, _, _ = await module._build_tools(
+            tools, _, _, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
-                has_tavily=True,
-                tavily_api_key="workspace-key",
+                workspace_credentials=SimpleNamespace(
+                    has_tavily=True,
+                    tavily_api_key="workspace-key",
+                ),
             )
 
         assert bound_tool in tools
@@ -204,7 +210,6 @@ class TestServerGraph:
             create_web_search_tool=Mock(),
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
-            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         mcp_module = _module_with_attrs(
@@ -221,7 +226,7 @@ class TestServerGraph:
             },
         ):
             module = _import_fresh_server_graph()
-            tools, mcp_server_info, mcp_tools = await module._build_tools(
+            tools, mcp_server_info, mcp_tools, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
             )
@@ -284,7 +289,6 @@ class TestServerGraph:
             create_web_search_tool=Mock(),
             fetch_url=object(),
             get_current_thread_id=object(),
-            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         config = ServerConfig(
@@ -325,20 +329,147 @@ class TestServerGraph:
         }
 
 
+class TestWorkspaceEnvironmentBinding:
+    """The workspace snapshot must actually be bound around construction.
+
+    Every other `_make_graphs` test stubs `deepagents_code.config`, including
+    `use_environment`, while each consumer test patches `active_environment`
+    directly. Both ends are mocked, so nothing exercises the wire between them:
+    dropping the `with use_environment(...)` block leaves `active_environment()`
+    falling back to `os.environ` with no error and no failing test, and sandbox
+    setup would expand the server's own secrets.
+    """
+
+    async def test_consumers_read_the_workspace_env_during_construction(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The real config module binds the workspace `.env` for consumers."""
+        import deepagents_code.agent as agent_mod
+        import deepagents_code.config as config_mod
+        import deepagents_code.integrations.sandbox_factory as sandbox_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text(
+            "WORKSPACE_ONLY=from-workspace-dotenv\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("WORKSPACE_ONLY", raising=False)
+        monkeypatch.setenv("SERVER_ONLY", "from-server-process")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        seen: dict[str, object] = {}
+
+        def _record(label: str) -> None:
+            environment = config_mod.active_environment()
+            seen[label] = environment.get("WORKSPACE_ONLY")
+            seen[f"{label}_server_leak"] = environment.get("SERVER_ONLY")
+
+        graph_obj = object()
+
+        def _create_cli_agent(**_kwargs: object) -> tuple[object, object]:
+            _record("agent")
+            return graph_obj, _backend_with_offload(object())
+
+        def _create_model(*_args: object, **_kwargs: object) -> object:
+            _record("model")
+            return SimpleNamespace(
+                model=object(),
+                provider="openai",
+                apply_to_runtime_state=lambda: None,
+                model_retries=5,
+                cli_max_retries=None,
+            )
+
+        def _create_sandbox(*_args: object, **_kwargs: object) -> object:
+            _record("sandbox")
+            return MagicMock()
+
+        module = _import_fresh_server_graph()
+        config = ServerConfig(
+            no_mcp=True,
+            cwd=str(workspace),
+            project_root=str(workspace),
+            sandbox_type="vercel",
+        )
+
+        with (
+            patch.object(agent_mod, "create_cli_agent", _create_cli_agent),
+            patch.object(agent_mod, "load_async_subagents", lambda **_: None),
+            patch.object(config_mod, "create_model", _create_model),
+            patch.object(sandbox_mod, "create_sandbox", _create_sandbox),
+            patch.object(
+                module, "_criteria_context_tools", lambda *_args, **_kwargs: []
+            ),
+        ):
+            runtime = await module._make_graphs(config_override=config)
+
+        assert runtime.agent is graph_obj
+        # Each consumer read the workspace `.env`, not the server process env.
+        assert seen["model"] == "from-workspace-dotenv"
+        assert seen["agent"] == "from-workspace-dotenv"
+        assert seen["sandbox"] == "from-workspace-dotenv"
+        # The server's own environment still shows through where unshadowed.
+        assert seen["agent_server_leak"] == "from-server-process"
+        # And the workspace value never reached the process.
+        assert "WORKSPACE_ONLY" not in os.environ
+
+
 def _bind(config: ServerConfig, cwd: Any) -> Any:  # noqa: ANN401
     """Resolve a workspace binding for `cwd`, creating the directory first."""
     from deepagents_code.workspace import resolve_workspace
 
     cwd.mkdir(exist_ok=True)
+    identity = resolve_workspace(str(cwd))
+    resolved = config.resolve_workspace(identity.cwd, identity.project_root)
     return resolve_workspace(
-        str(cwd),
-        config.to_workspace_payload(),
-        config_fingerprint=config.workspace_fingerprint(),
+        identity.cwd,
+        resolved.to_workspace_payload(),
+        config_fingerprint=resolved.workspace_fingerprint(),
     )
 
 
 class TestWorkspaceRuntime:
     """Workspace runtimes retain trusted server-only configuration."""
+
+    async def test_default_binding_preserves_launch_project_policy(
+        self, tmp_path
+    ) -> None:
+        module = _import_fresh_server_graph()
+        project = tmp_path / "project"
+        project.mkdir()
+        config = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=True,
+            mcp_config_path=str(project / "mcp.json"),
+        )
+
+        with blockbuster_ctx(scanned_modules=module):
+            binding = await module._default_workspace_binding(config)
+
+        assert binding is not None
+        assert binding.workspace_config()["trust_project_mcp"] is True
+        assert binding.workspace_config()["mcp_config_path"] == str(
+            project / "mcp.json"
+        )
+        assert binding.config_fingerprint == config.workspace_fingerprint()
+
+    async def test_cached_runtime_resolves_policy_off_event_loop(
+        self, tmp_path
+    ) -> None:
+        module = _import_fresh_server_graph()
+        config = ServerConfig()
+        binding = _bind(config, tmp_path)
+        runtime = module.ServerRuntime(object(), object(), object())
+        module._remember_workspace_runtime(binding, runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=config),
+            blockbuster_ctx(scanned_modules=module),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
 
     async def test_uses_full_server_config_and_replaces_only_workspace_paths(
         self, tmp_path
@@ -466,6 +597,106 @@ class TestWorkspaceRuntime:
             ] == (runtimes)
 
         assert make.await_count == 2
+
+    async def test_rejects_resolved_project_policy_divergence(self, tmp_path) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        project = tmp_path / "project"
+        bound_config = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=False,
+        )
+        binding = _bind(bound_config, project)
+        changed = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=True,
+        )
+        with (
+            patch.object(ServerConfig, "from_env", return_value=changed),
+            patch.object(module, "_make_graphs", new=AsyncMock()) as make,
+            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_not_awaited()
+
+    async def test_cached_runtime_rejects_project_policy_divergence(
+        self, tmp_path
+    ) -> None:
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        project = tmp_path / "project"
+        bound_config = ServerConfig(
+            cwd=str(project),
+            project_root=str(project),
+            trust_project_mcp=True,
+        )
+        binding = _bind(bound_config, project)
+        runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=runtime)
+
+        with (
+            patch.object(ServerConfig, "from_env", return_value=bound_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        changed = dataclasses.replace(bound_config, trust_project_mcp=False)
+        with (
+            patch.object(ServerConfig, "from_env", return_value=changed),
+            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_awaited_once()
+
+    async def test_cached_runtime_rejects_revoked_extension_trust(
+        self, tmp_path
+    ) -> None:
+        """Revoking trust must invalidate a runtime built while it was granted.
+
+        `trust_project_extensions` is the one project policy field not derived
+        from the environment: `resolve_workspace` re-reads it from the
+        persisted trust store. `ServerConfig.from_env()` is identical across
+        both calls here, so the server-config fingerprint check cannot fire and
+        only the project-policy comparison can catch the revocation. Without
+        it, a runtime keeps executing project Python the user has untrusted.
+        """
+        from deepagents_code.workspace import WorkspaceConflictError
+
+        module = _import_fresh_server_graph()
+        launch = tmp_path / "launch"
+        other = tmp_path / "other"
+        launch.mkdir()
+        other.mkdir()
+        launch_config = ServerConfig(cwd=str(launch), project_root=str(launch))
+        runtime = module.ServerRuntime(object(), object(), object())
+        make = AsyncMock(return_value=runtime)
+        trust = "deepagents_code.extensions.trust.is_project_extensions_trusted"
+
+        with patch(trust, return_value=True):
+            binding = _bind(launch_config, other)
+
+        with (
+            patch(trust, return_value=True),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            patch.object(module, "_make_graphs", new=make),
+        ):
+            assert await module._workspace_runtime(binding) is runtime
+
+        # The user revokes trust. Nothing about the environment changes.
+        with (
+            patch(trust, return_value=False),
+            patch.object(ServerConfig, "from_env", return_value=launch_config),
+            pytest.raises(WorkspaceConflictError, match="project's resolved policy"),
+        ):
+            await module._workspace_runtime(binding)
+
+        make.assert_awaited_once()
 
     async def test_rejects_server_config_drift(self, tmp_path) -> None:
         from deepagents_code.workspace import WorkspaceConflictError

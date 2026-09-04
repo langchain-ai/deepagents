@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import patch
@@ -204,6 +205,25 @@ class TestUserTracingRelay:
         assert apply_inherited_user_tracing(shell_env) is True
         assert "LANGSMITH_API_KEY" not in shell_env
         assert "LANGSMITH_TRACING" not in shell_env
+
+    def test_relay_applies_only_tracing_keys(self) -> None:
+        """A relayed blob cannot write arbitrary shell environment keys."""
+        shell_env = {
+            _INHERITED_USER_TRACING_ENV: json.dumps(
+                {
+                    "LANGSMITH_API_KEY": "caller-key",
+                    "PATH": "/attacker/bin",
+                    "LD_PRELOAD": "/attacker/evil.so",
+                }
+            ),
+            "PATH": "/usr/bin",
+        }
+
+        assert apply_inherited_user_tracing(shell_env) is True
+
+        assert shell_env["LANGSMITH_API_KEY"] == "caller-key"
+        assert shell_env["PATH"] == "/usr/bin"
+        assert "LD_PRELOAD" not in shell_env
 
     def test_inherited_carrier_var_is_never_trusted(self) -> None:
         """A smuggled carrier cannot choose the tracing identity."""

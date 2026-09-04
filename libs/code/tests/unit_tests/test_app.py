@@ -14060,6 +14060,34 @@ class TestFetchThreadHistoryData:
 class TestRemoteAgent:
     """Tests for configuring external agents."""
 
+    def test_managed_agent_claims_only_session_policy(self, tmp_path) -> None:
+        from deepagents_code._server_config import ServerConfig
+        from deepagents_code.client.remote_client import RemoteAgent
+
+        app = DeepAgentsApp(cwd=tmp_path)
+        app._server_kwargs = {}
+        agent = RemoteAgent("http://test:0")
+        config = ServerConfig(
+            trust_project_mcp=True,
+            mcp_config_path="/tmp/mcp.json",
+            no_mcp=True,
+        )
+        with (
+            patch.object(agent, "set_workspace") as set_workspace,
+            patch.object(ServerConfig, "from_env", return_value=config),
+        ):
+            app._configure_remote_agent(agent)
+
+        set_workspace.assert_called_once_with(
+            str(tmp_path),
+            config.to_session_workspace_claim(),
+            config_fingerprint=config.session_workspace_fingerprint(),
+        )
+        claim = set_workspace.call_args.args[1]
+        assert "trust_project_mcp" not in claim
+        assert "mcp_config_path" not in claim
+        assert claim["no_mcp"] is True
+
     def test_external_agent_defers_policy_to_server(self, tmp_path) -> None:
         from deepagents_code.client.remote_client import RemoteAgent
 

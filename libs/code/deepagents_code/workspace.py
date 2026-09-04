@@ -9,9 +9,12 @@ import os
 import sqlite3
 from dataclasses import asdict, dataclass
 from pathlib import Path, PurePath
-from typing import Any, TypedDict, cast
+from typing import TYPE_CHECKING, Any, TypedDict, cast
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 _SCHEMA_VERSION = 2
 _MAX_PATH_LENGTH = 4096
@@ -127,7 +130,15 @@ def canonical_workspace_config(value: object | None) -> tuple[str, str]:
     return serialized, hashlib.sha256(serialized.encode()).hexdigest()
 
 
-def _fingerprint(value: object) -> str:
+def canonical_fingerprint(value: object) -> str:
+    """Fingerprint *value* with the canonical workspace serialization.
+
+    This is the single definition of the fingerprint wire format that client
+    claims and server verification must agree on.
+
+    Returns:
+        The SHA-256 hex digest of the canonical JSON encoding.
+    """
     serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(serialized.encode()).hexdigest()
 
@@ -151,13 +162,13 @@ def resolve_workspace(
     project_root = find_project_root(canonical_cwd)
     if project_root is not None:
         project_root = _canonical_directory(str(project_root), field="project_root")
-    workspace_id = _fingerprint(
+    workspace_id = canonical_fingerprint(
         {
             "cwd": str(canonical_cwd),
             "project_root": str(project_root) if project_root else None,
         }
     )
-    resource_key = _fingerprint(
+    resource_key = canonical_fingerprint(
         {"workspace_id": workspace_id, "config_fingerprint": config_fingerprint}
     )
     return WorkspaceBinding(
@@ -225,6 +236,49 @@ def _binding_differs(existing: WorkspaceBinding, proposed: WorkspaceBinding) -> 
     )
 
 
+PROJECT_POLICY_DRIFT_REASON = (
+    "the project's resolved policy differs from the policy recorded "
+    "when this workspace was bound"
+)
+SERVER_CONFIG_DRIFT_REASON = (
+    "the server configuration changed after this workspace was bound"
+)
+
+
+def project_policy_differs(
+    bound_config: Mapping[str, Any],
+    current_config: Mapping[str, Any],
+) -> bool:
+    """Report whether the project-scoped policy drifted from its binding.
+
+    Returns:
+        `True` when any project-scoped field differs between the two policies.
+    """
+    from deepagents_code._server_config import PROJECT_WORKSPACE_FIELDS
+
+    return any(
+        bound_config.get(key) != current_config.get(key)
+        for key in PROJECT_WORKSPACE_FIELDS
+    )
+
+
+def _binding_conflict(
+    thread_id: str,
+    existing: WorkspaceBinding,
+    proposed: WorkspaceBinding,
+) -> WorkspaceConflictError:
+    if existing.workspace_id != proposed.workspace_id:
+        return WorkspaceConflictError(
+            f"thread {thread_id} is already bound to a different workspace"
+        )
+    drifted = project_policy_differs(
+        existing.workspace_config(),
+        proposed.workspace_config(),
+    )
+    reason = PROJECT_POLICY_DRIFT_REASON if drifted else SERVER_CONFIG_DRIFT_REASON
+    return WorkspaceConflictError.from_reason(reason)
+
+
 def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
     with sqlite3.connect(_database_path(), timeout=5) as conn:
         conn.row_factory = sqlite3.Row
@@ -258,8 +312,7 @@ def _bind(thread_id: str, proposed: WorkspaceBinding) -> WorkspaceBinding:
             raise RuntimeError(msg)
         existing = _row_binding(row)
         if _binding_differs(existing, proposed):
-            msg = f"thread {thread_id} is already bound to a different workspace"
-            raise WorkspaceConflictError(msg)
+            raise _binding_conflict(thread_id, existing, proposed)
         if not existing.config_fingerprint:
             conn.execute(
                 """

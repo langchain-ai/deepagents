@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,7 +21,32 @@ from deepagents_code.integrations.sandbox_factory import (
 )
 from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
 _FACTORY = "deepagents_code.integrations.sandbox_factory"
+
+
+@contextlib.contextmanager
+def _bind_environment(environment: Mapping[str, str]) -> Iterator[None]:
+    """Bind one workspace environment everywhere the factory reads it.
+
+    `sandbox_factory` aliases `active_environment` at import, while
+    `resolve_env_var` calls it through `deepagents_code.config`. Both resolve
+    to the same binding in production, so a test that patches only the alias
+    lets the two disagree.
+
+    Yields:
+        `None`, with both references bound to `environment`.
+    """
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.config.active_environment",
+            return_value=environment,
+        ),
+    ):
+        yield
 
 
 def _registry_with(config: SandboxConfig) -> SandboxRegistry:
@@ -198,7 +225,7 @@ def test_agentcore_uses_workspace_aws_session() -> None:
     backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
 
     with (
-        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        _bind_environment(environment),
         patch.dict(sys.modules, {"boto3": mock_boto3}),
     ):
         provider = _AgentCoreProvider()
@@ -641,6 +668,89 @@ def test_vercel_override_gate_reads_workspace_environment() -> None:
     }
 
 
+def test_vercel_uses_an_unprefixed_workspace_credential() -> None:
+    """Canonical `VERCEL_*` names from a workspace `.env` must not be dropped.
+
+    `_build_server_env` strips the client's project `.env` from the server
+    process, so these never reach the SDK's own `os.environ` read.
+    """
+    environment = {
+        "VERCEL_TOKEN": "workspace-token",
+        "VERCEL_PROJECT_ID": "workspace-project",
+        "VERCEL_TEAM_ID": "workspace-team",
+    }
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            side_effect=environment.get,
+        ),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        kwargs = _VercelProvider._resolve_sdk_kwargs()
+
+    assert kwargs == {
+        "token": "workspace-token",
+        "project_id": "workspace-project",
+        "team_id": "workspace-team",
+    }
+
+
+def test_vercel_delegates_when_the_workspace_configured_nothing() -> None:
+    """With no resolved credential the SDK keeps owning auth (OIDC)."""
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value={}),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            return_value=None,
+        ),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        assert _VercelProvider._resolve_sdk_kwargs() == {}
+
+
+def test_vercel_fails_closed_on_a_partial_workspace_credential_set() -> None:
+    """A partial set must not fall back to the server's Vercel identity.
+
+    An empty mapping hands auth back to the Vercel SDK, which resolves
+    credentials from the server process (`VERCEL_*` in its own environment,
+    or its OIDC identity). A workspace that pinned a restricted token would
+    then silently run its sandbox under the server's broader identity.
+    """
+    environment = {
+        "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+    }
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            side_effect=lambda name: environment.get(f"DEEPAGENTS_CODE_{name}"),
+        ),
+        patch.dict("os.environ", {}, clear=True),
+        pytest.raises(ValueError, match="VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"),
+    ):
+        _VercelProvider._resolve_sdk_kwargs()
+
+
+def test_vercel_get_provider_fails_closed_on_a_partial_set() -> None:
+    """The constructor propagates the partial-set failure.
+
+    `create_sandbox` surfaces `ValueError` as a startup error, so the server
+    refuses the sandbox rather than running it under substituted credentials.
+    """
+    with (
+        _bind_environment(
+            {
+                "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+                "DEEPAGENTS_CODE_VERCEL_TEAM_ID": "workspace-team",
+            }
+        ),
+        patch.dict("os.environ", {}, clear=True),
+        pytest.raises(ValueError, match="workspace Vercel configuration"),
+    ):
+        _get_provider("vercel")
+
+
 def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     """A failed session must not masquerade as an applied workspace session."""
     mock_boto3 = MagicMock()
@@ -652,9 +762,7 @@ def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
 
     with (
-        patch(
-            f"{_FACTORY}.active_environment", return_value={"AWS_REGION": "us-test-1"}
-        ),
+        _bind_environment({"AWS_REGION": "us-test-1"}),
         patch.dict(sys.modules, {"boto3": mock_boto3}),
     ):
         provider = _AgentCoreProvider()
@@ -670,3 +778,64 @@ def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
         integration_source="deepagents-code",
     )
     assert "session" not in client_module.CodeInterpreter.call_args.kwargs
+
+
+def test_agentcore_refuses_to_substitute_server_aws_credentials() -> None:
+    """A workspace that scoped its credentials must not silently fall back.
+
+    Omitting `session` lets the SDK resolve from the server process, so a
+    workspace pinned to a restricted profile would run under the server's
+    broader identity.
+    """
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: typo")
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_PROFILE": "restricted-profile"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="not substituted"),
+    ):
+        _AgentCoreProvider()
+
+
+def test_agentcore_rejects_a_half_set_access_key_pair() -> None:
+    """boto3 would raise `PartialCredentialsError` into the silent fallback."""
+    mock_boto3 = MagicMock()
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_ACCESS_KEY_ID": "only-the-id"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="AWS_SECRET_ACCESS_KEY is not set"),
+    ):
+        _AgentCoreProvider()
+
+    mock_boto3.Session.assert_not_called()
+
+
+def test_agentcore_honors_a_prefixed_aws_credential_override() -> None:
+    """The sandbox path must read the prefix exactly as the model path does."""
+    session = MagicMock()
+    session.get_credentials.return_value = MagicMock()
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value = session
+
+    with (
+        _bind_environment(
+            {
+                "AWS_REGION": "us-test-1",
+                "AWS_PROFILE": "canonical-profile",
+                "DEEPAGENTS_CODE_AWS_PROFILE": "prefixed-profile",
+            }
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        _AgentCoreProvider()
+
+    mock_boto3.Session.assert_called_once_with(
+        profile_name="prefixed-profile",
+        region_name="us-test-1",
+    )

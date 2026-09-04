@@ -4,7 +4,7 @@ import logging
 import subprocess
 import sys
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
@@ -384,6 +384,147 @@ class TestWorkspaceDotenvEnvironment:
         assert env["SHELL_VALUE"] == "shell"
         assert env["PROJECT_VALUE"] == "project"
         assert env["GLOBAL_VALUE"] == "global"
+
+    def test_dotenv_is_read_as_utf8_regardless_of_locale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `.env` holding non-ASCII bytes decodes on any platform locale.
+
+        The value round-trips on a UTF-8 host either way, so this asserts the
+        explicit encoding reaches `DotEnv`: its own default is the locale
+        encoding (cp1252 on Windows), which mis-decodes or raises.
+        """
+        import dotenv.main
+
+        import deepagents_code.config as config_mod
+
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text("PROXY_USER=café\n", encoding="utf-8")
+        recorded: dict[str, Any] = {}
+        real_dotenv = dotenv.main.DotEnv
+
+        def _record(**kwargs: Any) -> dotenv.main.DotEnv:
+            recorded.update(kwargs)
+            return real_dotenv(**kwargs)
+
+        monkeypatch.setattr(dotenv.main, "DotEnv", _record)
+
+        values = config_mod._dotenv_values_from(dotenv_path, {})
+
+        assert recorded["encoding"] == "utf-8"
+        assert values["PROXY_USER"] == "café"
+
+    def test_global_dotenv_does_not_interpolate_project_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cloned repo cannot steer the trusted global file's references."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("GATEWAY_HOST=https://evil\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("GATEWAY_HOST", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        # The project value still lands in the environment; it just must not
+        # be visible to the global file's interpolation.
+        assert env["GATEWAY_HOST"] == "https://evil"
+        assert env["ANTHROPIC_BASE_URL"] == "/v1"
+
+    def test_global_dotenv_still_interpolates_shell_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The baseline keeps trusted shell values available to the global file."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("GATEWAY_HOST", "https://trusted")
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["ANTHROPIC_BASE_URL"] == "https://trusted/v1"
+
+    def test_unreadable_global_dotenv_skips_the_project_dotenv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable global file must not resurrect the project `.env`.
+
+        `resolve_read_project_dotenv` defaults to true, so failing open here
+        would discard the user's opt-out on every workspace construction.
+        """
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("GLOBAL_VALUE=global\n", encoding="utf-8")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.delenv("GLOBAL_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        real_values_from = config_mod._dotenv_values_from
+
+        def _fail_on_global(
+            dotenv_path: Path, environ: Mapping[str, str]
+        ) -> dict[str, str | None]:
+            if dotenv_path == global_dotenv:
+                msg = "permission denied"
+                raise OSError(msg)
+            return real_values_from(dotenv_path, environ)
+
+        monkeypatch.setattr(config_mod, "_dotenv_values_from", _fail_on_global)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert "PROJECT_VALUE" not in env
+
+    def test_unreadable_global_dotenv_yields_to_a_trusted_opt_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failing closed occupies the global tier, so a shell export wins."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("GLOBAL_VALUE=global\n", encoding="utf-8")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", "true")
+
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        real_values_from = config_mod._dotenv_values_from
+
+        def _fail_on_global(
+            dotenv_path: Path, environ: Mapping[str, str]
+        ) -> dict[str, str | None]:
+            if dotenv_path == global_dotenv:
+                msg = "permission denied"
+                raise OSError(msg)
+            return real_values_from(dotenv_path, environ)
+
+        monkeypatch.setattr(config_mod, "_dotenv_values_from", _fail_on_global)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["PROJECT_VALUE"] == "project"
 
 
 class TestProjectDotenvDeniedKeys:
@@ -1197,6 +1338,123 @@ class TestWorkspaceStoredCredentials:
         assert kwargs["api_key"] == "stored-key"
         assert kwargs["base_url"] == "https://api.anthropic.com"
         assert kwargs["default_headers"] == {}
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_drops_the_inherited_endpoint(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """An unreadable store must not let a resolved key reach a gateway.
+
+        `_apply_scoped_stored_endpoint` is the only thing enforcing the
+        key/endpoint pairing on the scoped path, and `resolve_provider_credential`
+        still falls back to the environment key. Keeping `base_url` would send
+        that key to a gateway a workspace `.env` chose.
+        """
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key", _corrupt
+        )
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url", _corrupt
+        )
+
+        with use_environment(
+            {
+                "OPENAI_API_KEY": "workspace-key",
+                "OPENAI_BASE_URL": "https://attacker.example/v1",
+            }
+        ):
+            create_model("openai:gpt-5.5")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs.get("base_url") != "https://attacker.example/v1"
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_drops_the_endpoint_for_an_explicit_key(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """Without the store, an explicit key's endpoint pairing is unknowable."""
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_base_url", _corrupt
+        )
+
+        with use_environment(
+            {
+                "OPENAI_API_KEY": "workspace-key",
+                "OPENAI_BASE_URL": "https://attacker.example/v1",
+            }
+        ):
+            create_model("openai:gpt-5.5", extra_kwargs={"api_key": "caller-key"})
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert kwargs["api_key"] == "caller-key"
+        assert "base_url" not in kwargs
+
+    @patch("langchain.chat_models.init_chat_model")
+    def test_corrupt_store_falls_back_to_adc_project_inference(
+        self,
+        mock_init_chat_model: Mock,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Vertex stores the GCP project in the key slot; a read failure warns.
+
+        The provider uses implicit auth, so the early credential check never
+        fires and a corrupt store would otherwise surface only as an opaque
+        ADC project-inference error.
+        """
+        import logging
+
+        from deepagents_code.config import create_model, use_environment
+
+        mock_model = Mock()
+        mock_model.profile = {"max_input_tokens": 128000, "tool_calling": True}
+        mock_init_chat_model.return_value = mock_model
+
+        def _corrupt(_provider: str) -> str | None:
+            msg = "credential file is corrupt"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(
+            "deepagents_code.model_config.auth_store.get_stored_key", _corrupt
+        )
+
+        with (
+            caplog.at_level(logging.WARNING, logger="deepagents_code.config"),
+            use_environment({"GOOGLE_CLOUD_LOCATION": "us-east5"}),
+        ):
+            create_model("google_anthropic_vertex:claude-sonnet-4-6")
+
+        kwargs = mock_init_chat_model.call_args.kwargs
+        assert "project" not in kwargs
+        assert kwargs["location"] == "us-east5"
+        assert any(
+            "Could not read the stored Google Cloud project" in record.message
+            for record in caplog.records
+        )
 
     def test_bare_claude_provider_uses_workspace_credentials(self) -> None:
         """Bare model inference reads the active workspace snapshot."""
@@ -3621,6 +3879,36 @@ class TestGetProviderKwargsConfigFallback:
 
             kwargs = _get_provider_kwargs("google_genai")
             assert kwargs == {}
+
+    def test_azure_env_endpoint_does_not_replace_configured_azure_endpoint(
+        self, tmp_path: Path
+    ) -> None:
+        """`AZURE_OPENAI_ENDPOINT` fills in but never replaces `azure_endpoint`.
+
+        A `config.toml` `[models.providers.azure_openai.params]` literal reaches
+        `_apply_azure_sdk_endpoint` before the environment default is applied,
+        so an explicit endpoint must win over the env var just as the other
+        SDK environment defaults in `_apply_provider_sdk_environment` use
+        `setdefault`. The `base_url` -> `azure_endpoint` translation still runs
+        when the env var matches a configured `base_url`.
+        """
+        config_path = tmp_path / "config.toml"
+        config_path.write_text("""
+[models.providers.azure_openai.params]
+azure_endpoint = "https://configured.openai.azure.com/"
+""")
+        with (
+            patch.object(model_config, "DEFAULT_CONFIG_PATH", config_path),
+            patch.dict(
+                "os.environ",
+                {"AZURE_OPENAI_ENDPOINT": "https://env.openai.azure.com/"},
+                clear=True,
+            ),
+        ):
+            kwargs = _get_provider_kwargs("azure_openai")
+
+        assert kwargs["azure_endpoint"] == "https://configured.openai.azure.com/"
+        assert "base_url" not in kwargs
 
     def test_merges_config_params(self, tmp_path: Path) -> None:
         """Merges params from config with base_url and api_key."""

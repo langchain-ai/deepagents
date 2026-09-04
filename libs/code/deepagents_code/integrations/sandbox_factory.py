@@ -31,7 +31,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import Generator
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -719,13 +719,38 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
-def _aws_session_kwargs(environment: Mapping[str, str]) -> dict[str, str]:
-    """Translate a workspace environment into explicit boto3 session arguments.
+def _aws_session_kwargs() -> dict[str, str]:
+    """Translate the bound workspace environment into boto3 session arguments.
+
+    Resolves through `resolve_env_var` so a `DEEPAGENTS_CODE_`-prefixed
+    override is honored here exactly as it is on the model path. Both paths
+    share `AWS_CREDENTIAL_ENV_SOURCES`; sharing the table alone left the
+    *lookup* free to drift, so a prefixed value applied to the model and was
+    dropped for the sandbox.
 
     Returns:
         Populated boto3 session keyword arguments.
+
+    Raises:
+        ValueError: If exactly one half of the access-key pair resolves.
+            boto3 would raise `PartialCredentialsError`, which the caller
+            turns into a silent fallback to the server's own credentials.
     """
-    return resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, environment.get)
+    from deepagents_code.model_config import resolve_env_var
+
+    resolved = resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, resolve_env_var)
+    key_id = resolved.get("aws_access_key_id")
+    secret = resolved.get("aws_secret_access_key")
+    if bool(key_id) != bool(secret):
+        missing = "AWS_SECRET_ACCESS_KEY" if key_id else "AWS_ACCESS_KEY_ID"
+        msg = (
+            f"The workspace AWS configuration is incomplete: {missing} is not "
+            f"set. Set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in "
+            f"this workspace's .env, or unset both to use AWS_PROFILE or the "
+            f"server's default credentials."
+        )
+        raise ValueError(msg)
+    return resolved
 
 
 class _AgentCoreProvider(SandboxProvider):
@@ -743,8 +768,11 @@ class _AgentCoreProvider(SandboxProvider):
                 `AWS_DEFAULT_REGION` / `us-west-2`).
 
         Raises:
-            ValueError: If boto3 is installed and AWS credentials cannot
-                be resolved.
+            ValueError: If boto3 is installed and AWS credentials cannot be
+                resolved, or if the workspace scoped the sandbox to specific
+                AWS credentials that turn out to be invalid or incomplete.
+                Falling back to the server's own credentials there would be a
+                silent privilege substitution.
         """
         environment = active_environment()
         self._region = region or environment.get(
@@ -753,12 +781,12 @@ class _AgentCoreProvider(SandboxProvider):
         self._session: Any = None
 
         # Validate AWS credentials early for a clear error message.
+        credential_kwargs: dict[str, str] = {}
         try:
             import boto3  # ty: ignore[unresolved-import]
 
-            session_kwargs = _aws_session_kwargs(environment)
-            session_kwargs["region_name"] = self._region
-            self._session = boto3.Session(**session_kwargs)
+            credential_kwargs = _aws_session_kwargs()
+            self._session = boto3.Session(region_name=self._region, **credential_kwargs)
             credentials = self._session.get_credentials()
             if credentials is None:
                 msg = (
@@ -771,10 +799,22 @@ class _AgentCoreProvider(SandboxProvider):
             logger.debug("boto3 not installed; skipping credential pre-check")
         except ValueError:
             raise
-        except Exception:
-            # Say what the failure costs, not just that it happened: without a
-            # session the interpreter resolves credentials itself, from the
-            # process environment rather than this workspace's.
+        except Exception as exc:
+            # Without a session the interpreter resolves credentials itself,
+            # from the server process rather than this workspace. That is the
+            # right default when the workspace scoped nothing, and a privilege
+            # substitution when it did -- a workspace pinned to a restricted
+            # profile would silently run under the server's broader identity.
+            if credential_kwargs:
+                msg = (
+                    f"The workspace AWS configuration is invalid: {exc}. This "
+                    f"workspace scoped its sandbox to specific AWS credentials "
+                    f"({', '.join(sorted(credential_kwargs))}), so the server's own "
+                    f"credentials are not substituted. Fix AWS_PROFILE / "
+                    f"AWS_ACCESS_KEY_ID in this workspace's .env, or unset "
+                    f"them to use the server's default credentials."
+                )
+                raise ValueError(msg) from exc
             logger.warning(
                 "Could not build an AWS session from the workspace environment "
                 "(region=%s). The sandbox will NOT use workspace AWS "
@@ -915,40 +955,29 @@ class _VercelSandboxHandle(Protocol):
 class _VercelProvider(SandboxProvider):
     """Vercel Sandbox provider implementation."""
 
-    _CREDENTIAL_ENV_NAMES = (
-        "VERCEL_TOKEN",
-        "VERCEL_PROJECT_ID",
-        "VERCEL_TEAM_ID",
-    )
-
     def __init__(self) -> None:
+        """Initialize the provider, resolving workspace Vercel credentials."""
         self._sdk_kwargs = self._resolve_sdk_kwargs()
 
     @classmethod
     def _resolve_sdk_kwargs(cls) -> dict[str, str]:
-        """Resolve explicit Vercel credentials when a prefixed override is set.
+        """Resolve explicit Vercel credentials configured for this workspace.
 
-        Credentials stay SDK-managed (canonical `VERCEL_*` variables or OIDC)
-        unless at least one of the prefixed overrides
-        `DEEPAGENTS_CODE_VERCEL_TOKEN`, `DEEPAGENTS_CODE_VERCEL_PROJECT_ID`, or
-        `DEEPAGENTS_CODE_VERCEL_TEAM_ID` is present. When triggered, each value
-        still resolves prefixed-first then canonical via `resolve_env_var`.
+        Each value resolves prefixed-first then canonical via `resolve_env_var`,
+        against the bound workspace environment. Credentials stay SDK-managed
+        (OIDC, or `VERCEL_*` in the server's own environment) only when none of
+        the three variables resolves for this workspace.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
             credential resolution to the Vercel SDK.
-        """
-        prefix = "DEEPAGENTS_CODE_"
-        # Gate against the same mapping `resolve_env_var` resolves from. Reading
-        # `os.environ` here would miss a prefixed override that came from the
-        # workspace `.env`, silently falling back to default Vercel auth.
-        environment = active_environment()
-        has_override = any(
-            f"{prefix}{name}" in environment for name in cls._CREDENTIAL_ENV_NAMES
-        )
-        if not has_override:
-            return {}
 
+        Raises:
+            ValueError: If only part of the `VERCEL_TOKEN` / `VERCEL_PROJECT_ID`
+                / `VERCEL_TEAM_ID` set resolves. Delegating to the SDK there
+                would authenticate the sandbox with the server's own Vercel
+                identity instead of the credentials this workspace pinned.
+        """
         from deepagents_code.model_config import resolve_env_var
 
         values = {
@@ -956,15 +985,31 @@ class _VercelProvider(SandboxProvider):
             "project_id": resolve_env_var("VERCEL_PROJECT_ID"),
             "team_id": resolve_env_var("VERCEL_TEAM_ID"),
         }
-        missing = sorted(key for key, value in values.items() if not value)
-        if missing:
-            logger.warning(
-                "Incomplete explicit Vercel credentials; VERCEL_TOKEN, "
-                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID are all required. "
-                "Falling back to default Vercel authentication. Missing: %s",
-                ", ".join(missing),
-            )
+        # Gate on the resolved values, not on the presence of a prefixed name.
+        # `_build_server_env` strips the client's project `.env` from the server
+        # process, so an unprefixed `VERCEL_TOKEN` in a workspace `.env` reaches
+        # `resolve_env_var` but no longer reaches the SDK's own `os.environ`
+        # read -- gating on the prefix alone silently discarded it.
+        if not any(values.values()):
             return {}
+        missing = sorted(
+            f"VERCEL_{key.upper()}" for key, value in values.items() if not value
+        )
+        if missing:
+            # Fail closed rather than warn and delegate: an empty mapping hands
+            # auth back to the Vercel SDK, which resolves credentials from the
+            # server process (`VERCEL_*` in its own environment, or its OIDC
+            # identity). A workspace that pinned a restricted token would then
+            # silently run its sandbox under the server's broader identity.
+            msg = (
+                "The workspace Vercel configuration is incomplete: "
+                f"{', '.join(missing)} not set. Set VERCEL_TOKEN, "
+                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together, or unset all "
+                "three to fall back to default Vercel authentication."
+            )
+            raise ValueError(msg)
+        # `missing` is empty, so every value is a non-empty string here; the
+        # comprehension re-states that for the type checker.
         return {key: value for key, value in values.items() if value}
 
     def get_or_create(

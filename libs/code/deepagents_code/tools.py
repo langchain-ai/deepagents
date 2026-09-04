@@ -8,7 +8,6 @@ import ipaddress
 import logging
 import socket
 import threading
-import weakref
 from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Annotated, Any, Literal
 from urllib.parse import urljoin, urlparse
@@ -27,10 +26,6 @@ logger = logging.getLogger(__name__)
 
 _UNSET = object()
 _tavily_client: TavilyClient | object | None = _UNSET
-_workspace_web_search_tools: weakref.WeakValueDictionary[int, object] = (
-    weakref.WeakValueDictionary()
-)
-
 _ALLOWED_URL_SCHEMES = frozenset({"http", "https"})
 _MAX_FETCH_REDIRECTS = 5
 
@@ -332,16 +327,7 @@ def create_web_search_tool(api_key: str) -> BaseTool:
             client = _TavilyClient(api_key=api_key)
         return _search_with_tavily(client, **kwargs)
 
-    _workspace_web_search_tools[id(workspace_web_search)] = workspace_web_search
     return workspace_web_search
-
-
-def is_web_search_tool(candidate: object) -> bool:
-    """Return whether `candidate` is a built-in or workspace-bound search tool."""
-    return (
-        candidate is web_search
-        or _workspace_web_search_tools.get(id(candidate)) is candidate
-    )
 
 
 @tool

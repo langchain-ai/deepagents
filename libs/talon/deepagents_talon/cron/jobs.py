@@ -12,8 +12,12 @@ import uuid
 from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Literal, NotRequired, TypedDict, cast
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict, cast
+
+from deepagents_talon.timezones import TimeZoneError, resolve_zone
+
+if TYPE_CHECKING:
+    from zoneinfo import ZoneInfo
 
 MIN_GRANULARITY_MINUTES = 1
 MAX_SCHEDULE_TEXT_LENGTH = 200
@@ -867,11 +871,7 @@ def _first_run_at(schedule: CronSchedule, now: datetime) -> datetime:
 
 
 def _resolve_zone(name: str) -> ZoneInfo:
-    """Look up an IANA timezone by name.
-
-    Legacy POSIX aliases such as `EST5EDT` and bare UTC offsets are rejected:
-    they cannot express a region's future daylight-saving rules, so a recurring
-    schedule under one would silently drift.
+    """Look up an IANA timezone, reporting failures as a cron job error.
 
     Args:
         name: Timezone key, such as `America/New_York` or `UTC`.
@@ -882,17 +882,10 @@ def _resolve_zone(name: str) -> ZoneInfo:
     Raises:
         CronJobError: If the name is not a usable IANA region key.
     """
-    if name != "UTC" and "/" not in name:
-        msg = (
-            f"timezone must be an IANA region name such as 'America/New_York', "
-            f"or 'UTC', not {name!r}"
-        )
-        raise CronJobError(msg)
     try:
-        return ZoneInfo(name)
-    except (ZoneInfoNotFoundError, ValueError) as exc:
-        msg = f"unknown timezone {name!r}; use an IANA name such as 'America/New_York'"
-        raise CronJobError(msg) from exc
+        return resolve_zone(name)
+    except TimeZoneError as exc:
+        raise CronJobError(str(exc)) from exc
 
 
 def _local_time_exists(naive: datetime, zone: ZoneInfo) -> bool:

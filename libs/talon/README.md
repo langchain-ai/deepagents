@@ -222,6 +222,14 @@ The wall-clock forms require an explicit IANA timezone name; there is no default
 zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
 rejected because they cannot express a region's future daylight-saving rules.
 
+The agent gets that zone name from the `current_time` tool, which is always
+available and reports the current date, time, and IANA timezone. Called with no
+argument it uses the host's local zone; pass a zone name to read the clock
+elsewhere. Its `timezone` value goes straight into a schedule string. When the
+host zone name cannot be determined the tool still reports the correct local
+time and UTC offset, but returns `timezone: null` and a note to ask the user
+rather than guessing.
+
 The timezone is stored on the job and pinned. `daily at 08:00 America/New_York`
 fires at 08:00 New York wall-clock time no matter where the host is or which
 side of a daylight-saving transition the run falls on — the next run is rebuilt

@@ -10,7 +10,7 @@ import contextlib
 import json
 import logging
 import signal
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
@@ -77,6 +77,7 @@ _CANCEL_TIMEOUT_MESSAGE = (
     "Could not stop the current run within 30 seconds. Your new message was not started. "
     "Restart Talon to recover."
 )
+_QUEUED_MESSAGE = "Queued your message. It will run after the current response."
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -102,7 +103,15 @@ class _Turn:
     conversation_id: str
     provider: str | None
     generation: int
-    recovery_degraded: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _QueuedTurn:
+    channel: ChannelAdapter
+    message: ChannelMessage
+    conversation_root: str
+    conversation_id: str
+    provider: str | None
 
 
 @dataclass(slots=True)
@@ -177,6 +186,7 @@ class TalonHost:
         self._cron_controls: dict[str, _CronControl] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
+        self._queued_turns: defaultdict[str, deque[_QueuedTurn]] = defaultdict(deque)
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
         self._conversation_resets: dict[str, int] = {}
@@ -298,7 +308,7 @@ class TalonHost:
             ):
                 return
 
-            await self._replace_agent_turn(
+            await self._submit_agent_turn(
                 channel,
                 message,
                 conversation_root,
@@ -337,7 +347,7 @@ class TalonHost:
             env=self.config.env,
         )
 
-    async def _replace_agent_turn(
+    async def _submit_agent_turn(
         self,
         channel: ChannelAdapter,
         message: ChannelMessage,
@@ -351,33 +361,77 @@ class TalonHost:
             )
             return
         active = self._tasks.get(conversation_id)
-        recovery_degraded = False
-        if active is not None and not active.done():
-            outcome = await self._cancel_active(conversation_id, active, recover=True)
-            if outcome is _CancelOutcome.TIMEOUT:
-                await send_with_retry(
-                    lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
-                )
-                return
-            recovery_degraded = outcome is _CancelOutcome.DEGRADED
+        queued = _QueuedTurn(
+            channel,
+            message,
+            conversation_root,
+            conversation_id,
+            provider,
+        )
+        pending = self._queued_turns.get(conversation_id)
+        if (active is not None and not active.done()) or pending:
+            self._queued_turns[conversation_id].append(queued)
+            await send_with_retry(
+                lambda: channel.send_message(message.conversation_id, _QUEUED_MESSAGE)
+            )
+            if active is None or active.done():
+                self._start_next_queued_turn(conversation_id)
+            return
+        self._start_agent_turn(queued)
+
+    def _start_agent_turn(self, queued: _QueuedTurn) -> None:
+        conversation_id = queued.conversation_id
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
         task = asyncio.create_task(
             self._run_agent_turn(
-                channel,
-                message,
+                queued.channel,
+                queued.message,
                 _Turn(
-                    conversation_root,
+                    queued.conversation_root,
                     conversation_id,
-                    provider,
+                    queued.provider,
                     generation,
-                    recovery_degraded,
                 ),
             ),
             name=f"talon:{conversation_id}",
         )
         self._tasks[conversation_id] = task
         self._track_conversation_task(conversation_id, task)
+        task.add_done_callback(
+            lambda _done, current=conversation_id, root=queued.conversation_root: (
+                self._schedule_queue_drain(current, root)
+            )
+        )
+
+    def _start_next_queued_turn(self, conversation_id: str) -> None:
+        queue = self._queued_turns.get(conversation_id)
+        if not queue:
+            self._queued_turns.pop(conversation_id, None)
+            return
+        queued = queue.popleft()
+        if not queue:
+            del self._queued_turns[conversation_id]
+        self._start_agent_turn(queued)
+
+    def _schedule_queue_drain(self, conversation_id: str, conversation_root: str) -> None:
+        if not self._running or not self._queued_turns.get(conversation_id):
+            return
+        task = asyncio.create_task(
+            self._drain_queue(conversation_id, conversation_root),
+            name=f"talon-queue:{conversation_id}",
+        )
+        self._track_conversation_task(conversation_id, task)
+
+    async def _drain_queue(self, conversation_id: str, conversation_root: str) -> None:
+        async with self._locks[conversation_root]:
+            if self._agent_conversation_id(conversation_root) != conversation_id:
+                self._queued_turns.pop(conversation_id, None)
+                return
+            active = self._tasks.get(conversation_id)
+            if active is not None and not active.done():
+                return
+            self._start_next_queued_turn(conversation_id)
 
     async def _run_agent_turn(
         self,
@@ -394,8 +448,6 @@ class TalonHost:
             "message_id": message.message_id,
             **message.metadata,
         }
-        if turn.recovery_degraded:
-            metadata["interruption_recovery"] = "failed"
         origin_conversation_id = _origin_conversation_id(message)
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
@@ -532,6 +584,7 @@ class TalonHost:
         conversation_root: str,
     ) -> None:
         current_conversation_id = self._agent_conversation_id(conversation_root)
+        self._queued_turns.pop(current_conversation_id, None)
         outcome = await self._cancel_conversation_tasks(current_conversation_id)
         if outcome is _CancelOutcome.TIMEOUT:
             await send_with_retry(
@@ -552,6 +605,7 @@ class TalonHost:
         reply_conversation_id: str | None = None,
     ) -> None:
         target_conversation_id = reply_conversation_id or conversation_id
+        self._queued_turns.pop(conversation_id, None)
         outcome = await self._cancel_conversation_tasks(conversation_id)
         if outcome is _CancelOutcome.NONE:
             message = "No in-flight run to stop."
@@ -636,6 +690,7 @@ class TalonHost:
         return _conversation_key(channel_key, conversation_id)
 
     async def _cancel_all(self) -> None:
+        self._queued_turns.clear()
         tasks = {
             task
             for task in [

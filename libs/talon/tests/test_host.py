@@ -475,7 +475,7 @@ async def test_late_authorization_callback_expires_without_cancelling_turn(
     await host.stop()
 
 
-async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_path: Path) -> None:
+async def test_host_queues_follow_ups_in_same_conversation(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()
     host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
@@ -484,13 +484,24 @@ async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_p
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await _wait_for_request(agent, "second")
-    await _wait_for_sent_count(channel, 1)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="third"))
+
+    assert [request.text for request in agent.requests] == ["block"]
+    assert agent.recoveries == []
+
+    agent.released.set()
+    await _wait_for_request(agent, "third")
+    await _wait_for_sent_count(channel, 5)
     await host.stop()
 
-    assert [request.text for request in agent.requests] == ["block", "second"]
-    assert agent.recoveries == ["chat"]
-    assert channel.sent == [("chat", "reply:second")]
+    assert [request.text for request in agent.requests] == ["block", "second", "third"]
+    assert channel.sent == [
+        ("chat", "Queued your message. It will run after the current response."),
+        ("chat", "Queued your message. It will run after the current response."),
+        ("chat", "reply:block"),
+        ("chat", "reply:second"),
+        ("chat", "reply:third"),
+    ]
 
 
 async def test_typing_indicator_refreshes_during_long_agent_turn(
@@ -523,11 +534,16 @@ async def test_stop_cancels_in_flight_conversation(tmp_path: Path) -> None:
 
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="stale"))
 
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/stop"))
     await host.stop()
 
-    assert channel.sent == [("chat", "Stopped current run.")]
+    assert [request.text for request in agent.requests] == ["block"]
+    assert channel.sent == [
+        ("chat", "Queued your message. It will run after the current response."),
+        ("chat", "Stopped current run."),
+    ]
 
 
 async def test_stop_keeps_ack_when_recovery_fails(tmp_path: Path, caplog) -> None:
@@ -596,16 +612,18 @@ async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> Non
 
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="stale"))
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await _wait_for_sent_count(channel, 2)
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="fresh"))
+    await _wait_for_sent_count(channel, 3)
     await host.stop()
 
-    assert [request.text for request in agent.requests] == ["block", "second"]
+    assert [request.text for request in agent.requests] == ["block", "fresh"]
     assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
     assert channel.sent == [
+        ("chat", "Queued your message. It will run after the current response."),
         ("chat", "Started a fresh conversation."),
-        ("chat", "reply:second"),
+        ("chat", "reply:fresh"),
     ]
 
 
@@ -626,21 +644,6 @@ async def test_new_recovers_old_thread_before_reset(tmp_path: Path) -> None:
     assert agent.requests[1].conversation_id.startswith("chat:talon-reset:")
 
 
-async def test_recovery_failure_starts_replacement_with_metadata(tmp_path: Path) -> None:
-    channel = RecordingChannel()
-    agent = FailingRecoveryAgent()
-    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
-    await host.start()
-
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
-    await _wait_for_request(agent, "block")
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await _wait_for_request(agent, "second")
-    await host.stop()
-
-    assert agent.requests[1].metadata["interruption_recovery"] == "failed"
-
-
 async def test_cancellation_timeout_blocks_until_host_restart(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -652,8 +655,8 @@ async def test_cancellation_timeout_blocks_until_host_restart(
 
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="block"))
     await _wait_for_request(agent, "block")
+    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/stop"))
     await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="second"))
-    await host.receive_message(channel, ChannelMessage(conversation_id="chat", text="third"))
     assert [request.text for request in agent.requests] == ["block"]
     assert len(channel.sent) == 2
 
@@ -866,17 +869,27 @@ async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path
         channel,
         ChannelMessage(conversation_id="chat", text="deny", sender_id="operator"),
     )
-    await _wait_for_sent_count(channel, 4)
+    await _wait_for_sent_count(channel, 5)
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="approve", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 6)
     await host.stop()
 
     assert [request.text for request in agent.requests] == ["run", "maybe"]
-    assert agent.recoveries == ["chat"]
+    assert agent.recoveries == []
     assert channel.sent[1] == (
         "chat",
         "Only the operator who started this run can approve or deny it.",
     )
-    assert "Tool approval required." in channel.sent[2][1]
+    assert channel.sent[2] == (
+        "chat",
+        "Queued your message. It will run after the current response.",
+    )
     assert channel.sent[3] == ("chat", "decision:reject")
+    assert "Tool approval required." in channel.sent[4][1]
+    assert channel.sent[5] == ("chat", "decision:approve")
 
 
 async def test_host_routes_tool_approval_reaction_to_prompt_message(tmp_path: Path) -> None:

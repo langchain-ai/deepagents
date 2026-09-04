@@ -493,6 +493,40 @@ async def test_runtime_uses_user_defined_general_purpose_subagent(
     ]
 
 
+async def test_runtime_skips_invalid_local_subagent_definitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    captured: dict[str, Any] = {}
+    assistant_dir = tmp_path / "agent-home" / "agent"
+    invalid_dir = tmp_path / "agent-home" / "agents" / "invalid"
+    invalid_dir.mkdir(parents=True)
+    (invalid_dir / "AGENTS.md").write_text(
+        "---\ndescription: [not, text]\n---\nInvalid instructions.",
+        encoding="utf-8",
+    )
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return RecordingGraph()
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    caplog.set_level(logging.WARNING, logger="deepagents_talon.runtime")
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        assistant_dir=assistant_dir,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+
+    await runtime.start()
+
+    assert captured["subagents"] == [{**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"}]
+    assert "invalid name, description, or model" in caplog.text
+
+
 async def test_runtime_passes_middleware_to_create_deep_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

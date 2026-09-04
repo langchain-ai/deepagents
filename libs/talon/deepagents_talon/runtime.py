@@ -10,11 +10,13 @@ import contextvars
 import json
 import logging
 import os
+import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
+import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -29,7 +31,6 @@ from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from deepagents_code.subagents import list_subagents
 from deepagents_code.tools import fetch_url, web_search
 from deepagents_talon.authorization import (
     reset_authorization_handler,
@@ -995,18 +996,73 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
 
 def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
     agents_dir = _local_subagents_dir(assistant_dir)
-    subagents: list[SubAgent] = []
-    for metadata in list_subagents(user_agents_dir=agents_dir):
-        subagent: SubAgent = {
-            "name": metadata["name"],
-            "description": metadata["description"],
-            "system_prompt": metadata["system_prompt"],
-            "mode": "fork",
-        }
-        if metadata["model"]:
-            subagent["model"] = metadata["model"]
-        subagents.append(subagent)
-    return subagents
+    if not agents_dir.is_dir():
+        return []
+    subagents: dict[str, SubAgent] = {}
+    for directory in sorted(agents_dir.iterdir(), key=lambda path: path.name):
+        path = directory / "AGENTS.md"
+        if not directory.is_dir() or not path.is_file():
+            continue
+        subagent = _parse_local_subagent(path, fallback_name=directory.name)
+        if subagent is not None:
+            subagents[subagent["name"]] = subagent
+    return list(subagents.values())
+
+
+def _parse_local_subagent(path: Path, *, fallback_name: str) -> SubAgent | None:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Skipping Talon subagent %s: could not read file (%s)", path, exc)
+        return None
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", content, re.DOTALL)
+    if match is None:
+        logger.warning("Skipping Talon subagent %s: missing YAML frontmatter", path)
+        return None
+    try:
+        frontmatter = yaml.safe_load(match.group(1))
+    except yaml.YAMLError as exc:
+        logger.warning("Skipping Talon subagent %s: invalid YAML frontmatter (%s)", path, exc)
+        return None
+    return _subagent_from_frontmatter(path, frontmatter, match.group(2), fallback_name)
+
+
+def _subagent_from_frontmatter(
+    path: Path, frontmatter: object, prompt: str, fallback_name: str
+) -> SubAgent | None:
+    if not isinstance(frontmatter, dict):
+        logger.warning("Skipping Talon subagent %s: frontmatter must be a mapping", path)
+        return None
+    metadata = _normalize_subagent_metadata(
+        frontmatter.get("name", fallback_name),
+        frontmatter.get("description"),
+        frontmatter.get("model"),
+    )
+    if metadata is None:
+        logger.warning("Skipping Talon subagent %s: invalid name, description, or model", path)
+        return None
+    name, description, model = metadata
+    subagent: SubAgent = {
+        "name": name,
+        "description": description,
+        "system_prompt": prompt.strip(),
+        "mode": "fork",
+    }
+    if model:
+        subagent["model"] = model
+    return subagent
+
+
+def _normalize_subagent_metadata(
+    name: object, description: object, model: object
+) -> tuple[str, str, str | None] | None:
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(description, str) or not description.strip():
+        return None
+    if model is not None and not isinstance(model, str):
+        return None
+    return name.strip(), description.strip(), model
 
 
 def _local_subagents_dir(assistant_dir: Path) -> Path:

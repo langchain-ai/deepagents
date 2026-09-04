@@ -103,7 +103,7 @@ _ALLOWLIST: dict[CallSite, str] = {
         "client/non_interactive.py", "run_non_interactive", "Path.cwd", "0f2377b6"
     ): "The headless client sends its directory in run context.",
     CallSite(
-        "config.py", "_dotenv_environment", "Path.cwd", "e3f140b7"
+        "config.py", "_dotenv_environment", "Path.cwd", "55cd4e5f"
     ): "Workspace server callers pass `start_path`; client processes fall back "
     "to their own launch directory, which is the correct project directory there.",
     CallSite(

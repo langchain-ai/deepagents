@@ -91,8 +91,7 @@ async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
     *,
-    has_tavily: bool | None = None,
-    tavily_api_key: str | None = None,
+    tavily_api_key: str | None,
 ) -> tuple[list[Any], list[Any] | None, list[Any]]:
     """Assemble the tool list based on server config.
 
@@ -111,8 +110,9 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
-        has_tavily: Workspace credential availability override.
-        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
+        tavily_api_key: Workspace Tavily key, or `None` when the workspace
+            configures none. An empty string still binds the tool, which then
+            reports the key as unconfigured.
 
     Returns:
         Tuple of `(tools, mcp_server_info, mcp_tools)`.
@@ -121,22 +121,15 @@ async def _build_tools(
         FileNotFoundError: If the MCP config file is not found.
         RuntimeError: If MCP tool loading fails.
     """
-    from deepagents_code.config import credentials
     from deepagents_code.tools import (
         create_web_search_tool,
         fetch_url,
         get_current_thread_id,
-        web_search,
     )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
-    if tavily_available:
-        tools.append(
-            web_search
-            if has_tavily is None
-            else create_web_search_tool(tavily_api_key or "")
-        )
+    if tavily_api_key is not None:
+        tools.append(create_web_search_tool(tavily_api_key))
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -332,6 +325,7 @@ async def _make_graphs_in_environment(
         Any,
         Any,
         Any,
+        Any,
     ]:
         project_context = project_context_override or get_server_project_context()
 
@@ -340,6 +334,7 @@ async def _make_graphs_in_environment(
             configure_langsmith_secret_redaction,
             create_model,
             is_memory_auto_save_enabled,
+            reconcile_tracing_environment,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -350,6 +345,7 @@ async def _make_graphs_in_environment(
             create_model,
             is_memory_auto_save_enabled,
             configure_langsmith_secret_redaction,
+            reconcile_tracing_environment,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -360,8 +356,12 @@ async def _make_graphs_in_environment(
         create_model,
         is_memory_auto_save_enabled,
         configure_langsmith_secret_redaction,
+        reconcile_tracing_environment,
         resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
+    # Publish this workspace's tracing settings before deciding on redaction:
+    # the decision reads the snapshot, the SDK reads `os.environ`.
+    reconcile_tracing_environment(workspace_env)
     configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some
@@ -380,7 +380,6 @@ async def _make_graphs_in_environment(
     tools, mcp_server_info, mcp_tools = await _build_tools(
         config,
         project_context,
-        has_tavily=workspace_credentials.has_tavily,
         tavily_api_key=workspace_credentials.tavily_api_key,
     )
     read_only_context_tools = _criteria_context_tools(tools, mcp_tools)

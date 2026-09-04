@@ -182,7 +182,6 @@ class TestServerGraph:
             tools, _, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
-                has_tavily=True,
                 tavily_api_key="workspace-key",
             )
 
@@ -224,6 +223,7 @@ class TestServerGraph:
             tools, mcp_server_info, mcp_tools = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
+                tavily_api_key=None,
             )
 
         assert tools == [fetch_tool, thread_tool]
@@ -259,6 +259,7 @@ class TestServerGraph:
             active_environment=MagicMock(return_value=environment),
             use_environment=__import__("contextlib").nullcontext,
             configure_langsmith_secret_redaction=MagicMock(),
+            reconcile_tracing_environment=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,

@@ -1,10 +1,55 @@
 from __future__ import annotations
 
+import argparse
 import logging
+from typing import Any
 
 import pytest
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from deepagents_talon.__main__ import _channel_log_level, _configure_logging
+from deepagents_talon.__main__ import (
+    _channel_log_level,
+    _configure_logging,
+    _run_host,
+)
+from deepagents_talon.config import TalonConfig
+from deepagents_talon.cron import CronJobStore
+
+
+async def test_run_host_persists_langgraph_checkpoints(tmp_path, monkeypatch) -> None:
+    config = TalonConfig.from_env(
+        {"AGENT_ASSISTANT_ID": "assistant-1", "AGENT_MODEL": "test:model"},
+        base_home=tmp_path,
+    )
+    config.ensure_home()
+    cron_store = CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
+    captured: dict[str, Any] = {}
+
+    async def fake_agent_runtime(_config, cron_store=None, checkpointer=None):
+        captured["cron_store"] = cron_store
+        captured["checkpointer"] = checkpointer
+        return object()
+
+    async def fake_run_host_with_agent(*_args: object) -> None:
+        await captured["checkpointer"].aput(
+            {"configurable": {"thread_id": "conversation", "checkpoint_ns": ""}},
+            {"id": "checkpoint", "ts": "2026-09-04T00:00:00Z", "channel_values": {}},
+            {},
+            {},
+        )
+
+    monkeypatch.setattr("deepagents_talon.__main__._agent_runtime", fake_agent_runtime)
+    monkeypatch.setattr("deepagents_talon.__main__._run_host_with_agent", fake_run_host_with_agent)
+
+    await _run_host(argparse.Namespace(once=True), config, cron_store, ())
+
+    assert config.checkpoint_path.is_file()
+    async with AsyncSqliteSaver.from_conn_string(str(config.checkpoint_path)) as checkpointer:
+        checkpoint = await checkpointer.aget(
+            {"configurable": {"thread_id": "conversation", "checkpoint_ns": ""}}
+        )
+    assert checkpoint is not None
+    assert checkpoint["id"] == "checkpoint"
 
 
 @pytest.mark.parametrize(

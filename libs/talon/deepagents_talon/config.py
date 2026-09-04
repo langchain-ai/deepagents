@@ -126,6 +126,17 @@ class TalonConfig:
         return self.home / "channels"
 
     @property
+    def checkpoint_path(self) -> Path:
+        """SQLite database used for persistent LangGraph checkpoints."""
+        home = self.home.resolve()
+        expected_home = self.home.parent.resolve() / self.home.name
+        checkpoint_path = (home / "checkpoints.sqlite").resolve()
+        if home != expected_home or checkpoint_path.parent != home:
+            msg = "checkpoint database must remain inside the assistant home"
+            raise TalonConfigError(msg)
+        return checkpoint_path
+
+    @property
     def inbound_media_dir(self) -> Path:
         """Directory reserved for downloaded inbound channel media."""
         return self.home / "media" / "inbound"

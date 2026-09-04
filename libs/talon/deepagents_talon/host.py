@@ -766,11 +766,13 @@ class TalonHost:
         if pending is None or pending.binding != event.binding:
             msg = "MCP authorization request does not match the active invocation"
             raise RuntimeError(msg)
-        remaining = event.binding.expires_at - asyncio.get_running_loop().time()
-        if remaining <= 0:
-            msg = "MCP authorization request expired"
-            raise TimeoutError(msg)
         try:
+            remaining = event.binding.expires_at - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                if pending.future.done():
+                    return pending.future.result()
+                msg = "MCP authorization request expired"
+                raise TimeoutError(msg)
             return await asyncio.wait_for(asyncio.shield(pending.future), timeout=remaining)
         finally:
             if self._pending_authorizations.get(agent_conversation_id) is pending:
@@ -812,13 +814,8 @@ class TalonHost:
             return True
         if asyncio.get_running_loop().time() >= pending.binding.expires_at:
             if not pending.future.done():
-                pending.future.cancel()
-            await send_with_retry(
-                lambda: channel.send_message(
-                    message.conversation_id,
-                    "The MCP authorization request expired.",
-                )
-            )
+                msg = "MCP authorization request expired"
+                pending.future.set_exception(TimeoutError(msg))
             return True
         if callback_url is None:
             await send_with_retry(

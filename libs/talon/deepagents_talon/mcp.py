@@ -172,12 +172,9 @@ class MCPToolProvider:
         async with self._lock:
             if not self._dirty:
                 return None
+            tools = (await self.load()).tools
             self._dirty = False
-            try:
-                return (await self.load()).tools
-            except Exception:
-                self._dirty = True
-                raise
+            return tools
 
     def _authorization_tool(self) -> BaseTool:
         @tool(
@@ -198,6 +195,7 @@ class MCPToolProvider:
     async def _authenticate(self, server_name: str, invocation_id: str) -> dict[str, str]:
         if server_name not in self._oauth_servers:
             return {"status": "failed"}
+        attempt = AuthorizationAttempt()
         try:
             path = mcp_config_path(self._config)
             servers = _load_config(path, self._config.env)
@@ -215,9 +213,15 @@ class MCPToolProvider:
             await _run_authorized(
                 invocation_id,
                 lambda: _open_mcp_session(client, server_name),
+                attempt=attempt,
             )
         except asyncio.CancelledError:
-            raise
+            if not attempt.completed:
+                raise
+            logger.debug(
+                "MCP authorization session was cancelled after credentials persisted",
+                exc_info=True,
+            )
         except (
             HTTPError,
             McpError,
@@ -228,7 +232,19 @@ class MCPToolProvider:
             TypeError,
             ValueError,
         ):
-            return {"status": "failed", "server_name": server_name}
+            if not attempt.completed:
+                return {"status": "failed", "server_name": server_name}
+            logger.debug(
+                "MCP authorization session failed after credentials persisted",
+                exc_info=True,
+            )
+        except Exception:
+            if not attempt.completed:
+                raise
+            logger.debug(
+                "MCP authorization session failed after credentials persisted",
+                exc_info=True,
+            )
         self._dirty = True
         return {"status": "completed", "server_name": server_name}
 
@@ -367,14 +383,19 @@ async def _authorization_interceptor(
 async def _run_authorized[AuthorizedResult](
     invocation_id: str | None,
     operation: Callable[[], Awaitable[AuthorizedResult]],
+    *,
+    attempt: AuthorizationAttempt | None = None,
 ) -> AuthorizedResult:
-    attempt = AuthorizationAttempt()
+    attempt = attempt or AuthorizationAttempt()
     invocation_token = set_authorization_invocation(invocation_id)
     attempt_token = set_authorization_attempt(attempt)
     try:
         result = await operation()
     except asyncio.CancelledError:
-        await _finish_authorization(attempt, reason="cancelled")
+        await _finish_authorization(
+            attempt,
+            reason=None if attempt.completed else "cancelled",
+        )
         raise
     except Exception as exc:
         if attempt.completed:

@@ -308,6 +308,41 @@ async def test_channel_authorization_expires_and_cleans_pending_state(tmp_path: 
     await host.stop()
 
 
+async def test_late_authorization_callback_expires_without_cancelling_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def wait_without_timeout(awaitable, **options: float):
+        assert options.keys() == {"timeout"}
+        return await awaitable
+
+    monkeypatch.setattr("deepagents_talon.host.asyncio.wait_for", wait_without_timeout)
+    channel = RecordingChannel(provider="whatsapp")
+    agent = ExpiringAuthorizationAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    await asyncio.sleep(0.02)
+    await host.receive_message(
+        channel,
+        ChannelMessage(
+            conversation_id="chat",
+            text="http://localhost:3000/callback?code=late&state=late",
+            sender_id="operator",
+        ),
+    )
+    await _wait_for_sent_count(channel, 2)
+
+    assert channel.sent[-1] == ("chat", "authorization:expired")
+    assert host._pending_authorizations == {}
+    await host.stop()
+
+
 async def test_host_interrupts_active_turn_and_continues_same_conversation(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = BlockingAgent()

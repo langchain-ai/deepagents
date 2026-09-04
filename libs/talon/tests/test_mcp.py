@@ -13,10 +13,12 @@ from mcp.shared.auth import OAuthToken
 from mcp.types import CallToolResult
 
 from deepagents_talon.authorization import (
+    AuthorizationBinding,
     AuthorizationCompleted,
     AuthorizationEvent,
     AuthorizationURL,
     CallbackURLRequested,
+    current_authorization_attempt,
     reset_authorization_handler,
     set_authorization_handler,
 )
@@ -255,6 +257,78 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     assert loaded.servers[0].status == "unauthenticated"
     assert loaded.servers[0].uses_oauth is True
     assert await provider._authenticate("unconfigured", "tool-call") == {"status": "failed"}
+
+
+async def test_mcp_tool_provider_serializes_concurrent_refreshes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MCPToolProvider(_config(tmp_path))
+    provider._dirty = True
+    load_started = asyncio.Event()
+    release_load = asyncio.Event()
+
+    async def load() -> SimpleNamespace:
+        load_started.set()
+        await release_load.wait()
+        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+
+    monkeypatch.setattr(provider, "load", load)
+    first = asyncio.create_task(provider.refresh_if_needed())
+    await load_started.wait()
+    second = asyncio.create_task(provider.refresh_if_needed())
+    await asyncio.sleep(0)
+
+    assert not second.done()
+
+    release_load.set()
+    first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result is not None
+    assert [tool.name for tool in first_result] == ["refreshed"]
+    assert second_result is None
+
+
+@pytest.mark.parametrize("exception_type", [RuntimeError, KeyError, asyncio.CancelledError])
+async def test_mcp_tool_provider_refreshes_after_credentials_persist(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    exception_type: type[BaseException],
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+    events: list[AuthorizationEvent] = []
+
+    async def complete_then_fail(_client: object, _server_name: str) -> None:
+        attempt = current_authorization_attempt()
+        assert attempt is not None
+        attempt.binding = AuthorizationBinding(
+            server_name="notion",
+            invocation_id="tool-call",
+            expires_at=asyncio.get_running_loop().time() + 30,
+        )
+        attempt.completed = True
+        raise exception_type
+
+    async def authorize(event: AuthorizationEvent) -> str | None:
+        events.append(event)
+        return None
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_then_fail)
+    token = set_authorization_handler(authorize)
+    try:
+        result = await provider._authenticate("notion", "tool-call")
+    finally:
+        reset_authorization_handler(token)
+
+    assert result == {"status": "completed", "server_name": "notion"}
+    assert provider._dirty is True
+    assert [type(event) for event in events] == [AuthorizationCompleted]
 
 
 async def test_explicit_config_interpolates_environment(

@@ -62,12 +62,26 @@ class MCPConfigError(ValueError):
     """An MCP configuration is malformed or unsafe."""
 
 
+class _MCPLoginRequiredError(MCPConfigError):
+    """An MCP server requires OAuth login before loading tools."""
+
+
 @dataclass(frozen=True, slots=True)
 class MCPToolInfo:
     """Metadata for one MCP tool."""
 
     name: str
     description: str
+    input_schema: dict[str, object] | None = None
+
+
+MCPServerStatus = Literal[
+    "ok",
+    "unauthenticated",
+    "awaiting_reconnect",
+    "error",
+    "disabled",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -77,8 +91,33 @@ class MCPServerInfo:
     name: str
     transport: str
     tools: tuple[MCPToolInfo, ...] = ()
-    status: Literal["ok", "error"] = "ok"
+    status: MCPServerStatus = "ok"
     error: str | None = None
+    pending_reconnect: bool = False
+    uses_oauth: bool = False
+
+    def __post_init__(self) -> None:
+        """Enforce status, error, tool, and reconnect consistency."""
+        if self.status == "ok":
+            if self.error is not None:
+                msg = f"MCPServerInfo {self.name!r}: status='ok' cannot carry an error"
+                raise ValueError(msg)
+        else:
+            if self.error is None:
+                msg = (
+                    f"MCPServerInfo {self.name!r}: status={self.status!r} requires an error message"
+                )
+                raise ValueError(msg)
+            if self.tools:
+                msg = f"MCPServerInfo {self.name!r}: status={self.status!r} cannot carry tools"
+                raise ValueError(msg)
+        if self.pending_reconnect and self.status != "disabled":
+            msg = f"MCPServerInfo {self.name!r}: pending_reconnect requires status='disabled'"
+            raise ValueError(msg)
+
+    def needs_attention(self) -> bool:
+        """Return whether this server is blocked on user login."""
+        return self.status == "unauthenticated"
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,7 +161,9 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 MCPServerInfo(
                     name=name,
                     transport=transport,
-                    status="error",
+                    status="unauthenticated"
+                    if isinstance(exc, _MCPLoginRequiredError)
+                    else "error",
                     error=str(exc),
                 )
             )
@@ -133,9 +174,16 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 name=name,
                 transport=transport,
                 tools=tuple(
-                    MCPToolInfo(name=tool.name, description=tool.description or "")
+                    MCPToolInfo(
+                        name=tool.name,
+                        description=tool.description or "",
+                        input_schema=copy.deepcopy(tool.args_schema)
+                        if isinstance(tool.args_schema, dict)
+                        else None,
+                    )
                     for tool in loaded
                 ),
+                uses_oauth=server.get("auth") == "oauth",
             )
         )
     tools.sort(key=lambda tool: tool.name)
@@ -360,7 +408,7 @@ async def _remote_connection(
         storage = FileTokenStorage(name, server_url=url)
         if not interactive and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
-            raise MCPConfigError(msg)
+            raise _MCPLoginRequiredError(msg)
         connection["auth"] = build_oauth_provider(
             server_name=name,
             server_url=url,

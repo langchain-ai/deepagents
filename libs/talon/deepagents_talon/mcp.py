@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Literal, cast
 
 from httpx import HTTPError
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from mcp.client.auth import OAuthFlowError
 from mcp.shared.exceptions import McpError
 
 from deepagents_talon.mcp_auth import (
@@ -166,10 +167,17 @@ async def login_mcp_server(
             msg = f"MCP server {server_name!r} does not use a remote transport"
             raise MCPConfigError(msg)
         client = MultiServerMCPClient({server_name: connection})
-        await asyncio.wait_for(
-            _open_mcp_session(client, server_name), timeout=_MCP_LOAD_TIMEOUT_SECONDS
-        )
-    except (HTTPError, McpError, OSError, RuntimeError, TimeoutError, TypeError, ValueError) as exc:
+        await _open_mcp_session(client, server_name)
+    except (
+        HTTPError,
+        McpError,
+        OAuthFlowError,
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        TypeError,
+        ValueError,
+    ) as exc:
         print(f"MCP login failed: {format_login_error(exc)}", file=sys.stderr)  # noqa: T201
         return 1
     print(f"Logged in to MCP server {server_name!r}.")  # noqa: T201

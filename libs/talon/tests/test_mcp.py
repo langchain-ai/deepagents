@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, ClassVar, Self
 
 import pytest
+from mcp.client.auth import OAuthFlowError
 
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import (
@@ -273,6 +275,44 @@ async def test_login_uses_talon_config_and_interactive_oauth(
             }
         }
     ]
+
+
+async def test_login_reports_oauth_failure_without_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+
+    failure = OAuthFlowError("secret token exchange response")
+
+    async def fail_login(*_args: object) -> None:
+        raise failure
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_login)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    assert result == 1
+    assert capsys.readouterr().err == "MCP login failed: OAuthFlowError\n"
+
+
+async def test_login_does_not_timeout_interactive_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+
+    async def slow_login(*_args: object) -> None:
+        await asyncio.sleep(0.02)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", slow_login)
+    monkeypatch.setattr("deepagents_talon.mcp._MCP_LOAD_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    assert await login_mcp_server(_config(tmp_path), "remote", str(config_path)) == 0
 
 
 async def test_login_reports_missing_server_without_deepagents_code(

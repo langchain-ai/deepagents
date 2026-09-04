@@ -185,7 +185,7 @@ class MCPToolProvider:
             return tools
 
     def _status_tool(self, servers: Sequence[MCPServerInfo]) -> BaseTool:
-        statuses = tuple(
+        statuses: tuple[dict[str, object], ...] = tuple(
             {
                 "server_name": server.name,
                 "status": server.status,

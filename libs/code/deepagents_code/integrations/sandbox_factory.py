@@ -31,7 +31,7 @@ from deepagents_code.integrations.sandbox_provider import (
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import Generator
     from types import ModuleType
 
     from deepagents.backends.protocol import SandboxBackendProtocol
@@ -719,13 +719,38 @@ class _RunloopProvider(SandboxProvider):
         self._provider.delete(sandbox_id=sandbox_id)
 
 
-def _aws_session_kwargs(environment: Mapping[str, str]) -> dict[str, str]:
-    """Translate a workspace environment into explicit boto3 session arguments.
+def _aws_session_kwargs() -> dict[str, str]:
+    """Translate the bound workspace environment into boto3 session arguments.
+
+    Resolves through `resolve_env_var` so a `DEEPAGENTS_CODE_`-prefixed
+    override is honored here exactly as it is on the model path. Both paths
+    share `AWS_CREDENTIAL_ENV_SOURCES`; sharing the table alone left the
+    *lookup* free to drift, so a prefixed value applied to the model and was
+    dropped for the sandbox.
 
     Returns:
         Populated boto3 session keyword arguments.
+
+    Raises:
+        ValueError: If exactly one half of the access-key pair resolves.
+            boto3 would raise `PartialCredentialsError`, which the caller
+            turns into a silent fallback to the server's own credentials.
     """
-    return resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, environment.get)
+    from deepagents_code.model_config import resolve_env_var
+
+    resolved = resolve_env_kwargs(AWS_CREDENTIAL_ENV_SOURCES, resolve_env_var)
+    key_id = resolved.get("aws_access_key_id")
+    secret = resolved.get("aws_secret_access_key")
+    if bool(key_id) != bool(secret):
+        missing = "AWS_SECRET_ACCESS_KEY" if key_id else "AWS_ACCESS_KEY_ID"
+        msg = (
+            f"The workspace AWS configuration is incomplete: {missing} is not "
+            f"set. Set both AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY in "
+            f"this workspace's .env, or unset both to use AWS_PROFILE or the "
+            f"server's default credentials."
+        )
+        raise ValueError(msg)
+    return resolved
 
 
 class _AgentCoreProvider(SandboxProvider):
@@ -743,8 +768,11 @@ class _AgentCoreProvider(SandboxProvider):
                 `AWS_DEFAULT_REGION` / `us-west-2`).
 
         Raises:
-            ValueError: If boto3 is installed and AWS credentials cannot
-                be resolved.
+            ValueError: If boto3 is installed and AWS credentials cannot be
+                resolved, or if the workspace scoped the sandbox to specific
+                AWS credentials that turn out to be invalid or incomplete.
+                Falling back to the server's own credentials there would be a
+                silent privilege substitution.
         """
         environment = active_environment()
         self._region = region or environment.get(
@@ -753,10 +781,11 @@ class _AgentCoreProvider(SandboxProvider):
         self._session: Any = None
 
         # Validate AWS credentials early for a clear error message.
+        session_kwargs: dict[str, str] = {}
         try:
             import boto3  # ty: ignore[unresolved-import]
 
-            session_kwargs = _aws_session_kwargs(environment)
+            session_kwargs = _aws_session_kwargs()
             session_kwargs["region_name"] = self._region
             self._session = boto3.Session(**session_kwargs)
             credentials = self._session.get_credentials()
@@ -771,10 +800,27 @@ class _AgentCoreProvider(SandboxProvider):
             logger.debug("boto3 not installed; skipping credential pre-check")
         except ValueError:
             raise
-        except Exception:
-            # Say what the failure costs, not just that it happened: without a
-            # session the interpreter resolves credentials itself, from the
-            # process environment rather than this workspace's.
+        except Exception as exc:
+            # Without a session the interpreter resolves credentials itself,
+            # from the server process rather than this workspace. That is the
+            # right default when the workspace scoped nothing, and a privilege
+            # substitution when it did -- a workspace pinned to a restricted
+            # profile would silently run under the server's broader identity.
+            scoped = {
+                key: value
+                for key, value in session_kwargs.items()
+                if key != "region_name"
+            }
+            if scoped:
+                msg = (
+                    f"The workspace AWS configuration is invalid: {exc}. This "
+                    f"workspace scoped its sandbox to specific AWS credentials "
+                    f"({', '.join(sorted(scoped))}), so the server's own "
+                    f"credentials are not substituted. Fix AWS_PROFILE / "
+                    f"AWS_ACCESS_KEY_ID in this workspace's .env, or unset "
+                    f"them to use the server's default credentials."
+                )
+                raise ValueError(msg) from exc
             logger.warning(
                 "Could not build an AWS session from the workspace environment "
                 "(region=%s). The sandbox will NOT use workspace AWS "

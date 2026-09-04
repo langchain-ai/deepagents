@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import sys
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -19,7 +21,32 @@ from deepagents_code.integrations.sandbox_factory import (
 )
 from deepagents_code.integrations.sandbox_registry import SandboxRegistry
 
+if TYPE_CHECKING:
+    from collections.abc import Iterator, Mapping
+
 _FACTORY = "deepagents_code.integrations.sandbox_factory"
+
+
+@contextlib.contextmanager
+def _bind_environment(environment: Mapping[str, str]) -> Iterator[None]:
+    """Bind one workspace environment everywhere the factory reads it.
+
+    `sandbox_factory` aliases `active_environment` at import, while
+    `resolve_env_var` calls it through `deepagents_code.config`. Both resolve
+    to the same binding in production, so a test that patches only the alias
+    lets the two disagree.
+
+    Yields:
+        `None`, with both references bound to `environment`.
+    """
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.config.active_environment",
+            return_value=environment,
+        ),
+    ):
+        yield
 
 
 def _registry_with(config: SandboxConfig) -> SandboxRegistry:
@@ -198,7 +225,7 @@ def test_agentcore_uses_workspace_aws_session() -> None:
     backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
 
     with (
-        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        _bind_environment(environment),
         patch.dict(sys.modules, {"boto3": mock_boto3}),
     ):
         provider = _AgentCoreProvider()
@@ -693,9 +720,7 @@ def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
 
     with (
-        patch(
-            f"{_FACTORY}.active_environment", return_value={"AWS_REGION": "us-test-1"}
-        ),
+        _bind_environment({"AWS_REGION": "us-test-1"}),
         patch.dict(sys.modules, {"boto3": mock_boto3}),
     ):
         provider = _AgentCoreProvider()
@@ -711,3 +736,64 @@ def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
         integration_source="deepagents-code",
     )
     assert "session" not in client_module.CodeInterpreter.call_args.kwargs
+
+
+def test_agentcore_refuses_to_substitute_server_aws_credentials() -> None:
+    """A workspace that scoped its credentials must not silently fall back.
+
+    Omitting `session` lets the SDK resolve from the server process, so a
+    workspace pinned to a restricted profile would run under the server's
+    broader identity.
+    """
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: typo")
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_PROFILE": "restricted-profile"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="not substituted"),
+    ):
+        _AgentCoreProvider()
+
+
+def test_agentcore_rejects_a_half_set_access_key_pair() -> None:
+    """boto3 would raise `PartialCredentialsError` into the silent fallback."""
+    mock_boto3 = MagicMock()
+
+    with (
+        _bind_environment(
+            {"AWS_REGION": "us-test-1", "AWS_ACCESS_KEY_ID": "only-the-id"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+        pytest.raises(ValueError, match="AWS_SECRET_ACCESS_KEY is not set"),
+    ):
+        _AgentCoreProvider()
+
+    mock_boto3.Session.assert_not_called()
+
+
+def test_agentcore_honors_a_prefixed_aws_credential_override() -> None:
+    """The sandbox path must read the prefix exactly as the model path does."""
+    session = MagicMock()
+    session.get_credentials.return_value = MagicMock()
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value = session
+
+    with (
+        _bind_environment(
+            {
+                "AWS_REGION": "us-test-1",
+                "AWS_PROFILE": "canonical-profile",
+                "DEEPAGENTS_CODE_AWS_PROFILE": "prefixed-profile",
+            }
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        _AgentCoreProvider()
+
+    mock_boto3.Session.assert_called_once_with(
+        profile_name="prefixed-profile",
+        region_name="us-test-1",
+    )

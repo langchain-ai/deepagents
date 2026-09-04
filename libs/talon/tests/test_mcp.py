@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, Self
 
 import pytest
+from mcp.client.auth import OAuthFlowError
 
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.mcp import (
@@ -12,6 +14,7 @@ from deepagents_talon.mcp import (
     MCPServerInfo,
     MCPToolInfo,
     load_mcp_tools,
+    login_mcp_server,
     mcp_config_path,
 )
 
@@ -231,6 +234,37 @@ async def test_server_connection_error_is_reported(
     assert result.servers[0].error == "connection failed"
 
 
+async def test_unexpected_server_error_does_not_block_other_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class PartiallyFailingMCPClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            if server_name == "broken":
+                msg = "unexpected failure"
+                raise OAuthFlowError(msg)
+            return await super().get_tools(server_name=server_name)
+
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {
+            "broken": {"url": "https://broken.example.com/mcp"},
+            "working": {"url": "https://working.example.com/mcp"},
+        },
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", PartiallyFailingMCPClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert [tool.name for tool in result.tools] == ["working_read"]
+    assert [(server.name, server.status) for server in result.servers] == [
+        ("broken", "error"),
+        ("working", "ok"),
+    ]
+
+
 async def test_tool_allowlist_filters_loaded_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -314,6 +348,106 @@ async def test_oauth_without_stored_credentials_requires_login(
     assert result.tools == ()
     assert result.servers[0].status == "unauthenticated"
     assert result.servers[0].needs_attention() is True
+
+
+async def test_login_uses_talon_config_and_interactive_oauth(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {"remote": {"url": "https://example.com/mcp", "auth": "oauth"}},
+    )
+    provider = object()
+    calls: list[dict[str, object]] = []
+
+    class LoginClient:
+        def __init__(self, connections: dict[str, object]) -> None:
+            calls.append(connections)
+
+        def session(self, server_name: str):
+            assert server_name == "remote"
+
+            class Session:
+                async def __aenter__(self) -> Self:
+                    return self
+
+                async def __aexit__(self, *_args: object) -> None:
+                    return None
+
+            return Session()
+
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", LoginClient)
+    monkeypatch.setattr("deepagents_talon.mcp._MCP_LOAD_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.build_oauth_provider",
+        lambda **kwargs: provider if kwargs["interactive"] else None,
+    )
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    assert result == 0
+    assert calls == [
+        {
+            "remote": {
+                "transport": "streamable_http",
+                "url": "https://example.com/mcp",
+                "timeout": 30.0,
+                "auth": provider,
+            }
+        }
+    ]
+
+
+async def test_login_reports_oauth_failure_without_details(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+
+    failure = OAuthFlowError("secret token exchange response")
+
+    async def fail_login(*_args: object) -> None:
+        raise failure
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_login)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
+
+    assert result == 1
+    assert capsys.readouterr().err == "MCP login failed: OAuthFlowError\n"
+
+
+async def test_login_does_not_timeout_interactive_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {"remote": {"url": "https://example.com/mcp"}})
+
+    async def slow_login(*_args: object) -> None:
+        await asyncio.sleep(0.02)
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", slow_login)
+    monkeypatch.setattr("deepagents_talon.mcp._MCP_LOAD_TIMEOUT_SECONDS", 0.001)
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
+
+    assert await login_mcp_server(_config(tmp_path), "remote", str(config_path)) == 0
+
+
+async def test_login_reports_missing_server_without_deepagents_code(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(config_path, {})
+
+    result = await login_mcp_server(_config(tmp_path), "missing", str(config_path))
+
+    assert result == 1
+    assert "was not found" in capsys.readouterr().err
 
 
 async def test_invalid_stdio_environment_does_not_block_valid_server(

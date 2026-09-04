@@ -12,15 +12,21 @@ import json
 import logging
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
 from httpx import HTTPError
 from langchain_mcp_adapters.client import MultiServerMCPClient
+from mcp.client.auth import OAuthFlowError
 from mcp.shared.exceptions import McpError
 
-from deepagents_code.mcp_auth import FileTokenStorage, build_oauth_provider
+from deepagents_talon.mcp_auth import (
+    FileTokenStorage,
+    build_oauth_provider,
+    format_login_error,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -149,7 +155,15 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 timeout=_MCP_LOAD_TIMEOUT_SECONDS,
             )
             loaded = _filter_tools(name, server, loaded)
-        except (HTTPError, McpError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        except (
+            HTTPError,
+            McpError,
+            OAuthFlowError,
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            ValueError,
+        ) as exc:
             logger.warning("MCP server %s failed to load: %s", name, exc)
             infos.append(
                 MCPServerInfo(
@@ -190,6 +204,45 @@ def print_mcp_config_paths(config: TalonConfig) -> None:
     marker = "found" if _is_file(path) else "missing"
     print(f"MCP config: [{marker}] {path}")  # noqa: T201
     print(f"Override with {_MCP_CONFIG_ENV}.")  # noqa: T201
+
+
+async def login_mcp_server(
+    config: TalonConfig, server_name: str, config_path: str | None = None
+) -> int:
+    """Authenticate one configured remote MCP server."""
+    path = Path(config_path) if config_path else mcp_config_path(config)
+    try:
+        path = await asyncio.to_thread(path.expanduser)
+        servers = _load_config(path, config.env)
+        server = servers.get(server_name)
+        if server is None:
+            msg = f"MCP server {server_name!r} was not found in {path}"
+            raise MCPConfigError(msg)
+        connection, transport = await _connection(server_name, server, interactive=True)
+        if transport not in {"sse", "streamable_http"}:
+            msg = f"MCP server {server_name!r} does not use a remote transport"
+            raise MCPConfigError(msg)
+        client = MultiServerMCPClient({server_name: connection})
+        await _open_mcp_session(client, server_name)
+    except (
+        HTTPError,
+        McpError,
+        OAuthFlowError,
+        OSError,
+        RuntimeError,
+        TimeoutError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        print(f"MCP login failed: {format_login_error(exc)}", file=sys.stderr)  # noqa: T201
+        return 1
+    print(f"Logged in to MCP server {server_name!r}.")  # noqa: T201
+    return 0
+
+
+async def _open_mcp_session(client: MultiServerMCPClient, server_name: str) -> None:
+    async with client.session(server_name):
+        pass
 
 
 def _load_config(path: Path, env: Mapping[str, str]) -> dict[str, dict[str, object]]:
@@ -274,7 +327,9 @@ def _resolve_string(value: object, field: str, env: Mapping[str, str]) -> str:
     return result
 
 
-async def _connection(name: str, server: Mapping[str, object]) -> tuple[Connection, str]:
+async def _connection(
+    name: str, server: Mapping[str, object], *, interactive: bool = False
+) -> tuple[Connection, str]:
     raw_transport = server.get("transport", server.get("type"))
     if raw_transport is None:
         raw_transport = "stdio" if "command" in server else "http"
@@ -287,7 +342,7 @@ async def _connection(name: str, server: Mapping[str, object]) -> tuple[Connecti
     if transport == "stdio":
         return _stdio_connection(name, server), transport
     if transport in {"sse", "streamable_http"}:
-        return await _remote_connection(name, server, transport), transport
+        return await _remote_connection(name, server, transport, interactive=interactive), transport
     msg = f"MCP server {name!r} uses unsupported transport {raw_transport!r}"
     raise MCPConfigError(msg)
 
@@ -333,7 +388,9 @@ def _validate_stdio_env(name: str, values: object) -> None:
         raise MCPConfigError(msg)
 
 
-async def _remote_connection(name: str, server: Mapping[str, object], transport: str) -> Connection:
+async def _remote_connection(
+    name: str, server: Mapping[str, object], transport: str, *, interactive: bool = False
+) -> Connection:
     url = server.get("url")
     headers = server.get("headers")
     if not isinstance(url, str) or not url:
@@ -350,21 +407,21 @@ async def _remote_connection(name: str, server: Mapping[str, object], transport:
     connection: dict[str, object] = {"transport": transport, "url": url, "timeout": 30.0}
     if headers is not None:
         connection["headers"] = headers
-    if server.get("auth") == "oauth":
+    if server.get("auth") == "oauth" or interactive:
         if isinstance(headers, dict) and any(
             isinstance(key, str) and key.lower() == "authorization" for key in headers
         ):
             msg = f"MCP server {name!r} cannot combine OAuth with an Authorization header"
             raise MCPConfigError(msg)
         storage = FileTokenStorage(name, server_url=url)
-        if await storage.get_tokens() is None:
+        if not interactive and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
         connection["auth"] = build_oauth_provider(
             server_name=name,
             server_url=url,
             storage=storage,
-            interactive=False,
+            interactive=interactive,
         )
     elif server.get("auth") is not None:
         msg = f"MCP server {name!r} uses unsupported auth {server['auth']!r}"

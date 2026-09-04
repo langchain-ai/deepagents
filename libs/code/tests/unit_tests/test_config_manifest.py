@@ -30,7 +30,11 @@ from deepagents_code.config_manifest import (
     get_option,
     options_with_key_prefix,
 )
-from deepagents_code.model_config import DEFAULT_STARTUP_MODE, PROVIDER_API_KEY_ENV
+from deepagents_code.model_config import (
+    DEFAULT_STARTUP_MODE,
+    PROVIDER_API_KEY_ENV,
+    SERVICE_API_KEY_ENV,
+)
 from unit_tests.conftest import resolve_option_for_test
 
 if TYPE_CHECKING:
@@ -68,6 +72,15 @@ def test_manifest_covers_every_provider_credential() -> None:
     missing = set(PROVIDER_API_KEY_ENV.values()) - manifest_env_vars
     assert not missing, (
         f"Provider credential env vars without a manifest entry: {sorted(missing)}."
+    )
+
+
+def test_manifest_covers_every_service_credential() -> None:
+    """Every service in `SERVICE_API_KEY_ENV` must have a credential option."""
+    manifest_env_vars = {opt.env_var for opt in get_config_options() if opt.env_var}
+    missing = set(SERVICE_API_KEY_ENV.values()) - manifest_env_vars
+    assert not missing, (
+        f"Service credential env vars without a manifest entry: {sorted(missing)}."
     )
 
 
@@ -661,6 +674,65 @@ def test_resolve_non_credential_ignores_store():
     assert option is not None
     _, source, _ = _resolve(option, {}, managed_toml_data={})
     assert source != "stored"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_langsmith_service_prefers_stored(monkeypatch):
+    """A stored LangSmith key resolves with a stored source."""
+    from deepagents_code import auth_store
+
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("LANGCHAIN_API_KEY", raising=False)
+    auth_store.set_stored_key("langsmith", "from-store")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    assert option.redacted is True
+    assert option.fallback_env_vars == ("LANGCHAIN_API_KEY",)
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "stored"
+    assert value == "from-store"
+
+
+@pytest.mark.usefixtures("stored_auth_dir")
+def test_resolve_langsmith_prefixed_env_overrides_stored(monkeypatch):
+    """A prefixed LangSmith env var wins over the stored key."""
+    from deepagents_code import auth_store
+
+    monkeypatch.setenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", "from-prefix")
+    auth_store.set_stored_key("langsmith", "from-store")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "env (DEEPAGENTS_CODE_LANGSMITH_API_KEY)"
+    assert value == "from-prefix"
+
+
+def test_resolve_langsmith_falls_back_to_langchain_api_key(monkeypatch):
+    """LangSmith credential display reports the runtime fallback source."""
+    monkeypatch.delenv("LANGSMITH_API_KEY", raising=False)
+    monkeypatch.delenv("DEEPAGENTS_CODE_LANGSMITH_API_KEY", raising=False)
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "env (LANGCHAIN_API_KEY)"
+    assert value == "from-fallback"
+
+
+def test_resolve_langsmith_primary_env_wins_over_fallback(monkeypatch):
+    """The primary LangSmith env var retains precedence over its fallback."""
+    monkeypatch.setenv("LANGSMITH_API_KEY", "from-primary")
+    monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+    option = get_option("credentials.langsmith")
+    assert option is not None
+    is_set, source, value = _resolve(option, {}, managed_toml_data={})
+    assert is_set is True
+    assert source == "env (LANGSMITH_API_KEY)"
+    assert value == "from-primary"
 
 
 @pytest.mark.usefixtures("stored_auth_dir")

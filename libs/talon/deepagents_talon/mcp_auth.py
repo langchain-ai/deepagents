@@ -40,13 +40,30 @@ class MCPAuthorizationError(RuntimeError):
 class FileTokenStorage:
     """Store MCP OAuth credentials in the user's Deep Agents state directory."""
 
-    def __init__(self, server_name: str, *, server_url: str) -> None:
-        """Bind storage to a server name and URL."""
+    def __init__(
+        self,
+        server_name: str,
+        *,
+        server_url: str,
+        force_authorization: bool = False,
+    ) -> None:
+        """Bind storage to a server name and URL.
+
+        Args:
+            server_name: Configured MCP server name.
+            server_url: Remote MCP endpoint used to isolate credentials.
+            force_authorization: Whether the first token read should require a
+                fresh OAuth flow without deleting the stored credential.
+        """
         digest = hashlib.sha256(server_url.encode()).hexdigest()[:12]
         self.path = Path.home() / _TOKEN_DIR / f"{server_name}-{digest}.json"
+        self._force_authorization = force_authorization
 
     async def get_tokens(self) -> OAuthToken | None:
         """Return stored OAuth tokens."""
+        if self._force_authorization:
+            self._force_authorization = False
+            return None
         data = await asyncio.to_thread(self._read)
         raw = data.get("tokens") if data is not None else None
         return OAuthToken.model_validate(raw) if raw is not None else None

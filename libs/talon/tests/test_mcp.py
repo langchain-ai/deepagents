@@ -29,6 +29,7 @@ from deepagents_talon.mcp import (
     MCPToolInfo,
     MCPToolProvider,
     _authorization_interceptor,
+    _connection,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
@@ -264,6 +265,15 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     assert [tool.name for tool in loaded.tools] == ["authenticate_mcp_server"]
     assert loaded.servers[0].status == "unauthenticated"
     assert loaded.servers[0].uses_oauth is True
+    schema = loaded.tools[0].tool_call_schema.model_json_schema()
+    assert schema["properties"]["reauthenticate"] == {
+        "default": False,
+        "description": (
+            "Set true only when the user explicitly asks to log in again or switch accounts."
+        ),
+        "title": "Reauthenticate",
+        "type": "boolean",
+    }
     assert await provider._authenticate("unconfigured", "tool-call") == {"status": "failed"}
 
 
@@ -318,6 +328,50 @@ async def test_mcp_tool_provider_reports_existing_authorization_without_refresh(
 
     assert result == {"status": "already_authenticated", "server_name": "notion"}
     assert provider._dirty is False
+
+
+async def test_mcp_tool_provider_forces_explicit_reauthentication(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+    forced: list[bool] = []
+
+    async def connection(
+        _server_name: str,
+        _server: object,
+        *,
+        channel_authorization: bool,
+        force_authorization: bool,
+    ) -> tuple[dict[str, object], str]:
+        assert channel_authorization is True
+        forced.append(force_authorization)
+        return {}, "streamable_http"
+
+    async def complete_authorization(_client: object, _server_name: str) -> None:
+        attempt = current_authorization_attempt()
+        assert attempt is not None
+        attempt.binding = AuthorizationBinding(
+            server_name="notion",
+            invocation_id="tool-call",
+            expires_at=asyncio.get_running_loop().time() + 30,
+        )
+        attempt.completed = True
+
+    monkeypatch.setattr("deepagents_talon.mcp._connection", connection)
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", complete_authorization)
+
+    result = await provider._authenticate("notion", "tool-call", reauthenticate=True)
+
+    assert forced == [True]
+    assert result == {"status": "completed", "server_name": "notion"}
+    assert provider._dirty is True
 
 
 def _provider_with_post_persistence_error(
@@ -634,6 +688,36 @@ async def test_oauth_connection_uses_stored_credentials(
     assert isinstance(connection, dict)
     assert connection["remote"]["auth"] is provider
     assert result.servers[0].uses_oauth is True
+
+
+async def test_forced_oauth_connection_bypasses_stored_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object()
+
+    class ForcedStorage:
+        def __init__(
+            self,
+            server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool,
+        ) -> None:
+            assert (server_name, server_url) == ("remote", "https://example.com/mcp")
+            assert force_authorization is True
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", ForcedStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+
+    connection, transport = await _connection(
+        "remote",
+        {"url": "https://example.com/mcp", "auth": "oauth"},
+        channel_authorization=True,
+        force_authorization=True,
+    )
+
+    assert transport == "streamable_http"
+    assert connection["auth"] is provider
 
 
 async def test_oauth_without_stored_credentials_requires_login(

@@ -191,18 +191,34 @@ class MCPToolProvider:
                 "Authenticate a configured OAuth MCP server through the current Talon channel. "
                 "Use only the configured server name; authorization links are handled by Talon. "
                 "If current credentials work, returns already_authenticated without starting "
-                "a new authorization flow."
+                "a new authorization flow. Set reauthenticate only when the user explicitly "
+                "asks to log in again or switch accounts."
             ),
         )
         async def authenticate_mcp_server(
             server_name: str,
             tool_call_id: Annotated[str, InjectedToolCallId],
+            *,
+            reauthenticate: Annotated[
+                bool,
+                "Set true only when the user explicitly asks to log in again or switch accounts.",
+            ] = False,
         ) -> dict[str, str]:
-            return await self._authenticate(server_name, tool_call_id)
+            return await self._authenticate(
+                server_name,
+                tool_call_id,
+                reauthenticate=reauthenticate,
+            )
 
         return authenticate_mcp_server
 
-    async def _authenticate(self, server_name: str, invocation_id: str) -> dict[str, str]:
+    async def _authenticate(
+        self,
+        server_name: str,
+        invocation_id: str,
+        *,
+        reauthenticate: bool = False,
+    ) -> dict[str, str]:
         if server_name not in self._oauth_servers:
             return {"status": "failed"}
         attempt = AuthorizationAttempt(terminal=True)
@@ -216,6 +232,7 @@ class MCPToolProvider:
                 server_name,
                 server,
                 channel_authorization=True,
+                force_authorization=reauthenticate,
             )
             if transport not in {"sse", "streamable_http"}:
                 return {"status": "failed", "server_name": server_name}
@@ -551,6 +568,7 @@ async def _connection(
     *,
     interactive: bool = False,
     channel_authorization: bool = False,
+    force_authorization: bool = False,
 ) -> tuple[Connection, str]:
     raw_transport = server.get("transport", server.get("type"))
     if raw_transport is None:
@@ -571,6 +589,7 @@ async def _connection(
                 transport,
                 interactive=interactive,
                 channel_authorization=channel_authorization,
+                force_authorization=force_authorization,
             ),
             transport,
         )
@@ -619,13 +638,14 @@ def _validate_stdio_env(name: str, values: object) -> None:
         raise MCPConfigError(msg)
 
 
-async def _remote_connection(
+async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes explicit.
     name: str,
     server: Mapping[str, object],
     transport: str,
     *,
     interactive: bool = False,
     channel_authorization: bool = False,
+    force_authorization: bool = False,
 ) -> Connection:
     url = server.get("url")
     headers = server.get("headers")
@@ -649,7 +669,11 @@ async def _remote_connection(
         ):
             msg = f"MCP server {name!r} cannot combine OAuth with an Authorization header"
             raise MCPConfigError(msg)
-        storage = FileTokenStorage(name, server_url=url)
+        storage = (
+            FileTokenStorage(name, server_url=url, force_authorization=True)
+            if force_authorization
+            else FileTokenStorage(name, server_url=url)
+        )
         if not interactive and not channel_authorization and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)

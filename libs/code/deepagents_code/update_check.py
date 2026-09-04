@@ -117,7 +117,13 @@ INSTALLED_AGE_NOTICE_DAYS = 7
 """Minimum installed-version age before update notices call it out explicitly."""
 
 INSTALLED_STALE_NOTICE_DAYS = 7
-"""Minimum installed-version age (days) before the stale-install banner shows."""
+"""Minimum installed-version age (days) before the stale-install banner shows.
+
+Deliberately a separate knob from `INSTALLED_AGE_NOTICE_DAYS`, which they
+currently coincide with: that one only adds an age phrase to a notice the user
+asked for, while this one forces a persistent header banner. Tune them apart
+rather than collapsing them into one constant.
+"""
 
 _SDK_RELEASE_TIMES_KEY = "sdk_release_times"
 """`CACHE_FILE` key for cached SDK upload timestamps, keyed by version string."""

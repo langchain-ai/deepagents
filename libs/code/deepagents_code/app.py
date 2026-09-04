@@ -2880,6 +2880,17 @@ def _toast_identity(
     return getattr(notif, "identity", None)
 
 
+def _stale_install_sub_title(days: int) -> str:
+    """Return the stale-install advisory subtitle for an install *days* old.
+
+    Both the construction-time banner and the runtime refresh render this
+    string, and the refresh path recognizes the subtitle it owns by comparing
+    against it — so the two must stay byte-identical.
+    """
+    unit = "day" if days == 1 else "days"
+    return f"Update available — installed version is {days} {unit} old (run /update)"
+
+
 class _StaticHeader(Header):
     """`Header` variant that doesn't toggle tall mode on click.
 
@@ -3806,11 +3817,7 @@ class DeepAgentsApp(App):
                 # than render "installed version is None days old".
                 self._installation_stale = False
             else:
-                unit = "day" if days == 1 else "days"
-                self._stale_header_sub_title = (
-                    f"Update available \u2014 installed version is "
-                    f"{days} {unit} old (run /update)"
-                )
+                self._stale_header_sub_title = _stale_install_sub_title(days)
                 self.sub_title = self._stale_header_sub_title
 
         # Per-turn model overrides
@@ -4710,11 +4717,10 @@ class DeepAgentsApp(App):
         Yields:
             UI components for the main chat area and status bar.
         """
-        from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
         from deepagents_code.config import runtime_state
 
         header = _StaticHeader(id="app-header")
-        header.display = is_env_truthy(SHOW_HEADER) or self._installation_stale
+        header.display = self._header_should_display()
         yield header
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
@@ -6528,7 +6534,6 @@ class DeepAgentsApp(App):
             update_available: Whether a newer version was just confirmed. `False`
                 hides the banner and restores the base subtitle.
         """
-        from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
         from deepagents_code.update_check import INSTALLED_STALE_NOTICE_DAYS
 
         if update_available and days is None:
@@ -6543,51 +6548,65 @@ class DeepAgentsApp(App):
             and days >= INSTALLED_STALE_NOTICE_DAYS
         )
         self._installation_stale = stale
-        # A pushed modal is the top screen and owns no header, so `query_one`
-        # would silently miss. Walk the stack and stop at the screen that has it.
-        for screen in self.screen_stack:
-            headers = screen.query("#app-header")
-            if headers:
-                headers.first().display = is_env_truthy(SHOW_HEADER) or stale
-                break
-        else:
-            logger.debug("No #app-header to refresh; the app is not running yet")
-        owned_sub_title = self._stale_header_sub_title
-        owns_sub_title = (
-            owned_sub_title is not None and self.sub_title == owned_sub_title
-        )
-        if owned_sub_title is not None and not owns_sub_title:
+        self._apply_header_visibility()
+
+        # Another writer taking the subtitle ends our ownership of it.
+        if self._stale_header_sub_title != self.sub_title:
             self._stale_header_sub_title = None
-        if stale and (owns_sub_title or self.sub_title == self._base_sub_title):
-            unit = "day" if days == 1 else "days"
-            self._stale_header_sub_title = (
-                f"Update available — installed version is {days} {unit} old "
-                "(run /update)"
-            )
+        owned = self._stale_header_sub_title is not None
+        if stale and (owned or self.sub_title == self._base_sub_title):
+            self._stale_header_sub_title = _stale_install_sub_title(days)
             self.sub_title = self._stale_header_sub_title
-        elif not stale and owns_sub_title:
+        elif not stale and owned:
             self.sub_title = self._base_sub_title
             self._stale_header_sub_title = None
 
-    async def _mount_update_message(self, latest: str, message: str) -> bool:
+    def _header_should_display(self) -> bool:
+        """Resolve the single header-visibility rule.
+
+        Returns:
+            Whether the header shows: either `DEEPAGENTS_CODE_SHOW_HEADER` is
+            set, or a stale install is forcing the advisory banner.
+        """
+        from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
+
+        return is_env_truthy(SHOW_HEADER) or self._installation_stale
+
+    def _apply_header_visibility(self) -> None:
+        """Push the current visibility rule onto the mounted header, if there is one.
+
+        A pushed modal is the top screen and owns no header, so `query_one` on
+        `self` would silently miss; the header only ever lives on the base
+        screen composed by `compose`.
+        """
+        if not self.screen_stack:
+            logger.debug("No #app-header to refresh; the app is not running yet")
+            return
+        headers = self.screen_stack[0].query("#app-header")
+        if not headers:
+            logger.debug("No #app-header to refresh; the app is not running yet")
+            return
+        headers.first().display = self._header_should_display()
+
+    async def _mount_update_message(
+        self, latest: str, message: str
+    ) -> Literal["mounted", "duplicate", "failed"]:
         """Mount one durable update message per target version this session.
 
         Returns:
-            Whether the message was mounted now. `False` means the version was
-            already surfaced this session *or* the mount failed (no transcript
-            container). Callers must not record the notification in either case;
-            to tell the two apart, test membership in
-            `_update_message_versions`.
+            `"mounted"` when the message reached the transcript, `"duplicate"`
+            when this version was already surfaced this session, or `"failed"`
+            when the mount was skipped (no transcript container). Callers must
+            record the notification only on `"mounted"`; `"failed"` means
+            nothing reached the user and needs a fallback surface.
         """
-        if latest in self._update_message_versions:
-            return False
         await self._startup_history_ready.wait()
         if latest in self._update_message_versions:
-            return False
+            return "duplicate"
         if not await self._mount_message(AppMessage(message)):
-            return False
+            return "failed"
         self._update_message_versions.add(latest)
-        return True
+        return "mounted"
 
     async def _check_for_updates(self, *, periodic: bool = False) -> None:
         """Run the update check and signal completion for downstream waiters.
@@ -6645,15 +6664,20 @@ class DeepAgentsApp(App):
                 # PyPI was unreachable. Keep the last known result rather than
                 # retracting a warning that is already on screen.
                 return
-            update_available = available and not await asyncio.to_thread(
-                is_installed_version_at_least,
-                latest,
-            )
-            days = (
-                await asyncio.to_thread(installed_days_old)
-                if update_available
-                else None
-            )
+
+            def resolve_installed_state() -> tuple[bool, int | None]:
+                """Read both cache-backed installed facts in one executor hop.
+
+                Returns:
+                    Whether *latest* is genuinely newer than what is installed,
+                    and the installed release's age in whole days (`None` when
+                    there is no update, or the age is unknown).
+                """
+                if not available or is_installed_version_at_least(latest):
+                    return False, None
+                return True, installed_days_old()
+
+            update_available, days = await asyncio.to_thread(resolve_installed_state)
         except Exception:
             logger.debug("Background update check failed", exc_info=True)
             return
@@ -6695,16 +6719,21 @@ class DeepAgentsApp(App):
                     cli_version,
                 )
                 message = (
-                    f"Update available: v{latest}{release_age}. "
-                    f"Currently installed: {cli_version}{installed_age}. "
-                    "Quit and relaunch dcode to install the update automatically."
+                    self._format_update_summary(
+                        latest=latest,
+                        cli_version=cli_version,
+                        release_age=release_age,
+                        installed_age=installed_age,
+                    )
+                    + "Quit and relaunch dcode to install the update automatically."
                 )
-                if await self._mount_update_message(latest, message):
+                outcome = await self._mount_update_message(latest, message)
+                if outcome == "mounted":
                     await asyncio.to_thread(mark_update_notified, latest)
-                elif latest not in self._update_message_versions:
-                    # The mount failed rather than deduplicating. This branch
-                    # registers no notice, so without the toast it replaced the
-                    # user would learn nothing about the pending update.
+                elif outcome == "failed":
+                    # This branch registers no notice, so without the toast the
+                    # message replaced the user would learn nothing about the
+                    # pending update.
                     logger.warning(
                         "Could not mount the update message; falling back to a toast"
                     )
@@ -6744,13 +6773,17 @@ class DeepAgentsApp(App):
             )
             if periodic:
                 self._notice_registry.add(notification)
-                mounted = await self._mount_update_message(
+                outcome = await self._mount_update_message(
                     latest,
-                    f"Update available: v{latest}{release_age}. "
-                    f"Currently installed: {cli_version}{installed_age}. "
-                    "Run /update, or press ctrl+n to review install options.",
+                    self._format_update_summary(
+                        latest=latest,
+                        cli_version=cli_version,
+                        release_age=release_age,
+                        installed_age=installed_age,
+                    )
+                    + "Run /update, or press ctrl+n to review install options.",
                 )
-                if mounted:
+                if outcome == "mounted":
                     await asyncio.to_thread(mark_update_notified, latest)
                 return
             # Register without a toast: the dedicated modal is
@@ -6772,6 +6805,24 @@ class DeepAgentsApp(App):
                     severity="warning",
                     timeout=10,
                 )
+
+    @staticmethod
+    def _format_update_summary(
+        *,
+        latest: str,
+        cli_version: str,
+        release_age: str,
+        installed_age: str,
+    ) -> str:
+        """Return the shared "what is available, what is installed" sentence pair.
+
+        Ends with a trailing space so callers can append their own call to
+        action.
+        """
+        return (
+            f"Update available: v{latest}{release_age}. "
+            f"Currently installed: {cli_version}{installed_age}. "
+        )
 
     @staticmethod
     def _build_update_notification(

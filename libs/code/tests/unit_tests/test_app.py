@@ -492,7 +492,7 @@ class TestStartupSequence:
         release_history.set()
         mounted, _ = await asyncio.gather(update_task, startup_task)
 
-        assert mounted is True
+        assert mounted == "mounted"
         assert order == ["history", "update"]
 
     async def test_resuming_status_clears_when_session_init_fails(self) -> None:
@@ -18157,6 +18157,67 @@ def test_build_update_notification_uses_release_and_installed_age_copy() -> None
     assert notification.title == "Update available"
 
 
+def _app_without_stale_banner(**kwargs: Any) -> DeepAgentsApp:
+    """Build an app whose construction-time staleness check reports "fresh".
+
+    Keeps the header hidden and `sub_title` untouched at construction, so tests
+    exercising the runtime refresh start from a known-clean baseline.
+    """
+    with patch(
+        "deepagents_code.update_check.is_installation_stale",
+        return_value=False,
+    ):
+        return DeepAgentsApp(**kwargs)
+
+
+@contextlib.contextmanager
+def _patched_update_env(*, auto_update: bool) -> Iterator[MagicMock]:
+    """Patch the whole `update_check` surface one update run touches.
+
+    Pins a v9.9.9 update, a 7-day-old install, and empty age fragments so
+    assertions can match message text exactly.
+
+    Args:
+        auto_update: What `is_auto_update_enabled` reports, which selects the
+            restart-prompt branch (`True`) or the notice branch (`False`).
+
+    Yields:
+        The `mark_update_notified` mock, so tests can assert whether the
+        version was recorded as notified.
+    """
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch(
+            "deepagents_code.update_check.is_update_available",
+            return_value=(True, "9.9.9"),
+        ),
+        patch("deepagents_code.update_check.installed_days_old", return_value=7),
+        patch(
+            "deepagents_code.update_check.is_auto_update_enabled",
+            return_value=auto_update,
+        ),
+        patch("deepagents_code.update_check.should_notify_update", return_value=True),
+        patch("deepagents_code.update_check.mark_update_notified") as mark_notified,
+        patch(
+            "deepagents_code.update_check.format_release_age_parenthetical",
+            return_value="",
+        ),
+        patch(
+            "deepagents_code.update_check.format_installed_age_suffix",
+            return_value="",
+        ),
+        patch(
+            "deepagents_code.update_check.release_requires_prereleases",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="uv tool upgrade deepagents-code",
+        ),
+    ):
+        yield mark_notified
+
+
 class TestNotificationCenterIntegration:
     """App-level wiring between the notifications registry and the modal."""
 
@@ -19125,54 +19186,10 @@ class TestNotificationCenterIntegration:
         """Hourly rechecks surface one durable message instead of a toast."""
         from deepagents_code.tui.widgets.messages import AppMessage
 
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
         app.notify = MagicMock()  # ty: ignore
 
-        with (
-            patch(
-                "deepagents_code.config._is_editable_install",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.is_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.installed_days_old",
-                return_value=7,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.should_notify_update",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_update_notified",
-            ) as mark_notified,
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.format_installed_age_suffix",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.release_requires_prereleases",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.upgrade_command",
-                return_value="uv tool upgrade deepagents-code",
-            ),
-        ):
+        with _patched_update_env(auto_update=False) as mark_notified:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await app._check_for_updates(periodic=True)
@@ -19199,52 +19216,10 @@ class TestNotificationCenterIntegration:
         """A broken header still leaves the notice and the message intact."""
         from deepagents_code.tui.widgets.messages import AppMessage
 
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
 
         with (
-            patch(
-                "deepagents_code.config._is_editable_install",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.is_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.installed_days_old",
-                return_value=7,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.should_notify_update",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_update_notified",
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.format_installed_age_suffix",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.release_requires_prereleases",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.upgrade_command",
-                return_value="uv tool upgrade deepagents-code",
-            ),
+            _patched_update_env(auto_update=False),
             patch.object(
                 app,
                 "_refresh_stale_install_header",
@@ -19265,46 +19240,10 @@ class TestNotificationCenterIntegration:
         """With auto-update on, the restart prompt is a message, not a toast."""
         from deepagents_code.tui.widgets.messages import AppMessage
 
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
         app.notify = MagicMock()  # ty: ignore
 
-        with (
-            patch(
-                "deepagents_code.config._is_editable_install",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.is_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.installed_days_old",
-                return_value=7,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.should_notify_update",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_update_notified",
-            ) as mark_notified,
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.format_installed_age_suffix",
-                return_value="",
-            ),
-        ):
+        with _patched_update_env(auto_update=True) as mark_notified:
             async with app.run_test() as pilot:
                 await pilot.pause()
                 await app._check_for_updates(periodic=True)
@@ -19325,45 +19264,11 @@ class TestNotificationCenterIntegration:
         self,
     ) -> None:
         """A failed mount still reaches the user; the version stays unnotified."""
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
         app.notify = MagicMock()  # ty: ignore
 
         with (
-            patch(
-                "deepagents_code.config._is_editable_install",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.is_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.installed_days_old",
-                return_value=7,
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.should_notify_update",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_update_notified",
-            ) as mark_notified,
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.format_installed_age_suffix",
-                return_value="",
-            ),
+            _patched_update_env(auto_update=True) as mark_notified,
             patch.object(
                 app,
                 "_mount_message",
@@ -20048,11 +19953,7 @@ class TestStaleInstallBanner:
         monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
         from textual.widgets import Header
 
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp()
+        app = _app_without_stale_banner()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20070,11 +19971,7 @@ class TestStaleInstallBanner:
     ) -> None:
         """Clearing a stale result does not hide the explicitly enabled header."""
         monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_HEADER", "1")
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp()
+        app = _app_without_stale_banner()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20086,11 +19983,7 @@ class TestStaleInstallBanner:
 
     async def test_runtime_stale_result_preserves_runtime_sub_title(self) -> None:
         """A fresh stale result does not replace a runtime subtitle override."""
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp()
+        app = _app_without_stale_banner()
 
         app.sub_title = "Runtime status"
         app._refresh_stale_install_header(7, update_available=True)
@@ -20104,11 +19997,7 @@ class TestStaleInstallBanner:
         monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
         from textual.widgets import Header
 
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp()
+        app = _app_without_stale_banner()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20133,11 +20022,7 @@ class TestStaleInstallBanner:
         monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
         from textual.widgets import Header
 
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp()
+        app = _app_without_stale_banner()
 
         async with app.run_test() as pilot:
             await pilot.pause()
@@ -20156,11 +20041,7 @@ class TestStaleInstallBanner:
 
     async def test_resolved_update_restores_sandbox_sub_title(self) -> None:
         """Clearing the advisory puts the sandbox label back."""
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp(server_kwargs={"sandbox_type": "modal"})
+        app = _app_without_stale_banner(server_kwargs={"sandbox_type": "modal"})
 
         app._refresh_stale_install_header(21, update_available=True)
         assert app.sub_title == self._MESSAGE_21
@@ -20171,11 +20052,7 @@ class TestStaleInstallBanner:
 
     async def test_explicit_sub_title_blocks_runtime_banner(self) -> None:
         """An explicitly passed subtitle is never replaced by the advisory."""
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp(sub_title="custom")
+        app = _app_without_stale_banner(sub_title="custom")
 
         app._refresh_stale_install_header(21, update_available=True)
 
@@ -20184,11 +20061,7 @@ class TestStaleInstallBanner:
 
     async def test_runtime_fresh_result_preserves_runtime_sub_title(self) -> None:
         """A fresh result only restores a stale subtitle still owned by dcode."""
-        with patch(
-            "deepagents_code.update_check.is_installation_stale",
-            return_value=False,
-        ):
-            app = DeepAgentsApp()
+        app = _app_without_stale_banner()
 
         app._refresh_stale_install_header(7, update_available=True)
         app.sub_title = "Runtime status"

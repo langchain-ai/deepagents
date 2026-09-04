@@ -1108,6 +1108,42 @@ def test_workspace_credentials_are_known_secrets(tmp_path: Path) -> None:
     assert "workspace-secret-value" in middleware._known_secrets
 
 
+def test_relayed_caller_tracing_key_is_a_known_secret(tmp_path: Path) -> None:
+    """The key `execute` actually runs under must be redactable.
+
+    `restore_user_langsmith_env` writes the caller's relayed LangSmith key
+    into the shell environment, but it arrives inside a carrier whose name does
+    not match the secret-name scan, so it would otherwise be the one credential
+    never redacted from command output.
+    """
+    from deepagents_code.config import (
+        _USER_LANGSMITH_ENV_CARRIER,
+        _USER_LANGSMITH_ENV_VARS,
+    )
+
+    selectors = dict.fromkeys(_USER_LANGSMITH_ENV_VARS)
+    selectors["LANGSMITH_API_KEY"] = "lsv2-caller-relayed-key"
+
+    config: InterruptOnConfig = {"allowed_decisions": ["approve", "reject"]}
+    middleware = AutoModeHITLMiddleware(
+        {"execute": config},
+        worktree_root=tmp_path,
+        environ={
+            _USER_LANGSMITH_ENV_CARRIER: json.dumps(
+                {"launch": selectors, "user": selectors}
+            ),
+            "LANGSMITH_API_KEY": "lsv2-agent-session-key",
+        },
+    )
+
+    assert "lsv2-caller-relayed-key" in middleware._known_secrets
+    # The agent's own key stays covered by the name scan.
+    assert "lsv2-agent-session-key" in middleware._known_secrets
+    # The carrier itself is not a credential; it must not become a redaction
+    # pattern that blanks whole command outputs.
+    assert not any(value.startswith("{") for value in middleware._known_secrets)
+
+
 def test_sanitize_auto_reason_redacts_secrets_urls_and_control_text() -> None:
     reason = (
         "TOKEN=supersecret https://user:pass@example.com/path?q=value\x1b[31m\n"

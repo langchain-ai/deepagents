@@ -1423,6 +1423,27 @@ def _decode_user_langsmith_env(
     return (launch, user) if launch is not None and user is not None else None
 
 
+def relayed_user_tracing_secrets(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Extract caller API keys from the validated LangSmith settings carrier.
+
+    Args:
+        environ: Environment containing the client-to-server carrier.
+
+    Returns:
+        Launch and user-command API keys for Auto mode output redaction.
+    """
+    encoded = environ.get(_USER_LANGSMITH_ENV_CARRIER)
+    decoded = _decode_user_langsmith_env(encoded) if encoded else None
+    if decoded is None:
+        return ()
+    return tuple(
+        value
+        for mapping in decoded
+        for var in _TRACING_API_KEY_ENV_VARS
+        if isinstance(value := mapping.get(var), str) and value
+    )
+
+
 def _encode_user_langsmith_env() -> str:
     """Encode the trusted user-command LangSmith environment for the server.
 

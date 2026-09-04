@@ -14,6 +14,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Literal, cast
 
@@ -320,11 +321,18 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     infos: list[MCPServerInfo] = []
     for name, server in servers.items():
         transport = _transport_label(server)
+        input_schemas: dict[str, dict[str, object]] = {}
         try:
             connection, transport = await _connection(name, server)
             client = MultiServerMCPClient(
                 {name: connection},
-                tool_interceptors=[_authorization_interceptor],
+                tool_interceptors=[
+                    _authorization_interceptor,
+                    partial(
+                        _argument_normalization_interceptor,
+                        input_schemas=input_schemas,
+                    ),
+                ],
                 tool_name_prefix=True,
                 handle_tool_errors=True,
             )
@@ -333,6 +341,14 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 timeout=_MCP_LOAD_TIMEOUT_SECONDS,
             )
             loaded = _filter_tools(name, server, loaded)
+            prefix = f"{name}_"
+            input_schemas.update(
+                {
+                    tool.name.removeprefix(prefix): tool.args_schema
+                    for tool in loaded
+                    if isinstance(tool.args_schema, dict)
+                }
+            )
         except (
             ExceptionGroup,
             HTTPError,
@@ -439,6 +455,48 @@ async def _authorization_interceptor(
     invocation_id = getattr(request.runtime, "tool_call_id", None)
     normalized_id = invocation_id if isinstance(invocation_id, str) and invocation_id else None
     return await _run_authorized(normalized_id, lambda: handler(request))
+
+
+async def _argument_normalization_interceptor(
+    request: MCPToolCallRequest,
+    handler: Callable[[MCPToolCallRequest], Awaitable[MCPToolCallResult]],
+    *,
+    input_schemas: Mapping[str, dict[str, object]],
+) -> MCPToolCallResult:
+    schema = input_schemas.get(request.name)
+    arguments = _normalize_mcp_arguments(request.args, schema)
+    normalized = request if arguments == request.args else request.override(args=arguments)
+    return await handler(normalized)
+
+
+def _normalize_mcp_arguments(
+    arguments: Mapping[str, object], input_schema: object
+) -> dict[str, object]:
+    """Omit empty strings for optional string-like MCP arguments."""
+    if not isinstance(input_schema, dict):
+        return dict(arguments)
+    raw_required = input_schema.get("required")
+    required = (
+        {item for item in raw_required if isinstance(item, str)}
+        if isinstance(raw_required, list)
+        else set()
+    )
+    raw_properties = input_schema.get("properties")
+    properties = raw_properties if isinstance(raw_properties, dict) else {}
+    return {
+        name: value
+        for name, value in arguments.items()
+        if value != "" or name in required or _is_explicitly_non_string(properties.get(name))
+    }
+
+
+def _is_explicitly_non_string(property_schema: object) -> bool:
+    if not isinstance(property_schema, dict):
+        return False
+    property_type = property_schema.get("type")
+    if property_type is None or property_type == "string":
+        return False
+    return not (isinstance(property_type, list) and "string" in property_type)
 
 
 async def _run_authorized[AuthorizedResult](

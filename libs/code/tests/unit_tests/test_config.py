@@ -4715,6 +4715,8 @@ class TestUserLangsmithEnvironment:
                 "LANGCHAIN_TRACING_V2": None,
                 "LANGSMITH_TRACING": None,
                 "LANGCHAIN_TRACING": None,
+                "LANGSMITH_RUNS_ENDPOINTS": None,
+                "LANGCHAIN_RUNS_ENDPOINTS": None,
             }
         finally:
             config_mod._bootstrap_state.launch_langsmith_env = original_launch

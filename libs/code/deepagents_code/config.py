@@ -143,6 +143,12 @@ _TRACING_ENABLE_ENV_VARS = (
 )
 """Env vars LangChain/LangSmith read to decide whether tracing is enabled."""
 
+_TRACING_RUNS_ENDPOINTS_ENV_VARS = (
+    "LANGSMITH_RUNS_ENDPOINTS",
+    "LANGCHAIN_RUNS_ENDPOINTS",
+)
+"""Env vars the LangSmith SDK parses into replica trace ingestion targets."""
+
 _USER_LANGSMITH_ENV_VARS = (
     "LANGSMITH_API_KEY",
     "LANGCHAIN_API_KEY",
@@ -156,8 +162,18 @@ _USER_LANGSMITH_ENV_VARS = (
     "LANGSMITH_PROFILE",
     "LANGSMITH_CONFIG_FILE",
     *_TRACING_ENABLE_ENV_VARS,
+    *_TRACING_RUNS_ENDPOINTS_ENV_VARS,
 )
-"""LangSmith settings restored for approval-gated user commands."""
+"""LangSmith settings restored for approval-gated user commands.
+
+The runs-endpoints vars belong here because `_tracing_can_upload_from` treats
+them as a live ingest target: their value is a JSON object carrying `api_url`
+and `api_key` pairs, so leaving them out both ignored a replica config the user
+set for their own commands and left any agent-side value in place.
+
+`LANGSMITH_GATEWAY_API_KEY` is deliberately absent: it authenticates model
+calls, not tracing, and nothing here overwrites it.
+"""
 
 _DOTENV_DENIED_ENV_KEYS = frozenset(
     {
@@ -876,12 +892,6 @@ def is_http_url(value: str) -> bool:
     # ingest. Reject it loudly at save time.
     return not any(char.isspace() for char in parsed.netloc)
 
-
-_TRACING_RUNS_ENDPOINTS_ENV_VARS = (
-    "LANGSMITH_RUNS_ENDPOINTS",
-    "LANGCHAIN_RUNS_ENDPOINTS",
-)
-"""Env vars the LangSmith SDK parses into replica trace ingestion targets."""
 
 _TRACING_RECONCILED_ENV_VARS = (
     *_TRACING_ENABLE_ENV_VARS,

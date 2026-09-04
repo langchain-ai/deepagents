@@ -1151,6 +1151,39 @@ def export_user_tracing_env(env: dict[str, str]) -> None:
     env[_INHERITED_USER_TRACING_ENV] = json.dumps(originals)
 
 
+def relayed_user_tracing_secrets(environ: Mapping[str, str]) -> tuple[str, ...]:
+    """Extract the caller API keys carried by the relayed tracing environment.
+
+    `apply_inherited_user_tracing` writes these into the `execute` shell
+    environment, so they are the credentials user commands actually run under.
+    Auto mode's redaction set is built by matching env var *names*, and the
+    carrier's name does not look like a secret, so without this the one key
+    that reaches shell commands is the one key never redacted from their
+    output.
+
+    Args:
+        environ: Environment to read the carrier from.
+
+    Returns:
+        Relayed API key values, empty when no carrier is present or parsable.
+    """
+    relayed = environ.get(_INHERITED_USER_TRACING_ENV)
+    if not relayed:
+        return ()
+    try:
+        originals = json.loads(relayed)
+    except ValueError:
+        logger.debug("Could not parse relayed tracing values for Auto redaction")
+        return ()
+    if not isinstance(originals, dict):
+        return ()
+    return tuple(
+        value
+        for var in _TRACING_API_KEY_ENV_VARS
+        if isinstance(value := originals.get(var), str) and value
+    )
+
+
 def apply_inherited_user_tracing(env: dict[str, str]) -> bool:
     """Apply relayed caller tracing values to a shell-command environment.
 

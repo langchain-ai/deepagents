@@ -10,6 +10,7 @@ from deepagents.backends import LocalShellBackend
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
+from deepagents_talon.authorization import AuthorizationEvent, current_authorization_handler
 from deepagents_talon.cron import CronJobStore
 from deepagents_talon.interfaces import (
     AgentRequest,
@@ -25,6 +26,7 @@ from deepagents_talon.runtime import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
 
     from langgraph.types import Command
@@ -135,6 +137,63 @@ def web_search() -> str:
     return "searched"
 
 
+def refreshed_tool() -> str:
+    """Refreshed runtime tool stub."""
+    return "refreshed"
+
+
+async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_handler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[list[str]] = []
+
+    class AuthorizationGraph(RecordingGraph):
+        async def ainvoke(self, payload: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
+            assert current_authorization_handler() is authorization_handler
+            return await super().ainvoke(payload, config)
+
+    def fake_create_deep_agent(**kwargs: Any) -> AuthorizationGraph:
+        created.append([_tool_name(item) for item in kwargs["tools"]])
+        return AuthorizationGraph()
+
+    refreshed = False
+
+    async def refresh_tools() -> list[Callable[..., object]] | None:
+        nonlocal refreshed
+        if refreshed:
+            return None
+        refreshed = True
+        return [refreshed_tool]
+
+    async def authorization_handler(_event: AuthorizationEvent) -> str | None:
+        return None
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        tools=[custom_tool],
+        refresh_tools=refresh_tools,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    await runtime.invoke(
+        AgentRequest(
+            conversation_id="chat",
+            text="hello",
+            authorization_handler=authorization_handler,
+        )
+    )
+
+    assert created == [
+        ["current_time", "custom_tool"],
+        ["current_time", "refreshed_tool"],
+    ]
+    assert current_authorization_handler() is None
+
+
 async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
     tmp_path,
     monkeypatch: pytest.MonkeyPatch,
@@ -173,6 +232,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert {
+        "current_time",
         "fetch_url",
         "web_search",
         "create_job",
@@ -1187,3 +1247,24 @@ def _talon_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
         for message in caplog.messages
         if message.startswith("talon_event ")
     ]
+
+
+async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    graph = RecordingGraph()
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return graph
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        cron_store=None,
+        include_web_tools=False,
+    )
+
+    await runtime.start()
+
+    assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time"]

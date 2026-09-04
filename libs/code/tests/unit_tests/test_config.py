@@ -4469,6 +4469,81 @@ class TestDetectProvider:
             credentials.anthropic_api_key = None
 
 
+class TestTracingEnvironmentReconcile:
+    """The LangSmith SDK reads `os.environ`, so the snapshot is published."""
+
+    def test_workspace_settings_reach_the_process_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Snapshot values are written under their canonical SDK names."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.delenv("LANGSMITH_TRACING", raising=False)
+        monkeypatch.setenv("LANGSMITH_API_KEY", "stale-key")
+
+        config_mod.reconcile_tracing_environment(
+            {
+                "LANGSMITH_TRACING": "true",
+                "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "workspace-key",
+            }
+        )
+
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+        # A prefixed override resolves onto the canonical name the SDK reads.
+        assert os.environ["LANGSMITH_API_KEY"] == "workspace-key"
+
+    def test_previous_workspace_values_do_not_linger(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A var the workspace does not set is removed, not left behind."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_TRACING", "true")
+        monkeypatch.setenv("LANGSMITH_API_KEY", "workspace-a-key")
+        monkeypatch.setenv("LANGSMITH_PROJECT", "workspace-a")
+
+        config_mod.reconcile_tracing_environment({})
+
+        for var in ("LANGSMITH_TRACING", "LANGSMITH_API_KEY", "LANGSMITH_PROJECT"):
+            assert var not in os.environ
+
+    def test_sdk_env_caches_are_dropped(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A reconcile must not leave the SDK answering from a stale cache."""
+        from langsmith import utils as ls_utils
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_PROJECT", "workspace-a")
+        assert ls_utils.get_env_var("PROJECT") == "workspace-a"
+
+        config_mod.reconcile_tracing_environment({"LANGSMITH_PROJECT": "workspace-b"})
+
+        assert ls_utils.get_env_var("PROJECT") == "workspace-b"
+
+    def test_a_broken_cache_clear_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """A stale cache the caller cannot detect must not pass silently."""
+        from langsmith import utils as ls_utils
+
+        import deepagents_code.config as config_mod
+
+        def _boom() -> None:
+            msg = "upstream changed shape"
+            raise RuntimeError(msg)
+
+        monkeypatch.setattr(ls_utils.get_env_var, "cache_clear", _boom)
+
+        with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
+            config_mod.reconcile_tracing_environment({})
+
+        assert "previous workspace" in caplog.text
+
+
 class TestUserLangsmithEnvironment:
     """LangSmith credentials for the agent stay out of user commands."""
 

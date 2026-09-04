@@ -332,6 +332,7 @@ async def _make_graphs_in_environment(
         Any,
         Any,
         Any,
+        Any,
     ]:
         project_context = project_context_override or get_server_project_context()
 
@@ -340,6 +341,7 @@ async def _make_graphs_in_environment(
             configure_langsmith_secret_redaction,
             create_model,
             is_memory_auto_save_enabled,
+            reconcile_tracing_environment,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -350,6 +352,7 @@ async def _make_graphs_in_environment(
             create_model,
             is_memory_auto_save_enabled,
             configure_langsmith_secret_redaction,
+            reconcile_tracing_environment,
             resolve_auto_classifier_model_for_provider,
         )
 
@@ -360,8 +363,12 @@ async def _make_graphs_in_environment(
         create_model,
         is_memory_auto_save_enabled,
         configure_langsmith_secret_redaction,
+        reconcile_tracing_environment,
         resolve_auto_classifier_model_for_provider,
     ) = await asyncio.to_thread(_resolve_project_context_and_settings)
+    # Publish this workspace's tracing settings before deciding on redaction:
+    # the decision reads the snapshot, the SDK reads `os.environ`.
+    reconcile_tracing_environment(workspace_env)
     configure_langsmith_secret_redaction()
 
     # Offload to a worker thread: `create_model` does blocking disk IO for some

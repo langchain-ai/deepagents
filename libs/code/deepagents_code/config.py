@@ -837,6 +837,63 @@ _TRACING_RUNS_ENDPOINTS_ENV_VARS = (
 )
 """Env vars the LangSmith SDK parses into replica trace ingestion targets."""
 
+_TRACING_RECONCILED_ENV_VARS = (
+    *_TRACING_ENABLE_ENV_VARS,
+    *_TRACING_API_KEY_ENV_VARS,
+    *_TRACING_ENDPOINT_ENV_VARS,
+    *_TRACING_RUNS_ENDPOINTS_ENV_VARS,
+    "LANGSMITH_PROJECT",
+    "LANGCHAIN_PROJECT",
+    "LANGSMITH_SESSION",
+    "LANGCHAIN_SESSION",
+    "LANGSMITH_WORKSPACE_ID",
+)
+"""Vars the LangSmith SDK reads from `os.environ` to trace, and where."""
+
+
+def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
+    """Publish a workspace's tracing settings to the process environment.
+
+    Redaction and project naming decide from the active workspace snapshot, but
+    the LangSmith SDK reads `os.environ` directly. Left to diverge, the snapshot
+    can say "not tracing" while the SDK traces on -- uploading unredacted -- or
+    the reverse, where the TUI offers `/trace` and nothing is ever ingested.
+
+    Writes the canonical name, resolving `DEEPAGENTS_CODE_`-prefixed overrides
+    first, because the SDK only reads canonical names. A var the workspace does
+    not set is removed, so the previous workspace's `.env` cannot linger.
+
+    The SDK caches env reads, so its caches are dropped afterwards.
+
+    Args:
+        environ: The active workspace environment snapshot.
+    """
+    for var in _TRACING_RECONCILED_ENV_VARS:
+        value = _resolve_env_var_from(environ, var)
+        if value is None:
+            os.environ.pop(var, None)
+        else:
+            os.environ[var] = value
+    _clear_langsmith_env_caches()
+
+
+def _clear_langsmith_env_caches() -> None:
+    """Drop the LangSmith SDK's cached environment reads."""
+    try:
+        from langsmith import utils as ls_utils
+
+        ls_utils.get_env_var.cache_clear()
+        ls_utils.get_tracer_project.cache_clear()
+    except Exception:  # cache shape is upstream's, not ours
+        # A stale cache means the SDK keeps the previous workspace's answer,
+        # which the caller cannot detect. Say so rather than continuing as if
+        # the reconcile took effect.
+        logger.warning(
+            "Could not clear the LangSmith environment caches; tracing may "
+            "still use the previous workspace's settings",
+            exc_info=True,
+        )
+
 
 class _LangSmithProfileConfig(Protocol):
     """Subset of LangSmith profile client config fields used at bootstrap."""
@@ -4496,6 +4553,13 @@ def configure_langsmith_secret_redaction() -> bool:
     # fail-closed boundary: if there is no upload target, there is nothing to
     # protect.
     if not (_tracing_enabled_from(env) and _tracing_can_upload_from(env)):
+        # Distinguish "nothing to protect" from "declined": without this, a
+        # missing redacting client looks the same either way after the fact.
+        logger.debug(
+            "Skipping secret redaction: tracing enabled=%s, upload target=%s",
+            _tracing_enabled_from(env),
+            _tracing_can_upload_from(env),
+        )
         return False
 
     # Everything from here on runs inside the fail-closed boundary: any

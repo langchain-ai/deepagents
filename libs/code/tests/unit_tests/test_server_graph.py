@@ -259,6 +259,7 @@ class TestServerGraph:
             active_environment=MagicMock(return_value=environment),
             use_environment=__import__("contextlib").nullcontext,
             configure_langsmith_secret_redaction=MagicMock(),
+            reconcile_tracing_environment=MagicMock(),
             create_model=MagicMock(
                 return_value=SimpleNamespace(
                     model=model_obj,

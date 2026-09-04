@@ -50,7 +50,10 @@ from langchain_quickjs._snapshot import (
     sign_snapshot,
     verify_snapshot,
 )
-from langchain_quickjs._subagent import find_subagent_task_tool
+from langchain_quickjs._subagent import (
+    SUBAGENT_INVOCATION_CONFIG_KEY,
+    find_subagent_task_tool,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,25 +108,26 @@ def _resolve_mode(
 
 
 def _resolve_thread_id(fallback: str) -> str:
-    """Extract `thread_id` from langgraph config or use `fallback`.
+    """Extract a QuickJS slot identity from LangGraph config or use `fallback`.
 
-    The fallback is a middleware-instance-scoped id: when the caller
-    didn't configure a `thread_id` (common for ad-hoc
-    `agent.invoke(...)` in tests or single-shot scripts), we still need
-    all resolver calls within one CodeInterpreterMiddleware lifetime to return the
-    same id — otherwise `wrap_model_call` installs tools on one REPL
-    and the eval tool looks up a different one, and the model sees
-    `ReferenceError: tools is not defined`.
+    The fallback is middleware-instance-scoped, keeping model-call preparation
+    and eval on the same REPL when no LangGraph `thread_id` is configured. A
+    subagent invocation adds a private suffix so inherited middleware cannot
+    share or evict its parent's in-process QuickJS slot.
     """
     try:
         config = get_config()
     except RuntimeError:
         # Not running inside a Runnable — test / bare-call path.
         return fallback
-    thread_id = config.get("configurable", {}).get("thread_id") if config else None
-    if thread_id is not None:
-        return str(thread_id)
-    return fallback
+    configurable = config.get("configurable", {}) if config else {}
+    if not isinstance(configurable, dict):
+        configurable = {}
+    thread_id = str(configurable.get("thread_id", fallback))
+    invocation_id = configurable.get(SUBAGENT_INVOCATION_CONFIG_KEY)
+    if invocation_id is not None:
+        return f"{thread_id}::subagent:{invocation_id}"
+    return thread_id
 
 
 @beta()

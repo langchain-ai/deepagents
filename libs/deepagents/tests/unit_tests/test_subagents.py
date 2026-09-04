@@ -35,8 +35,32 @@ from pydantic import BaseModel, Field
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.graph import create_deep_agent
 from deepagents.middleware.skills import SkillsMiddleware
-from deepagents.middleware.subagents import CompiledSubAgent, SubAgent
+from deepagents.middleware.subagents import (
+    SUBAGENT_INVOCATION_CONFIG_KEY,
+    CompiledSubAgent,
+    SubAgent,
+    _subagent_config,
+)
 from tests.unit_tests.chat_model import GenericFakeChatModel
+
+
+def test_subagent_config_scopes_invocation() -> None:
+    runtime = ToolRuntime(
+        state={},
+        context={},
+        config={"configurable": {}},
+        stream_writer=lambda _chunk: None,
+        tools=[],
+        tool_call_id="call-1",
+        store=None,
+    )
+
+    assert _subagent_config(runtime) == {
+        "configurable": {
+            "ls_agent_type": "subagent",
+            SUBAGENT_INVOCATION_CONFIG_KEY: "call-1",
+        }
+    }
 
 
 def _make_skill_content(name: str, description: str) -> str:

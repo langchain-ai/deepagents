@@ -123,10 +123,6 @@ async def test_explicit_config_interpolates_environment(
         ([], "must contain a JSON object"),
         ({}, "must contain an mcpServers object"),
         ({"mcpServers": {"bad/name": {"command": "x"}}}, "server name"),
-        (
-            {"mcpServers": {"unsafe": {"command": "x", "env": {"LD_PRELOAD": "x"}}}},
-            "cannot set LD_PRELOAD",
-        ),
     ],
 )
 async def test_invalid_config_fails_before_connecting(
@@ -166,3 +162,113 @@ async def test_server_connection_error_is_reported(
     assert result.tools == ()
     assert result.servers[0].status == "error"
     assert result.servers[0].error == "connection failed"
+
+
+def test_mcp_config_path_prefers_assistant_import(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr("deepagents_talon.mcp.Path.home", lambda: home)
+    config = _config(tmp_path)
+    _write_config(config.manifest_dir / ".mcp.json", {})
+
+    assert mcp_config_path(config) == config.manifest_dir / ".mcp.json"
+
+
+async def test_tool_allowlist_filters_loaded_tools(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class MultipleToolClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            assert server_name is not None
+            return [DummyTool(f"{server_name}_read"), DummyTool(f"{server_name}_write")]
+
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {
+            "remote": {
+                "url": "https://example.com/mcp",
+                "allowedTools": ["read"],
+            }
+        },
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", MultipleToolClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert [tool.name for tool in result.tools] == ["remote_read"]
+    assert [tool.name for tool in result.servers[0].tools] == ["remote_read"]
+
+
+async def test_oauth_connection_uses_stored_credentials(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    provider = object()
+
+    class FakeStorage:
+        def __init__(self, server_name: str, *, server_url: str) -> None:
+            assert (server_name, server_url) == ("remote", "https://example.com/mcp")
+
+        async def get_tokens(self) -> object:
+            return object()
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", FakeStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", FakeMCPClient)
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {"remote": {"url": "https://example.com/mcp", "auth": "oauth"}},
+    )
+
+    await load_mcp_tools(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+
+    connection = FakeMCPClient.calls[-1]["connections"]
+    assert isinstance(connection, dict)
+    assert connection["remote"]["auth"] is provider
+
+
+async def test_invalid_stdio_environment_does_not_block_valid_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {
+            "unsafe": {"command": "x", "env": {"LD_PRELOAD": "x"}},
+            "valid": {"url": "https://example.com/mcp"},
+        },
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", FakeMCPClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert [tool.name for tool in result.tools] == ["valid_read"]
+    assert result.servers[0].error == "MCP stdio server 'unsafe' cannot set LD_PRELOAD"
+
+
+async def test_invalid_server_does_not_block_valid_server(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {
+            "invalid": {"transport": "websocket", "url": "https://example.com"},
+            "valid": {"url": "https://example.com/mcp"},
+        },
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", FakeMCPClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert [tool.name for tool in result.tools] == ["valid_read"]
+    assert result.servers[0].status == "error"
+    assert result.servers[1].status == "ok"

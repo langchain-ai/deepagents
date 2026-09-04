@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import fnmatch
 import json
 import logging
 import os
@@ -18,6 +19,8 @@ from typing import TYPE_CHECKING, Literal, cast
 from httpx import HTTPError
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.shared.exceptions import McpError
+
+from deepagents_code.mcp_auth import FileTokenStorage, build_oauth_provider
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -81,9 +84,12 @@ class MCPTools:
 
 
 def mcp_config_path(config: TalonConfig) -> Path:
-    """Return the configured MCP path or Talon's standard user path."""
+    """Return the configured, assistant-local, or standard user MCP path."""
     configured = config.env.get(_MCP_CONFIG_ENV) or os.environ.get(_MCP_CONFIG_ENV)
-    return Path(configured).expanduser() if configured else Path.home() / _DEFAULT_MCP_CONFIG
+    if configured:
+        return Path(configured).expanduser()
+    assistant_path = config.manifest_dir / ".mcp.json"
+    return assistant_path if _is_file(assistant_path) else Path.home() / _DEFAULT_MCP_CONFIG
 
 
 async def load_mcp_tools(config: TalonConfig) -> MCPTools:
@@ -96,8 +102,9 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
     tools: list[BaseTool] = []
     infos: list[MCPServerInfo] = []
     for name, server in servers.items():
-        connection, transport = _connection(name, server)
+        transport = _transport_label(server)
         try:
+            connection, transport = await _connection(name, server)
             client = MultiServerMCPClient(
                 {name: connection}, tool_name_prefix=True, handle_tool_errors=True
             )
@@ -105,6 +112,7 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 client.get_tools(server_name=name),
                 timeout=_MCP_LOAD_TIMEOUT_SECONDS,
             )
+            loaded = _filter_tools(name, server, loaded)
         except (HTTPError, McpError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
             logger.warning("MCP server %s failed to load: %s", name, exc)
             infos.append(
@@ -221,7 +229,7 @@ def _resolve_string(value: object, field: str, env: Mapping[str, str]) -> str:
     return result
 
 
-def _connection(name: str, server: Mapping[str, object]) -> tuple[Connection, str]:
+async def _connection(name: str, server: Mapping[str, object]) -> tuple[Connection, str]:
     raw_transport = server.get("transport", server.get("type"))
     if raw_transport is None:
         raw_transport = "stdio" if "command" in server else "http"
@@ -234,9 +242,16 @@ def _connection(name: str, server: Mapping[str, object]) -> tuple[Connection, st
     if transport == "stdio":
         return _stdio_connection(name, server), transport
     if transport in {"sse", "streamable_http"}:
-        return _remote_connection(name, server, transport), transport
+        return await _remote_connection(name, server, transport), transport
     msg = f"MCP server {name!r} uses unsupported transport {raw_transport!r}"
     raise MCPConfigError(msg)
+
+
+def _transport_label(server: Mapping[str, object]) -> str:
+    raw = server.get("transport", server.get("type"))
+    if raw is None:
+        raw = "stdio" if "command" in server else "http"
+    return raw.replace("-", "_") if isinstance(raw, str) else "unknown"
 
 
 def _stdio_connection(name: str, server: Mapping[str, object]) -> Connection:
@@ -273,7 +288,7 @@ def _validate_stdio_env(name: str, values: object) -> None:
         raise MCPConfigError(msg)
 
 
-def _remote_connection(name: str, server: Mapping[str, object], transport: str) -> Connection:
+async def _remote_connection(name: str, server: Mapping[str, object], transport: str) -> Connection:
     url = server.get("url")
     headers = server.get("headers")
     if not isinstance(url, str) or not url:
@@ -290,7 +305,59 @@ def _remote_connection(name: str, server: Mapping[str, object], transport: str) 
     connection: dict[str, object] = {"transport": transport, "url": url, "timeout": 30.0}
     if headers is not None:
         connection["headers"] = headers
+    if server.get("auth") == "oauth":
+        if isinstance(headers, dict) and any(
+            isinstance(key, str) and key.lower() == "authorization" for key in headers
+        ):
+            msg = f"MCP server {name!r} cannot combine OAuth with an Authorization header"
+            raise MCPConfigError(msg)
+        storage = FileTokenStorage(name, server_url=url)
+        if await storage.get_tokens() is None:
+            msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
+            raise MCPConfigError(msg)
+        connection["auth"] = build_oauth_provider(
+            server_name=name,
+            server_url=url,
+            storage=storage,
+            interactive=False,
+        )
+    elif server.get("auth") is not None:
+        msg = f"MCP server {name!r} uses unsupported auth {server['auth']!r}"
+        raise MCPConfigError(msg)
     return cast("Connection", connection)
+
+
+def _filter_tools(
+    server_name: str, server: Mapping[str, object], tools: Sequence[BaseTool]
+) -> Sequence[BaseTool]:
+    allowed = _tool_filter(server_name, server, "allowedTools")
+    disabled = _tool_filter(server_name, server, "disabledTools")
+    if allowed is not None and disabled is not None:
+        msg = f"MCP server {server_name!r} cannot set both allowedTools and disabledTools"
+        raise MCPConfigError(msg)
+    entries = allowed if allowed is not None else disabled
+    if entries is None:
+        return tools
+
+    prefix = f"{server_name}_"
+
+    def matches(tool: BaseTool) -> bool:
+        names = (tool.name, tool.name.removeprefix(prefix))
+        return any(fnmatch.fnmatchcase(name, entry) for entry in entries for name in names)
+
+    if allowed is not None:
+        return [tool for tool in tools if matches(tool)]
+    return [tool for tool in tools if not matches(tool)]
+
+
+def _tool_filter(server_name: str, server: Mapping[str, object], field: str) -> list[str] | None:
+    value = server.get(field)
+    if value is None:
+        return None
+    if not isinstance(value, list) or not value or not all(isinstance(item, str) for item in value):
+        msg = f"MCP server {server_name!r} {field} must be a non-empty list of strings"
+        raise MCPConfigError(msg)
+    return cast("list[str]", value)
 
 
 def _is_file(path: Path) -> bool:

@@ -19260,6 +19260,36 @@ class TestNotificationCenterIntegration:
         app.notify.assert_not_called()  # ty: ignore
         mark_notified.assert_called_once_with("9.9.9")
 
+    async def test_deferred_resume_does_not_block_update_check(self) -> None:
+        """A future history restore must not strand the update-check worker."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = _app_without_stale_banner(
+            thread_id="t",
+            resume_thread="t",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            defer_server_start=True,
+        )
+
+        with _patched_update_env(auto_update=True) as mark_notified:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await asyncio.wait_for(app._check_for_updates(), timeout=1)
+
+                assert app._update_check_done.is_set()
+                assert mark_notified.call_count == 0
+                assert not any(
+                    "Update available" in message.render().plain
+                    for message in app.query(AppMessage)
+                )
+
+                app._startup_history_ready.set()
+                await asyncio.wait_for(app.workers.wait_for_complete(), timeout=5)
+                messages = [message.render().plain for message in app.query(AppMessage)]
+
+        assert any("Quit and relaunch dcode" in message for message in messages)
+        mark_notified.assert_called_once_with("9.9.9")
+
     async def test_auto_update_falls_back_to_a_toast_when_the_mount_fails(
         self,
     ) -> None:

@@ -6608,6 +6608,67 @@ class DeepAgentsApp(App):
         self._update_message_versions.add(latest)
         return "mounted"
 
+    async def _surface_update_message(
+        self,
+        latest: str,
+        message: str,
+        *,
+        toast_on_failure: bool,
+    ) -> None:
+        """Mount now or delegate delivery until startup history is restored."""
+        delivery = self._mount_update_message_and_record(
+            latest,
+            message,
+            toast_on_failure=toast_on_failure,
+        )
+        if self._startup_history_ready.is_set():
+            await delivery
+            return
+        self.run_worker(
+            delivery,
+            exclusive=True,
+            group="deferred-update-message",
+        )
+
+    async def _mount_update_message_and_record(
+        self,
+        latest: str,
+        message: str,
+        *,
+        toast_on_failure: bool,
+    ) -> None:
+        """Mount an update message after history and record successful delivery.
+
+        Raises:
+            CancelledError: If the managed delivery worker is canceled.
+        """
+        from deepagents_code.update_check import mark_update_notified
+
+        mounted = False
+        try:
+            outcome = await self._mount_update_message(latest, message)
+            mounted = outcome == "mounted"
+            if mounted:
+                await asyncio.to_thread(mark_update_notified, latest)
+            elif outcome == "failed" and toast_on_failure:
+                self._notify_update_message_fallback(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Update message delivery failed", exc_info=True)
+            if toast_on_failure and not mounted:
+                self._notify_update_message_fallback(message)
+
+    def _notify_update_message_fallback(self, message: str) -> None:
+        """Surface an update in a toast when its durable message cannot mount."""
+        logger.warning("Could not mount the update message; falling back to a toast")
+        self.notify(
+            message,
+            severity="information",
+            timeout=12,
+            markup=False,
+        )
+
     async def _check_for_updates(self, *, periodic: bool = False) -> None:
         """Run the update check and signal completion for downstream waiters.
 
@@ -6727,22 +6788,11 @@ class DeepAgentsApp(App):
                     )
                     + "Quit and relaunch dcode to install the update automatically."
                 )
-                outcome = await self._mount_update_message(latest, message)
-                if outcome == "mounted":
-                    await asyncio.to_thread(mark_update_notified, latest)
-                elif outcome == "failed":
-                    # This branch registers no notice, so without the toast the
-                    # message replaced the user would learn nothing about the
-                    # pending update.
-                    logger.warning(
-                        "Could not mount the update message; falling back to a toast"
-                    )
-                    self.notify(
-                        message,
-                        severity="information",
-                        timeout=12,
-                        markup=False,
-                    )
+                await self._surface_update_message(
+                    latest,
+                    message,
+                    toast_on_failure=True,
+                )
                 return
 
             if not await asyncio.to_thread(should_notify_update, latest):
@@ -6773,7 +6823,7 @@ class DeepAgentsApp(App):
             )
             if periodic:
                 self._notice_registry.add(notification)
-                outcome = await self._mount_update_message(
+                await self._surface_update_message(
                     latest,
                     self._format_update_summary(
                         latest=latest,
@@ -6782,9 +6832,8 @@ class DeepAgentsApp(App):
                         installed_age=installed_age,
                     )
                     + "Run /update, or press ctrl+n to review install options.",
+                    toast_on_failure=False,
                 )
-                if outcome == "mounted":
-                    await asyncio.to_thread(mark_update_notified, latest)
                 return
             # Register without a toast: the dedicated modal is
             # the update's UI, so a parallel toast would be

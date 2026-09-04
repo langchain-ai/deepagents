@@ -154,7 +154,7 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/.mcp.json`. For user-level MCP servers, edit `~/.deepagents/.mcp.json`:
+Talon checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`. Without an explicit path, it layers `~/.deepagents/.mcp.json`, `<project-root>/.deepagents/.mcp.json`, and `<project-root>/.mcp.json` from lowest to highest precedence. Project configs are ignored unless `DEEPAGENTS_TALON_TRUST_PROJECT_MCP=true`; selecting one explicitly also trusts it. For user-level MCP servers, edit `~/.deepagents/.mcp.json`:
 
 ```json
 {

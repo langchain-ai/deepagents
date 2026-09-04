@@ -36,12 +36,12 @@ from deepagents_talon.authorization import (
     set_authorization_invocation,
 )
 from deepagents_talon.mcp_auth import (
+    DeviceAuthorizationCompletedError,
     FileTokenStorage,
     MCPAuthorizationError,
-    authorize_github_mcp,
     build_oauth_provider,
     format_login_error,
-    is_github_mcp_url,
+    prepare_device_client,
 )
 
 if TYPE_CHECKING:
@@ -420,12 +420,19 @@ async def login_mcp_server(
         if server is None:
             msg = f"MCP server {server_name!r} was not found in {path}"
             raise MCPConfigError(msg)
-        connection, transport = await _connection(server_name, server, interactive=True)
+        connection, transport = await _connection(
+            server_name,
+            server,
+            interactive=True,
+            force_authorization=True,
+        )
         if transport not in {"sse", "streamable_http"}:
             msg = f"MCP server {server_name!r} does not use a remote transport"
             raise MCPConfigError(msg)
         client = MultiServerMCPClient({server_name: connection})
         await _open_mcp_session(client, server_name)
+    except DeviceAuthorizationCompletedError:
+        pass
     except (
         HTTPError,
         McpError,
@@ -774,14 +781,8 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
             if force_authorization
             else FileTokenStorage(name, server_url=url)
         )
-        can_authorize = interactive or channel_authorization
-        github_mcp = is_github_mcp_url(url)
-        tokens = await storage.get_tokens() if github_mcp else None
-        if github_mcp and tokens is None and can_authorize:
-            await authorize_github_mcp(name, storage, interactive=interactive)
-        elif not can_authorize and (
-            tokens is None if github_mcp else await storage.get_tokens() is None
-        ):
+        await prepare_device_client(url, storage)
+        if not interactive and not channel_authorization and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
         connection["auth"] = build_oauth_provider(

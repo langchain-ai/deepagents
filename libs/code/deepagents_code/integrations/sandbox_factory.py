@@ -938,7 +938,9 @@ class _VercelProvider(SandboxProvider):
             Explicit SDK credential arguments, or an empty mapping to delegate
             credential resolution to the Vercel SDK.
         """
-        prefix = "DEEPAGENTS_CODE_"
+        from deepagents_code.model_config import _ENV_PREFIX
+
+        prefix = _ENV_PREFIX
         # Gate against the same mapping `resolve_env_var` resolves from. Reading
         # `os.environ` here would miss a prefixed override that came from the
         # workspace `.env`, silently falling back to default Vercel auth.

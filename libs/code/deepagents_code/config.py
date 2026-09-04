@@ -1326,8 +1326,10 @@ def restore_user_langsmith_env(
             return
         launch, values = decoded
 
+    from deepagents_code.model_config import _ENV_PREFIX
+
     for var in _USER_LANGSMITH_ENV_VARS:
-        env.pop(f"DEEPAGENTS_CODE_{var}", None)
+        env.pop(f"{_ENV_PREFIX}{var}", None)
         value = launch.get(var)
         if value is None:
             env.pop(var, None)
@@ -1582,7 +1584,9 @@ def _apply_stored_langsmith_tracing(*, replace_project: bool = False) -> None:
 
 def _stored_langsmith_key_is_suppressed(stored_key: str) -> bool:
     """Return whether an env override keeps `stored_key` from taking effect."""
-    prefixed_names = [f"DEEPAGENTS_CODE_{name}" for name in _TRACING_API_KEY_ENV_VARS]
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    prefixed_names = [f"{_ENV_PREFIX}{name}" for name in _TRACING_API_KEY_ENV_VARS]
     prefixed_values = [
         os.environ.get(name) or None for name in prefixed_names if name in os.environ
     ]

@@ -55,7 +55,6 @@ dependencies = [
     "textual-speedups>=0.2.1,<1.0.0",
     "prompt-toolkit>=3.0.53,<4.0.0",
     "rich>=15.0.0,<16.0.0",
-    "markdownify>=1.2.3,<2.0.0",
 
     # Sandbox integrations
     "langsmith[sandbox]>=0.12.1",

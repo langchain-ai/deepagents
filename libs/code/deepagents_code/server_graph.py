@@ -40,8 +40,13 @@ from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
+    from contextlib import AbstractContextManager
 
     from deepagents.backends.composite import CompositeBackend
+
+    EnvironmentContext = Callable[
+        [Mapping[str, str] | None], AbstractContextManager[None]
+    ]
 
     from deepagents_code.config import CredentialsSnapshot
     from deepagents_code.extensions.registry import ExtensionRegistry
@@ -257,12 +262,6 @@ async def _make_graphs(
             offload operation bound to that backend.
     """
     config = config_override or ServerConfig.from_env()
-    from deepagents_code.config import (
-        Credentials,
-        _preview_dotenv_environ,
-        use_environment,
-    )
-
     workspace_path = (
         project_context_override.user_cwd
         if project_context_override is not None
@@ -278,15 +277,25 @@ async def _make_graphs(
     # rejects when invoked directly from the server loop (see issue #5043),
     # for the same reason as the offload in `_make_graphs_in_environment`.
     def _resolve_workspace_environment() -> tuple[
-        Mapping[str, str], CredentialsSnapshot
+        Mapping[str, str], CredentialsSnapshot, EnvironmentContext
     ]:
-        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
-        return environ, Credentials.snapshot_from_environment(
-            start_path=workspace_path,
-            environ=environ,
+        from deepagents_code.config import (
+            Credentials,
+            _preview_dotenv_environ,
+            use_environment,
         )
 
-    workspace_env, workspace_credentials = await asyncio.to_thread(
+        environ = MappingProxyType(_preview_dotenv_environ(start_path=workspace_path))
+        return (
+            environ,
+            Credentials.snapshot_from_environment(
+                start_path=workspace_path,
+                environ=environ,
+            ),
+            use_environment,
+        )
+
+    workspace_env, workspace_credentials, use_environment = await asyncio.to_thread(
         _resolve_workspace_environment
     )
 

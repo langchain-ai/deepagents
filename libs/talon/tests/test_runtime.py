@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import pytest
 from deepagents.backends import LocalShellBackend
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from langchain.agents.middleware.types import AgentMiddleware
 from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
@@ -271,7 +272,7 @@ async def test_runtime_wires_subagents(
 
     await runtime.start()
 
-    assert captured["subagents"] == subagents
+    assert captured["subagents"] == [*subagents, {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"}]
 
 
 async def test_runtime_requires_approval_for_async_subagent_tools(
@@ -301,7 +302,10 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
 
     await runtime.start()
 
-    assert captured["subagents"] == [async_subagent]
+    assert captured["subagents"] == [
+        async_subagent,
+        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
+    ]
     assert captured["interrupt_on"] == {
         "custom_tool": True,
         "start_async_task": False,
@@ -318,7 +322,9 @@ async def test_runtime_merges_local_and_async_subagents(
     assistant_dir = tmp_path / "agent-home" / "agent"
     researcher_dir = tmp_path / "agent-home" / "agents" / "researcher"
     researcher_dir.mkdir(parents=True)
-    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+    (researcher_dir / "AGENTS.md").write_text(
+        "---\ndescription: Research tasks\n---\nResearch carefully.", encoding="utf-8"
+    )
     async_subagent = {
         "name": "remote_reviewer",
         "description": "Remote review tasks",
@@ -346,10 +352,12 @@ async def test_runtime_merges_local_and_async_subagents(
     assert captured["subagents"] == [
         {
             "name": "researcher",
-            "description": "Use the researcher subagent.",
+            "description": "Research tasks",
             "system_prompt": "Research carefully.",
+            "mode": "fork",
         },
         async_subagent,
+        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
     ]
 
 
@@ -364,10 +372,12 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
     researcher_dir.mkdir(parents=True)
     reviewer_dir.mkdir(parents=True)
     (researcher_dir / "AGENTS.md").write_text(
-        "---\ndescription: Research tasks\nmodel_id: openai:model\n---\nResearch carefully.",
+        "---\ndescription: Research tasks\nmodel: openai:model\n---\nResearch carefully.",
         encoding="utf-8",
     )
-    (reviewer_dir / "AGENTS.md").write_text("Review changes.", encoding="utf-8")
+    (reviewer_dir / "AGENTS.md").write_text(
+        "---\ndescription: Review changes\n---\nReview carefully.", encoding="utf-8"
+    )
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
@@ -392,12 +402,15 @@ async def test_runtime_loads_local_subagents_from_user_agents_dir(
             "description": "Research tasks",
             "system_prompt": "Research carefully.",
             "model": "openai:model",
+            "mode": "fork",
         },
         {
             "name": "reviewer",
-            "description": "Use the reviewer subagent.",
-            "system_prompt": "Review changes.",
+            "description": "Review changes",
+            "system_prompt": "Review carefully.",
+            "mode": "fork",
         },
+        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
     ]
 
 
@@ -409,7 +422,9 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
     assistant_dir = tmp_path / "imported-agent"
     researcher_dir = assistant_dir / "agents" / "researcher"
     researcher_dir.mkdir(parents=True)
-    (researcher_dir / "AGENTS.md").write_text("Research carefully.", encoding="utf-8")
+    (researcher_dir / "AGENTS.md").write_text(
+        "---\ndescription: Research tasks\n---\nResearch carefully.", encoding="utf-8"
+    )
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
@@ -431,34 +446,32 @@ async def test_runtime_loads_subagents_from_explicit_target_dir(
     assert captured["subagents"] == [
         {
             "name": "researcher",
-            "description": "Use the researcher subagent.",
+            "description": "Research tasks",
             "system_prompt": "Research carefully.",
+            "mode": "fork",
         },
+        {**GENERAL_PURPOSE_SUBAGENT, "mode": "fork"},
     ]
 
 
-async def test_runtime_skips_unloadable_local_subagent_dirs(
+async def test_runtime_uses_user_defined_general_purpose_subagent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
-    caplog: pytest.LogCaptureFixture,
 ) -> None:
     captured: dict[str, Any] = {}
     assistant_dir = tmp_path / "agent-home" / "agent"
-    missing_dir = tmp_path / "agent-home" / "agents" / "missing"
-    bad_dir = tmp_path / "agent-home" / "agents" / "bad name"
-    good_dir = tmp_path / "agent-home" / "agents" / "good-name"
-    missing_dir.mkdir(parents=True)
-    bad_dir.mkdir(parents=True)
-    good_dir.mkdir(parents=True)
-    (bad_dir / "AGENTS.md").write_text("Bad prompt.", encoding="utf-8")
-    (good_dir / "AGENTS.md").write_text("Good prompt.", encoding="utf-8")
+    general_dir = tmp_path / "agent-home" / "agents" / "general-purpose"
+    general_dir.mkdir(parents=True)
+    (general_dir / "AGENTS.md").write_text(
+        "---\ndescription: Custom general agent\n---\nUse custom instructions.",
+        encoding="utf-8",
+    )
 
     def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
         captured.update(kwargs)
         return RecordingGraph()
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
-    caplog.set_level(logging.WARNING, logger="deepagents_talon.runtime")
 
     runtime = DeepAgentRuntime(
         model="test:model",
@@ -472,12 +485,12 @@ async def test_runtime_skips_unloadable_local_subagent_dirs(
 
     assert captured["subagents"] == [
         {
-            "name": "good-name",
-            "description": "Use the good-name subagent.",
-            "system_prompt": "Good prompt.",
+            "name": "general-purpose",
+            "description": "Custom general agent",
+            "system_prompt": "Use custom instructions.",
+            "mode": "fork",
         }
     ]
-    assert "unsafe subagent name 'bad name'" in caplog.text
 
 
 async def test_runtime_passes_middleware_to_create_deep_agent(

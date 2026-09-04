@@ -1165,29 +1165,6 @@ def consume_orphaned_tracing_disabled_notice() -> str | None:
     return notice
 
 
-def _tracing_enabled() -> bool:
-    """Whether any LangSmith/LangChain tracing flag is truthy in the environment.
-
-    Reads the canonical tracing-enable vars (`_TRACING_ENABLE_ENV_VARS`) and
-    classifies each present value with `classify_env_bool`, mirroring how the
-    LangChain/LangSmith SDKs decide whether to start tracing. Shared by
-    `_disable_orphaned_tracing` and `_apply_default_langsmith_project` so both
-    read the flags identically.
-
-    Returns:
-        `True` if at least one tracing flag is set to a truthy value,
-            else `False`.
-    """
-    from deepagents_code._env_vars import classify_env_bool
-
-    environ = active_environment()
-    return any(
-        classify_env_bool(environ[var])
-        for var in _TRACING_ENABLE_ENV_VARS
-        if var in environ
-    )
-
-
 def _disable_set_tracing_flags() -> list[str]:
     """Set every configured tracing-enable flag to `false`.
 

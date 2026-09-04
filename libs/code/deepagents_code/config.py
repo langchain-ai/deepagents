@@ -545,8 +545,17 @@ def _dotenv_environment(
     start_path: Path | None,
     environ: Mapping[str, str],
     include_global: bool = True,
+    unreadable: list[Path] | None = None,
 ) -> dict[str, str]:
     """Apply the project/global dotenv stack to an explicit environment mapping.
+
+    Args:
+        start_path: Directory to begin project dotenv discovery from.
+        environ: Environment the files are layered under. Its keys win.
+        include_global: Whether the global profile `.env` contributes.
+        unreadable: Collects the path of each file that could not be read, for
+            a caller that must tell "the file sets nothing" apart from "the file
+            could not be read". A read failure is otherwise only logged.
 
     Returns:
         A new effective environment mapping.
@@ -570,6 +579,8 @@ def _dotenv_environment(
                 dotenv_path,
                 exc_info=True,
             )
+            if unreadable is not None:
+                unreadable.append(dotenv_path)
             return
         for key, value in values.items():
             if value is None:
@@ -586,8 +597,9 @@ def _dotenv_environment(
                 continue
             env[key] = value
 
+    discovery_root = start_path or Path.cwd()
     try:
-        project_dotenv = _find_dotenv_from_start_path(start_path or Path.cwd())
+        project_dotenv = _find_dotenv_from_start_path(discovery_root)
     except OSError:
         logger.warning(
             "Could not inspect project dotenv at %s; environment may be incomplete",
@@ -595,6 +607,8 @@ def _dotenv_environment(
             exc_info=True,
         )
         project_dotenv = None
+        if unreadable is not None:
+            unreadable.append(discovery_root)
     global_is_project = _dotenv_files_are_same(project_dotenv, _GLOBAL_DOTENV_PATH)
 
     global_toggle: dict[str, str] = {}
@@ -1324,11 +1338,26 @@ def restore_user_langsmith_env(
         else:
             env[var] = value
     if start_path is not None:
-        values = _dotenv_environment(
+        unreadable: list[Path] = []
+        recomputed = _dotenv_environment(
             start_path=start_path,
             environ=env,
             include_global=False,
+            unreadable=unreadable,
         )
+        if unreadable:
+            # The recompute reports "sets nothing" for a file it could not
+            # read, which would drop the project's selectors from every user
+            # command. The client already resolved them for this project and
+            # shipped them in the carrier, so keep those instead of treating
+            # an unreadable file as an empty one.
+            logger.warning(
+                "Could not read %s; keeping the LangSmith settings captured at "
+                "launch for user commands",
+                ", ".join(str(path) for path in unreadable),
+            )
+        else:
+            values = recomputed
     for var in _USER_LANGSMITH_ENV_VARS:
         value = values.get(var)
         if value is None:

@@ -4655,6 +4655,34 @@ class TestUserLangsmithEnvironment:
         # The user is told, on stderr, not only in the buffered debug log.
         assert "without LangSmith credentials" in capsys.readouterr().err
 
+    def test_unreadable_project_dotenv_keeps_the_carried_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `.env` that cannot be read must not read as an empty one."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("LANGSMITH_PROJECT=from-dotenv\n")
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        # The realistic shape: the launch shell did not set the project, the
+        # project `.env` did. So only the carried `user` half can supply it.
+        launch = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS)
+        user = dict(launch, LANGSMITH_PROJECT="carried-project")
+        carrier = json.dumps({"launch": launch, "user": user})
+
+        def _unreadable(*_args: object, **_kwargs: object) -> dict[str, str | None]:
+            raise OSError(5, "Input/output error")
+
+        env = {config_mod._USER_LANGSMITH_ENV_CARRIER: carrier}
+        with patch.object(config_mod, "_dotenv_values_from", _unreadable):
+            config_mod.restore_user_langsmith_env(env, start_path=project)
+
+        assert env["LANGSMITH_PROJECT"] == "carried-project"
+
     def test_restore_drops_agent_values_and_prefixed_settings(self) -> None:
         import deepagents_code.config as config_mod
 

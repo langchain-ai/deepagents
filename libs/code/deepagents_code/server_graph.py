@@ -35,7 +35,13 @@ from deepagents_code._startup_error import (
 from deepagents_code.configuration.interpreter import InterpreterConfig
 from deepagents_code.configuration.resolver import get_config_resolver
 from deepagents_code.project_utils import ProjectContext, get_server_project_context
-from deepagents_code.workspace import WorkspaceConflictError, resolve_workspace
+from deepagents_code.workspace import (
+    PROJECT_POLICY_DRIFT_REASON,
+    SERVER_CONFIG_DRIFT_REASON,
+    WorkspaceConflictError,
+    project_policy_differs,
+    resolve_workspace,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping
@@ -90,9 +96,8 @@ async def _build_tools(
     config: ServerConfig,
     project_context: ProjectContext | None,
     *,
-    has_tavily: bool | None = None,
-    tavily_api_key: str | None = None,
-) -> tuple[list[Any], list[Any] | None, list[Any]]:
+    workspace_credentials: CredentialsSnapshot | None = None,
+) -> tuple[list[Any], list[Any] | None, list[Any], list[Any]]:
     """Assemble the tool list based on server config.
 
     Loads built-in tools (conditionally including web search when Tavily is
@@ -110,11 +115,14 @@ async def _build_tools(
     Args:
         config: Deserialized server configuration.
         project_context: Resolved project context for MCP discovery.
-        has_tavily: Workspace credential availability override.
-        tavily_api_key: Workspace Tavily key that pairs with `has_tavily`.
+        workspace_credentials: Credentials bound to this workspace. When
+            omitted, the process-global credentials are used instead.
 
     Returns:
-        Tuple of `(tools, mcp_server_info, mcp_tools)`.
+        Tuple of `(tools, mcp_server_info, mcp_tools, read_only_builtins)`. The
+        last element is the exact built-in tool objects that are safe to expose
+        to criteria drafting and rubric grading; read-only-ness is known here,
+        at construction, so no consumer has to re-derive it.
 
     Raises:
         FileNotFoundError: If the MCP config file is not found.
@@ -129,13 +137,16 @@ async def _build_tools(
     )
 
     tools: list[Any] = [fetch_url, get_current_thread_id]
-    tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
-    if tavily_available:
-        tools.append(
-            web_search
-            if has_tavily is None
-            else create_web_search_tool(tavily_api_key or "")
-        )
+    read_only_builtins: list[Any] = [fetch_url]
+    search_tool: Any = None
+    if workspace_credentials is None:
+        if credentials.has_tavily:
+            search_tool = web_search
+    elif workspace_credentials.tavily_api_key:
+        search_tool = create_web_search_tool(workspace_credentials.tavily_api_key)
+    if search_tool is not None:
+        tools.append(search_tool)
+        read_only_builtins.append(search_tool)
 
     mcp_server_info: list[Any] | None = None
     mcp_tools: list[Any] = []
@@ -177,28 +188,28 @@ async def _build_tools(
         if mcp_tools:
             logger.info("Loaded %d MCP tool(s)", len(mcp_tools))
 
-    return tools, mcp_server_info, mcp_tools
+    return tools, mcp_server_info, mcp_tools, read_only_builtins
 
 
 def _criteria_context_tools(
     tools: list[Any],
     mcp_tools: list[Any],
+    read_only_builtins: list[Any],
 ) -> list[Any]:
     """Select read-only external tools for criteria drafting and rubric grading.
 
     Args:
         tools: Main agent tools in execution order.
         mcp_tools: Exact tool objects returned by MCP discovery.
+        read_only_builtins: Built-in tool objects `_build_tools` created and
+            marked read-only.
 
     Returns:
         External context tools available to criteria generation and grading.
         MCP tools are included only when their protocol annotations explicitly
         declare them read-only.
     """
-    from deepagents_code.tools import fetch_url, is_web_search_tool
-
-    allowed_ids = {id(fetch_url)}
-    allowed_ids.update(id(tool) for tool in tools if is_web_search_tool(tool))
+    allowed_ids = {id(tool) for tool in read_only_builtins}
     allowed_ids.update(
         id(tool) for tool in mcp_tools if _mcp_tool_is_explicitly_read_only(tool)
     )
@@ -376,13 +387,16 @@ async def _make_graphs_in_environment(
     )
     result.apply_to_runtime_state()
 
-    tools, mcp_server_info, mcp_tools = await _build_tools(
+    tools, mcp_server_info, mcp_tools, read_only_builtins = await _build_tools(
         config,
         project_context,
-        has_tavily=workspace_credentials.has_tavily,
-        tavily_api_key=workspace_credentials.tavily_api_key,
+        workspace_credentials=workspace_credentials,
     )
-    read_only_context_tools = _criteria_context_tools(tools, mcp_tools)
+    read_only_context_tools = _criteria_context_tools(
+        tools,
+        mcp_tools,
+        read_only_builtins,
+    )
 
     # Create sandbox backend if a sandbox provider is configured.
     # The context manager is created here in the factory, but its reference is
@@ -688,18 +702,17 @@ async def _default_workspace_binding(config: ServerConfig) -> WorkspaceBinding |
     """
     if config.cwd is None:
         return None
-    identity = await asyncio.to_thread(resolve_workspace, config.cwd)
-    resolved = await asyncio.to_thread(
-        config.resolve_workspace,
-        identity.cwd,
-        identity.project_root,
-    )
-    return await asyncio.to_thread(
-        resolve_workspace,
-        identity.cwd,
-        resolved.to_workspace_payload(),
-        config_fingerprint=resolved.workspace_fingerprint(),
-    )
+
+    def _bind() -> WorkspaceBinding:
+        identity = resolve_workspace(config.cwd)
+        resolved = config.resolve_workspace(identity.cwd, identity.project_root)
+        return resolve_workspace(
+            identity.cwd,
+            resolved.to_workspace_payload(),
+            config_fingerprint=resolved.workspace_fingerprint(),
+        )
+
+    return await asyncio.to_thread(_bind)
 
 
 def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
@@ -710,18 +723,14 @@ def _resolve_bound_workspace_config(binding: WorkspaceBinding) -> ServerConfig:
     """
     config = ServerConfig.from_env()
     current_config = config.resolve_workspace(binding.cwd, binding.project_root)
-    bound_policy = binding.workspace_config()
-    project_policy = current_config.to_project_workspace_policy()
-    if any(bound_policy.get(key) != value for key, value in project_policy.items()):
-        reason = (
-            "the project's resolved policy differs from the policy recorded "
-            "when this workspace was bound"
-        )
-        conflict = WorkspaceConflictError.from_reason(reason)
+    if project_policy_differs(
+        binding.workspace_config(),
+        current_config.to_project_workspace_policy(),
+    ):
+        conflict = WorkspaceConflictError.from_reason(PROJECT_POLICY_DRIFT_REASON)
         raise conflict
     if current_config.workspace_fingerprint() != binding.config_fingerprint:
-        reason = "the server configuration changed after this workspace was bound"
-        conflict = WorkspaceConflictError.from_reason(reason)
+        conflict = WorkspaceConflictError.from_reason(SERVER_CONFIG_DRIFT_REASON)
         raise conflict
     return current_config
 
@@ -732,15 +741,11 @@ async def _workspace_runtime(binding: WorkspaceBinding) -> ServerRuntime:
     Returns:
         The runtime selected by the binding's immutable resource key.
     """
-    await asyncio.to_thread(_resolve_bound_workspace_config, binding)
+    current_config = await asyncio.to_thread(_resolve_bound_workspace_config, binding)
     cached = _cached_workspace_runtime(binding)
     if cached is not None:
         return cached
     async with _workspace_runtime_lock:
-        current_config = await asyncio.to_thread(
-            _resolve_bound_workspace_config,
-            binding,
-        )
         cached = _cached_workspace_runtime(binding)
         if cached is not None:
             return cached

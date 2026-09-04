@@ -781,13 +781,12 @@ class _AgentCoreProvider(SandboxProvider):
         self._session: Any = None
 
         # Validate AWS credentials early for a clear error message.
-        session_kwargs: dict[str, str] = {}
+        credential_kwargs: dict[str, str] = {}
         try:
             import boto3  # ty: ignore[unresolved-import]
 
-            session_kwargs = _aws_session_kwargs()
-            session_kwargs["region_name"] = self._region
-            self._session = boto3.Session(**session_kwargs)
+            credential_kwargs = _aws_session_kwargs()
+            self._session = boto3.Session(region_name=self._region, **credential_kwargs)
             credentials = self._session.get_credentials()
             if credentials is None:
                 msg = (
@@ -806,16 +805,11 @@ class _AgentCoreProvider(SandboxProvider):
             # right default when the workspace scoped nothing, and a privilege
             # substitution when it did -- a workspace pinned to a restricted
             # profile would silently run under the server's broader identity.
-            scoped = {
-                key: value
-                for key, value in session_kwargs.items()
-                if key != "region_name"
-            }
-            if scoped:
+            if credential_kwargs:
                 msg = (
                     f"The workspace AWS configuration is invalid: {exc}. This "
                     f"workspace scoped its sandbox to specific AWS credentials "
-                    f"({', '.join(sorted(scoped))}), so the server's own "
+                    f"({', '.join(sorted(credential_kwargs))}), so the server's own "
                     f"credentials are not substituted. Fix AWS_PROFILE / "
                     f"AWS_ACCESS_KEY_ID in this workspace's .env, or unset "
                     f"them to use the server's default credentials."

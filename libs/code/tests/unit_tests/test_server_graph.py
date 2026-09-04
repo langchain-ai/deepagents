@@ -108,6 +108,7 @@ class TestServerGraph:
                 fetch_url,
             ],
             [mcp_tool],
+            [fetch_url, web_search],
         )
 
         assert len(result) == 3
@@ -146,6 +147,7 @@ class TestServerGraph:
         result = module._criteria_context_tools(
             [mutating, fetch_url, readonly, unannotated, web_search, ambiguous],
             [readonly, mutating, unannotated, ambiguous],
+            [fetch_url, web_search],
         )
 
         assert result == [fetch_url, readonly, web_search]
@@ -181,11 +183,13 @@ class TestServerGraph:
             "deepagents_code.tools.create_web_search_tool",
             return_value=bound_tool,
         ) as create:
-            tools, _, _ = await module._build_tools(
+            tools, _, _, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
-                has_tavily=True,
-                tavily_api_key="workspace-key",
+                workspace_credentials=SimpleNamespace(
+                    has_tavily=True,
+                    tavily_api_key="workspace-key",
+                ),
             )
 
         assert bound_tool in tools
@@ -206,7 +210,6 @@ class TestServerGraph:
             create_web_search_tool=Mock(),
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
-            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         mcp_module = _module_with_attrs(
@@ -223,7 +226,7 @@ class TestServerGraph:
             },
         ):
             module = _import_fresh_server_graph()
-            tools, mcp_server_info, mcp_tools = await module._build_tools(
+            tools, mcp_server_info, mcp_tools, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
             )
@@ -286,7 +289,6 @@ class TestServerGraph:
             create_web_search_tool=Mock(),
             fetch_url=object(),
             get_current_thread_id=object(),
-            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         config = ServerConfig(

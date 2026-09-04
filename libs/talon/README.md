@@ -207,6 +207,39 @@ directory. Talon does not support the old Fleet direct-run startup path or its
 environment variables; import the zip first, then run Talon against the
 materialized local assistant.
 
+## Cron Schedules
+
+`create_job` and `edit_job` accept four schedule forms:
+
+| Form | Kind | Example |
+| --- | --- | --- |
+| `in <N>{m,h}` | one-shot | `in 30m` |
+| `every <N>{m,h}` | recurring | `every 6h` |
+| `at <YYYY-MM-DD> <HH:MM> <tz>` | one-shot | `at 2026-09-04 13:30 America/New_York` |
+| `daily at <HH:MM> <tz>` | recurring | `daily at 08:00 America/New_York` |
+
+The wall-clock forms require an explicit IANA timezone name; there is no default
+zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
+rejected because they cannot express a region's future daylight-saving rules.
+
+The timezone is stored on the job and pinned. `daily at 08:00 America/New_York`
+fires at 08:00 New York wall-clock time no matter where the host is or which
+side of a daylight-saving transition the run falls on — the next run is rebuilt
+from the local date each time rather than advanced by 24 hours. Two edge cases
+resolve deterministically:
+
+- A local time skipped by a spring-forward transition snaps forward to the first
+  minute that exists, so `daily at 02:30` fires at 03:00 local on that day
+  rather than being skipped.
+- An ambiguous local time repeated by a fall-back transition resolves to its
+  earlier occurrence, so the job fires once.
+
+Interval schedules stay phase-locked to their previous run, so a late scheduler
+tick does not shift an `every 15m` job off its cadence. A one-shot `at` schedule
+that has already passed is rejected at create and edit time with the resolved
+instant in the error message. Because the scheduler ticks every 60 seconds, a
+run lands within the minute it is due, not on the exact second.
+
 ## Cron Observability
 
 Cron jobs are persisted in `cron/jobs.json` under the assistant state directory. Scheduler lifecycle events are emitted through the standard Python logger as `talon_event` JSON records:

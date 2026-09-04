@@ -26,7 +26,7 @@ if TYPE_CHECKING:
     from deepagents_code.project_utils import ProjectContext
 
 
-_SESSION_WORKSPACE_FIELDS = frozenset(
+SESSION_WORKSPACE_FIELDS = frozenset(
     {
         "allow_fs_tools",
         "assistant_id",
@@ -48,7 +48,7 @@ _SESSION_WORKSPACE_FIELDS = frozenset(
         "shell_allow_list",
     }
 )
-_PROJECT_WORKSPACE_FIELDS = frozenset(
+PROJECT_WORKSPACE_FIELDS = frozenset(
     {
         "extension_paths",
         "mcp_config_path",
@@ -57,31 +57,6 @@ _PROJECT_WORKSPACE_FIELDS = frozenset(
         "trust_project_mcp",
     }
 )
-
-
-def workspace_claim_fields() -> frozenset[str]:
-    """Return the exact workspace policy keys clients may claim.
-
-    Returns:
-        The session-scoped workspace field names.
-    """
-    return _SESSION_WORKSPACE_FIELDS
-
-
-def project_workspace_fields() -> frozenset[str]:
-    """Return the exact workspace policy keys resolved per project.
-
-    Returns:
-        The project-scoped workspace field names.
-    """
-    return _PROJECT_WORKSPACE_FIELDS
-
-
-def _fingerprint(value: object) -> str:
-    import hashlib
-
-    serialized = json.dumps(value, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(serialized.encode()).hexdigest()
 
 
 def _same_workspace_project(first: str | None, second: str) -> bool:
@@ -519,13 +494,25 @@ class ServerConfig:
             "extension_paths": list(self.extension_paths),
         }
 
-    def to_session_workspace_claim(self) -> dict[str, Any]:
-        """Return the command-scoped policy a managed client may claim."""
+    def _workspace_subset(self, fields: frozenset[str]) -> dict[str, Any]:
+        """Return the *fields* subset of the full workspace policy.
+
+        Returns:
+            The requested subset of `to_workspace_payload()`.
+        """
         return {
             key: value
             for key, value in self.to_workspace_payload().items()
-            if key in _SESSION_WORKSPACE_FIELDS
+            if key in fields
         }
+
+    def to_session_workspace_claim(self) -> dict[str, Any]:
+        """Return the command-scoped policy a managed client may claim.
+
+        Returns:
+            The session-scoped subset of the workspace policy.
+        """
+        return self._workspace_subset(SESSION_WORKSPACE_FIELDS)
 
     def to_project_workspace_policy(self) -> dict[str, Any]:
         """Return policy that must be resolved for each project directory.
@@ -533,11 +520,7 @@ class ServerConfig:
         Returns:
             The project-scoped subset of the workspace policy.
         """
-        return {
-            key: value
-            for key, value in self.to_workspace_payload().items()
-            if key in _PROJECT_WORKSPACE_FIELDS
-        }
+        return self._workspace_subset(PROJECT_WORKSPACE_FIELDS)
 
     def session_workspace_fingerprint(self) -> str:
         """Fingerprint the exact client-claimable session policy.
@@ -545,7 +528,9 @@ class ServerConfig:
         Returns:
             The canonical SHA-256 fingerprint.
         """
-        return _fingerprint(self.to_session_workspace_claim())
+        from deepagents_code.workspace import canonical_fingerprint
+
+        return canonical_fingerprint(self.to_session_workspace_claim())
 
     def resolve_workspace(
         self,
@@ -583,7 +568,9 @@ class ServerConfig:
         values = self.to_env()
         values.pop("CWD")
         values.pop("PROJECT_ROOT")
-        return _fingerprint(values)
+        from deepagents_code.workspace import canonical_fingerprint
+
+        return canonical_fingerprint(values)
 
     def __post_init__(self) -> None:
         """Normalize fields and validate invariants.

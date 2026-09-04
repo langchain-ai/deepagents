@@ -43,12 +43,14 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from starlette.requests import Request
 
+    from deepagents_code._server_config import ServerConfig
     from deepagents_code.cost_tracking import PreparedOperationCost
     from deepagents_code.offload_middleware import (
         OffloadExecution,
         OffloadResponse,
         _OffloadState,
     )
+    from deepagents_code.workspace import WorkspaceBinding
 
 logger = logging.getLogger(__name__)
 
@@ -202,9 +204,8 @@ async def workspace(request: Request) -> JSONResponse:
         )
     try:
         from deepagents_code._server_config import (
+            PROJECT_WORKSPACE_FIELDS,
             ServerConfig,
-            project_workspace_fields,
-            workspace_claim_fields,
         )
         from deepagents_code.workspace import resolve_workspace
 
@@ -216,12 +217,15 @@ async def workspace(request: Request) -> JSONResponse:
                 status_code=422,
             )
         server_config = ServerConfig.from_env()
-        identity = await asyncio.to_thread(resolve_workspace, body.get("cwd"))
-        trusted = await asyncio.to_thread(
-            server_config.resolve_workspace,
-            identity.cwd,
-            identity.project_root,
-        )
+
+        def _resolve() -> tuple[WorkspaceBinding, ServerConfig]:
+            identity = resolve_workspace(body.get("cwd"))
+            return identity, server_config.resolve_workspace(
+                identity.cwd,
+                identity.project_root,
+            )
+
+        identity, trusted = await asyncio.to_thread(_resolve)
         if "workspace_config" in body or "config_fingerprint" in body:
             claim = body.get("workspace_config")
             if not isinstance(claim, dict):
@@ -229,15 +233,9 @@ async def workspace(request: Request) -> JSONResponse:
                     {"detail": "workspace_config must be an object"},
                     status_code=422,
                 )
-            keys = set(claim)
-            if keys & project_workspace_fields():
+            if claim.keys() & PROJECT_WORKSPACE_FIELDS:
                 return JSONResponse(
                     {"detail": "clients cannot claim project workspace policy"},
-                    status_code=409,
-                )
-            if keys != workspace_claim_fields():
-                return JSONResponse(
-                    {"detail": "workspace configuration does not match server policy"},
                     status_code=409,
                 )
             claimed_config_fingerprint = body.get("config_fingerprint")

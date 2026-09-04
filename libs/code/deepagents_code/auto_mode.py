@@ -616,7 +616,12 @@ def _redact_remote(value: str) -> str:
 def _known_credential_values(
     environ: Mapping[str, str] | None = None,
 ) -> tuple[str, ...]:
-    source = os.environ if environ is None else environ
+    from deepagents_code.config import (
+        active_environment,
+        relayed_user_tracing_secrets,
+    )
+
+    source = active_environment() if environ is None else environ
     values: set[str] = set()
     for name, value in source.items():
         if _SECRET_KEY_RE.search(name) and len(value) >= _MIN_SECRET_LENGTH:
@@ -624,8 +629,6 @@ def _known_credential_values(
     # The caller's relayed tracing key is what `execute` commands actually run
     # under, but it reaches this process inside a carrier whose name does not
     # match `_SECRET_KEY_RE`, so the name scan above cannot see it.
-    from deepagents_code.config import relayed_user_tracing_secrets
-
     values.update(
         value
         for value in relayed_user_tracing_secrets(source)

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import inspect
 import logging
-import os
 import re
 import shutil
 import warnings
@@ -108,6 +107,7 @@ from deepagents_code.config import (
     _INHERITED_PYTHONPATH_ENV,
     DEFAULT_MODEL_RETRIES,
     _ShellAllowAll,
+    active_environment,
     console,
     credentials,
     get_default_coding_instructions,
@@ -1606,26 +1606,19 @@ def get_system_prompt(
         )
 
     if model_result is not None:
-        model_identity = (
+        model_identity_section = build_model_identity_section(
             model_result.model_name,
-            model_result.provider,
-            model_result.context_limit,
-            model_result.unsupported_modalities,
+            provider=model_result.provider,
+            context_limit=model_result.context_limit,
+            unsupported_modalities=model_result.unsupported_modalities,
         )
     else:
-        model_identity = (
+        model_identity_section = build_model_identity_section(
             runtime_state.model_name,
-            runtime_state.model_provider,
-            runtime_state.model_context_limit,
-            runtime_state.model_unsupported_modalities,
+            provider=runtime_state.model_provider,
+            context_limit=runtime_state.model_context_limit,
+            unsupported_modalities=runtime_state.model_unsupported_modalities,
         )
-    model_name, model_provider, model_context_limit, model_modalities = model_identity
-    model_identity_section = build_model_identity_section(
-        model_name,
-        provider=model_provider,
-        context_limit=model_context_limit,
-        unsupported_modalities=model_modalities,
-    )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
     tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
     web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if tavily_available else ""
@@ -2647,7 +2640,7 @@ def create_cli_agent(
             a prebuilt `BaseChatModel` came from a path that already checked.
     """  # noqa: DOC502 - propagates from `ModelConfig.require_model_allowed`
     tools = list(tools or [])
-    environment = os.environ if environ is None else environ
+    environment = active_environment() if environ is None else environ
     runtime_credentials = (
         credentials if credentials_snapshot is None else credentials_snapshot
     )

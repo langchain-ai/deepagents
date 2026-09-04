@@ -153,6 +153,7 @@ asyncio.run(main())
                 fetch_url,
             ],
             [mcp_tool],
+            [fetch_url, web_search],
         )
 
         assert len(result) == 3
@@ -191,6 +192,7 @@ asyncio.run(main())
         result = module._criteria_context_tools(
             [mutating, fetch_url, readonly, unannotated, web_search, ambiguous],
             [readonly, mutating, unannotated, ambiguous],
+            [fetch_url, web_search],
         )
 
         assert result == [fetch_url, readonly, web_search]
@@ -256,7 +258,7 @@ asyncio.run(main())
             "deepagents_code.tools.create_web_search_tool",
             return_value=bound_tool,
         ) as create:
-            tools, _, _ = await module._build_tools(
+            tools, _, _, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
                 tavily_api_key="workspace-key",
@@ -280,7 +282,6 @@ asyncio.run(main())
             create_web_search_tool=Mock(),
             fetch_url=fetch_tool,
             get_current_thread_id=thread_tool,
-            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         mcp_module = _module_with_attrs(
@@ -297,7 +298,7 @@ asyncio.run(main())
             },
         ):
             module = _import_fresh_server_graph()
-            tools, mcp_server_info, mcp_tools = await module._build_tools(
+            tools, mcp_server_info, mcp_tools, _ = await module._build_tools(
                 ServerConfig(no_mcp=True),
                 None,
                 tavily_api_key=None,
@@ -367,7 +368,6 @@ asyncio.run(main())
             create_web_search_tool=Mock(),
             fetch_url=object(),
             get_current_thread_id=object(),
-            is_web_search_tool=lambda _tool: False,
             web_search=object(),
         )
         config = ServerConfig(

@@ -770,6 +770,19 @@ def _dotenv_environment(
     return env
 
 
+def strip_loaded_dotenv_values(env: MutableMapping[str, str]) -> None:
+    """Remove values this process's dotenv loader injected into *env*.
+
+    A value is loader-owned only while it still matches what was injected, so a
+    later override by the shell or by managed policy survives the strip. This is
+    the single definition of that rule; both the dotenv preview and the server
+    subprocess environment depend on it.
+    """
+    for key, value in _dotenv_loaded_values.items():
+        if env.get(key) == value:
+            env.pop(key)
+
+
 def _preview_dotenv_environ(*, start_path: Path | None = None) -> dict[str, str]:
     """Return the effective dotenv environment without mutating `os.environ`.
 
@@ -4355,6 +4368,7 @@ def get_langsmith_project_name() -> str | None:
     Returns:
         Project name string when LangSmith tracing is active, None otherwise.
     """
+    from deepagents_code._env_vars import LANGSMITH_PROJECT
     from deepagents_code.config_manifest import LANGSMITH_PROJECT_DEFAULT
     from deepagents_code.model_config import resolve_env_var
 
@@ -5892,12 +5906,9 @@ def _apply_provider_sdk_environment(
     if provider == "azure_openai":
         _apply_azure_sdk_endpoint(kwargs)
 
-    table = {
-        argument: env_names
-        for argument, env_names in _PROVIDER_SDK_ENV_KWARGS.get(provider, {}).items()
-        if argument not in kwargs
-    }
-    kwargs.update(resolve_env_kwargs(table, resolve_env_var))
+    table = _PROVIDER_SDK_ENV_KWARGS.get(provider, {})
+    for argument, value in resolve_env_kwargs(table, resolve_env_var).items():
+        kwargs.setdefault(argument, value)
 
 
 def _get_provider_kwargs(
@@ -5977,6 +5988,48 @@ def _get_provider_kwargs(
 
     _apply_provider_sdk_environment(provider, result)
     return result
+
+
+def _apply_scoped_endpoint(
+    provider: str,
+    kwargs: dict[str, Any],
+    extra_kwargs: dict[str, Any] | None,
+) -> None:
+    """Pair the resolved key with its endpoint on the workspace-scoped path.
+
+    `apply_stored_credentials` is skipped while an environment is bound, so this
+    is the only thing keeping a gateway key from reaching an endpoint that key
+    was not issued for.
+    """
+    if not (extra_kwargs and "api_key" in extra_kwargs):
+        _apply_scoped_stored_endpoint(provider, kwargs)
+        if extra_kwargs and "base_url" in extra_kwargs:
+            kwargs["base_url"] = extra_kwargs["base_url"]
+        return
+    if "base_url" in extra_kwargs:
+        return
+
+    from deepagents_code.model_config import auth_store
+
+    try:
+        stored_base_url = auth_store.get_stored_base_url(provider)
+    except RuntimeError:
+        # The caller passed an explicit `api_key` with no `base_url`. Without
+        # the store we cannot tell whether the inherited endpoint was paired
+        # with the *stored* key, so fail closed and drop it: sending an
+        # explicitly supplied key to a gateway it was not issued for is the
+        # worse outcome.
+        logger.warning(
+            "Could not read the stored endpoint for %r; the credential file "
+            "may be corrupt. Dropping the inherited base URL so the explicitly "
+            "supplied key is not sent to it. Pass `base_url` via "
+            "`--model-params` to target an endpoint explicitly.",
+            provider,
+        )
+        kwargs.pop("base_url", None)
+        return
+    if stored_base_url and kwargs.get("base_url") == stored_base_url:
+        kwargs.pop("base_url", None)
 
 
 def _apply_scoped_stored_endpoint(provider: str, kwargs: dict[str, Any]) -> None:
@@ -6571,7 +6624,7 @@ def create_model(
 
     # Provider-specific kwargs (with per-model overrides)
     kwargs = _get_provider_kwargs(provider, model_name=model_name)
-    if provider and stored_credential and provider != "google_anthropic_vertex":
+    if stored_credential and provider != "google_anthropic_vertex":
         kwargs["api_key"] = stored_credential
 
     # Compose under existing kwargs: profile < config.toml < --model-params
@@ -6614,35 +6667,7 @@ def create_model(
         reasoning_override = extra_kwargs.get("reasoning")
         kwargs.update(extra_kwargs)
     if provider and scoped_environment:
-        if extra_kwargs and "api_key" in extra_kwargs:
-            if "base_url" not in extra_kwargs:
-                from deepagents_code.model_config import auth_store
-
-                try:
-                    stored_base_url = auth_store.get_stored_base_url(provider)
-                except RuntimeError:
-                    # The caller passed an explicit `api_key` with no
-                    # `base_url`. Without the store we cannot tell whether the
-                    # inherited endpoint was paired with the *stored* key, so
-                    # fail closed and drop it: sending an explicitly supplied
-                    # key to a gateway it was not issued for is the worse
-                    # outcome.
-                    logger.warning(
-                        "Could not read the stored endpoint for %r; the "
-                        "credential file may be corrupt. Dropping the "
-                        "inherited base URL so the explicitly supplied key is "
-                        "not sent to it. Pass `base_url` via `--model-params` "
-                        "to target an endpoint explicitly.",
-                        provider,
-                    )
-                    kwargs.pop("base_url", None)
-                else:
-                    if stored_base_url and kwargs.get("base_url") == stored_base_url:
-                        kwargs.pop("base_url", None)
-        else:
-            _apply_scoped_stored_endpoint(provider, kwargs)
-            if extra_kwargs and "base_url" in extra_kwargs:
-                kwargs["base_url"] = extra_kwargs["base_url"]
+        _apply_scoped_endpoint(provider, kwargs, extra_kwargs)
     kwargs = _compose_openai_reasoning_effort(
         provider,
         kwargs,

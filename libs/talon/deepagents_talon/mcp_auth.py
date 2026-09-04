@@ -6,8 +6,10 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import math
 import os
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -152,9 +154,24 @@ class FileTokenStorage:
         raw = data.get("tokens") if data is not None else None
         return OAuthToken.model_validate(raw) if raw is not None else None
 
+    async def get_token_expiry(self) -> float | None:
+        """Return the stored absolute token expiry time."""
+        data = await asyncio.to_thread(self._read)
+        raw = data.get("expires_at") if data is not None else None
+        if raw is None:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int | float) or not math.isfinite(raw):
+            msg = f"Invalid MCP credential file: {self.path}"
+            raise TypeError(msg)
+        return float(raw)
+
     async def set_tokens(self, tokens: OAuthToken) -> None:
-        """Persist OAuth tokens."""
-        await asyncio.to_thread(self._update, "tokens", json.loads(tokens.model_dump_json()))
+        """Persist OAuth tokens and their absolute expiry time."""
+        values = {
+            "tokens": json.loads(tokens.model_dump_json()),
+            "expires_at": _token_expiry(tokens),
+        }
+        await asyncio.to_thread(self._update_values, values)
         _mark_authorization_complete()
 
     async def set_tokens_and_client_info(
@@ -165,6 +182,7 @@ class FileTokenStorage:
         """Atomically persist OAuth tokens and their client registration."""
         values = {
             "tokens": json.loads(tokens.model_dump_json()),
+            "expires_at": _token_expiry(tokens),
             "client_info": json.loads(client_info.model_dump_json(exclude_none=True)),
         }
         await asyncio.to_thread(self._update_values, values)
@@ -211,6 +229,10 @@ class FileTokenStorage:
                 os.close(descriptor)
             Path(temporary).unlink(missing_ok=True)
             raise
+
+
+def _token_expiry(tokens: OAuthToken) -> float | None:
+    return time.time() + tokens.expires_in if tokens.expires_in is not None else None
 
 
 def _mark_authorization_complete() -> None:
@@ -586,6 +608,18 @@ def _normalized_url(url: str) -> str:
     return url.rstrip("/")
 
 
+class _PersistedExpiryOAuthProvider(OAuthClientProvider):
+    async def _initialize(self) -> None:
+        storage = self.context.storage
+        if not isinstance(storage, FileTokenStorage):
+            msg = "Talon OAuth requires file token storage"
+            raise TypeError(msg)
+        self.context.current_tokens = await storage.get_tokens()
+        self.context.client_info = await storage.get_client_info()
+        self.context.token_expiry_time = await storage.get_token_expiry()
+        self._initialized = True
+
+
 def build_oauth_provider(
     *,
     server_name: str,
@@ -621,7 +655,7 @@ def build_oauth_provider(
             raise DeviceAuthorizationCompletedError
         await fallback(url)
 
-    provider = OAuthClientProvider(
+    provider = _PersistedExpiryOAuthProvider(
         server_url=server_url,
         client_metadata=_client_metadata(redirect_uri),
         storage=storage,

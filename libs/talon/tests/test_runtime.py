@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -1123,6 +1124,48 @@ async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
     assert approvals[0].conversation_id == "chat"
     assert approvals[0].interrupt_id == "interrupt-1"
     assert approvals[0].action_requests[0]["name"] == "dangerous_tool"
+
+
+async def test_runtime_keeps_graph_stable_while_waiting_for_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = InterruptingGraph()
+    replacement = RecordingGraph()
+    approval_started = asyncio.Event()
+    release_approval = asyncio.Event()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    async def approve(_request: ToolApprovalRequest) -> ToolApprovalDecision:
+        approval_started.set()
+        await release_approval.wait()
+        return "approve"
+
+    invocation = asyncio.create_task(
+        runtime.invoke(
+            AgentRequest(
+                conversation_id="chat",
+                text="run",
+                approval_handler=approve,
+            )
+        )
+    )
+    await approval_started.wait()
+    monkeypatch.setattr(runtime, "_create_graph", lambda _tools: replacement)
+    runtime._replace_runtime_tools(())
+    release_approval.set()
+
+    result = await invocation
+
+    assert result.text == "approved"
+    assert graph.executed is True
+    assert runtime._graph is replacement
+    assert replacement.calls == []
 
 
 async def test_runtime_logs_tool_approval_without_argument_values(

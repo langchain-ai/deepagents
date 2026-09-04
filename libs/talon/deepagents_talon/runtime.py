@@ -304,6 +304,10 @@ class DeepAgentRuntime:
         self.max_retries = max_retries
         self.max_continuations = max_continuations
         self._graph: object | None = None
+        self._invocation_graph: contextvars.ContextVar[object | None] = contextvars.ContextVar(
+            "talon_invocation_graph",
+            default=None,
+        )
         self._tools_lock = asyncio.Lock()
 
     async def start(self) -> None:
@@ -384,6 +388,7 @@ class DeepAgentRuntime:
             raise RuntimeError(msg)
 
         await self._refresh_runtime_tools()
+        graph_token = self._invocation_graph.set(self._graph)
         activity = self._activity_callback(request)
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
@@ -398,6 +403,7 @@ class DeepAgentRuntime:
         finally:
             reset_authorization_handler(authorization_token)
             _CRON_ORIGIN.reset(token)
+            self._invocation_graph.reset(graph_token)
         if activity is not None:
             activity.run_completed(text)
         return AgentResult(text=text)
@@ -531,7 +537,10 @@ class DeepAgentRuntime:
         raise RuntimeError(msg)
 
     def _graph_invoke(self) -> Callable[..., Awaitable[object]]:
-        ainvoke = getattr(self._graph, "ainvoke", None)
+        graph = self._invocation_graph.get()
+        if graph is None:
+            graph = self._graph
+        ainvoke = getattr(graph, "ainvoke", None)
         if not callable(ainvoke):
             msg = "Deep Agents graph does not expose async invocation"
             raise TypeError(msg)

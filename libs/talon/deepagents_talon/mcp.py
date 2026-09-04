@@ -198,9 +198,14 @@ class MCPToolProvider:
             if not force and revision == self._applied_revision:
                 return None
             try:
-                return (await self.load()).tools
-            finally:
+                tools = (await self.load()).tools
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
                 self._applied_revision = revision
+                raise
+            self._applied_revision = revision
+            return tools
 
     def _reload_tool(self) -> BaseTool:
         @tool(

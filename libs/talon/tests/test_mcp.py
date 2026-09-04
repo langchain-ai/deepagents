@@ -446,6 +446,37 @@ async def test_mcp_tool_provider_preserves_refresh_requested_during_load(
     assert [tool.name for tool in second_result] == ["refreshed-2"]
 
 
+async def test_mcp_tool_provider_retries_cancelled_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = MCPToolProvider(_config(tmp_path))
+    provider.request_refresh()
+    load_started = asyncio.Event()
+    release_load = asyncio.Event()
+    loads = 0
+
+    async def load() -> SimpleNamespace:
+        nonlocal loads
+        loads += 1
+        if loads == 1:
+            load_started.set()
+            await release_load.wait()
+        return SimpleNamespace(tools=(DummyTool("refreshed"),))
+
+    monkeypatch.setattr(provider, "load", load)
+    refresh = asyncio.create_task(provider.refresh_if_needed())
+    await load_started.wait()
+    refresh.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+
+    refreshed = await provider.refresh_if_needed()
+    assert refreshed is not None
+    assert [tool.name for tool in refreshed] == ["refreshed"]
+
+
 async def test_mcp_tool_provider_does_not_retry_failed_refresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

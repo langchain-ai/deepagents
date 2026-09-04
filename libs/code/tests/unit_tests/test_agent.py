@@ -41,6 +41,7 @@ from deepagents_code.agent import (
     _format_delete_description,
     _format_execute_description,
     _interrupt_predicate,
+    _render_interactive_only_sections,
     _resolve_retry_owned_model,
     _rubric_grader_system_prompt,
     _sanitize_agent_message_name,
@@ -1242,6 +1243,7 @@ class TestGetSystemPromptModelIdentity:
         expected = PATHS.display(PATHS.profile.agent_skills_dir("test-agent"))
         assert expected in prompt
         assert "~/.deepagents/test-agent/skills" not in prompt
+        assert "bash python" not in prompt
 
     def test_excludes_provider_when_not_set(self) -> None:
         """Test that provider is excluded when model_provider is None."""
@@ -1357,6 +1359,112 @@ class TestGetSystemPromptWebSearch:
 
         assert "### Web Search Tool Usage" in prompt
         assert "When you use the web_search tool:" in prompt
+        assert "explain what you found and ask clarifying questions" in prompt
+        assert "only sees your text responses" not in prompt
+        assert "Always provide a complete, natural language answer" in prompt
+
+    def test_headless_guidance_does_not_request_followup(self) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+        mock_settings.has_tavily = True
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert (
+            "6. If the search doesn't find what you need, explain what you found\n\n"
+            in prompt
+        )
+        assert (
+            "6. If the search doesn't find what you need, explain what you found "
+            "and ask clarifying questions" not in prompt
+        )
+
+
+class TestRenderInteractiveOnlySections:
+    """Direct tests for conditional system-prompt sections."""
+
+    _TEMPLATE = (
+        "before\n\n"
+        "<!-- interactive-only:start -->\n"
+        "interactive content\n"
+        "<!-- interactive-only:end -->\n\n"
+        "after"
+    )
+
+    def test_keeps_content_in_interactive_mode(self) -> None:
+        rendered = _render_interactive_only_sections(self._TEMPLATE, interactive=True)
+
+        assert rendered == "before\n\ninteractive content\n\nafter"
+
+    def test_removes_content_and_extra_whitespace_in_headless_mode(self) -> None:
+        rendered = _render_interactive_only_sections(self._TEMPLATE, interactive=False)
+
+        assert rendered == "before\n\nafter"
+        assert "\n\n\n" not in rendered
+
+    def test_renders_section_at_start_of_template(self) -> None:
+        template = (
+            "<!-- interactive-only:start -->\n"
+            "interactive content\n"
+            "<!-- interactive-only:end -->\n"
+            "after"
+        )
+
+        interactive = _render_interactive_only_sections(template, interactive=True)
+        headless = _render_interactive_only_sections(template, interactive=False)
+
+        assert interactive == "interactive content\nafter"
+        assert headless == "after"
+
+    @pytest.mark.parametrize("interactive", [True, False])
+    def test_renders_adjacent_sections(self, *, interactive: bool) -> None:
+        template = (
+            "a\n"
+            "<!-- interactive-only:start -->\n"
+            "X\n"
+            "<!-- interactive-only:end -->\n"
+            "<!-- interactive-only:start -->\n"
+            "Y\n"
+            "<!-- interactive-only:end -->\n"
+            "b"
+        )
+
+        rendered = _render_interactive_only_sections(template, interactive=interactive)
+
+        assert "interactive-only" not in rendered
+        if interactive:
+            assert "X" in rendered
+            assert "Y" in rendered
+        else:
+            assert "X" not in rendered
+            assert "Y" not in rendered
+
+    @pytest.mark.parametrize("interactive", [True, False])
+    def test_accepts_end_marker_at_eof(self, *, interactive: bool) -> None:
+        template = (
+            "before\n"
+            "<!-- interactive-only:start -->\n"
+            "interactive content\n"
+            "<!-- interactive-only:end -->"
+        )
+
+        rendered = _render_interactive_only_sections(template, interactive=interactive)
+
+        expected = "before\ninteractive content\n" if interactive else "before"
+        assert rendered == expected
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "before\n<!-- interactive-only:start -->\ncontent",
+            "before\n<!-- interactive-only:end -->",
+            "before\n<!-- interactive-only:finish -->",
+        ],
+    )
+    def test_rejects_unrendered_markers(self, template: str) -> None:
+        with pytest.raises(ValueError, match="unrendered interactive-only markers"):
+            _render_interactive_only_sections(template, interactive=False)
 
 
 class TestGetSystemPromptNonInteractive:
@@ -1371,6 +1479,7 @@ class TestGetSystemPromptNonInteractive:
 
         assert "interactive TUI" in prompt
         assert "ask questions before acting" in prompt
+        assert "## Clarifying Requests" in prompt
 
     def test_non_interactive_prompt_mentions_headless(self) -> None:
         mock_settings = Mock()
@@ -1389,7 +1498,26 @@ class TestGetSystemPromptNonInteractive:
         with patch("deepagents_code.agent.credentials", mock_settings):
             prompt = get_system_prompt("test-agent", interactive=False)
 
+        assert "## Clarifying Requests" not in prompt
         assert "ask questions before acting" not in prompt
+        assert "Ask domain-defining questions" not in prompt
+        assert "ask the user what to do" not in prompt
+        assert "ask the user for help" not in prompt
+        assert "DO NOT loop more than 3 times" in prompt
+
+    def test_non_interactive_prompt_describes_policy_rejections(self) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent", interactive=False)
+
+        assert "shell commands may be rejected" in prompt
+        assert "configured allow-list policy" in prompt
+        assert "Read the reason in the tool message" in prompt
+        assert "Use an allowed command or another approach" in prompt
+        assert "rejected by the user" not in prompt
+        assert "Suggest an alternative approach or ask for clarification" not in prompt
 
     def test_non_interactive_prompt_instructs_autonomous_execution(self) -> None:
         mock_settings = Mock()
@@ -1467,6 +1595,15 @@ class TestGetSystemPromptSandbox:
             prompt = get_system_prompt("test-agent", sandbox_type="modal")
 
         assert "do NOT have access to the user's local filesystem" in prompt
+
+    def test_interactive_sandbox_does_not_claim_tools_run_locally(self) -> None:
+        mock_settings = Mock()
+        runtime_state.model_name = None
+
+        with patch("deepagents_code.agent.credentials", mock_settings):
+            prompt = get_system_prompt("test-agent", sandbox_type="modal")
+
+        assert "tools run on the user's machine" not in prompt
 
     def test_sandbox_includes_working_dir_constraint(self) -> None:
         mock_settings = Mock()

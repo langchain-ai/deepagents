@@ -1450,12 +1450,63 @@ _WEB_SEARCH_TOOL_GUIDANCE = (
     "3. NEVER show raw JSON or tool results directly to the user\n"
     "4. Synthesize the information from multiple sources into a coherent answer\n"
     "5. Cite your sources by mentioning page titles or URLs when relevant\n"
-    "6. If the search doesn't find what you need, explain what you found and ask "
-    "clarifying questions\n\n"
-    "The user only sees your text responses - not tool results. Always provide a "
-    "complete, natural language answer after using web_search."
+    "6. If the search doesn't find what you need, explain what you found"
+    "{clarifying_followup}\n\n"
+    "Always provide a complete, natural language answer after using web_search."
 )
 """Usage guidance included only when the Tavily-backed tool is available."""
+
+
+_INTERACTIVE_TOOL_APPROVAL_GUIDANCE = (
+    "### Human-in-the-Loop Tool Approval\n\n"
+    "Some tool calls require user approval before execution. When a tool call is "
+    "rejected by the user:\n\n"
+    "1. Accept their decision immediately - do NOT retry the same command\n"
+    "2. Explain that you understand they rejected the action\n"
+    "3. Suggest an alternative approach or ask for clarification\n"
+    "4. Never attempt the exact same rejected command again\n\n"
+    "Respect the user's decisions and work with them collaboratively."
+)
+"""Tool-approval guidance for sessions with a user available."""
+
+_HEADLESS_TOOL_APPROVAL_GUIDANCE = (
+    "### Tool Approval\n\n"
+    "In non-interactive mode, shell commands may be rejected by the configured "
+    "allow-list policy. If a command is rejected:\n\n"
+    "1. Read the reason in the tool message\n"
+    "2. Do not retry the rejected command\n"
+    "3. Use an allowed command or another approach"
+)
+"""Tool-approval guidance for sessions using programmatic policy decisions."""
+
+
+_INTERACTIVE_ONLY_SECTION_RE = re.compile(
+    r"(?P<prefix>\A|\n)<!-- interactive-only:start -->\n(?P<content>.*?)"
+    r"<!-- interactive-only:end -->(?:"
+    r"\n(?!<!-- interactive-only:start -->)"
+    r"|(?=\n<!-- interactive-only:start -->)|\Z)",
+    re.DOTALL,
+)
+"""Matches prompt sections that require a user who can respond in real time."""
+_INTERACTIVE_ONLY_MARKER_RE = re.compile(r"<!-- interactive-only:[^>]*-->")
+"""Matches any conditional marker left behind after prompt rendering."""
+
+
+def _render_interactive_only_sections(template: str, *, interactive: bool) -> str:
+    """Include marked prompt sections only for interactive sessions.
+
+    Returns:
+        The prompt template with conditional markers removed.
+
+    Raises:
+        ValueError: If the template contains malformed or unpaired markers.
+    """
+    replacement = r"\g<prefix>\g<content>" if interactive else ""
+    rendered = _INTERACTIVE_ONLY_SECTION_RE.sub(replacement, template)
+    if _INTERACTIVE_ONLY_MARKER_RE.search(rendered):
+        msg = "System prompt contains unrendered interactive-only markers"
+        raise ValueError(msg)
+    return rendered
 
 
 def _build_fs_tool_prompt_guidance(fs_tools: list[FsToolName] | None) -> str:
@@ -1568,7 +1619,9 @@ def get_system_prompt(
         ```
     """
     prompt_dir = Path(__file__).parent
-    template = (prompt_dir / "system_prompt.md").read_text()
+    template = _render_interactive_only_sections(
+        (prompt_dir / "system_prompt.md").read_text(), interactive=interactive
+    )
 
     skills_path = PATHS.display(PATHS.profile.agent_skills_dir(assistant_id))
 
@@ -1576,9 +1629,8 @@ def get_system_prompt(
         mode_description = "an interactive TUI on the user's computer"
         interactive_preamble = (
             "The user sends you messages and you respond with text and tool "
-            "calls. Your tools run on the user's machine. The user can see "
-            "your responses and tool outputs in real time, so keep them "
-            "informed — but don't over-explain."
+            "calls. The user can see your responses and tool outputs in real "
+            "time, so keep them informed — but don't over-explain."
         )
         ambiguity_guidance = (
             "- If the request is ambiguous, ask questions before acting.\n"
@@ -1630,7 +1682,18 @@ def get_system_prompt(
     )
     filesystem_tool_guidance = _build_fs_tool_prompt_guidance(fs_tools)
     tavily_available = credentials.has_tavily if has_tavily is None else has_tavily
-    web_search_tool_guidance = _WEB_SEARCH_TOOL_GUIDANCE if tavily_available else ""
+    web_search_tool_guidance = (
+        _WEB_SEARCH_TOOL_GUIDANCE.format(
+            clarifying_followup=(" and ask clarifying questions" if interactive else "")
+        )
+        if tavily_available
+        else ""
+    )
+    tool_approval_guidance = (
+        _INTERACTIVE_TOOL_APPROVAL_GUIDANCE
+        if interactive
+        else _HEADLESS_TOOL_APPROVAL_GUIDANCE
+    )
 
     # Build working directory section (local vs sandbox)
     if sandbox_type:
@@ -1684,6 +1747,7 @@ def get_system_prompt(
         .replace("{working_dir_section}", working_dir_section)
         .replace("{skills_path}", skills_path)
         .replace("{filesystem_tool_guidance}", filesystem_tool_guidance)
+        .replace("{tool_approval_guidance}", tool_approval_guidance)
         .replace("{web_search_tool_guidance}", web_search_tool_guidance)
     )
 

@@ -13,6 +13,7 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import pytest
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.memory import InMemorySaver
@@ -174,17 +175,27 @@ def _mock_settings(tmp_path: Path) -> Generator[None, None, None]:
             yield
 
 
+@pytest.mark.parametrize(
+    ("interactive", "snapshot_name"),
+    [
+        (True, "system_prompt_interactive_local.md"),
+        (False, "system_prompt_headless_local.md"),
+    ],
+    ids=("interactive", "headless"),
+)
 def test_system_prompt_snapshot(
     tmp_path: Path,
     snapshots_dir: Path,
+    interactive: bool,
+    snapshot_name: str,
     *,
     update_snapshots: bool,
 ) -> None:
-    """Snapshot the full interactive local-mode system prompt.
+    """Snapshot the full local-mode system prompt.
 
     The agent is created with default features (memory, skills, shell) in
-    interactive local mode. A fake model captures the system message from
-    the first model call. The local-context detection script output is
+    interactive or headless mode. A fake model captures the system message
+    from the first model call. The local-context detection script output is
     mocked to keep the snapshot machine-independent.
     """
     model = _SnapshotChatModel(
@@ -198,6 +209,8 @@ def test_system_prompt_snapshot(
             assistant_id="agent",
             checkpointer=InMemorySaver(),
             cwd=_FIXED_CWD,
+            interactive=interactive,
+            enable_ask_user=interactive,
         )
 
         # Mock the local-context detection script so the local-context
@@ -224,7 +237,7 @@ def test_system_prompt_snapshot(
     actual = actual.replace(str(PATHS.profile.root), "<deepagents_home>")
 
     _assert_snapshot(
-        snapshots_dir / "system_prompt_interactive_local.md",
+        snapshots_dir / snapshot_name,
         actual,
         update_snapshots=update_snapshots,
     )

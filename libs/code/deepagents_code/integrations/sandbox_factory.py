@@ -915,40 +915,22 @@ class _VercelSandboxHandle(Protocol):
 class _VercelProvider(SandboxProvider):
     """Vercel Sandbox provider implementation."""
 
-    _CREDENTIAL_ENV_NAMES = (
-        "VERCEL_TOKEN",
-        "VERCEL_PROJECT_ID",
-        "VERCEL_TEAM_ID",
-    )
-
     def __init__(self) -> None:
         self._sdk_kwargs = self._resolve_sdk_kwargs()
 
     @classmethod
     def _resolve_sdk_kwargs(cls) -> dict[str, str]:
-        """Resolve explicit Vercel credentials when a prefixed override is set.
+        """Resolve explicit Vercel credentials configured for this workspace.
 
-        Credentials stay SDK-managed (canonical `VERCEL_*` variables or OIDC)
-        unless at least one of the prefixed overrides
-        `DEEPAGENTS_CODE_VERCEL_TOKEN`, `DEEPAGENTS_CODE_VERCEL_PROJECT_ID`, or
-        `DEEPAGENTS_CODE_VERCEL_TEAM_ID` is present. When triggered, each value
-        still resolves prefixed-first then canonical via `resolve_env_var`.
+        Each value resolves prefixed-first then canonical via `resolve_env_var`,
+        against the bound workspace environment. Credentials stay SDK-managed
+        (OIDC, or `VERCEL_*` in the server's own environment) only when the
+        workspace configured none of them.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
             credential resolution to the Vercel SDK.
         """
-        prefix = "DEEPAGENTS_CODE_"
-        # Gate against the same mapping `resolve_env_var` resolves from. Reading
-        # `os.environ` here would miss a prefixed override that came from the
-        # workspace `.env`, silently falling back to default Vercel auth.
-        environment = active_environment()
-        has_override = any(
-            f"{prefix}{name}" in environment for name in cls._CREDENTIAL_ENV_NAMES
-        )
-        if not has_override:
-            return {}
-
         from deepagents_code.model_config import resolve_env_var
 
         values = {
@@ -956,6 +938,13 @@ class _VercelProvider(SandboxProvider):
             "project_id": resolve_env_var("VERCEL_PROJECT_ID"),
             "team_id": resolve_env_var("VERCEL_TEAM_ID"),
         }
+        # Gate on the resolved values, not on the presence of a prefixed name.
+        # `_build_server_env` strips the client's project `.env` from the server
+        # process, so an unprefixed `VERCEL_TOKEN` in a workspace `.env` reaches
+        # `resolve_env_var` but no longer reaches the SDK's own `os.environ`
+        # read -- gating on the prefix alone silently discarded it.
+        if not any(values.values()):
+            return {}
         missing = sorted(key for key, value in values.items() if not value)
         if missing:
             logger.warning(

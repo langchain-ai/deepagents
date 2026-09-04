@@ -487,10 +487,16 @@ def _dotenv_values_from(
     from dotenv.main import DotEnv
     from dotenv.variables import parse_variables
 
+    # `DotEnv` defaults `encoding` to `None` (the locale encoding, cp1252 on
+    # Windows) where the `dotenv_values` helper this replaced defaulted to
+    # UTF-8. Without this, a `.env` holding non-ASCII bytes raises
+    # `UnicodeDecodeError` -- a `ValueError` the caller swallows -- and the
+    # whole file is dropped.
     parsed = DotEnv(
         dotenv_path=str(dotenv_path),
         override=False,
         interpolate=False,
+        encoding="utf-8",
     ).dict()
     resolved: dict[str, str | None] = {}
     # Built once: `resolved` only grows, and each new key is folded in below, so

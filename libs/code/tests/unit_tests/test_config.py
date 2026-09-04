@@ -385,6 +385,35 @@ class TestWorkspaceDotenvEnvironment:
         assert env["PROJECT_VALUE"] == "project"
         assert env["GLOBAL_VALUE"] == "global"
 
+    def test_dotenv_is_read_as_utf8_regardless_of_locale(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A `.env` holding non-ASCII bytes decodes on any platform locale.
+
+        The value round-trips on a UTF-8 host either way, so this asserts the
+        explicit encoding reaches `DotEnv`: its own default is the locale
+        encoding (cp1252 on Windows), which mis-decodes or raises.
+        """
+        import dotenv.main
+
+        import deepagents_code.config as config_mod
+
+        dotenv_path = tmp_path / ".env"
+        dotenv_path.write_text("PROXY_USER=café\n", encoding="utf-8")
+        recorded: dict[str, Any] = {}
+        real_dotenv = dotenv.main.DotEnv
+
+        def _record(**kwargs: Any) -> dotenv.main.DotEnv:
+            recorded.update(kwargs)
+            return real_dotenv(**kwargs)
+
+        monkeypatch.setattr(dotenv.main, "DotEnv", _record)
+
+        values = config_mod._dotenv_values_from(dotenv_path, {})
+
+        assert recorded["encoding"] == "utf-8"
+        assert values["PROXY_USER"] == "café"
+
 
 class TestProjectDotenvDeniedKeys:
     """A cloned repo must not set user-level environment values."""

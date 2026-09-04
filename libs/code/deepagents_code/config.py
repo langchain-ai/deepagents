@@ -127,7 +127,13 @@ re-applied only to the approval-gated shell backend's `execute` subprocesses by
 """
 
 _USER_LANGSMITH_ENV_CARRIER = "DEEPAGENTS_USER_LANGSMITH_ENV"
-"""Private client-to-server carrier for user-command LangSmith settings."""
+"""Private client-to-server carrier for user-command LangSmith settings.
+
+Holds JSON with two mappings. `launch` is the user's pre-bootstrap environment;
+`user` is `launch` overlaid with the project `.env`. `restore_user_langsmith_env`
+treats them differently -- `launch` is the higher-precedence layer -- so the
+distinction has to survive the trip.
+"""
 
 _TRACING_ENABLE_ENV_VARS = (
     "LANGSMITH_TRACING_V2",
@@ -234,9 +240,9 @@ without checking which category it belongs to:
 `_INHERITED_PYTHONPATH_ENV` is denied so a project `.env` cannot smuggle a
 `PYTHONPATH` into agent `execute` commands through the carrier var; the carrier
 is only meant to relay a value the user set in their launch environment.
-`_INHERITED_USER_TRACING_ENV` is denied for the same reason: it decides which
-LangSmith flags and key user commands run under, so only the client's captured
-pre-bootstrap state may populate it.
+`_USER_LANGSMITH_ENV_CARRIER` is denied for the same reason: it decides which
+LangSmith flags and API key user commands run under, so only the client's own
+capture -- its launch environment plus the project `.env` -- may populate it.
 
 `READ_PROJECT_DOTENV` is denied from *every* `.env` (not just the project one)
 because it is a trust decision about the loader itself: if a project `.env`
@@ -456,7 +462,17 @@ def active_environment() -> Mapping[str, str]:
 
 @contextmanager
 def use_environment(environ: Mapping[str, str] | None) -> Iterator[None]:
-    """Bind an immutable environment snapshot for runtime construction."""
+    """Bind an immutable environment snapshot for the duration of the block.
+
+    The binding is a `ContextVar`, so it is copied into `asyncio.to_thread`
+    workers, and it ends when the block exits. Anything that runs later -- a
+    lazy model switch, a summary, a compaction rebuild -- is outside it, which
+    is why those middlewares carry an `environ` field and re-enter this
+    contextmanager at request time instead of relying on the ambient binding.
+
+    `None` binds nothing, and `active_environment` then falls back to
+    `os.environ`.
+    """
     if environ is None:
         yield
         return
@@ -510,8 +526,11 @@ def _dotenv_values_from(
 ) -> dict[str, str | None]:
     """Parse one dotenv file with interpolation against an explicit mapping.
 
-    Interpolation is not done by `dotenv` itself, which resolves references
-    against `os.environ` and would defeat the scoped snapshot in `environ`.
+    Interpolation is hand-rolled because `dotenv`'s own resolver layers
+    `os.environ` into the mapping it interpolates against (see
+    `dotenv.main.resolve_variables`), which would defeat the scoped snapshot in
+    `environ`. So `dotenv_values(interpolate=True)` is not a valid
+    simplification here, however much it looks like one.
 
     `environ` stays the top layer, matching how the caller applies the parsed
     values: a key already present there wins, so a `${...}` reference to it must
@@ -561,7 +580,9 @@ def _dotenv_environment(
     Args:
         start_path: Directory to begin project dotenv discovery from.
         environ: Environment the files are layered under. Its keys win.
-        include_global: Whether the global profile `.env` contributes.
+        include_global: Whether the global profile `.env` contributes. Pass
+            `False` for the user-command path: the global file configures the
+            agent, not the user's own commands.
         unreadable: Collects the path of each file that could not be read, for
             a caller that must tell "the file sets nothing" apart from "the file
             could not be read". A read failure is otherwise only logged.
@@ -598,6 +619,13 @@ def _dotenv_environment(
                 _report_denied_env_key(key, dotenv_path, is_project=is_project)
                 continue
             if is_project and key.upper() in _PROJECT_DOTENV_DENIED_ENV_KEYS:
+                # A committed project `.env` must not set a user-level trust
+                # decision -- MCP trust lists, or the Auto classifier model and
+                # deadline that authorize this repo's own tool calls; the
+                # global `.env` and the shell may (is_project=False). The key
+                # is uppercased so a case variant cannot slip past on Windows,
+                # where `os.environ` assignment normalizes it back to the
+                # active uppercase form.
                 logger.debug(
                     "Ignoring project-denied env key %r from %s", key, dotenv_path
                 )
@@ -620,6 +648,13 @@ def _dotenv_environment(
             unreadable.append(discovery_root)
     global_is_project = _dotenv_files_are_same(project_dotenv, _GLOBAL_DOTENV_PATH)
 
+    # The project file loads first, so the trusted global `.env` can only fill
+    # in vars it left unset. `read_project_dotenv` is denied from *every* `.env`
+    # (see `_DOTENV_DENIED_ENV_KEYS`), so neither file can inject it -- but the
+    # global file is a legitimate place to opt out, so read just that key from
+    # it *before* the project file is touched. Otherwise a hostile project file
+    # would load, and could pin the var true, before the trusted opt-out was
+    # ever seen. The ordering here is the control; it is not incidental.
     global_toggle: dict[str, str] = {}
     try:
         if not global_is_project and _GLOBAL_DOTENV_PATH.is_file():
@@ -758,7 +793,12 @@ _PREFIXED_LANGSMITH_ENV_VARS = (
     "LANGSMITH_TRACING",
     "LANGCHAIN_TRACING_V2",
 )
-"""LangSmith vars bridged from app-prefixed overrides to SDK names."""
+"""LangSmith vars bridged from app-prefixed overrides to SDK names.
+
+Keep the tracing flags here in sync with `_TRACING_BRIDGED_ENABLE_ENV_VARS`,
+which `dcode doctor` reads to predict the same bridging. Adding a flag to one
+and not the other makes the prediction disagree with the runtime, silently.
+"""
 
 _TRACING_ENDPOINT_ENV_VARS = ("LANGSMITH_ENDPOINT", "LANGCHAIN_ENDPOINT")
 """Env vars that point tracing at a non-default (self-hosted/proxied) endpoint."""
@@ -1492,6 +1532,9 @@ def _apply_prefixed_langsmith_env() -> None:
             continue
         value = os.environ[prefixed]
         conflict = canonical in os.environ and os.environ[canonical] != value
+        # Propagated unconditionally, empty string included: `FOO=""` is how a
+        # user explicitly disables a flag, so an `if value:` guard here would
+        # silently ignore the override.
         os.environ[canonical] = value
         if conflict and not suppress_warning:
             _warn_on_prefixed_langsmith_override(canonical, prefixed)
@@ -1699,7 +1742,9 @@ def _ensure_bootstrap() -> None:
             # CRITICAL: Override LANGSMITH_PROJECT to route agent traces to a
             # separate project. LangSmith reads LANGSMITH_PROJECT at invocation
             # time, so we override it here and preserve the user's original
-            # value for shell commands.
+            # value for the project shown in the UI and in stream metadata.
+            # Shell commands get their own selectors from
+            # `restore_user_langsmith_env`, not from this snapshot.
             from deepagents_code._env_vars import LANGSMITH_PROJECT
 
             deepagents_project = os.environ.get(LANGSMITH_PROJECT)
@@ -4692,10 +4737,13 @@ def _get_first_langsmith_replica_project(extras: list[str]) -> str | None:
 _TRACING_BRIDGED_ENABLE_ENV_VARS = ("LANGSMITH_TRACING", "LANGCHAIN_TRACING_V2")
 """Tracing flags bootstrap propagates from a `DEEPAGENTS_CODE_` prefix.
 
-`dcode doctor` runs before `_ensure_bootstrap` bridges these to their canonical
-names, so it must resolve them prefix-aware (via `resolve_env_var`) to predict
-the runtime's effective state. The remaining flags in `_TRACING_ENABLE_ENV_VARS`
-are not bridged, so only their canonical form takes effect.
+`dcode doctor` runs before `_apply_prefixed_langsmith_env` bridges these to
+their canonical names, so it must resolve them prefix-aware (via
+`resolve_env_var`) to predict the runtime's effective state. Keep in sync with
+`_PREFIXED_LANGSMITH_ENV_VARS`, the list that bridging actually walks.
+
+The remaining flags in `_TRACING_ENABLE_ENV_VARS` are not bridged, so only
+their canonical form takes effect.
 """
 
 

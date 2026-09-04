@@ -187,7 +187,10 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
         )
     )
 
-    assert created == [["custom_tool"], ["refreshed_tool"]]
+    assert created == [
+        ["current_time", "custom_tool"],
+        ["current_time", "refreshed_tool"],
+    ]
     assert current_authorization_handler() is None
 
 

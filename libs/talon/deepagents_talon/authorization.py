@@ -49,9 +49,14 @@ class DeviceCode:
 
 @dataclass(frozen=True, slots=True)
 class AuthorizationCompleted:
-    """Bounded notification that authorization completed."""
+    """Bounded notification that authorization completed.
+
+    A terminal completion lets the host-owned notice replace the proactive
+    login turn's otherwise redundant model response.
+    """
 
     binding: AuthorizationBinding
+    terminal: bool = field(default=False, kw_only=True)
     type: Literal["completed"] = "completed"
 
 
@@ -89,6 +94,7 @@ class AuthorizationAttempt:
 
     binding: AuthorizationBinding | None = None
     completed: bool = False
+    terminal: bool = field(default=False, kw_only=True)
 
 
 _AUTHORIZATION_HANDLER: contextvars.ContextVar[AuthorizationHandler | None] = (

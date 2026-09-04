@@ -189,7 +189,9 @@ class MCPToolProvider:
             "authenticate_mcp_server",
             description=(
                 "Authenticate a configured OAuth MCP server through the current Talon channel. "
-                "Use only the configured server name; authorization links are handled by Talon."
+                "Use only the configured server name; authorization links are handled by Talon. "
+                "If current credentials work, returns already_authenticated without starting "
+                "a new authorization flow."
             ),
         )
         async def authenticate_mcp_server(
@@ -203,7 +205,7 @@ class MCPToolProvider:
     async def _authenticate(self, server_name: str, invocation_id: str) -> dict[str, str]:
         if server_name not in self._oauth_servers:
             return {"status": "failed"}
-        attempt = AuthorizationAttempt()
+        attempt = AuthorizationAttempt(terminal=True)
         try:
             path = mcp_config_path(self._config)
             servers = _load_config(path, self._config.env)
@@ -250,8 +252,15 @@ class MCPToolProvider:
                 "MCP authorization session failed after credentials persisted",
                 exc_info=True,
             )
-        self._dirty = True
-        return {"status": "completed", "server_name": server_name}
+        status = (
+            "completed"
+            if attempt.completed
+            else "already_authenticated"
+            if attempt.binding is None
+            else "failed"
+        )
+        self._dirty = self._dirty or attempt.completed
+        return {"status": status, "server_name": server_name}
 
 
 def mcp_config_path(config: TalonConfig) -> Path:
@@ -436,7 +445,7 @@ async def _finish_authorization(
     if binding is None or handler is None:
         return
     event = (
-        AuthorizationCompleted(binding=binding)
+        AuthorizationCompleted(binding=binding, terminal=attempt.terminal)
         if attempt.completed and reason is None
         else AuthorizationFailed(binding=binding, reason=reason or "error")
     )

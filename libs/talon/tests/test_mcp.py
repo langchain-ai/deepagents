@@ -297,6 +297,29 @@ async def test_mcp_tool_provider_serializes_concurrent_refreshes(
     assert second_result is None
 
 
+async def test_mcp_tool_provider_reports_existing_authorization_without_refresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_path = tmp_path / "oauth.mcp.json"
+    _write_config(
+        config_path,
+        {"notion": {"url": "https://mcp.example", "auth": "oauth"}},
+    )
+    provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
+    provider._oauth_servers = frozenset({"notion"})
+
+    async def open_existing_session(_client: object, _server_name: str) -> None:
+        return None
+
+    monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", open_existing_session)
+
+    result = await provider._authenticate("notion", "tool-call")
+
+    assert result == {"status": "already_authenticated", "server_name": "notion"}
+    assert provider._dirty is False
+
+
 def _provider_with_post_persistence_error(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -347,6 +370,8 @@ async def test_mcp_tool_provider_refreshes_after_credentials_persist(
     assert result == {"status": "completed", "server_name": "notion"}
     assert provider._dirty is True
     assert [type(event) for event in events] == [AuthorizationCompleted]
+    assert isinstance(events[0], AuthorizationCompleted)
+    assert events[0].terminal is True
 
 
 async def test_mcp_tool_provider_propagates_cancellation_after_credentials_persist(

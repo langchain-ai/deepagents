@@ -175,6 +175,7 @@ class TalonHost:
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, AuthorizationBinding] = {}
+        self._terminal_authorizations: set[str] = set()
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -397,6 +398,7 @@ class TalonHost:
         typing_task = asyncio.create_task(
             _typing_refresh_loop(channel, message.conversation_id),
         )
+        suppress_result = False
         try:
             result = await self._invoke_agent(
                 conversation_id=agent_conversation_id,
@@ -418,6 +420,7 @@ class TalonHost:
                     sender_id=message.sender_id,
                 ),
             )
+            suppress_result = agent_conversation_id in self._terminal_authorizations
         finally:
             typing_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -427,6 +430,7 @@ class TalonHost:
             if (
                 self._agent_conversation_id(turn.conversation_root) == agent_conversation_id
                 and self._generations[agent_conversation_id] == turn.generation
+                and not suppress_result
             ):
                 await self._deliver_agent_result(channel, message.conversation_id, result)
 
@@ -647,6 +651,7 @@ class TalonHost:
                 pending.future.cancel()
         self._pending_authorizations.clear()
         self._authorization_flows.clear()
+        self._terminal_authorizations.clear()
 
     async def _handle_authorization_event(  # noqa: PLR0913  # binds all channel identities.
         self,
@@ -690,12 +695,14 @@ class TalonHost:
             return None
         if isinstance(event, AuthorizationCompleted):
             self._finish_authorization_flow(agent_conversation_id, event.binding)
-            await send_with_retry(
+            result = await send_with_retry(
                 lambda: channel.send_message(
                     reply_conversation_id,
                     f"MCP server `{event.binding.server_name}` is authorized.",
                 )
             )
+            if event.terminal and result.success:
+                self._terminal_authorizations.add(agent_conversation_id)
             return None
         if isinstance(event, AuthorizationFailed):
             self._finish_authorization_flow(agent_conversation_id, event.binding)
@@ -857,6 +864,7 @@ class TalonHost:
         if pending is not None and not pending.future.done():
             pending.future.cancel()
         self._authorization_flows.pop(agent_conversation_id, None)
+        self._terminal_authorizations.discard(agent_conversation_id)
 
     async def _request_tool_approval(
         self,

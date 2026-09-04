@@ -13,6 +13,7 @@ from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
     ChannelReaction,
+    SendResult,
     ToolApprovalRequest,
 )
 from tests.conftest import RecordingChannel
@@ -151,9 +152,10 @@ class ApprovalAgent(BlockingAgent):
 
 
 class AuthorizationAgent(BlockingAgent):
-    def __init__(self) -> None:
+    def __init__(self, *, terminal: bool = False) -> None:
         super().__init__()
         self.callbacks: list[str] = []
+        self.terminal = terminal
 
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -174,8 +176,17 @@ class AuthorizationAgent(BlockingAgent):
         callback = await request.authorization_handler(CallbackURLRequested(binding=binding))
         assert callback is not None
         self.callbacks.append(callback)
-        await request.authorization_handler(AuthorizationCompleted(binding=binding))
+        await request.authorization_handler(
+            AuthorizationCompleted(binding=binding, terminal=self.terminal)
+        )
         return AgentResult(text="authorization:completed")
+
+
+class CompletionFailingChannel(RecordingChannel):
+    async def send_message(self, conversation_id: str, text: str) -> SendResult:
+        if text == "MCP server `notion` is authorized.":
+            return SendResult(success=False, error="permanent failure")
+        return await super().send_message(conversation_id, text)
 
 
 class ExpiringAuthorizationAgent(BlockingAgent):
@@ -217,7 +228,7 @@ async def test_host_starts_and_stops_components(tmp_path: Path) -> None:
     assert channel.handler is not None
 
 
-@pytest.mark.parametrize("provider", ["whatsapp", "telegram"])
+@pytest.mark.parametrize("provider", ["whatsapp", "telegram", "discord"])
 async def test_channel_authorization_intercepts_bound_callback_outside_model(
     tmp_path: Path,
     caplog: pytest.LogCaptureFixture,
@@ -266,6 +277,63 @@ async def test_channel_authorization_intercepts_bound_callback_outside_model(
         ("chat", "MCP server `notion` is authorized."),
         ("chat", "authorization:completed"),
     ]
+
+
+async def test_terminal_channel_authorization_suppresses_redundant_agent_result(
+    tmp_path: Path,
+) -> None:
+    channel = RecordingChannel(provider="telegram")
+    agent = AuthorizationAgent(terminal=True)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = "http://localhost:3000/callback?code=secret-code&state=secret-state"
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text=callback, sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent == [
+        (
+            "chat",
+            "Authorization required for MCP server `notion`.\n"
+            "Open this link and approve access:\n"
+            "https://auth.example/authorize?state=sensitive-state\n"
+            "Then paste the full callback URL here.",
+        ),
+        ("chat", "MCP server `notion` is authorized."),
+    ]
+
+
+async def test_terminal_authorization_preserves_agent_result_when_notice_fails(
+    tmp_path: Path,
+) -> None:
+    channel = CompletionFailingChannel(provider="telegram")
+    agent = AuthorizationAgent(terminal=True)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="login", sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 1)
+    callback = "http://localhost:3000/callback?code=secret-code&state=secret-state"
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text=callback, sender_id="operator"),
+    )
+    await _wait_for_sent_count(channel, 2)
+    await host.stop()
+
+    assert channel.sent[-1] == ("chat", "authorization:completed")
 
 
 async def test_stop_cancels_pending_channel_authorization(tmp_path: Path) -> None:

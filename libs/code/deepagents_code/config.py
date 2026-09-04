@@ -90,6 +90,15 @@ class _BootstrapState:
     user_langsmith_env: dict[str, str | None] = dataclass_field(default_factory=dict)
     """Launch and project-dotenv LangSmith values intended for user commands."""
 
+    error: BaseException | None = None
+    """Why bootstrap did not finish, when it was cut short.
+
+    Bootstrap tolerates its own failures so the app still starts. But a later
+    step that needs captured state can only report "not captured", which names
+    a symptom rather than a cause. Keeping the exception lets that step chain
+    it.
+    """
+
 
 _bootstrap_state = _BootstrapState()
 """State captured and mutated by lazy bootstrap."""
@@ -1237,8 +1246,18 @@ def _encode_user_langsmith_env() -> str:
         _bootstrap_state.user_langsmith_env,
     ):
         if _validate_user_langsmith_env(values) is None:
-            msg = "User LangSmith environment was not captured during bootstrap"
-            raise RuntimeError(msg)
+            msg = (
+                "Cannot start the server: your LangSmith settings were not "
+                "captured at startup, so approval-gated commands could not be "
+                "given your own credentials."
+            )
+            if _bootstrap_state.error is not None:
+                # Bootstrap swallowed this to keep the app starting. Chain it,
+                # or the report names only the symptom.
+                msg = f"{msg} Startup failed earlier: {_bootstrap_state.error}"
+            elif not _bootstrap_state.done:
+                msg = f"{msg} Startup has not run yet."
+            raise RuntimeError(msg) from _bootstrap_state.error
     return json.dumps(
         {
             "launch": _bootstrap_state.launch_langsmith_env,
@@ -1688,7 +1707,8 @@ def _ensure_bootstrap() -> None:
             # to the displayed project. Keeping this in one helper lets `/auth`
             # save apply the same state inside an already-running TUI session.
             apply_stored_langsmith_auth()
-        except Exception:
+        except Exception as exc:
+            _bootstrap_state.error = exc
             logger.exception(
                 "Bootstrap failed; .env values and LANGSMITH_PROJECT override "
                 "may be missing. The app will proceed with environment as-is.",

@@ -123,12 +123,32 @@ class TestBuildServerEnv:
         try:
             with pytest.raises(
                 RuntimeError,
-                match="User LangSmith environment was not captured",
+                match="were not captured at startup",
             ):
                 _build_server_env()
         finally:
             config_mod._bootstrap_state.launch_langsmith_env = original_launch
             config_mod._bootstrap_state.user_langsmith_env = original_user
+
+    def test_names_the_swallowed_bootstrap_failure(self) -> None:
+        """Bootstrap tolerates its own errors, so this must name the cause."""
+        import deepagents_code.config as config_mod
+
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        original_error = config_mod._bootstrap_state.error
+        config_mod._bootstrap_state.launch_langsmith_env = {}
+        config_mod._bootstrap_state.user_langsmith_env = {}
+        config_mod._bootstrap_state.error = OSError("profile config unreadable")
+        try:
+            with pytest.raises(RuntimeError, match="profile config unreadable") as exc:
+                _build_server_env()
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+            config_mod._bootstrap_state.error = original_error
+
+        assert isinstance(exc.value.__cause__, OSError)
 
     def test_overwrites_untrusted_langsmith_carrier(self) -> None:
         import json

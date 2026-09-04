@@ -263,7 +263,15 @@ async def load_mcp_tools(config: TalonConfig) -> MCPTools:
                 timeout=_MCP_LOAD_TIMEOUT_SECONDS,
             )
             loaded = _filter_tools(name, server, loaded)
-        except (HTTPError, McpError, OSError, RuntimeError, TimeoutError, ValueError) as exc:
+        except (
+            HTTPError,
+            McpError,
+            OAuthFlowError,
+            OSError,
+            RuntimeError,
+            TimeoutError,
+            ValueError,
+        ) as exc:
             logger.warning("MCP server %s failed to load: %s", name, exc)
             infos.append(
                 MCPServerInfo(

@@ -336,6 +336,37 @@ async def test_server_connection_error_is_reported(
     assert result.servers[0].error == "connection failed"
 
 
+async def test_unexpected_server_error_does_not_block_other_servers(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class PartiallyFailingMCPClient(FakeMCPClient):
+        async def get_tools(self, *, server_name: str | None = None) -> list[DummyTool]:
+            if server_name == "broken":
+                msg = "unexpected failure"
+                raise OAuthFlowError(msg)
+            return await super().get_tools(server_name=server_name)
+
+    config_path = tmp_path / "custom.mcp.json"
+    _write_config(
+        config_path,
+        {
+            "broken": {"url": "https://broken.example.com/mcp"},
+            "working": {"url": "https://working.example.com/mcp"},
+        },
+    )
+    monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", PartiallyFailingMCPClient)
+
+    result = await load_mcp_tools(
+        _config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)})
+    )
+
+    assert [tool.name for tool in result.tools] == ["working_read"]
+    assert [(server.name, server.status) for server in result.servers] == [
+        ("broken", "error"),
+        ("working", "ok"),
+    ]
+
+
 async def test_tool_allowlist_filters_loaded_tools(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

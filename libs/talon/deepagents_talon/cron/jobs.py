@@ -223,9 +223,17 @@ class CronOrigin:
 class CronSchedule:
     """Minute-granularity schedule for a cron job.
 
-    The first three fields keep the argument positions this class has always
-    had, so `CronSchedule("recurring", 15, "every 15m")` still constructs an
-    interval schedule. Wall-clock forms pass `minutes=None`.
+    !!! warning "Breaking change"
+        The wall-clock fields changed shape. `local_time="08:00"` became the
+        integer pair `hour=8, minute=0`, and `local_date` went from a
+        `YYYY-MM-DD` string to a `date`. Callers that constructed a wall-clock
+        schedule directly must be updated; positional callers are affected
+        silently, since strings now land where integers are expected. Prefer
+        `parse`, which is the supported way to build any form.
+
+    The first three fields keep the argument positions they have always had, so
+    `CronSchedule("recurring", 15, "every 15m")` still constructs an interval
+    schedule. Wall-clock forms pass `minutes=None`.
 
     Args:
         kind: Whether the schedule is one-shot or recurring.

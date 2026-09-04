@@ -709,6 +709,48 @@ def test_vercel_delegates_when_the_workspace_configured_nothing() -> None:
         assert _VercelProvider._resolve_sdk_kwargs() == {}
 
 
+def test_vercel_fails_closed_on_a_partial_workspace_credential_set() -> None:
+    """A partial set must not fall back to the server's Vercel identity.
+
+    An empty mapping hands auth back to the Vercel SDK, which resolves
+    credentials from the server process (`VERCEL_*` in its own environment,
+    or its OIDC identity). A workspace that pinned a restricted token would
+    then silently run its sandbox under the server's broader identity.
+    """
+    environment = {
+        "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+    }
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            side_effect=lambda name: environment.get(f"DEEPAGENTS_CODE_{name}"),
+        ),
+        patch.dict("os.environ", {}, clear=True),
+        pytest.raises(ValueError, match="VERCEL_PROJECT_ID, and VERCEL_TEAM_ID"),
+    ):
+        _VercelProvider._resolve_sdk_kwargs()
+
+
+def test_vercel_get_provider_fails_closed_on_a_partial_set() -> None:
+    """The constructor propagates the partial-set failure.
+
+    `create_sandbox` surfaces `ValueError` as a startup error, so the server
+    refuses the sandbox rather than running it under substituted credentials.
+    """
+    with (
+        _bind_environment(
+            {
+                "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+                "DEEPAGENTS_CODE_VERCEL_TEAM_ID": "workspace-team",
+            }
+        ),
+        patch.dict("os.environ", {}, clear=True),
+        pytest.raises(ValueError, match="workspace Vercel configuration"),
+    ):
+        _get_provider("vercel")
+
+
 def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
     """A failed session must not masquerade as an applied workspace session."""
     mock_boto3 = MagicMock()

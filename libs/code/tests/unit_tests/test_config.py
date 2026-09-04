@@ -436,6 +436,27 @@ class TestWorkspaceDotenvEnvironment:
         (workspace / ".env").write_text(
             "BASE=project\nCOMPOSED=${BASE}-value\n", encoding="utf-8"
         )
+        monkeypatch.delenv("BASE", raising=False)
+        monkeypatch.setattr(
+            config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
+        )
+
+        env = config_mod._preview_dotenv_environ(start_path=workspace)
+
+        assert env["BASE"] == "project"
+        assert env["COMPOSED"] == "project-value"
+
+    def test_preview_interpolates_the_value_that_wins(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A reference resolves to the effective value, not the shadowed one."""
+        import deepagents_code.config as config_mod
+
+        workspace = tmp_path / "workspace"
+        workspace.mkdir()
+        (workspace / ".env").write_text(
+            "BASE=project\nCOMPOSED=${BASE}-value\n", encoding="utf-8"
+        )
         monkeypatch.setenv("BASE", "shell")
         monkeypatch.setattr(
             config_mod, "_GLOBAL_DOTENV_PATH", tmp_path / "missing-global.env"
@@ -443,8 +464,10 @@ class TestWorkspaceDotenvEnvironment:
 
         env = config_mod._preview_dotenv_environ(start_path=workspace)
 
+        # The shell value outranks the file, so `${BASE}` must not expand to the
+        # file's losing value: the environment stays self-consistent.
         assert env["BASE"] == "shell"
-        assert env["COMPOSED"] == "project-value"
+        assert env["COMPOSED"] == "shell-value"
 
     def test_preview_preserves_shell_project_global_precedence(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

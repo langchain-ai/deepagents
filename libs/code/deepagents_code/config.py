@@ -494,6 +494,13 @@ def _dotenv_values_from(
 ) -> dict[str, str | None]:
     """Parse one dotenv file with interpolation against an explicit mapping.
 
+    Interpolation is not done by `dotenv` itself, which resolves references
+    against `os.environ` and would defeat the scoped snapshot in `environ`.
+
+    `environ` stays the top layer, matching how the caller applies the parsed
+    values: a key already present there wins, so a `${...}` reference to it must
+    resolve to the winning value and not to the shadowed one in this file.
+
     Returns:
         Parsed values with references resolved against `environ`.
     """
@@ -502,7 +509,6 @@ def _dotenv_values_from(
 
     parsed = DotEnv(
         dotenv_path=str(dotenv_path),
-        override=False,
         interpolate=False,
     ).dict()
     resolved: dict[str, str | None] = {}
@@ -511,14 +517,17 @@ def _dotenv_values_from(
     interpolation_env: dict[str, str | None] = dict(environ)
     for parsed_key, value in parsed.items():
         key = _environment_key(parsed_key)
-        if value is None:
-            resolved[key] = None
-            interpolation_env[key] = None
-            continue
-        resolved[key] = "".join(
-            atom.resolve(interpolation_env) for atom in parse_variables(value)
+        resolved[key] = (
+            None
+            if value is None
+            else "".join(
+                atom.resolve(interpolation_env) for atom in parse_variables(value)
+            )
         )
-        interpolation_env[key] = resolved[key]
+        # `environ` outranks this file, so a key it already carries keeps its
+        # value for every later reference.
+        if key not in interpolation_env:
+            interpolation_env[key] = resolved[key]
     return resolved
 
 

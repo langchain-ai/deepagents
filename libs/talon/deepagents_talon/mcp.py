@@ -36,6 +36,7 @@ from deepagents_talon.authorization import (
     set_authorization_invocation,
 )
 from deepagents_talon.mcp_auth import (
+    DeviceAuthorizationCompletedError,
     FileTokenStorage,
     MCPAuthorizationError,
     build_oauth_provider,
@@ -253,20 +254,18 @@ class MCPToolProvider:
             server = servers.get(server_name)
             if server is None or server.get("auth") != "oauth":
                 return {"status": "failed", "server_name": server_name}
-            connection, transport = await _connection(
-                server_name,
-                server,
-                channel_authorization=True,
-                force_authorization=reauthenticate,
-            )
-            if transport not in {"sse", "streamable_http"}:
-                return {"status": "failed", "server_name": server_name}
-            client = MultiServerMCPClient({server_name: connection})
-            await _run_authorized(
+
+            opened = await _run_authorized(
                 invocation_id,
-                lambda: _open_mcp_session(client, server_name),
+                lambda: _open_authenticated_session(
+                    server_name,
+                    server,
+                    force_authorization=reauthenticate,
+                ),
                 attempt=attempt,
             )
+            if not opened:
+                return {"status": "failed", "server_name": server_name}
         except asyncio.CancelledError:
             if attempt.completed:
                 self._dirty = True
@@ -421,12 +420,19 @@ async def login_mcp_server(
         if server is None:
             msg = f"MCP server {server_name!r} was not found in {path}"
             raise MCPConfigError(msg)
-        connection, transport = await _connection(server_name, server, interactive=True)
+        connection, transport = await _connection(
+            server_name,
+            server,
+            interactive=True,
+            force_authorization=True,
+        )
         if transport not in {"sse", "streamable_http"}:
             msg = f"MCP server {server_name!r} does not use a remote transport"
             raise MCPConfigError(msg)
         client = MultiServerMCPClient({server_name: connection})
         await _open_mcp_session(client, server_name)
+    except DeviceAuthorizationCompletedError:
+        pass
     except (
         HTTPError,
         McpError,
@@ -446,6 +452,25 @@ async def login_mcp_server(
 async def _open_mcp_session(client: MultiServerMCPClient, server_name: str) -> None:
     async with client.session(server_name):
         pass
+
+
+async def _open_authenticated_session(
+    server_name: str,
+    server: Mapping[str, object],
+    *,
+    force_authorization: bool,
+) -> bool:
+    connection, transport = await _connection(
+        server_name,
+        server,
+        channel_authorization=True,
+        force_authorization=force_authorization,
+    )
+    if transport not in {"sse", "streamable_http"}:
+        return False
+    client = MultiServerMCPClient({server_name: connection})
+    await _open_mcp_session(client, server_name)
+    return True
 
 
 async def _authorization_interceptor(

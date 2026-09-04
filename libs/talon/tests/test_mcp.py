@@ -9,15 +9,18 @@ from typing import TYPE_CHECKING, ClassVar, Self
 import pytest
 from langchain_mcp_adapters.interceptors import MCPToolCallRequest
 from mcp.client.auth import OAuthFlowError
-from mcp.shared.auth import OAuthToken
+from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 from mcp.types import CallToolResult
+from pydantic import SecretStr
 
 from deepagents_talon.authorization import (
+    AuthorizationAttempt,
     AuthorizationBinding,
     AuthorizationCompleted,
     AuthorizationEvent,
     AuthorizationURL,
     CallbackURLRequested,
+    DeviceCode,
     current_authorization_attempt,
     reset_authorization_handler,
     set_authorization_handler,
@@ -32,6 +35,7 @@ from deepagents_talon.mcp import (
     _authorization_interceptor,
     _connection,
     _normalize_mcp_arguments,
+    _run_authorized,
     load_mcp_tools,
     login_mcp_server,
     mcp_config_path,
@@ -39,6 +43,8 @@ from deepagents_talon.mcp import (
 from deepagents_talon.mcp_auth import (
     FileTokenStorage,
     MCPAuthorizationError,
+    _DeviceCodeResponse,
+    _present_device_code,
     build_oauth_provider,
 )
 
@@ -81,6 +87,14 @@ async def _no_tokens() -> None:
 
 async def _stored_tokens() -> OAuthToken:
     return _oauth_token()
+
+
+class EmptyOAuthStorage:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        pass
+
+    async def get_tokens(self) -> None:
+        return None
 
 
 def _write_config(path: Path, servers: dict[str, object]) -> None:
@@ -247,6 +261,52 @@ async def test_mcp_interceptor_resumes_same_bound_invocation_without_secret_outp
     assert "secret-code" not in repr(events)
 
 
+async def test_github_device_code_is_bound_outside_model_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("github", server_url="https://api.githubcopilot.com/mcp")
+    device = _DeviceCodeResponse(
+        device_code=SecretStr("device-secret"),
+        user_code=SecretStr("ABCD-1234"),
+        verification_uri="https://github.com/login/device",
+        expires_in=120,
+    )
+    events: list[AuthorizationEvent] = []
+
+    async def authorize(event: AuthorizationEvent) -> None:
+        events.append(event)
+
+    async def execute() -> None:
+        await _present_device_code(
+            "github",
+            device,
+            deadline=asyncio.get_running_loop().time() + 120,
+            interactive=False,
+        )
+        await storage.set_tokens_and_client_info(
+            _oauth_token(),
+            OAuthClientInformationFull(
+                redirect_uris=["http://localhost/callback"],
+                client_id="client-id",
+            ),
+        )
+
+    attempt = AuthorizationAttempt(terminal=True)
+    token = set_authorization_handler(authorize)
+    try:
+        await _run_authorized("tool-call-42", execute, attempt=attempt)
+    finally:
+        reset_authorization_handler(token)
+
+    assert [type(event) for event in events] == [DeviceCode, AuthorizationCompleted]
+    assert all(event.binding.invocation_id == "tool-call-42" for event in events)
+    assert attempt.completed is True
+    assert "ABCD-1234" not in repr(events[0])
+    assert "github.com/login/device" not in repr(events[0])
+
+
 def test_normalize_mcp_arguments_omits_only_optional_empty_strings() -> None:
     schema = {
         "type": "object",
@@ -384,6 +444,10 @@ async def test_mcp_tool_provider_reports_existing_authorization_without_refresh(
     )
     provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
     provider._oauth_servers = frozenset({"notion"})
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _stored_tokens(),
+    )
 
     async def open_existing_session(_client: object, _server_name: str) -> None:
         return None
@@ -417,6 +481,7 @@ async def test_mcp_tool_provider_forces_explicit_reauthentication(
         force_authorization: bool,
     ) -> tuple[dict[str, object], str]:
         assert channel_authorization is True
+        assert current_authorization_attempt() is not None
         forced.append(force_authorization)
         return {}, "streamable_http"
 
@@ -452,6 +517,10 @@ def _provider_with_post_persistence_error(
     )
     provider = MCPToolProvider(_config(tmp_path, {"DEEPAGENTS_TALON_MCP_CONFIG": str(config_path)}))
     provider._oauth_servers = frozenset({"notion"})
+    monkeypatch.setattr(
+        "deepagents_talon.mcp.FileTokenStorage.get_tokens",
+        lambda _self: _no_tokens(),
+    )
 
     async def complete_then_fail(_client: object, _server_name: str) -> None:
         attempt = current_authorization_attempt()
@@ -768,6 +837,61 @@ async def test_oauth_connection_uses_stored_credentials(
     assert result.servers[0].uses_oauth is True
 
 
+async def test_oauth_connection_prepares_oauth_login(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object()
+    prepared: list[tuple[str, object]] = []
+
+    class EmptyStorage:
+        def __init__(self, server_name: str, *, server_url: str) -> None:
+            assert (server_name, server_url) == (
+                "github",
+                "https://api.githubcopilot.com/mcp",
+            )
+
+    async def prepare(*, server_url: str, storage: object) -> None:
+        prepared.append((server_url, storage))
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.prepare_oauth_login", prepare)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+
+    connection, transport = await _connection(
+        "github",
+        {"url": "https://api.githubcopilot.com/mcp", "auth": "oauth"},
+        interactive=True,
+    )
+
+    assert transport == "streamable_http"
+    assert connection["auth"] is provider
+    assert len(prepared) == 1
+    assert prepared[0][0] == "https://api.githubcopilot.com/mcp"
+
+
+async def test_oauth_connection_reuses_stored_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = object()
+
+    class StoredStorage:
+        def __init__(self, _server_name: str, *, server_url: str) -> None:
+            assert server_url == "https://example.com/mcp"
+
+        async def get_tokens(self) -> OAuthToken:
+            return _oauth_token()
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", StoredStorage)
+    monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
+
+    connection, _ = await _connection(
+        "remote",
+        {"url": "https://example.com/mcp", "auth": "oauth"},
+    )
+
+    assert connection["auth"] is provider
+
+
 async def test_forced_oauth_connection_bypasses_stored_credentials(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -853,7 +977,20 @@ async def test_login_uses_talon_config_and_interactive_oauth(
 
     monkeypatch.setattr("deepagents_talon.mcp.MultiServerMCPClient", LoginClient)
     monkeypatch.setattr("deepagents_talon.mcp._MCP_LOAD_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    forced: list[bool] = []
+
+    class LoginStorage:
+        def __init__(
+            self,
+            _server_name: str,
+            *,
+            server_url: str,
+            force_authorization: bool,
+        ) -> None:
+            assert server_url == "https://example.com/mcp"
+            forced.append(force_authorization)
+
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", LoginStorage)
     monkeypatch.setattr(
         "deepagents_talon.mcp.build_oauth_provider",
         lambda **kwargs: provider if kwargs["interactive"] else None,
@@ -862,6 +999,7 @@ async def test_login_uses_talon_config_and_interactive_oauth(
     result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
 
     assert result == 0
+    assert forced == [True]
     assert calls == [
         {
             "remote": {
@@ -886,7 +1024,7 @@ async def test_login_reports_oauth_failure_without_details(
         raise failure
 
     monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", fail_login)
-    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
     monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
 
     result = await login_mcp_server(_config(tmp_path), "remote", str(config_path))
@@ -906,7 +1044,7 @@ async def test_login_does_not_timeout_interactive_session(
 
     monkeypatch.setattr("deepagents_talon.mcp._open_mcp_session", slow_login)
     monkeypatch.setattr("deepagents_talon.mcp._MCP_LOAD_TIMEOUT_SECONDS", 0.001)
-    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyOAuthStorage)
     monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: object())
 
     assert await login_mcp_server(_config(tmp_path), "remote", str(config_path)) == 0

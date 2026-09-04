@@ -4,7 +4,7 @@ import logging
 import subprocess
 import sys
 import warnings
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, ClassVar
@@ -413,6 +413,73 @@ class TestWorkspaceDotenvEnvironment:
 
         assert recorded["encoding"] == "utf-8"
         assert values["PROXY_USER"] == "café"
+
+    def test_unreadable_global_dotenv_skips_the_project_dotenv(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unreadable global file must not resurrect the project `.env`.
+
+        `resolve_read_project_dotenv` defaults to true, so failing open here
+        would discard the user's opt-out on every workspace construction.
+        """
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("GLOBAL_VALUE=global\n", encoding="utf-8")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.delenv("GLOBAL_VALUE", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        real_values_from = config_mod._dotenv_values_from
+
+        def _fail_on_global(
+            dotenv_path: Path, environ: Mapping[str, str]
+        ) -> dict[str, str | None]:
+            if dotenv_path == global_dotenv:
+                msg = "permission denied"
+                raise OSError(msg)
+            return real_values_from(dotenv_path, environ)
+
+        monkeypatch.setattr(config_mod, "_dotenv_values_from", _fail_on_global)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert "PROJECT_VALUE" not in env
+
+    def test_unreadable_global_dotenv_yields_to_a_trusted_opt_in(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Failing closed occupies the global tier, so a shell export wins."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text("GLOBAL_VALUE=global\n", encoding="utf-8")
+        monkeypatch.delenv("PROJECT_VALUE", raising=False)
+        monkeypatch.setenv("DEEPAGENTS_CODE_READ_PROJECT_DOTENV", "true")
+
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        real_values_from = config_mod._dotenv_values_from
+
+        def _fail_on_global(
+            dotenv_path: Path, environ: Mapping[str, str]
+        ) -> dict[str, str | None]:
+            if dotenv_path == global_dotenv:
+                msg = "permission denied"
+                raise OSError(msg)
+            return real_values_from(dotenv_path, environ)
+
+        monkeypatch.setattr(config_mod, "_dotenv_values_from", _fail_on_global)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["PROJECT_VALUE"] == "project"
 
 
 class TestProjectDotenvDeniedKeys:

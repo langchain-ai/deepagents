@@ -572,9 +572,21 @@ def _dotenv_environment(
             if raw is not None:
                 global_toggle[READ_PROJECT_DOTENV] = raw
     except (OSError, ValueError):
+        # Fail closed. `resolve_read_project_dotenv` defaults to true, so an
+        # unreadable global file would silently discard the user's opt-out and
+        # load the untrusted project `.env` instead. Skipping the project file
+        # costs the user a startup value; honoring it costs them the trust
+        # decision they made. This occupies the global-dotenv tier only, so
+        # managed policy and a shell export still win -- a user who opts in
+        # through a trusted surface keeps project `.env` loading.
+        global_toggle[READ_PROJECT_DOTENV] = "false"
         logger.warning(
-            "Could not read global dotenv at %s; global defaults may be incomplete",
+            "Could not read the trusted global dotenv at %s. Skipping the "
+            "project .env for %s rather than assuming "
+            "startup.read_project_dotenv is true. Fix that file's permissions "
+            "to restore project .env loading.",
             _GLOBAL_DOTENV_PATH,
+            start_path or "cwd",
             exc_info=True,
         )
 

@@ -555,6 +555,21 @@ class TestLoadMcpConfigLenient:
         )
 
 
+class TestMCPServerInfoInvariants:
+    """Tests for `MCPServerInfo.__post_init__` invariants."""
+
+    def test_status_unauth_rejects_tools(self) -> None:
+        """Failed servers can't also carry tools."""
+        with pytest.raises(ValueError, match="cannot carry tools"):
+            MCPServerInfo(
+                name="srv",
+                transport="http",
+                status="unauthenticated",
+                error="login",
+                tools=(MCPToolInfo(name="t", description=""),),
+            )
+
+
 class TestMCPStderrCapture:
     """Tests for stdio subprocess diagnostic capture."""
 

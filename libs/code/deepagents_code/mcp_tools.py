@@ -28,9 +28,7 @@ from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 from types import MappingProxyType
-from typing import TYPE_CHECKING, Any, NamedTuple, cast, overload
-
-from deepagents.mcp import MCPServerInfo, MCPServerStatus, MCPToolInfo
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, cast, overload
 
 from deepagents_code import _env_vars
 from deepagents_code._paths import PATHS, project_paths
@@ -60,6 +58,148 @@ _MCP_TOOL_NAME_RE = re.compile(r"[^A-Za-z0-9_-]+")
 _MCP_TOOL_NAME_MAX_LENGTH = 64
 _MCP_TOOL_NAME_HASH_LENGTH = 12
 _MCP_ORIGINAL_TOOL_NAME_KEY = "_deepagents_code_mcp_tool"
+
+# Maintainer note: `deepagents-talon` imports `MCPConfigError`,
+# `MCPServerInfo`, and `get_mcp_tools` from this module, and its tests construct
+# `MCPToolInfo`. Keep those symbols' names, signatures, and return/dataclass
+# shapes stable unless `deepagents-talon` is migrated in the same change.
+
+
+@dataclass(frozen=True, slots=True)
+class MCPToolInfo:
+    """Metadata for a single MCP tool."""
+
+    name: str
+    """Tool name (may include server name prefix)."""
+
+    description: str
+    """Human-readable description of what the tool does."""
+
+    input_schema: dict[str, Any] | None = None
+    """Raw MCP `inputSchema` dict (JSON Schema), or `None` when unavailable.
+
+    Supplied directly from `mcp_tool.inputSchema` at tool-load time. The viewer
+    reads `properties` and `required` from this dict for parameter display;
+    `None` is rendered as "no parameters".
+    """
+
+
+MCPServerStatus = Literal[
+    "ok",
+    "unauthenticated",
+    "awaiting_reconnect",
+    "error",
+    "disabled",
+]
+"""Load states a configured MCP server can end up in.
+
+`ok` means the server loaded successfully and has an authoritative tool list.
+
+`unauthenticated` means the server requires OAuth login before tools can load.
+
+`error` means the server failed to load after a connection or configuration
+failure.
+
+`disabled` is set when the user has turned the server off via the TUI
+(`/mcp` -> F2). No connection is attempted and no tools are loaded, but
+the entry is still surfaced in the viewer so the user can re-enable it.
+
+`awaiting_reconnect` is a transient UI-only state used after OAuth login
+has succeeded but before the LangGraph server has restarted and loaded
+the newly available MCP tools.
+"""
+
+
+@dataclass(frozen=True, slots=True)
+class MCPServerInfo:
+    """Metadata for a configured MCP server and its tools."""
+
+    name: str
+    """Server name from the MCP configuration."""
+
+    transport: str
+    """Transport identifier — `stdio`, `sse`, `http`, the synthetic
+    `config` value used for entries surfacing a bad config file, or
+    `unknown` for a disabled server whose original config could not be
+    classified."""
+
+    tools: tuple[MCPToolInfo, ...] = ()
+    """Tools exposed by this server (empty when `status != "ok"`)."""
+
+    status: MCPServerStatus = "ok"
+    """Load status.
+
+    One of `ok`, `unauthenticated`, `awaiting_reconnect`, `error`, or
+    `disabled`.
+    """
+
+    error: str | None = None
+    """Human-readable reason when `status != "ok"`."""
+
+    pending_reconnect: bool = False
+    """`True` for a disabled entry that was just re-enabled in the TUI and is
+    awaiting a reconnect to load its tools.
+
+    Lets `/tools` (`tool_catalog.split_mcp_server_info`) preserve the reconnect
+    guidance held in `error` instead of collapsing it to the generic "disabled
+    by user" label — an explicit flag rather than a fragile match on the
+    guidance text. Only meaningful while `status == "disabled"`.
+    """
+
+    uses_oauth: bool = False
+    """`True` when this server's connection carries an OAuth provider.
+
+    Mirrors the condition that governs whether OAuth is actually used for the
+    connection: the config opted in with `auth: oauth`, or a prior login stored
+    tokens and no static `Authorization` header overrides them. Lets the TUI
+    offer re-authentication only where it would mean something — a server
+    authenticated by a static header ignores stored OAuth tokens, and a public
+    server has no OAuth flow to run.
+
+    Only meaningful while `status == "ok"`; `unauthenticated` servers are
+    already covered by `needs_attention()`.
+    """
+
+    def __post_init__(self) -> None:
+        """Enforce the status/error/tools consistency invariant.
+
+        Raises:
+            ValueError: If any of: `status='ok'` with a non-`None` error;
+                non-`ok` status without an error message; non-`ok` status
+                carrying tools; or `pending_reconnect` set without
+                `status='disabled'`.
+        """
+        if self.status == "ok":
+            if self.error is not None:
+                msg = (
+                    f"MCPServerInfo {self.name!r}: status='ok' cannot carry "
+                    f"an error (got {self.error!r})"
+                )
+                raise ValueError(msg)
+        else:
+            if self.error is None:
+                msg = (
+                    f"MCPServerInfo {self.name!r}: status={self.status!r} "
+                    "requires an error message"
+                )
+                raise ValueError(msg)
+            if self.tools:
+                msg = (
+                    f"MCPServerInfo {self.name!r}: status={self.status!r} "
+                    "cannot carry tools"
+                )
+                raise ValueError(msg)
+        if self.pending_reconnect and self.status != "disabled":
+            msg = (
+                f"MCPServerInfo {self.name!r}: pending_reconnect requires "
+                f"status='disabled' (got {self.status!r})"
+            )
+            raise ValueError(msg)
+
+    def needs_attention(self) -> bool:
+        """Return whether this server is blocked on user login."""
+        return self.status == "unauthenticated"
+
 
 _SUPPORTED_REMOTE_TYPES = {"sse", "http"}
 """Supported transport types for remote MCP servers (SSE and HTTP)."""

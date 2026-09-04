@@ -7,7 +7,13 @@ from typing import TYPE_CHECKING, ClassVar
 import pytest
 
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.mcp import MCPConfigError, load_mcp_tools, mcp_config_path
+from deepagents_talon.mcp import (
+    MCPConfigError,
+    MCPServerInfo,
+    MCPToolInfo,
+    load_mcp_tools,
+    mcp_config_path,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -45,6 +51,56 @@ def _config(tmp_path: Path, env: dict[str, str] | None = None) -> TalonConfig:
         },
         base_home=tmp_path,
     )
+
+
+def test_mcp_metadata_contracts_are_talon_owned() -> None:
+    tool = MCPToolInfo(
+        name="search",
+        description="Search documents",
+        input_schema={"type": "object"},
+    )
+    server = MCPServerInfo(
+        name="docs",
+        transport="http",
+        tools=(tool,),
+        uses_oauth=True,
+    )
+
+    assert server.tools == (tool,)
+    assert server.status == "ok"
+    assert server.needs_attention() is False
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        ({"error": "failed"}, "status='ok' cannot carry an error"),
+        ({"status": "error"}, "requires an error message"),
+        (
+            {
+                "status": "unauthenticated",
+                "error": "login",
+                "tools": (MCPToolInfo(name="search", description=""),),
+            },
+            "cannot carry tools",
+        ),
+        ({"pending_reconnect": True}, "pending_reconnect requires status='disabled'"),
+    ],
+)
+def test_mcp_server_info_rejects_inconsistent_state(kwargs: dict[str, object], match: str) -> None:
+    with pytest.raises(ValueError, match=match):
+        MCPServerInfo(name="docs", transport="http", **kwargs)
+
+
+def test_mcp_server_info_reports_authentication_attention() -> None:
+    server = MCPServerInfo(
+        name="docs",
+        transport="http",
+        status="unauthenticated",
+        error="login required",
+    )
+
+    assert server.needs_attention() is True
 
 
 def test_mcp_config_path_uses_standard_path_or_env_override(

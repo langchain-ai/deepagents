@@ -14,9 +14,8 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Literal, cast
 
-from deepagents.mcp import MCPServerInfo, MCPToolInfo
 from httpx import HTTPError
 from langchain_mcp_adapters.client import MultiServerMCPClient
 from mcp.shared.exceptions import McpError
@@ -55,6 +54,60 @@ _DANGEROUS_STDIO_ENV = frozenset(
 
 class MCPConfigError(ValueError):
     """An MCP configuration is malformed or unsafe."""
+
+
+@dataclass(frozen=True, slots=True)
+class MCPToolInfo:
+    """Metadata for one MCP tool."""
+
+    name: str
+    description: str
+    input_schema: dict[str, object] | None = None
+
+
+MCPServerStatus = Literal[
+    "ok",
+    "unauthenticated",
+    "awaiting_reconnect",
+    "error",
+    "disabled",
+]
+
+
+@dataclass(frozen=True, slots=True)
+class MCPServerInfo:
+    """Load status and tool metadata for one MCP server."""
+
+    name: str
+    transport: str
+    tools: tuple[MCPToolInfo, ...] = ()
+    status: MCPServerStatus = "ok"
+    error: str | None = None
+    pending_reconnect: bool = False
+    uses_oauth: bool = False
+
+    def __post_init__(self) -> None:
+        """Enforce status, error, tool, and reconnect consistency."""
+        if self.status == "ok":
+            if self.error is not None:
+                msg = f"MCPServerInfo {self.name!r}: status='ok' cannot carry an error"
+                raise ValueError(msg)
+        else:
+            if self.error is None:
+                msg = (
+                    f"MCPServerInfo {self.name!r}: status={self.status!r} requires an error message"
+                )
+                raise ValueError(msg)
+            if self.tools:
+                msg = f"MCPServerInfo {self.name!r}: status={self.status!r} cannot carry tools"
+                raise ValueError(msg)
+        if self.pending_reconnect and self.status != "disabled":
+            msg = f"MCPServerInfo {self.name!r}: pending_reconnect requires status='disabled'"
+            raise ValueError(msg)
+
+    def needs_attention(self) -> bool:
+        """Return whether this server is blocked on user login."""
+        return self.status == "unauthenticated"
 
 
 @dataclass(frozen=True, slots=True)

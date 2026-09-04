@@ -956,6 +956,7 @@ class _VercelProvider(SandboxProvider):
     """Vercel Sandbox provider implementation."""
 
     def __init__(self) -> None:
+        """Initialize the provider, resolving workspace Vercel credentials."""
         self._sdk_kwargs = self._resolve_sdk_kwargs()
 
     @classmethod
@@ -964,12 +965,18 @@ class _VercelProvider(SandboxProvider):
 
         Each value resolves prefixed-first then canonical via `resolve_env_var`,
         against the bound workspace environment. Credentials stay SDK-managed
-        (OIDC, or `VERCEL_*` in the server's own environment) only when the
-        workspace configured none of them.
+        (OIDC, or `VERCEL_*` in the server's own environment) only when none of
+        the three variables resolves for this workspace.
 
         Returns:
             Explicit SDK credential arguments, or an empty mapping to delegate
             credential resolution to the Vercel SDK.
+
+        Raises:
+            ValueError: If only part of the `VERCEL_TOKEN` / `VERCEL_PROJECT_ID`
+                / `VERCEL_TEAM_ID` set resolves. Delegating to the SDK there
+                would authenticate the sandbox with the server's own Vercel
+                identity instead of the credentials this workspace pinned.
         """
         from deepagents_code.model_config import resolve_env_var
 
@@ -985,15 +992,24 @@ class _VercelProvider(SandboxProvider):
         # read -- gating on the prefix alone silently discarded it.
         if not any(values.values()):
             return {}
-        missing = sorted(key for key, value in values.items() if not value)
+        missing = sorted(
+            f"VERCEL_{key.upper()}" for key, value in values.items() if not value
+        )
         if missing:
-            logger.warning(
-                "Incomplete explicit Vercel credentials; VERCEL_TOKEN, "
-                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID are all required. "
-                "Falling back to default Vercel authentication. Missing: %s",
-                ", ".join(missing),
+            # Fail closed rather than warn and delegate: an empty mapping hands
+            # auth back to the Vercel SDK, which resolves credentials from the
+            # server process (`VERCEL_*` in its own environment, or its OIDC
+            # identity). A workspace that pinned a restricted token would then
+            # silently run its sandbox under the server's broader identity.
+            msg = (
+                "The workspace Vercel configuration is incomplete: "
+                f"{', '.join(missing)} not set. Set VERCEL_TOKEN, "
+                "VERCEL_PROJECT_ID, and VERCEL_TEAM_ID together, or unset all "
+                "three to fall back to default Vercel authentication."
             )
-            return {}
+            raise ValueError(msg)
+        # `missing` is empty, so every value is a non-empty string here; the
+        # comprehension re-states that for the type checker.
         return {key: value for key, value in values.items() if value}
 
     def get_or_create(

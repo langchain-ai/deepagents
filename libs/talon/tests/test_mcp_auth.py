@@ -17,7 +17,9 @@ from deepagents_talon.mcp_auth import (
     _DeviceCodeResponse,
     _issuer_endpoint,
     build_oauth_provider,
+    extract_oauth_callback_url,
     prepare_device_client,
+    prepare_oauth_login,
 )
 
 if TYPE_CHECKING:
@@ -121,6 +123,90 @@ async def test_interactive_provider_validates_callback_state(
     code, state = await provider.context.callback_handler()
 
     assert (code, state) == ("abc", "state")
+
+
+def test_slack_provider_selection_requires_slack_hostname() -> None:
+    storage = FileTokenStorage("slack", server_url="https://slack.com/mcp")
+    slack = build_oauth_provider(
+        server_name="slack",
+        server_url="https://slack.com/mcp",
+        storage=storage,
+        interactive=True,
+    )
+    lookalike = build_oauth_provider(
+        server_name="lookalike",
+        server_url="https://slack.com.attacker.example/mcp",
+        storage=storage,
+        interactive=True,
+    )
+
+    assert [str(uri) for uri in slack.context.client_metadata.redirect_uris or []] == [
+        "http://localhost:3118/callback"
+    ]
+    assert [str(uri) for uri in lookalike.context.client_metadata.redirect_uris or []] == [
+        "http://localhost:3000/callback"
+    ]
+
+
+async def test_slack_login_preseeds_public_client(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("slack", server_url="https://slack.com/mcp")
+
+    await prepare_oauth_login(server_url="https://slack.com/mcp", storage=storage)
+
+    client = await storage.get_client_info()
+    assert client is not None
+    assert client.client_id == "4518649543379.10944517634130"
+    assert [str(uri) for uri in client.redirect_uris or []] == ["http://localhost:3118/callback"]
+
+
+async def test_slack_provider_validates_registered_callback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    storage = FileTokenStorage("slack", server_url="https://slack.com/mcp")
+    provider = build_oauth_provider(
+        server_name="slack",
+        server_url="https://slack.com/mcp",
+        storage=storage,
+        interactive=True,
+    )
+    callback = provider.context.callback_handler
+    assert callback is not None
+    callbacks = iter(
+        [
+            "http://localhost:3118/callback?code=abc&state=state",
+            "http://localhost:3000/callback?code=abc&state=state",
+        ]
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(callbacks))
+
+    assert await callback() == ("abc", "state")
+    with pytest.raises(MCPAuthorizationError, match="callback is invalid"):
+        await callback()
+
+
+@pytest.mark.parametrize("port", [3000, 3118])
+def test_extract_oauth_callback_url_accepts_registered_ports(port: int) -> None:
+    callback = f"http://localhost:{port}/callback?code=secret&state=opaque"
+
+    assert extract_oauth_callback_url(f"<{callback}>") == callback
+
+
+@pytest.mark.parametrize(
+    "callback",
+    [
+        "http://localhost:3119/callback?code=secret&state=opaque",
+        "http://localhost:3118/other?code=secret&state=opaque",
+        "http://attacker.example/callback?code=secret&state=opaque",
+        "http://localhost:3118/callback?code=secret&state=opaque\nextra",
+    ],
+)
+def test_extract_oauth_callback_url_rejects_unregistered_or_unsafe_urls(
+    callback: str,
+) -> None:
+    assert extract_oauth_callback_url(callback) is None
 
 
 async def test_malformed_credential_file_does_not_expose_contents(

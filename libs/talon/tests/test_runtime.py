@@ -187,7 +187,10 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
         )
     )
 
-    assert created == [["custom_tool"], ["refreshed_tool"]]
+    assert created == [
+        ["current_time", "custom_tool"],
+        ["current_time", "refreshed_tool"],
+    ]
     assert current_authorization_handler() is None
 
 
@@ -229,6 +232,7 @@ async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
 
     tool_names = {_tool_name(tool) for tool in captured["tools"]}
     assert {
+        "current_time",
         "fetch_url",
         "web_search",
         "create_job",
@@ -1243,3 +1247,24 @@ def _talon_events(caplog: pytest.LogCaptureFixture) -> list[dict[str, object]]:
         for message in caplog.messages
         if message.startswith("talon_event ")
     ]
+
+
+async def test_runtime_registers_clock_tool_without_web_or_cron_tools(monkeypatch) -> None:
+    captured: dict[str, Any] = {}
+    graph = RecordingGraph()
+
+    def fake_create_deep_agent(**kwargs: Any) -> RecordingGraph:
+        captured.update(kwargs)
+        return graph
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        cron_store=None,
+        include_web_tools=False,
+    )
+
+    await runtime.start()
+
+    assert [_tool_name(tool) for tool in captured["tools"]] == ["current_time"]

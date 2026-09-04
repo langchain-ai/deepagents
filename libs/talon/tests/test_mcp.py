@@ -837,7 +837,7 @@ async def test_oauth_connection_uses_stored_credentials(
     assert result.servers[0].uses_oauth is True
 
 
-async def test_oauth_connection_prepares_device_client(
+async def test_oauth_connection_prepares_oauth_login(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = object()
@@ -850,11 +850,11 @@ async def test_oauth_connection_prepares_device_client(
                 "https://api.githubcopilot.com/mcp",
             )
 
-    async def prepare(server_url: str, storage: object) -> None:
+    async def prepare(*, server_url: str, storage: object) -> None:
         prepared.append((server_url, storage))
 
     monkeypatch.setattr("deepagents_talon.mcp.FileTokenStorage", EmptyStorage)
-    monkeypatch.setattr("deepagents_talon.mcp.prepare_device_client", prepare)
+    monkeypatch.setattr("deepagents_talon.mcp.prepare_oauth_login", prepare)
     monkeypatch.setattr("deepagents_talon.mcp.build_oauth_provider", lambda **_kwargs: provider)
 
     connection, transport = await _connection(

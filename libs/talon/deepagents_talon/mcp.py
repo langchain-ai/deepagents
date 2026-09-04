@@ -41,7 +41,7 @@ from deepagents_talon.mcp_auth import (
     MCPAuthorizationError,
     build_oauth_provider,
     format_login_error,
-    prepare_device_client,
+    prepare_oauth_login,
 )
 
 if TYPE_CHECKING:
@@ -781,10 +781,10 @@ async def _remote_connection(  # noqa: PLR0913  # keeps distinct OAuth modes exp
             if force_authorization
             else FileTokenStorage(name, server_url=url)
         )
-        await prepare_device_client(url, storage)
         if not interactive and not channel_authorization and await storage.get_tokens() is None:
             msg = f"MCP server {name!r} needs authentication; run deepagents-talon mcp login {name}"
             raise _MCPLoginRequiredError(msg)
+        await prepare_oauth_login(server_url=url, storage=storage)
         connection["auth"] = build_oauth_provider(
             server_name=name,
             server_url=url,

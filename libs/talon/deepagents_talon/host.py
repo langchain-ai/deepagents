@@ -16,7 +16,6 @@ from dataclasses import dataclass
 from enum import StrEnum
 from types import FrameType
 from typing import TYPE_CHECKING, cast
-from urllib.parse import parse_qs, urlparse
 
 from deepagents_talon.authorization import (
     AuthorizationBinding,
@@ -41,6 +40,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalDecision,
     ToolApprovalRequest,
 )
+from deepagents_talon.mcp_auth import extract_oauth_callback_url
 from deepagents_talon.media import (
     MarkdownMediaRef,
     build_inbound_text,
@@ -1124,16 +1124,7 @@ def _prepare_inbound_message(message: ChannelMessage) -> ChannelMessage:
 
 
 def _callback_url(text: str) -> str | None:
-    candidate = text.strip()
-    if candidate.startswith("<") and candidate.endswith(">"):
-        candidate = candidate[1:-1].strip()
-    parsed = urlparse(candidate)
-    if parsed.scheme != "http" or parsed.netloc != "localhost:3000" or parsed.path != "/callback":
-        return None
-    query = parse_qs(parsed.query)
-    if not query.get("state") or not (query.get("code") or query.get("error")):
-        return None
-    return candidate
+    return extract_oauth_callback_url(text)
 
 
 def _command_name(text: str) -> str | None:

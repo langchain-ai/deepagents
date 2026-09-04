@@ -990,7 +990,11 @@ def reconcile_tracing_environment(environ: Mapping[str, str]) -> None:
     _apply_env_values(
         os.environ,
         {
-            var: _resolve_env_var_from(environ, var)
+            var: (
+                _resolve_env_var_from(environ, var)
+                if var in _PREFIXED_LANGSMITH_ENV_VARS or var == "LANGSMITH_PROJECT"
+                else environ.get(var) or None
+            )
             for var in _TRACING_RECONCILED_ENV_VARS
         },
     )

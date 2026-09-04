@@ -4598,12 +4598,34 @@ class TestTracingEnvironmentReconcile:
             {
                 "LANGSMITH_TRACING": "true",
                 "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "workspace-key",
+                "DEEPAGENTS_CODE_LANGSMITH_PROJECT": "agent-project",
             }
         )
 
         assert os.environ["LANGSMITH_TRACING"] == "true"
         # A prefixed override resolves onto the canonical name the SDK reads.
         assert os.environ["LANGSMITH_API_KEY"] == "workspace-key"
+        assert os.environ["LANGSMITH_PROJECT"] == "agent-project"
+
+    def test_unsupported_prefixed_endpoint_does_not_reach_sdk_environment(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A prefixed endpoint ignored by redaction must also be ignored here."""
+        import os
+
+        import deepagents_code.config as config_mod
+
+        monkeypatch.setenv("LANGSMITH_ENDPOINT", "https://stale.example.com")
+
+        config_mod.reconcile_tracing_environment(
+            {
+                "DEEPAGENTS_CODE_LANGSMITH_TRACING": "true",
+                "DEEPAGENTS_CODE_LANGSMITH_ENDPOINT": "https://upload.example.com",
+            }
+        )
+
+        assert os.environ["LANGSMITH_TRACING"] == "true"
+        assert "LANGSMITH_ENDPOINT" not in os.environ
 
     def test_previous_workspace_values_do_not_linger(
         self, monkeypatch: pytest.MonkeyPatch

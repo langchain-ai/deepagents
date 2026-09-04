@@ -1249,19 +1249,64 @@ def _encode_user_langsmith_env() -> str:
     )
 
 
+def _strip_user_langsmith_env(env: dict[str, str]) -> None:
+    """Remove every LangSmith selector, prefixed or not, from `env`."""
+    from deepagents_code.model_config import _ENV_PREFIX
+
+    for var in _USER_LANGSMITH_ENV_VARS:
+        env.pop(var, None)
+        env.pop(f"{_ENV_PREFIX}{var}", None)
+
+
+def _report_unusable_langsmith_carrier() -> None:
+    """Report that user commands lost their own LangSmith settings.
+
+    Goes to stderr as well as the logger, for the reason given in
+    `_report_denied_env_key`: the buffering handler installed at import means a
+    `logger.warning` alone is visible only under `--debug`.
+    """
+    message = (
+        "Could not read your LangSmith settings for approval-gated commands, "
+        "so they will run without LangSmith credentials. This usually means "
+        "the dcode client and server are running different versions; restart "
+        "dcode. Tracing for your own commands is unaffected otherwise."
+    )
+    print(f"Warning: {message}", file=sys.stderr)  # noqa: T201  # user-facing
+    logger.warning("%s", message)
+
+
 def restore_user_langsmith_env(
     env: dict[str, str], *, start_path: Path | None = None
 ) -> None:
-    """Restore launch and project-dotenv LangSmith settings for user commands."""
+    """Restore launch and project-dotenv LangSmith settings for user commands.
+
+    Precedence, highest first: the launch shell the user started `dcode` from,
+    then the project `.env`. The global profile `.env` is deliberately excluded,
+    because it configures the agent rather than the user's own commands.
+
+    Also pops the client-to-server carrier and every `DEEPAGENTS_CODE_`-prefixed
+    selector, so `agent.py` can pass the result with `inherit_env=False`.
+
+    Args:
+        env: Environment for user commands, modified in place.
+        start_path: Project directory whose `.env` supplies the lower layer.
+            Falls back to the mapping bootstrap captured for this process.
+    """
     encoded = env.pop(_USER_LANGSMITH_ENV_CARRIER, None)
     launch = _bootstrap_state.launch_langsmith_env
     values = _bootstrap_state.user_langsmith_env
     if encoded is not None:
         decoded = _decode_user_langsmith_env(encoded)
         if decoded is None:
-            logger.warning("Ignoring invalid user LangSmith environment carrier")
-        else:
-            launch, values = decoded
+            # Falling back to this process's bootstrap state would hand user
+            # commands the agent's own key and trace project -- the leak this
+            # function exists to prevent. Run them with no LangSmith auth at
+            # all instead, which fails visibly rather than silently mislabeling
+            # the user's traces.
+            _strip_user_langsmith_env(env)
+            _report_unusable_langsmith_carrier()
+            return
+        launch, values = decoded
 
     for var in _USER_LANGSMITH_ENV_VARS:
         env.pop(f"DEEPAGENTS_CODE_{var}", None)

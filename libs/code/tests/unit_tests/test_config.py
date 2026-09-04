@@ -4495,6 +4495,51 @@ class TestUserLangsmithEnvironment:
             config_mod._bootstrap_state.user_langsmith_env = original_user
             config_mod._dotenv_loaded_values.clear()
 
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            "not json at all",
+            '{"launch": {}}',
+            '{"launch": {}, "user": {}}',
+            '{"launch": {"LANGSMITH_API_KEY": "k"}, "user": {}}',
+            '{"launch": {"LANGSMITH_API_KEY": 1}, "user": {}}',
+        ],
+        ids=["malformed", "missing-half", "empty", "partial-keys", "wrong-type"],
+    )
+    def test_unusable_carrier_strips_rather_than_using_agent_credentials(
+        self, encoded: str, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """An undecodable carrier must not fall back to the agent's own key."""
+        import deepagents_code.config as config_mod
+
+        agent_state = dict.fromkeys(config_mod._USER_LANGSMITH_ENV_VARS, "agent-value")
+        original_launch = dict(config_mod._bootstrap_state.launch_langsmith_env)
+        original_user = dict(config_mod._bootstrap_state.user_langsmith_env)
+        config_mod._bootstrap_state.launch_langsmith_env = dict(agent_state)
+        config_mod._bootstrap_state.user_langsmith_env = dict(agent_state)
+        env = {
+            config_mod._USER_LANGSMITH_ENV_CARRIER: encoded,
+            "LANGSMITH_API_KEY": "agent-session-key",
+            "LANGSMITH_PROJECT": "deepagents-code",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY": "prefixed-agent-key",
+            "PATH": "/usr/bin",
+        }
+
+        try:
+            config_mod.restore_user_langsmith_env(env)
+        finally:
+            config_mod._bootstrap_state.launch_langsmith_env = original_launch
+            config_mod._bootstrap_state.user_langsmith_env = original_user
+
+        for var in config_mod._USER_LANGSMITH_ENV_VARS:
+            assert var not in env
+            assert f"DEEPAGENTS_CODE_{var}" not in env
+        assert config_mod._USER_LANGSMITH_ENV_CARRIER not in env
+        # Unrelated variables survive.
+        assert env["PATH"] == "/usr/bin"
+        # The user is told, on stderr, not only in the buffered debug log.
+        assert "without LangSmith credentials" in capsys.readouterr().err
+
     def test_restore_drops_agent_values_and_prefixed_settings(self) -> None:
         import deepagents_code.config as config_mod
 

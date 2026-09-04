@@ -313,7 +313,10 @@ def create_web_search_tool(api_key: str) -> BaseTool:
     """Bind web search to one workspace credential.
 
     The schema is taken from `web_search` via `functools.wraps` so the built-in
-    and workspace-bound variants can never present different arguments.
+    and workspace-bound variants can never present different arguments. The two
+    also have to fail the same way: `is_web_search_tool` treats them as one, so
+    a missing package or an unusable key must return the payload the model can
+    act on rather than raising.
 
     Returns:
         Workspace-bound web search tool.
@@ -326,10 +329,19 @@ def create_web_search_tool(api_key: str) -> BaseTool:
     @functools.wraps(web_search)
     def workspace_web_search(**kwargs: Any) -> object:
         nonlocal client
+        if not api_key:
+            return {
+                "error": "Tavily API key not configured. "
+                "Please set TAVILY_API_KEY environment variable.",
+                "query": kwargs.get("query"),
+            }
         if client is None:
-            from tavily import TavilyClient as _TavilyClient
+            try:
+                from tavily import TavilyClient as _TavilyClient
 
-            client = _TavilyClient(api_key=api_key)
+                client = _TavilyClient(api_key=api_key)
+            except ImportError as exc:
+                return {"error": f"Required package not installed: {exc.name}."}
         return _search_with_tavily(client, **kwargs)
 
     _workspace_web_search_tools[id(workspace_web_search)] = workspace_web_search

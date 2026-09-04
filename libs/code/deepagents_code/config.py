@@ -527,11 +527,18 @@ def _dotenv_environment(
     """
     env = {_environment_key(key): value for key, value in environ.items()}
 
-    def apply_dotenv(dotenv_path: Path | None, *, is_project: bool) -> None:
+    def apply_dotenv(
+        dotenv_path: Path | None,
+        *,
+        is_project: bool,
+        interpolate_against: Mapping[str, str] | None = None,
+    ) -> None:
         if dotenv_path is None:
             return
         try:
-            values = _dotenv_values_from(dotenv_path, env)
+            values = _dotenv_values_from(
+                dotenv_path, env if interpolate_against is None else interpolate_against
+            )
         except (OSError, ValueError):
             logger.warning(
                 "Could not read dotenv at %s; environment may be incomplete",
@@ -592,6 +599,12 @@ def _dotenv_environment(
 
     from deepagents_code.config_manifest import resolve_read_project_dotenv
 
+    # Snapshot before the project file lands. The trusted global file must not
+    # resolve its `${VAR}` references against values a cloned repo supplied:
+    # a global `ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1` would otherwise follow a
+    # `GATEWAY_HOST` the repo planted, silently.
+    baseline_env = dict(env)
+
     if resolve_read_project_dotenv(global_dotenv=global_toggle):
         apply_dotenv(project_dotenv, is_project=True)
     else:
@@ -612,7 +625,7 @@ def _dotenv_environment(
                 exc_info=True,
             )
             global_dotenv = None
-        apply_dotenv(global_dotenv, is_project=False)
+        apply_dotenv(global_dotenv, is_project=False, interpolate_against=baseline_env)
     return env
 
 

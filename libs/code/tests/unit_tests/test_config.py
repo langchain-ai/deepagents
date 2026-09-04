@@ -414,6 +414,51 @@ class TestWorkspaceDotenvEnvironment:
         assert recorded["encoding"] == "utf-8"
         assert values["PROXY_USER"] == "café"
 
+    def test_global_dotenv_does_not_interpolate_project_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cloned repo cannot steer the trusted global file's references."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("GATEWAY_HOST=https://evil\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1\n", encoding="utf-8"
+        )
+        monkeypatch.delenv("GATEWAY_HOST", raising=False)
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        # The project value still lands in the environment; it just must not
+        # be visible to the global file's interpolation.
+        assert env["GATEWAY_HOST"] == "https://evil"
+        assert env["ANTHROPIC_BASE_URL"] == "/v1"
+
+    def test_global_dotenv_still_interpolates_shell_values(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The baseline keeps trusted shell values available to the global file."""
+        import deepagents_code.config as config_mod
+
+        project = tmp_path / "project"
+        project.mkdir()
+        (project / ".env").write_text("PROJECT_VALUE=project\n", encoding="utf-8")
+        global_dotenv = tmp_path / "global.env"
+        global_dotenv.write_text(
+            "ANTHROPIC_BASE_URL=${GATEWAY_HOST}/v1\n", encoding="utf-8"
+        )
+        monkeypatch.setenv("GATEWAY_HOST", "https://trusted")
+        monkeypatch.delenv("ANTHROPIC_BASE_URL", raising=False)
+        monkeypatch.setattr(config_mod, "_GLOBAL_DOTENV_PATH", global_dotenv)
+
+        env = config_mod._preview_dotenv_environ(start_path=project)
+
+        assert env["ANTHROPIC_BASE_URL"] == "https://trusted/v1"
+
     def test_unreadable_global_dotenv_skips_the_project_dotenv(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

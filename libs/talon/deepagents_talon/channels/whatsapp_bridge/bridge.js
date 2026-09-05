@@ -13,6 +13,7 @@ const {
   isSelfChat,
   normalizeMessage,
   quotedMessageContext,
+  reactionEntry,
   serializedId,
   widString,
 } = require("./id_compat");
@@ -122,6 +123,13 @@ client.on("message_create", (message) => {
 
 client.on("message", (message) => {
   void enqueueMessage(message, false);
+});
+
+client.on("message_reaction", (reaction) => {
+  const entry = reactionEntry(reaction, botId, botIds);
+  if (entry) {
+    queue.push(entry);
+  }
 });
 
 client.on("media_uploaded", (message) => {

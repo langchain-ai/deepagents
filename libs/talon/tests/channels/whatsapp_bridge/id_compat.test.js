@@ -13,10 +13,33 @@ const {
   isSelfChat,
   normalizeId,
   normalizeMessage,
+  reactionEntry,
   quotedMessageContext,
   serializedId,
   widString,
 } = require("../../../deepagents_talon/channels/whatsapp_bridge/id_compat");
+
+test("queues reactions with the target message ID and reacting sender", () => {
+  const reaction = {
+    id: { fromMe: false, remote: "chat@g.us", id: "REACTION" },
+    msgId: { fromMe: true, remote: "chat@g.us", id: "PROMPT" },
+    senderId: { _serialized: "operator@lid" },
+    reaction: "\u{1f44d}",
+  };
+  assert.deepEqual(reactionEntry(reaction, "bot@c.us", ["bot@c.us"]), {
+    event_type: "reaction", chat_id: "chat@g.us", user_id: "operator@lid",
+    message_id: "true_chat@g.us_PROMPT", text: "\u{1f44d}",
+    from_self: false, self_chat: false,
+  });
+  assert.equal(reactionEntry({ ...reaction, reaction: "" }, "bot@c.us", []), null);
+  assert.equal(reactionEntry({ ...reaction, senderId: null }, "bot@c.us", []), null);
+  const own = { ...reaction, id: { ...reaction.id, fromMe: true } };
+  assert.equal(reactionEntry(own, "bot@c.us", ["bot@c.us"]), null);
+  const self = { ...own, msgId: { ...own.msgId, remote: "bot@lid" } };
+  const entry = reactionEntry(self, "bot@c.us", ["bot@c.us", "bot@lid"]);
+  assert.equal(entry.user_id, "bot@c.us");
+  assert.equal(entry.self_chat, true);
+});
 
 test("reads legacy, renamed, and component WhatsApp IDs", () => {
   assert.equal(widString({ _serialized: "123@lid" }), "123@lid");

@@ -43,8 +43,10 @@ from deepagents_talon.channels.base import (
 from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
+    ChannelReaction,
     ChannelStatus,
     MessageHandler,
+    ReactionHandler,
     SendResult,
 )
 from deepagents_talon.observability import log_debug_event
@@ -285,6 +287,7 @@ class WhatsAppChannel:
             token=config.bridge_token,
         )
         self._handler: MessageHandler | None = None
+        self._reaction_handler: ReactionHandler | None = None
         self._process: asyncio.subprocess.Process | None = None
         self._bridge_stdout: asyncio.Task[None] | None = None
         self._bridge_stderr: asyncio.Task[None] | None = None
@@ -301,6 +304,35 @@ class WhatsAppChannel:
             handler: Coroutine callback invoked for accepted inbound messages.
         """
         self._handler = handler
+
+    def set_reaction_handler(self, handler: ReactionHandler) -> None:
+        """Register the host callback for inbound reactions.
+
+        Args:
+            handler: Coroutine callback invoked for accepted inbound reactions.
+        """
+        self._reaction_handler = handler
+
+    async def _dispatch_reaction(self, message: ChannelMessage) -> bool:
+        if message.sender_id not in self.config.exposure.operator_ids:
+            return False
+        if message.metadata.get("from_self") and not message.metadata.get("self_chat"):
+            return False
+        if not message.message_id or not message.text:
+            return False
+        if self._reaction_handler is None:
+            logger.warning("Dropping WhatsApp reaction because no handler is registered")
+            return False
+        await self._reaction_handler(
+            ChannelReaction(
+                conversation_id=message.conversation_id,
+                message_id=message.message_id,
+                sender_id=message.sender_id,
+                emoji=message.text,
+                metadata=message.metadata,
+            )
+        )
+        return True
 
     async def start(self) -> None:
         """Start the bridge subprocess and background polling tasks."""
@@ -545,6 +577,9 @@ class WhatsAppChannel:
                     )
                 accepted = 0
                 for message in messages:
+                    if message.metadata.get("event_type") == "reaction":
+                        accepted += await self._dispatch_reaction(message)
+                        continue
                     if _allows_whatsapp_message(self.config.exposure, message):
                         accepted += 1
                         checked = _enforce_inbound_media_cap(
@@ -803,6 +838,7 @@ def _parse_message(payload: object) -> ChannelMessage:
         message_id=optional_str(values.get("message_id") or values.get("messageId")),
         metadata={
             "provider": "whatsapp",
+            "event_type": values.get("event_type"),
             "message_type": message_type,
             "media_type": media_type,
             "chat_name": values.get("chat_name") or values.get("chatName"),

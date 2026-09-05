@@ -47,6 +47,23 @@ function serializedId(value) {
   return typeof value.id === "string" && value.id ? value.id : null;
 }
 
+function reactionEntry(reaction, botId, botIds) {
+  const messageId = serializedId(reaction.msgId);
+  const chatId = widString(reaction.msgId && reaction.msgId.remote);
+  const fromSelf = Boolean(reaction.id && reaction.id.fromMe === true);
+  const selfChat = isSelfChat(fromSelf, chatId, botIds);
+  const senderId = fromSelf ? botId : widString(reaction.senderId);
+  if (!messageId || !chatId || !senderId || !reaction.reaction ||
+      chatId === "status@broadcast" || (fromSelf && !selfChat)) {
+    return null;
+  }
+  return {
+    event_type: "reaction", chat_id: chatId, user_id: senderId,
+    message_id: messageId, text: reaction.reaction,
+    from_self: fromSelf, self_chat: selfChat,
+  };
+}
+
 async function quotedMessageContext(message) {
   if (!message.hasQuotedMsg) {
     return { participant: null, messageId: null, status: "not_reply" };
@@ -274,6 +291,7 @@ module.exports = {
   normalizeId,
   normalizeMessage,
   quotedMessageContext,
+  reactionEntry,
   serializedId,
   widString,
 };

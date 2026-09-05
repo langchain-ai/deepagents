@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deepagents_talon.__main__ import (
@@ -14,6 +15,41 @@ from deepagents_talon.__main__ import (
 )
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.cron import CronJobStore
+
+
+async def test_run_host_uses_configured_checkpointer(tmp_path, monkeypatch) -> None:
+    config = TalonConfig.from_env(
+        {"AGENT_ASSISTANT_ID": "assistant-1", "AGENT_MODEL": "test:model"},
+        base_home=tmp_path,
+    )
+    cron_store = CronJobStore(assistant_id=config.assistant_id, cron_dir=config.cron_dir)
+    configured_checkpointer = InMemorySaver()
+    captured: dict[str, object] = {}
+
+    async def fake_agent_runtime(_config, cron_store=None, checkpointer=None):
+        captured["cron_store"] = cron_store
+        captured["checkpointer"] = checkpointer
+        return object()
+
+    async def fake_run_host_with_agent(*_args: object) -> None:
+        return None
+
+    monkeypatch.setattr("deepagents_talon.__main__._agent_runtime", fake_agent_runtime)
+    monkeypatch.setattr("deepagents_talon.__main__._run_host_with_agent", fake_run_host_with_agent)
+
+    await _run_host(
+        argparse.Namespace(once=True),
+        config,
+        cron_store,
+        (),
+        checkpointer=configured_checkpointer,
+    )
+
+    assert captured == {
+        "cron_store": cron_store,
+        "checkpointer": configured_checkpointer,
+    }
+    assert not config.checkpoint_path.exists()
 
 
 async def test_run_host_persists_langgraph_checkpoints(tmp_path, monkeypatch) -> None:

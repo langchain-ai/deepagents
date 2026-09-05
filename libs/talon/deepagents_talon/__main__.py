@@ -192,15 +192,28 @@ async def _run_host(
     config: TalonConfig,
     cron_store: CronJobStore,
     channels: Sequence[ChannelAdapter],
+    *,
+    checkpointer: Checkpointer | None = None,
 ) -> None:
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
-
     if config.model is None:
         await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
         return
-    async with AsyncSqliteSaver.from_conn_string(str(config.checkpoint_path)) as checkpointer:
-        await checkpointer.setup()
+    if checkpointer is not None:
         agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=checkpointer)
+        await _run_host_with_agent(args, config, cron_store, channels, agent)
+        return
+
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
+
+    async with AsyncSqliteSaver.from_conn_string(
+        str(config.checkpoint_path)
+    ) as sqlite_checkpointer:
+        await sqlite_checkpointer.setup()
+        agent = await _agent_runtime(
+            config,
+            cron_store=cron_store,
+            checkpointer=sqlite_checkpointer,
+        )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 
 

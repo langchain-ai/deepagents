@@ -75,6 +75,19 @@ class FailingRecoveryAgent(BlockingAgent):
         raise RuntimeError(message)
 
 
+class ReloadableAgent(BlockingAgent):
+    def __init__(self, *, fail_reload: bool = False) -> None:
+        super().__init__()
+        self.fail_reload = fail_reload
+        self.reloads = 0
+
+    async def reload_mcp_configuration(self) -> None:
+        self.reloads += 1
+        if self.fail_reload:
+            message = "sensitive reload failure"
+            raise RuntimeError(message)
+
+
 class CancellationResistantAgent(BlockingAgent):
     async def invoke(self, request: AgentRequest) -> AgentResult:
         self.requests.append(request)
@@ -607,6 +620,61 @@ async def test_new_command_cancels_in_flight_conversation(tmp_path: Path) -> Non
         ("chat", "Started a fresh conversation."),
         ("chat", "reply:second"),
     ]
+
+
+async def test_mcp_reload_command_reloads_without_invoking_agent(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = ReloadableAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="/mcp-reload@TestBot"),
+    )
+    await host.stop()
+
+    assert agent.reloads == 1
+    assert agent.requests == []
+    assert channel.sent == [("chat", "Reloaded MCP configuration.")]
+
+
+async def test_mcp_reload_command_hides_reload_errors(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    channel = RecordingChannel()
+    agent = ReloadableAgent(fail_reload=True)
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="/mcp-reload"),
+    )
+    await host.stop()
+
+    assert channel.sent == [
+        ("chat", "Could not reload MCP configuration. Check Talon logs."),
+    ]
+    assert "MCP configuration reload failed" in caplog.text
+    assert "sensitive reload failure" not in channel.sent[0][1]
+
+
+async def test_mcp_reload_command_reports_unavailable_runtime(tmp_path: Path) -> None:
+    channel = RecordingChannel()
+    agent = BlockingAgent()
+    host = TalonHost(config=_config(tmp_path), agent=agent, channels=[channel])
+    await host.start()
+
+    await host.receive_message(
+        channel,
+        ChannelMessage(conversation_id="chat", text="/mcp-reload"),
+    )
+    await host.stop()
+
+    assert agent.requests == []
+    assert channel.sent == [("chat", "MCP configuration reload is unavailable.")]
 
 
 async def test_new_recovers_old_thread_before_reset(tmp_path: Path) -> None:

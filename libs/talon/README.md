@@ -178,6 +178,11 @@ turn after login completes.
 Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
 `deepagents-talon mcp login <server>` flow remains available as an alternative.
 
+After editing the configuration, send `/mcp-reload` through an authorized channel to
+reload it without restarting Talon. The agent can also call
+`reload_mcp_configuration` autonomously; that schedules the same reload before the
+next agent turn.
+
 Fleet zip exports can be materialized into a Talon-local agent directory before
 starting the host:
 

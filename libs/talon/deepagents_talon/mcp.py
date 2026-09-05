@@ -154,13 +154,14 @@ class MCPTools:
 
 
 class MCPToolProvider:
-    """Load MCP tools and refresh them after first-time channel authorization."""
+    """Load MCP tools and refresh them when their availability changes."""
 
     def __init__(self, config: TalonConfig) -> None:
         """Bind the provider to one Talon configuration."""
         self._config = config
         self._oauth_servers: frozenset[str] = frozenset()
-        self._dirty = False
+        self._refresh_revision = 0
+        self._applied_revision = 0
         self._lock = asyncio.Lock()
 
     async def load(self) -> MCPTools:
@@ -174,18 +175,53 @@ class MCPToolProvider:
             tools = (*tools, self._status_tool(loaded.servers))
         if self._oauth_servers:
             tools = (*tools, self._authorization_tool())
+        tools = (*tools, self._reload_tool())
         return MCPTools(tools=tools, servers=loaded.servers)
 
     async def refresh_if_needed(self) -> Sequence[BaseTool] | None:
-        """Reload MCP schemas once after an authorization changes credentials."""
-        if not self._dirty:
-            return None
+        """Reload MCP schemas once after their availability changes."""
+        return await self._reload(force=False)
+
+    async def reload(self) -> Sequence[BaseTool]:
+        """Reload MCP tools from the configured path."""
+        refreshed = await self._reload(force=True)
+        if refreshed is None:
+            msg = "forced MCP reload did not produce tools"
+            raise RuntimeError(msg)
+        return refreshed
+
+    def request_refresh(self) -> None:
+        """Schedule an MCP configuration reload before the next agent turn."""
+        self._refresh_revision += 1
+
+    async def _reload(self, *, force: bool) -> Sequence[BaseTool] | None:
         async with self._lock:
-            if not self._dirty:
+            revision = self._refresh_revision
+            if not force and revision == self._applied_revision:
                 return None
-            tools = (await self.load()).tools
-            self._dirty = False
+            try:
+                tools = (await self.load()).tools
+            except asyncio.CancelledError:
+                raise
+            except BaseException:
+                self._applied_revision = revision
+                raise
+            self._applied_revision = revision
             return tools
+
+    def _reload_tool(self) -> BaseTool:
+        @tool(
+            "reload_mcp_configuration",
+            description=(
+                "Reload Talon's configured MCP servers before the next agent turn. "
+                "Use after the operator changes the MCP configuration."
+            ),
+        )
+        def reload_mcp_configuration() -> dict[str, str]:
+            self.request_refresh()
+            return {"status": "scheduled", "available": "next_turn"}
+
+        return reload_mcp_configuration
 
     def _status_tool(self, servers: Sequence[MCPServerInfo]) -> BaseTool:
         statuses: tuple[dict[str, object], ...] = tuple(
@@ -268,7 +304,7 @@ class MCPToolProvider:
                 return {"status": "failed", "server_name": server_name}
         except asyncio.CancelledError:
             if attempt.completed:
-                self._dirty = True
+                self._refresh_revision += 1
             raise
         except (
             HTTPError,
@@ -300,7 +336,7 @@ class MCPToolProvider:
             if attempt.binding is None
             else "failed"
         )
-        self._dirty = self._dirty or attempt.completed
+        self._refresh_revision += int(attempt.completed)
         return {"status": status, "server_name": server_name}
 
 

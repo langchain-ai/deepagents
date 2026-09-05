@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from types import SimpleNamespace
@@ -192,6 +193,46 @@ async def test_runtime_refreshes_tools_between_turns_and_binds_authorization_han
         ["current_time", "refreshed_tool"],
     ]
     assert current_authorization_handler() is None
+
+
+async def test_runtime_reloads_mcp_tools_transactionally(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created: list[RecordingGraph] = []
+
+    def fake_create_deep_agent(**_kwargs: Any) -> RecordingGraph:
+        graph = RecordingGraph()
+        created.append(graph)
+        if len(created) == 3:
+            msg = "invalid replacement graph"
+            raise RuntimeError(msg)
+        return graph
+
+    async def reload_tools() -> list[Callable[..., object]]:
+        return [refreshed_tool]
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", fake_create_deep_agent)
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        tools=[custom_tool],
+        reload_tools=reload_tools,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+
+    await runtime.reload_mcp_configuration()
+
+    assert runtime.tools == (refreshed_tool,)
+    assert runtime._graph is created[1]
+
+    previous_graph = runtime._graph
+    with pytest.raises(RuntimeError, match="invalid replacement graph"):
+        await runtime.reload_mcp_configuration()
+
+    assert runtime.tools == (refreshed_tool,)
+    assert runtime._graph is previous_graph
 
 
 async def test_runtime_wires_backend_checkpointer_tools_skills_and_memory(
@@ -1083,6 +1124,48 @@ async def test_runtime_approves_tool_interrupt_with_channel_handler() -> None:
     assert approvals[0].conversation_id == "chat"
     assert approvals[0].interrupt_id == "interrupt-1"
     assert approvals[0].action_requests[0]["name"] == "dangerous_tool"
+
+
+async def test_runtime_keeps_graph_stable_while_waiting_for_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph = InterruptingGraph()
+    replacement = RecordingGraph()
+    approval_started = asyncio.Event()
+    release_approval = asyncio.Event()
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    runtime._graph = graph
+
+    async def approve(_request: ToolApprovalRequest) -> ToolApprovalDecision:
+        approval_started.set()
+        await release_approval.wait()
+        return "approve"
+
+    invocation = asyncio.create_task(
+        runtime.invoke(
+            AgentRequest(
+                conversation_id="chat",
+                text="run",
+                approval_handler=approve,
+            )
+        )
+    )
+    await approval_started.wait()
+    monkeypatch.setattr(runtime, "_create_graph", lambda _tools: replacement)
+    runtime._replace_runtime_tools(())
+    release_approval.set()
+
+    result = await invocation
+
+    assert result.text == "approved"
+    assert graph.executed is True
+    assert runtime._graph is replacement
+    assert replacement.calls == []
 
 
 async def test_runtime_logs_tool_approval_without_argument_values(

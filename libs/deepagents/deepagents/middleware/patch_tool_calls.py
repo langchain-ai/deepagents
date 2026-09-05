@@ -42,7 +42,6 @@ class PatchToolCallsMiddleware(AgentMiddleware):
 
         answered_ids = {msg.tool_call_id for msg in messages if msg.type == "tool"}
         patched_messages = []
-        patched_any = False
         for msg in messages:
             patched_messages.append(msg)
             if not isinstance(msg, AIMessage):
@@ -51,9 +50,8 @@ class PatchToolCallsMiddleware(AgentMiddleware):
                 error_message = self._error_tool_message(tool_call)
                 if error_message is not None and error_message.tool_call_id not in answered_ids:
                     patched_messages.append(error_message)
-                    patched_any = True
 
-        if not patched_any:
+        if len(patched_messages) == len(messages):
             return None
         return {"messages": [RemoveMessage(id=REMOVE_ALL_MESSAGES), *patched_messages]}
 

@@ -16,6 +16,7 @@ const DEFAULT_CHANGELOG = 'CHANGELOG.md';
 const COMPONENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const BYPASS_LABEL = 'release: dangerously skip curated notes';
 const COMMAND_MENTION = '@release-bot';
+const WORKFLOW_BOT_LOGIN = 'github-actions[bot]';
 const OVERRIDE_MARKER = 'release-notes-override';
 const APPLIED_MARKER = 'release-notes-applied';
 // GitHub's compare response lists at most 300 changed files and does not
@@ -572,6 +573,27 @@ async function authenticatedBot(github, appSlug, login, id) {
   return user;
 }
 
+async function acknowledgeCommand({ github, owner, repo, commentId, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
+  const response = await github.rest.reactions.createForIssueComment({
+    owner,
+    repo,
+    comment_id: commentId,
+    content: 'eyes',
+  });
+  return response.data.id;
+}
+
+async function completeCommand({ github, owner, repo, commentId, reactionId, appSlug, login, id }) {
+  await authenticatedBot(github, appSlug, login, id);
+  await github.rest.reactions.deleteForIssueComment({
+    owner, repo, comment_id: commentId, reaction_id: reactionId,
+  });
+  await github.rest.reactions.createForIssueComment({
+    owner, repo, comment_id: commentId, content: 'rocket',
+  });
+}
+
 async function createComment(github, owner, repo, number, body) {
   return github.rest.issues.createComment({ owner, repo, issue_number: number, body });
 }
@@ -732,26 +754,6 @@ async function validateTrigger({ github, context, core, botLogin = null, botId =
         );
       }
       return { shouldRun: false };
-    }
-    // A manual command otherwise passes silently into a queued Actions run,
-    // leaving the maintainer unsure whether it registered at all. Unlike the
-    // rejection replies above this is not gated on `canNotify`: clearing the
-    // write-permission check already proves the commenter is an insider.
-    // Best-effort by design — a createComment failure (e.g. secondary rate
-    // limit) must not fail validation and drop a command that passed every
-    // check. Never include COMMAND_MENTION here, or the ack re-triggers us.
-    try {
-      await createComment(
-        github,
-        owner,
-        repo,
-        number,
-        `Running \`${command}\` for the \`${target.component}\` release PR; the release-notes comment on this PR will be created or updated when the run finishes.`,
-      );
-    } catch (error) {
-      core.warning(
-        `Failed to post acknowledgment comment for ${command} on PR #${number}: ${error instanceof Error ? error.message : String(error)}`,
-      );
     }
   }
 
@@ -1195,16 +1197,54 @@ async function draftCoversCurrentPackage({ github, owner, repo, override, pr, pa
   return comparisonLeavesPackageUnchanged(response.data, packagePath);
 }
 
+// A changed head/fingerprint needs a fresh timeline entry, but older notices no
+// longer need to compete for attention. Preserve them as an audit trail and mark
+// them outdated through GitHub's Hide API. The author checks are load-bearing:
+// contributor-authored copies of the marker must never become mutation targets.
 async function warnForNewEntries({ github, owner, repo, number, comments, head, fingerprint }) {
   const marker = `${STALE_MARKER}\nhead: ${head}\nchangelog-fingerprint: ${fingerprint}\n-->`;
-  if (comments.some(comment => (comment.body ?? '').startsWith(marker))) return;
-  await createComment(
-    github,
-    owner,
-    repo,
-    number,
-    `${marker}\nNew generated release entries appeared; please re-run \`${COMMAND_MENTION} draft\` and then \`${COMMAND_MENTION} apply\`.`,
+  const warnings = comments.filter(comment =>
+    comment.user?.login === WORKFLOW_BOT_LOGIN &&
+    comment.user?.type === 'Bot' &&
+    (comment.body ?? '').startsWith(`${STALE_MARKER}\n`),
   );
+  const newest = [...warnings]
+    .sort((left, right) => Number(right.id) - Number(left.id))[0];
+  let current = newest && (newest.body ?? '').startsWith(marker) ? newest : null;
+  if (!current) {
+    const response = await createComment(github, owner, repo, number, newEntriesWarningBody(marker));
+    current = response.data;
+  }
+  for (const warning of warnings) {
+    if (warning.id !== current.id) await minimizeComment(github, warning);
+  }
+}
+
+function newEntriesWarningBody(marker) {
+  return [
+    marker,
+    'New generated release entries appeared; please re-run:',
+    '',
+    '```',
+    `${COMMAND_MENTION} draft`,
+    '```',
+    '',
+    'and then:',
+    '',
+    '```',
+    `${COMMAND_MENTION} apply`,
+    '```',
+  ].join('\n');
+}
+
+async function minimizeComment(github, comment) {
+  await github.graphql(`
+    mutation($id: ID!) {
+      minimizeComment(input: {subjectId: $id, classifier: OUTDATED}) {
+        minimizedComment { isMinimized }
+      }
+    }
+  `, { id: comment.node_id });
 }
 
 // Surface (logs only) bot-authored comments that carry a curated-notes marker
@@ -1393,7 +1433,7 @@ async function checkCuratedState({
         }
       }
     }
-    core.warning(`Could not post the new-entries warning comment: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+    core.warning(`Could not update the new-entries warning comments: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
   };
   if (!applied) {
     await maybeWarnNewEntries();
@@ -1485,6 +1525,7 @@ async function checkCuratedState({
 
 module.exports = {
   BYPASS_LABEL,
+  acknowledgeCommand,
   comparisonLeavesPackageUnchanged,
   pathIsInPackage,
   COMMAND_MENTION,
@@ -1498,6 +1539,7 @@ module.exports = {
   commandFromComment,
   componentFromBranch,
   componentRegistry,
+  completeCommand,
   createApplyCommit,
   exactSha256,
   extractPreviewSection,

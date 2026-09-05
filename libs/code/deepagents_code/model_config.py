@@ -66,9 +66,12 @@ def resolved_env_var_name(canonical: str) -> str:
     Returns:
         The resolving env var name (prefixed or canonical).
     """
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
     if not canonical.startswith(_ENV_PREFIX):
         prefixed = f"{_ENV_PREFIX}{canonical}"
-        if prefixed in os.environ:
+        if prefixed in environ:
             return prefixed
     return canonical
 
@@ -95,11 +98,14 @@ def resolve_env_var(name: str) -> str | None:
     Returns:
         The resolved value, or `None` when absent or empty.
     """
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
     if not name.startswith(_ENV_PREFIX):
         prefixed = f"{_ENV_PREFIX}{name}"
-        if prefixed in os.environ:
-            val = os.environ[prefixed]
-            if not val and os.environ.get(name):
+        if prefixed in environ:
+            val = environ[prefixed]
+            if not val and environ.get(name):
                 logger.debug(
                     "%s is set but empty, blocking non-empty %s. "
                     "Unset %s to use the canonical variable.",
@@ -116,7 +122,7 @@ def resolve_env_var(name: str) -> str | None:
                 if should_log:
                     logger.debug("Resolved %s from %s", name, prefixed)
             return val or None
-    return os.environ.get(name) or None
+    return environ.get(name) or None
 
 
 PROVIDERS_DOCS_URL = (
@@ -2413,8 +2419,11 @@ def _resolve_gateway_configured(provider: str) -> ProviderAuthStatus | None:
         A `CONFIGURED` status pointing at `LANGSMITH_GATEWAY_API_KEY`, or
         `None` when the gateway cannot authenticate this provider.
     """
-    gateway = os.getenv(LANGSMITH_GATEWAY_ENV)
-    gateway_key = os.getenv(LANGSMITH_GATEWAY_API_KEY_ENV)
+    from deepagents_code.config import active_environment
+
+    environ = active_environment()
+    gateway = environ.get(LANGSMITH_GATEWAY_ENV)
+    gateway_key = environ.get(LANGSMITH_GATEWAY_API_KEY_ENV)
     if (
         provider not in LANGSMITH_GATEWAY_PROVIDERS
         or not gateway
@@ -2960,8 +2969,11 @@ def _configured_base_url_survives_env_clear(provider: str) -> bool:
     provider_cfg = config.providers.get(provider)
     if provider_cfg and provider_cfg.get("base_url"):
         return True
+    from deepagents_code.config import active_environment
+
+    environment = active_environment()
     for env_var in get_base_url_env_vars(provider):
-        if os.environ.get(f"{_ENV_PREFIX}{env_var}"):
+        if environment.get(f"{_ENV_PREFIX}{env_var}"):
             return True
     return False
 
@@ -5137,7 +5149,9 @@ def _parse_csv_env(name: str) -> list[str] | None:
             trimming), or `None` when the variable is unset so callers can
             distinguish "unset, fall back to TOML" from "set but empty".
     """
-    raw = os.environ.get(name)
+    from deepagents_code.config import active_environment
+
+    raw = active_environment().get(name)
     if raw is None:
         return None
     return [item.strip() for item in raw.split(",") if item.strip()]
@@ -5702,7 +5716,11 @@ def load_mcp_server_trust_lists(
     # The old name was renamed to the `DANGEROUSLY_`-prefixed var and is no
     # longer read; flag it set-but-ignored so callers can explain the rename
     # instead of the names silently ceasing to pre-approve.
-    legacy_env_ignored = _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in os.environ
+    from deepagents_code.config import active_environment
+
+    legacy_env_ignored = (
+        _env_vars.LEGACY_ENABLED_PROJECT_MCP_SERVERS in active_environment()
+    )
     if legacy_env_ignored:
         logger.warning(
             "%s is no longer used; it was renamed to %s",

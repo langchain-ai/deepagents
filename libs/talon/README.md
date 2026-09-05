@@ -154,7 +154,7 @@ When enabled, Talon wraps each agent run in a LangSmith tracing context with ass
 
 ## MCP Tools
 
-Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CONFIG`, then `MCP_CONFIG`, then `~/.deepagents/.mcp.json`. For user-level MCP servers, edit `~/.deepagents/.mcp.json`:
+Talon loads MCP servers from `~/.deepagents/.mcp.json`. Set `DEEPAGENTS_TALON_MCP_CONFIG` to use a different path. For user-level MCP servers, edit the standard file:
 
 ```json
 {
@@ -167,7 +167,16 @@ Talon loads MCP servers from one config file. It checks `DEEPAGENTS_TALON_MCP_CO
 }
 ```
 
-Run `deepagents-talon mcp config` to print the resolved config paths, and `deepagents-talon mcp login <server>` for OAuth-backed servers.
+Set `"auth": "oauth"` on a remote server to enable OAuth. From WhatsApp,
+Telegram, or another interactive channel, ask Talon to authenticate that configured
+server. Talon calls the narrow `authenticate_mcp_server` capability, sends the
+authorization link directly to the originating conversation, and waits for the same
+operator to paste the full callback URL. The authorization link and callback bypass
+the model context and traces. Newly discovered tools are available on the next channel
+turn after login completes.
+
+Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
+`deepagents-talon mcp login <server>` flow remains available as an alternative.
 
 Fleet zip exports can be materialized into a Talon-local agent directory before
 starting the host:
@@ -193,53 +202,51 @@ different assistant for the import, or `--target-dir <dir>` to write all
 imported files under an explicit directory.
 
 The importer writes Fleet prompts, skills, and subagent prompts. Fleet
-`tools.json` is read only as import input and is not copied into the Talon agent
-directory. Fleet `config.json` is ignored. Talon does not support the old Fleet
-direct-run startup path or its environment variables; import the zip first, then
-run Talon against the materialized local assistant.
+`tools.json` and `config.json` are ignored and are not copied into the Talon agent
+directory. Talon does not support the old Fleet direct-run startup path or its
+environment variables; import the zip first, then run Talon against the
+materialized local assistant.
 
-When Fleet MCP tools are present, the importer writes `.mcp.json` in the target
-agent directory. This is the runtime MCP config loaded by Talon and contains the
-sanitized OAuth server entries from the Fleet export. The importer also writes
-`.mcp.json.setup` as a human-readable setup handoff for the operator:
+## Cron Schedules
 
-```json
-{
-  "mcpServers": {
-    "fleet-tools": {
-      "type": "http",
-      "url": "https://tools.example.com/mcp",
-      "auth": "oauth",
-      "allowedTools": ["github_get_file", "github_create_pull_request"]
-    }
-  }
-}
-```
+`create_job` and `edit_job` accept four schedule forms:
 
-For non-OAuth servers or local edits, keep credentials in environment variables
-or another local secret source rather than in committed files:
+| Form | Kind | Example |
+| --- | --- | --- |
+| `in <N>{m,h}` | one-shot | `in 30m` |
+| `every <N>{m,h}` | recurring | `every 6h` |
+| `at <YYYY-MM-DD> <HH:MM> <tz>` | one-shot | `at 2026-09-04 13:30 America/New_York` |
+| `daily at <HH:MM> <tz>` | recurring | `daily at 08:00 America/New_York` |
 
-```json
-{
-  "mcpServers": {
-    "internal-tools": {
-      "command": "internal-mcp-server",
-      "args": ["--token-env", "INTERNAL_MCP_TOKEN"]
-    }
-  }
-}
-```
+The wall-clock forms require an explicit IANA timezone name; there is no default
+zone, and legacy POSIX aliases (`EST5EDT`) and bare UTC offsets (`+02:00`) are
+rejected because they cannot express a region's future daylight-saving rules.
 
-If the Fleet export contains interrupt-enabled tools, the import summary prints
-the recommended `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` value. Set that value when
-starting Talon so those tools continue to require channel approval:
+The agent gets that zone name from the `current_time` tool, which is always
+available and reports the current date, time, and IANA timezone. Called with no
+argument it uses the host's local zone; pass a zone name to read the clock
+elsewhere. Its `timezone` value goes straight into a schedule string. When the
+host zone name cannot be determined the tool still reports the correct local
+time and UTC offset, but returns `timezone: null` and a note to ask the user
+rather than guessing.
 
-```bash
-DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS=github_create_pull_request,github_update_file \
-AGENT_ASSISTANT_ID=local \
-AGENT_MODEL=<provider>:<model-id> \
-deepagents-talon --telegram
-```
+The timezone is stored on the job and pinned. `daily at 08:00 America/New_York`
+fires at 08:00 New York wall-clock time no matter where the host is or which
+side of a daylight-saving transition the run falls on — the next run is rebuilt
+from the local date each time rather than advanced by 24 hours. Two edge cases
+resolve deterministically:
+
+- A local time skipped by a spring-forward transition snaps forward to the first
+  minute that exists, so `daily at 02:30` fires at 03:00 local on that day
+  rather than being skipped.
+- An ambiguous local time repeated by a fall-back transition resolves to its
+  earlier occurrence, so the job fires once.
+
+Interval schedules stay phase-locked to their previous run, so a late scheduler
+tick does not shift an `every 15m` job off its cadence. A one-shot `at` schedule
+that has already passed is rejected at create and edit time with the resolved
+instant in the error message. Because the scheduler ticks every 60 seconds, a
+run lands within the minute it is due, not on the exact second.
 
 ## Cron Observability
 

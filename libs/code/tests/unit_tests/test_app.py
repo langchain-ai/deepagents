@@ -459,6 +459,42 @@ class TestStartupSequence:
             assert app._restoring_resumed_history is False
             assert app._status_bar.connection_state == ""
 
+    async def test_update_message_waits_for_resumed_history(self) -> None:
+        """A startup update notice mounts below restored transcript history."""
+        app = DeepAgentsApp(
+            agent=MagicMock(),
+            thread_id="thread-123",
+            resume_thread="thread-123",
+        )
+        history_started = asyncio.Event()
+        release_history = asyncio.Event()
+        order: list[str] = []
+
+        async def load_history(**_kwargs: object) -> None:
+            history_started.set()
+            await release_history.wait()
+            order.append("history")
+
+        async def mount_message(_message: object) -> bool:  # noqa: RUF029
+            order.append("update")
+            return True
+
+        app._load_thread_history = load_history  # ty: ignore
+        app._mount_message = mount_message  # ty: ignore[invalid-assignment]
+
+        update_task = asyncio.create_task(
+            app._mount_update_message("9.9.9", "Update available"),
+        )
+        startup_task = asyncio.create_task(app._run_session_start_sequence())
+        await history_started.wait()
+        assert not update_task.done()
+
+        release_history.set()
+        mounted, _ = await asyncio.gather(update_task, startup_task)
+
+        assert mounted == "mounted"
+        assert order == ["history", "update"]
+
     async def test_resuming_status_clears_when_session_init_fails(self) -> None:
         """Resume progress should clear when startup aborts before history loading."""
         app = DeepAgentsApp(
@@ -11153,47 +11189,162 @@ class TestMessageTimestampFooters:
                 app.query_one("#spacer-0", UserMessage)
             assert app.query_one("#spacer-4", UserMessage)
 
-    async def test_mount_message_hydrates_hidden_tail_before_append(
+    async def test_mount_message_moves_directly_to_bounded_tail(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """New live output should not skip messages hidden below the window."""
-        from deepagents_code.tui.widgets.message_store import MessageType
+        """New live output should mount only the bounded tail before appending."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
 
         app = DeepAgentsApp()
 
         async with app.run_test() as pilot:
             await pilot.pause()
-            for index in range(5):
-                await app._mount_message(UserMessage(f"m{index}", id=f"tail-{index}"))
-            await pilot.pause()
-
             monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            archived = [
+                MessageData(
+                    type=MessageType.USER,
+                    content=f"m{index}",
+                    id=f"tail-{index}",
+                )
+                for index in range(100)
+            ]
+            app._message_store.bulk_load(archived)
+            entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
             messages = app.query_one("#messages", Container)
-            await app._prune_messages("below", messages)
+            assert await app._mount_hydration_batch(
+                messages,
+                entries,
+                generation=app._transcript_generation,
+            )
+            await app._ensure_transcript_spacers(messages)
+            app._message_store._visible_start = 10
+            app._message_store._visible_end = 13
+            tail_nodes = [
+                child
+                for child in messages.children
+                if child.id
+                and any(
+                    child.id.startswith(f"tail-{index}") for index in range(97, 100)
+                )
+            ]
+            await messages.remove_children(tail_nodes)
+            middle_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                middle_entries,
+                generation=app._transcript_generation,
+            )
             await pilot.pause()
 
-            assert app._message_store.has_messages_below
-            with pytest.raises(NoMatches):
-                app.query_one("#tail-3", UserMessage)
+            hydrate_calls = 0
 
+            async def count_hydration(
+                direction: Literal["above", "below"], *, count: int | None = None
+            ) -> int:
+                nonlocal hydrate_calls
+                hydrate_calls += 1
+                await asyncio.sleep(0)
+                assert direction in {"above", "below"}
+                assert count is None or count >= 0
+                return 0
+
+            monkeypatch.setattr(app, "_hydrate_messages", count_hydration)
             await app._mount_message(UserMessage("new", id="tail-new"))
             await pilot.pause()
 
-            assert not app._message_store.has_messages_below
+            assert hydrate_calls == 0
+            assert app._message_store.get_visible_range() == (97, 101)
             assert [
                 msg.id
                 for msg in app._message_store.get_all_messages()
                 if msg.type is MessageType.USER
-            ] == [
-                "tail-0",
-                "tail-1",
-                "tail-2",
-                "tail-3",
-                "tail-4",
-                "tail-new",
-            ]
-            for message_id in ["tail-3", "tail-4", "tail-new"]:
+            ] == [*[f"tail-{index}" for index in range(100)], "tail-new"]
+            for message_id in ["tail-97", "tail-98", "tail-99", "tail-new"]:
                 assert app.query_one(f"#{message_id}", UserMessage)
+            for message_id in ["tail-10", "tail-11", "tail-12", "tail-50"]:
+                with pytest.raises(NoMatches):
+                    app.query_one(f"#{message_id}", UserMessage)
+
+    async def test_mount_message_hydrates_tail_blocked_by_protected_row(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A protected old row keeps the store and mounted append in sync."""
+        from deepagents_code.tui.widgets.message_store import MessageData, MessageType
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            monkeypatch.setattr(app._message_store, "WINDOW_SIZE", 3)
+            monkeypatch.setattr(app, "_schedule_transcript_prune", lambda *_args: None)
+            app._message_store.bulk_load(
+                [
+                    MessageData(
+                        type=MessageType.USER,
+                        content=f"m{index}",
+                        id=f"blocked-{index}",
+                    )
+                    for index in range(10)
+                ]
+            )
+            messages = app.query_one("#messages", Container)
+            tail_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                tail_entries,
+                generation=app._transcript_generation,
+            )
+            await app._ensure_transcript_spacers(messages)
+            await messages.remove_children(
+                [
+                    child
+                    for child in messages.children
+                    if child.id
+                    and any(
+                        child.id.startswith(f"blocked-{index}")
+                        for index in range(7, 10)
+                    )
+                ]
+            )
+            app._message_store._visible_start = 1
+            app._message_store._visible_end = 3
+            middle_entries = [
+                app._build_hydration_entry(data)
+                for data in app._message_store.get_visible_messages()
+            ]
+            assert await app._mount_hydration_batch(
+                messages,
+                middle_entries,
+                generation=app._transcript_generation,
+            )
+            app._message_store.protect_message("blocked-2")
+
+            assert await app._mount_message(UserMessage("new", id="blocked-new"))
+            await pilot.pause()
+
+            visible_ids = {
+                data.id for data in app._message_store.get_visible_messages()
+            }
+            mounted_ids = {
+                child.id
+                for child in messages.children
+                if child.id
+                in {
+                    *{f"blocked-{index}" for index in range(10)},
+                    "blocked-new",
+                }
+            }
+            assert app._message_store.get_visible_range() == (1, 11)
+            assert mounted_ids == visible_ids
+            assert len(app.query("#blocked-new")) == 1
 
     async def test_hydrate_below_replaces_unbuildable_message(
         self, monkeypatch: pytest.MonkeyPatch
@@ -16256,6 +16407,50 @@ class TestDeferredActions:
             assert app._status_bar is not None
             assert app._status_bar.connection_state == "reconnecting"
 
+    async def test_retry_startup_refreshes_provider_default_classifier(self) -> None:
+        """Deferred startup refreshes its classifier default across retries."""
+        from deepagents_code.model_config import (
+            ProviderAuthState,
+            ProviderAuthStatus,
+        )
+
+        app = DeepAgentsApp()
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._server_kwargs = {"model_name": None, "auto_classifier_model": None}
+            app._server_startup_deferred = True
+            app.query_one = MagicMock(side_effect=NoMatches("any"))  # ty: ignore
+            app.run_worker = MagicMock()  # ty: ignore
+
+            with (
+                patch(
+                    "deepagents_code.config._get_default_model_spec",
+                    return_value="anthropic:claude-opus-4-7",
+                ),
+                patch(
+                    "deepagents_code.model_config.get_provider_auth_status",
+                    return_value=ProviderAuthStatus(
+                        state=ProviderAuthState.UNKNOWN,
+                        provider="anthropic",
+                    ),
+                ),
+                patch(
+                    "deepagents_code.config.resolve_auto_classifier_model_for_provider",
+                    side_effect=[
+                        "anthropic:claude-sonnet-5",
+                        "openai:gpt-5.6-luna",
+                    ],
+                ),
+            ):
+                started = await app._maybe_start_deferred_server_from_default()
+                assert app._auto_classifier_model == "anthropic:claude-sonnet-5"
+
+                await app._retry_startup_with_model("openai:gpt-5.6")
+
+            assert started is True
+            assert app._auto_classifier_model == "openai:gpt-5.6-luna"
+            assert app._server_kwargs["auto_classifier_model"] == "openai:gpt-5.6-luna"
+
     async def test_server_failure_missing_credentials_clears_package_slot(
         self,
     ) -> None:
@@ -17962,6 +18157,67 @@ def test_build_update_notification_uses_release_and_installed_age_copy() -> None
     assert notification.title == "Update available"
 
 
+def _app_without_stale_banner(**kwargs: Any) -> DeepAgentsApp:
+    """Build an app whose construction-time staleness check reports "fresh".
+
+    Keeps the header hidden and `sub_title` untouched at construction, so tests
+    exercising the runtime refresh start from a known-clean baseline.
+    """
+    with patch(
+        "deepagents_code.update_check.is_installation_stale",
+        return_value=False,
+    ):
+        return DeepAgentsApp(**kwargs)
+
+
+@contextlib.contextmanager
+def _patched_update_env(*, auto_update: bool) -> Iterator[MagicMock]:
+    """Patch the whole `update_check` surface one update run touches.
+
+    Pins a v9.9.9 update, a 7-day-old install, and empty age fragments so
+    assertions can match message text exactly.
+
+    Args:
+        auto_update: What `is_auto_update_enabled` reports, which selects the
+            restart-prompt branch (`True`) or the notice branch (`False`).
+
+    Yields:
+        The `mark_update_notified` mock, so tests can assert whether the
+        version was recorded as notified.
+    """
+    with (
+        patch("deepagents_code.config._is_editable_install", return_value=False),
+        patch(
+            "deepagents_code.update_check.is_update_available",
+            return_value=(True, "9.9.9"),
+        ),
+        patch("deepagents_code.update_check.installed_days_old", return_value=7),
+        patch(
+            "deepagents_code.update_check.is_auto_update_enabled",
+            return_value=auto_update,
+        ),
+        patch("deepagents_code.update_check.should_notify_update", return_value=True),
+        patch("deepagents_code.update_check.mark_update_notified") as mark_notified,
+        patch(
+            "deepagents_code.update_check.format_release_age_parenthetical",
+            return_value="",
+        ),
+        patch(
+            "deepagents_code.update_check.format_installed_age_suffix",
+            return_value="",
+        ),
+        patch(
+            "deepagents_code.update_check.release_requires_prereleases",
+            return_value=False,
+        ),
+        patch(
+            "deepagents_code.update_check.upgrade_command",
+            return_value="uv tool upgrade deepagents-code",
+        ),
+    ):
+        yield mark_notified
+
+
 class TestNotificationCenterIntegration:
     """App-level wiring between the notifications registry and the modal."""
 
@@ -18926,55 +19182,127 @@ class TestNotificationCenterIntegration:
         assert isinstance(entry.payload, UpdateAvailablePayload)
         assert "--prerelease allow" in entry.payload.upgrade_cmd
 
-    async def test_periodic_update_check_toasts_without_opening_modal(self) -> None:
-        """Hourly rechecks surface updates without interrupting the session."""
-        app = DeepAgentsApp(agent=MagicMock(), thread_id="t")
-        bodies: list[str] = []
-        original_notify_actionable = app._notify_actionable
+    async def test_periodic_update_check_mounts_durable_message(self) -> None:
+        """Hourly rechecks surface one durable message instead of a toast."""
+        from deepagents_code.tui.widgets.messages import AppMessage
 
-        def capture_notify_actionable(
-            entry: PendingNotification, **kwargs: Any
-        ) -> None:
-            bodies.append(f"{entry.body}\n\n{kwargs.get('action_hint', '')}")
-            original_notify_actionable(entry, **kwargs)
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore
 
-        app._notify_actionable = capture_notify_actionable  # ty: ignore
+        with _patched_update_env(auto_update=False) as mark_notified:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+                messages = [
+                    message.render().plain
+                    for message in app.query(AppMessage)
+                    if "Update available" in message.render().plain
+                ]
+                assert app.query_one("#app-header").display is True
+
+        assert app._notice_registry.get("update:available") is not None
+        assert messages == [
+            (
+                f"Update available: v9.9.9. Currently installed: {__version__}. "
+                "Run /update, or press ctrl+n to review install options."
+            )
+        ]
+        app.notify.assert_not_called()  # ty: ignore
+        mark_notified.assert_called_once_with("9.9.9")
+
+    async def test_header_failure_does_not_swallow_the_update_notice(self) -> None:
+        """A broken header still leaves the notice and the message intact."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
 
         with (
-            patch(
-                "deepagents_code.config._is_editable_install",
-                return_value=False,
+            _patched_update_env(auto_update=False),
+            patch.object(
+                app,
+                "_refresh_stale_install_header",
+                side_effect=RuntimeError("boom"),
             ),
-            patch(
-                "deepagents_code.update_check.is_update_available",
-                return_value=(True, "9.9.9"),
-            ),
-            patch(
-                "deepagents_code.update_check.is_auto_update_enabled",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.should_notify_update",
-                return_value=True,
-            ),
-            patch(
-                "deepagents_code.update_check.mark_update_notified",
-            ),
-            patch(
-                "deepagents_code.update_check.format_release_age_parenthetical",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.format_installed_age_suffix",
-                return_value="",
-            ),
-            patch(
-                "deepagents_code.update_check.release_requires_prereleases",
-                return_value=False,
-            ),
-            patch(
-                "deepagents_code.update_check.upgrade_command",
-                return_value="uv tool upgrade deepagents-code",
+        ):
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+                messages = [message.render().plain for message in app.query(AppMessage)]
+
+        assert app._update_available == (True, "9.9.9")
+        assert app._notice_registry.get("update:available") is not None
+        assert any("Update available: v9.9.9" in message for message in messages)
+
+    async def test_auto_update_mounts_durable_restart_prompt(self) -> None:
+        """With auto-update on, the restart prompt is a message, not a toast."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore
+
+        with _patched_update_env(auto_update=True) as mark_notified:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await app._check_for_updates(periodic=True)
+                await app._check_for_updates(periodic=True)
+                await pilot.pause()
+                messages = [message.render().plain for message in app.query(AppMessage)]
+
+        assert messages == [
+            (
+                f"Update available: v9.9.9. Currently installed: {__version__}. "
+                "Quit and relaunch dcode to install the update automatically."
+            )
+        ]
+        app.notify.assert_not_called()  # ty: ignore
+        mark_notified.assert_called_once_with("9.9.9")
+
+    async def test_deferred_resume_does_not_block_update_check(self) -> None:
+        """A future history restore must not strand the update-check worker."""
+        from deepagents_code.tui.widgets.messages import AppMessage
+
+        app = _app_without_stale_banner(
+            thread_id="t",
+            resume_thread="t",
+            server_kwargs={"assistant_id": "agent", "model_name": None},
+            defer_server_start=True,
+        )
+
+        with _patched_update_env(auto_update=True) as mark_notified:
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                await asyncio.wait_for(app._check_for_updates(), timeout=1)
+
+                assert app._update_check_done.is_set()
+                assert mark_notified.call_count == 0
+                assert not any(
+                    "Update available" in message.render().plain
+                    for message in app.query(AppMessage)
+                )
+
+                app._startup_history_ready.set()
+                await asyncio.wait_for(app.workers.wait_for_complete(), timeout=5)
+                messages = [message.render().plain for message in app.query(AppMessage)]
+
+        assert any("Quit and relaunch dcode" in message for message in messages)
+        mark_notified.assert_called_once_with("9.9.9")
+
+    async def test_auto_update_falls_back_to_a_toast_when_the_mount_fails(
+        self,
+    ) -> None:
+        """A failed mount still reaches the user; the version stays unnotified."""
+        app = _app_without_stale_banner(agent=MagicMock(), thread_id="t")
+        app.notify = MagicMock()  # ty: ignore
+
+        with (
+            _patched_update_env(auto_update=True) as mark_notified,
+            patch.object(
+                app,
+                "_mount_message",
+                new=AsyncMock(return_value=False),
             ),
         ):
             async with app.run_test() as pilot:
@@ -18982,10 +19310,10 @@ class TestNotificationCenterIntegration:
                 await app._check_for_updates(periodic=True)
                 await pilot.pause()
 
-        entry = app._notice_registry.get("update:available")
-        assert entry is not None
-        assert any("session will not be interrupted" in body for body in bodies)
-        assert any("Press ctrl+n to install." in body for body in bodies)
+        mark_notified.assert_not_called()
+        assert app._update_message_versions == set()
+        app.notify.assert_called_once()  # ty: ignore
+        assert "Quit and relaunch dcode" in app.notify.call_args.args[0]  # ty: ignore
 
     async def test_open_update_available_modal_over_modal_toasts_hint(self) -> None:
         """Another modal already open: update modal is deferred with a hint toast."""
@@ -19646,7 +19974,130 @@ class TestStaleInstallBanner:
             assert "None" not in (app.sub_title or "")
             async with app.run_test() as pilot:
                 await pilot.pause()
-                assert not app.query(Header)
+                assert app.query_one(Header).display is False
+
+    async def test_runtime_check_reveals_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A fresh hourly result reveals the stale warning without a restart."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = _app_without_stale_banner()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(Header)
+            assert header.display is False
+            app._refresh_stale_install_header(7, update_available=True)
+            await pilot.pause()
+            assert header.display is True
+            assert app.sub_title == (
+                "Update available — installed version is 7 days old (run /update)"
+            )
+
+    async def test_runtime_refresh_preserves_explicit_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Clearing a stale result does not hide the explicitly enabled header."""
+        monkeypatch.setenv("DEEPAGENTS_CODE_SHOW_HEADER", "1")
+        app = _app_without_stale_banner()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app._refresh_stale_install_header(7, update_available=True)
+            app._refresh_stale_install_header(None, update_available=False)
+            await pilot.pause()
+            assert app.query_one("#app-header").display is True
+            assert app.sub_title == app._base_sub_title
+
+    async def test_runtime_stale_result_preserves_runtime_sub_title(self) -> None:
+        """A fresh stale result does not replace a runtime subtitle override."""
+        app = _app_without_stale_banner()
+
+        app.sub_title = "Runtime status"
+        app._refresh_stale_install_header(7, update_available=True)
+
+        assert app.sub_title == "Runtime status"
+
+    async def test_unknown_age_keeps_a_shown_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An unknown age never retracts an advisory the user already saw."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = _app_without_stale_banner()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(Header)
+            app._refresh_stale_install_header(21, update_available=True)
+            await pilot.pause()
+            assert header.display is True
+
+            # The release-time cache went cold (e.g. a concurrent `dcode`
+            # rewrote it) while the update is still outstanding.
+            app._refresh_stale_install_header(None, update_available=True)
+            await pilot.pause()
+
+            assert header.display is True
+            assert app._installation_stale is True
+            assert app.sub_title == self._MESSAGE_21
+
+    async def test_resolved_update_hides_the_banner(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A result with no update left hides the header and restores sub_title."""
+        monkeypatch.delenv("DEEPAGENTS_CODE_SHOW_HEADER", raising=False)
+        from textual.widgets import Header
+
+        app = _app_without_stale_banner()
+
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            header = app.query_one(Header)
+            app._refresh_stale_install_header(21, update_available=True)
+            await pilot.pause()
+            assert header.display is True
+            assert app.sub_title == self._MESSAGE_21
+
+            app._refresh_stale_install_header(None, update_available=False)
+            await pilot.pause()
+
+            assert header.display is False
+            assert app._installation_stale is False
+            assert app.sub_title == app._base_sub_title
+
+    async def test_resolved_update_restores_sandbox_sub_title(self) -> None:
+        """Clearing the advisory puts the sandbox label back."""
+        app = _app_without_stale_banner(server_kwargs={"sandbox_type": "modal"})
+
+        app._refresh_stale_install_header(21, update_available=True)
+        assert app.sub_title == self._MESSAGE_21
+
+        app._refresh_stale_install_header(None, update_available=False)
+
+        assert app.sub_title == "Sandbox: Modal"
+
+    async def test_explicit_sub_title_blocks_runtime_banner(self) -> None:
+        """An explicitly passed subtitle is never replaced by the advisory."""
+        app = _app_without_stale_banner(sub_title="custom")
+
+        app._refresh_stale_install_header(21, update_available=True)
+
+        assert app.sub_title == "custom"
+        assert app._installation_stale is False
+
+    async def test_runtime_fresh_result_preserves_runtime_sub_title(self) -> None:
+        """A fresh result only restores a stale subtitle still owned by dcode."""
+        app = _app_without_stale_banner()
+
+        app._refresh_stale_install_header(7, update_available=True)
+        app.sub_title = "Runtime status"
+        app._refresh_stale_install_header(None, update_available=False)
+
+        assert app.sub_title == "Runtime status"
 
 
 class TestHandleExternalSignal:

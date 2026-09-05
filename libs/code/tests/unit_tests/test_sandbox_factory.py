@@ -10,6 +10,7 @@ import pytest
 from deepagents_code.integrations.sandbox_config import SandboxConfig
 from deepagents_code.integrations.sandbox_factory import (
     _VERCEL_SANDBOX_TIMEOUT,
+    _AgentCoreProvider,
     _get_provider,
     _VercelProvider,
     create_sandbox,
@@ -175,6 +176,51 @@ def test_agentcore_raises_on_missing_aws_credentials() -> None:
         pytest.raises(ValueError, match="AWS credentials not found"),
     ):
         _get_provider("agentcore")
+
+
+def test_agentcore_uses_workspace_aws_session() -> None:
+    """AgentCore receives a session built from workspace AWS settings."""
+    environment = {
+        "AWS_REGION": "us-test-1",
+        "AWS_PROFILE": "workspace-profile",
+        "AWS_ACCESS_KEY_ID": "test-access-key",
+        "AWS_SECRET_ACCESS_KEY": "test-secret-key",
+        "AWS_SESSION_TOKEN": "test-session-token",
+    }
+    session = MagicMock()
+    session.get_credentials.return_value = MagicMock()
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.return_value = session
+    interpreter = MagicMock()
+    client_module = MagicMock()
+    client_module.CodeInterpreter.return_value = interpreter
+    backend_module = MagicMock()
+    backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
+
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        provider = _AgentCoreProvider()
+
+    with patch(
+        f"{_FACTORY}._import_provider_module",
+        side_effect=[client_module, backend_module],
+    ):
+        provider.get_or_create()
+
+    mock_boto3.Session.assert_called_once_with(
+        profile_name="workspace-profile",
+        aws_access_key_id="test-access-key",
+        aws_secret_access_key="test-secret-key",
+        aws_session_token="test-session-token",
+        region_name="us-test-1",
+    )
+    client_module.CodeInterpreter.assert_called_once_with(
+        region="us-test-1",
+        session=session,
+        integration_source="deepagents-code",
+    )
 
 
 def test_agentcore_rejects_sandbox_id() -> None:
@@ -538,3 +584,89 @@ class TestLangSmithSnapshotResolution:
             )
 
             return _LangSmithProvider()
+
+
+def test_setup_script_expands_workspace_environment() -> None:
+    """The setup script sees the workspace `.env`, not the server process env."""
+    from deepagents_code.integrations.sandbox_factory import _run_sandbox_setup
+
+    backend = MagicMock()
+    backend.execute.return_value = MagicMock(exit_code=0, output="")
+    script = MagicMock()
+    script.read_text.return_value = "echo ${WORKSPACE_ONLY} ${SERVER_ONLY}"
+
+    with (
+        patch(f"{_FACTORY}.Path", return_value=script),
+        patch(
+            f"{_FACTORY}.active_environment",
+            return_value={"WORKSPACE_ONLY": "from-project-dotenv"},
+        ),
+        patch.dict(
+            "os.environ",
+            {"SERVER_ONLY": "server-secret", "WORKSPACE_ONLY": "server-value"},
+            clear=False,
+        ),
+    ):
+        script.exists.return_value = True
+        _run_sandbox_setup(backend, "setup.sh")
+
+    command = backend.execute.call_args[0][0]
+    assert "from-project-dotenv" in command
+    # The server process's values must not leak into the sandbox.
+    assert "server-secret" not in command
+    assert "server-value" not in command
+
+
+def test_vercel_override_gate_reads_workspace_environment() -> None:
+    """A prefixed override from the workspace `.env` still triggers the gate."""
+    environment = {
+        "DEEPAGENTS_CODE_VERCEL_TOKEN": "workspace-token",
+        "DEEPAGENTS_CODE_VERCEL_PROJECT_ID": "workspace-project",
+        "DEEPAGENTS_CODE_VERCEL_TEAM_ID": "workspace-team",
+    }
+    with (
+        patch(f"{_FACTORY}.active_environment", return_value=environment),
+        patch(
+            "deepagents_code.model_config.resolve_env_var",
+            side_effect=lambda name: environment.get(f"DEEPAGENTS_CODE_{name}"),
+        ),
+        patch.dict("os.environ", {}, clear=True),
+    ):
+        kwargs = _VercelProvider._resolve_sdk_kwargs()
+
+    assert kwargs == {
+        "token": "workspace-token",
+        "project_id": "workspace-project",
+        "team_id": "workspace-team",
+    }
+
+
+def test_agentcore_omits_session_when_it_could_not_be_built() -> None:
+    """A failed session must not masquerade as an applied workspace session."""
+    mock_boto3 = MagicMock()
+    mock_boto3.Session.side_effect = RuntimeError("ProfileNotFound: typo")
+    interpreter = MagicMock()
+    client_module = MagicMock()
+    client_module.CodeInterpreter.return_value = interpreter
+    backend_module = MagicMock()
+    backend_module.AgentCoreSandbox.return_value.id = "sandbox-id"
+
+    with (
+        patch(
+            f"{_FACTORY}.active_environment", return_value={"AWS_REGION": "us-test-1"}
+        ),
+        patch.dict(sys.modules, {"boto3": mock_boto3}),
+    ):
+        provider = _AgentCoreProvider()
+
+    with patch(
+        f"{_FACTORY}._import_provider_module",
+        side_effect=[client_module, backend_module],
+    ):
+        provider.get_or_create()
+
+    client_module.CodeInterpreter.assert_called_once_with(
+        region="us-test-1",
+        integration_source="deepagents-code",
+    )
+    assert "session" not in client_module.CodeInterpreter.call_args.kwargs

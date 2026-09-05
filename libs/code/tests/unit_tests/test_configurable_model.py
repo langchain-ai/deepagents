@@ -999,6 +999,32 @@ class TestIsAnthropicModel:
     """Direct tests for the `_is_anthropic_model` helper."""
 
 
+class TestWorkspaceEnvironment:
+    """Lazy runtime model switches retain the workspace environment."""
+
+    def test_model_switch_uses_bound_environment(self) -> None:
+        """Construction context is restored around deferred model creation."""
+        from deepagents_code.config import active_environment
+
+        request = _make_request(
+            _make_model("gpt-5.5"),
+            context=CLIContext(model="anthropic:claude-sonnet-4-6"),
+        )
+        replacement = _make_model("claude-sonnet-4-6")
+        replacement._get_ls_params.return_value = {"ls_provider": "anthropic"}
+        middleware = ConfigurableModelMiddleware(
+            openai_prompt_cache_key=True,
+            environ={"ANTHROPIC_API_KEY": "workspace-key"},
+        )
+
+        def create(*_args: Any, **_kwargs: Any) -> SimpleNamespace:
+            assert active_environment()["ANTHROPIC_API_KEY"] == "workspace-key"
+            return _make_model_result(replacement)
+
+        with patch(_PATCH_CREATE, side_effect=create):
+            middleware.wrap_model_call(request, lambda _r: _make_response())
+
+
 class TestModelParams:
     """Cases where model_params are merged into model_settings."""
 

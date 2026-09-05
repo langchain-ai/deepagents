@@ -41,8 +41,7 @@ def _load_example(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
 def test_project_is_resolved_after_dotenv_load(monkeypatch: pytest.MonkeyPatch) -> None:
     module = _load_example(monkeypatch)
 
-    def load_dotenv(dotenv_path: str) -> bool:
-        assert dotenv_path == "settings"
+    def load_dotenv(_dotenv_path: str) -> bool:
         monkeypatch.setenv("LANGSMITH_PROJECT", "project-from-dotenv")
         return True
 

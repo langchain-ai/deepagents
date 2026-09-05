@@ -17,7 +17,7 @@ from deepagents_code.config import Credentials, runtime_state
 from deepagents_code.skills.load import ExtendedSkillMetadata
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
+    from collections.abc import Callable, Coroutine, Mapping
     from pathlib import Path
 
     from deepagents_code.app import _PluginFingerprint
@@ -556,7 +556,9 @@ class TestReloadFromEnvironment:
         tmp_path: Path,
         caplog: pytest.LogCaptureFixture,
     ) -> None:
-        """OSError from `dotenv.dotenv_values` itself is caught."""
+        """OSError from the dotenv parser itself is caught."""
+        import deepagents_code.config as config_mod
+
         credentials = Credentials.from_environment(start_path=tmp_path)
 
         global_env = tmp_path / "global" / ".env"
@@ -568,18 +570,20 @@ class TestReloadFromEnvironment:
         project_env.write_text("OPENAI_API_KEY=sk-ok\n")
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
-        original_dotenv_values = _dotenv_module.dotenv_values
+        original_dotenv_values = config_mod._dotenv_values_from
         global_calls = 0
 
-        def _fail_on_global(*, dotenv_path: Path) -> dict[str, str | None]:
+        def _fail_on_global(
+            dotenv_path: Path, environ: Mapping[str, str]
+        ) -> dict[str, str | None]:
             nonlocal global_calls
             if dotenv_path == global_env:
                 global_calls += 1
                 msg = "read error"
                 raise OSError(msg)
-            return dict(original_dotenv_values(dotenv_path=dotenv_path))
+            return original_dotenv_values(dotenv_path, environ)
 
-        monkeypatch.setattr("dotenv.dotenv_values", _fail_on_global)
+        monkeypatch.setattr(config_mod, "_dotenv_values_from", _fail_on_global)
 
         with caplog.at_level(logging.WARNING, logger="deepagents_code.config"):
             credentials.reload_from_environment(start_path=tmp_path)

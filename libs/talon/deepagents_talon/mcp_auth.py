@@ -616,9 +616,23 @@ def _normalized_url(url: str) -> str:
     return url.rstrip("/")
 
 
+class _OAuthHTTPTransport(httpx.AsyncHTTPTransport):
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        hostname = request.extensions.get("sni_hostname")
+        if isinstance(hostname, bytes):
+            request.extensions["sni_hostname"] = hostname.decode("ascii")
+        return await super().handle_async_request(request)
+
+
+class _OAuthSafeTransport(SSRFSafeTransport):
+    def __init__(self) -> None:
+        self._policy = SSRFPolicy(allowed_schemes=frozenset({"https"}))
+        self._inner = _OAuthHTTPTransport(trust_env=False)
+
+
 def _oauth_http_client() -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        transport=SSRFSafeTransport(SSRFPolicy(allowed_schemes=frozenset({"https"}))),
+        transport=_OAuthSafeTransport(),
         timeout=_HTTP_TIMEOUT_SECONDS,
         follow_redirects=False,
         trust_env=False,

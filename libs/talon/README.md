@@ -178,7 +178,39 @@ turn after login completes.
 Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
 `deepagents-talon mcp login <server>` flow remains available as an alternative.
 
-After editing the configuration, send `/mcp-reload` through an authorized channel to
+Ask Talon through Telegram, Discord, or another authorized channel to inspect or
+change MCP settings. `get_mcp_configuration` reads the operator-selected file;
+`update_mcp_server` adds, replaces, or removes one server. Neither tool accepts a
+file path. Updates require human approval by default, using the channel's existing
+approval flow. Scheduled runs and channels without approval support cannot apply
+updates under this default.
+
+The view masks stored strings as `<redacted>`, including URLs, commands, arguments,
+headers, and environment values. Only transport/authentication enums and exact
+`${ENV_VAR}` references remain visible; references are never expanded. An update
+can copy `<redacted>` at the same field to preserve the stored value. It supplies
+a complete server object (omitted fields are removed), or `null` to remove the
+server. Other servers and top-level settings are preserved. Use environment
+references for new credentials; do not send secrets through chat.
+
+Each update requires the revision returned by the view. If the file changes while
+approval is pending, Talon rejects the stale update and must read it again. Writes
+are atomic, use owner-only permissions, and schedule a reload before the next turn.
+These tools require a POSIX host (Linux or macOS) and reject symlink configuration
+files.
+
+Set `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` in the **host environment** to
+disable the default MCP update approval. Other values keep approval enabled.
+Explicit gating through `DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS` still applies. This
+opt-out trusts the agent to change commands, destinations, and credential use:
+MCP configuration can launch processes or send credentials to remote servers.
+
+Keep the file outside the workspace using `DEEPAGENTS_TALON_MCP_CONFIG` when your
+deployment restricts the agent's filesystem access. These tools do not create a
+sandbox: Talon's default local shell backend can access host files outside the
+workspace. Enforce that boundary in the backend or deployment if required.
+
+After editing the configuration manually, send `/mcp-reload` through an authorized channel to
 reload it without restarting Talon. The agent can also call
 `reload_mcp_configuration` autonomously; that schedules the same reload before the
 next agent turn.

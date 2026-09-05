@@ -43,6 +43,7 @@ from deepagents_talon.mcp_auth import (
     format_login_error,
     prepare_oauth_login,
 )
+from deepagents_talon.mcp_config import MCPConfigStore
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Mapping, Sequence
@@ -163,6 +164,7 @@ class MCPToolProvider:
         self._refresh_revision = 0
         self._applied_revision = 0
         self._lock = asyncio.Lock()
+        self._config_store = MCPConfigStore(mcp_config_path(config), self.request_refresh)
 
     async def load(self) -> MCPTools:
         """Load tools and include the narrow proactive authorization capability."""
@@ -175,7 +177,10 @@ class MCPToolProvider:
             tools = (*tools, self._status_tool(loaded.servers))
         if self._oauth_servers:
             tools = (*tools, self._authorization_tool())
-        tools = (*tools, self._reload_tool())
+        tools = (*tools, self._reload_tool(), *self._config_store.tools())
+        if len({tool.name for tool in tools}) != len(tools):
+            msg = "MCP tool names conflict with Talon management tools"
+            raise MCPConfigError(msg)
         return MCPTools(tools=tools, servers=loaded.servers)
 
     async def refresh_if_needed(self) -> Sequence[BaseTool] | None:

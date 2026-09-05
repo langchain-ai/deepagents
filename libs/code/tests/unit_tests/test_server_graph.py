@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import importlib
 import os
+import subprocess
 import sys
 from types import ModuleType, SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
 from deepagents_code._env_vars import SERVER_ENV_PREFIX
 from deepagents_code._server_config import ServerConfig
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 @pytest.fixture(autouse=True)
@@ -83,6 +87,47 @@ class TestServerGraph:
 
         assert calls == 1
         assert results == [graph_obj, graph_obj, graph_obj]
+
+    def test_config_bootstrap_runs_off_the_blockbuster_loop(
+        self, tmp_path: Path
+    ) -> None:
+        """Profile validation must not block the server event loop."""
+        profile = tmp_path / "profile"
+        profile.mkdir()
+        env = os.environ.copy()
+        env["DEEPAGENTS_HOME"] = str(profile)
+        env.pop("DEEPAGENTS_HOME_IS_DEFAULT", None)
+        code = """
+import asyncio
+from unittest.mock import AsyncMock, patch
+from blockbuster import blockbuster_ctx
+from deepagents_code._server_config import ServerConfig
+import deepagents_code.server_graph as module
+
+async def main():
+    runtime = module.ServerRuntime(object(), object(), object())
+    with patch.object(
+        module,
+        "_make_graphs_in_environment",
+        new=AsyncMock(return_value=runtime),
+    ):
+        with blockbuster_ctx():
+            assert await module._make_graphs(
+                config_override=ServerConfig(no_mcp=True)
+            ) is runtime
+
+asyncio.run(main())
+"""
+
+        process = subprocess.run(
+            [sys.executable, "-c", code],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+        assert process.returncode == 0, process.stderr
 
     def test_criteria_context_tools_use_identity_allowlist_in_tool_order(self) -> None:
         """Criteria tools should be known context objects in main-tool order."""

@@ -125,6 +125,7 @@ class _PendingToolApproval:
     provider: str
     channel_conversation_id: str
     agent_conversation_id: str
+    prompt_text: str
     prompt_message_id: str | None
     sender_id: str | None
 
@@ -307,10 +308,8 @@ class TalonHost:
 
             pending = self._pending_tool_approvals.get(agent_conversation_id)
             if pending is not None:
-                authorized = pending.sender_id is None or message.sender_id == pending.sender_id
-                if not authorized or _parse_tool_approval_reply(message.text) is not None:
-                    await self._handle_tool_approval_reply(channel, message, pending)
-                    return
+                await self._handle_tool_approval_reply(channel, message, pending)
+                return
 
             if await self._intercept_authorization_message(
                 channel,
@@ -1032,22 +1031,27 @@ class TalonHost:
             provider=provider,
             channel_conversation_id=reply_conversation_id,
             agent_conversation_id=approval.conversation_id,
+            prompt_text=_format_tool_approval_prompt(approval),
             prompt_message_id=None,
             sender_id=sender_id,
         )
         self._pending_tool_approvals[approval.conversation_id] = pending
         try:
-            result = await send_with_retry(
-                lambda: channel.send_message(
-                    reply_conversation_id,
-                    _format_tool_approval_prompt(approval),
-                )
-            )
-            pending.prompt_message_id = result.message_id
+            await self._send_tool_approval_prompt(channel, pending)
             return await future
         finally:
             if self._pending_tool_approvals.get(approval.conversation_id) is pending:
                 del self._pending_tool_approvals[approval.conversation_id]
+
+    async def _send_tool_approval_prompt(
+        self,
+        channel: ChannelAdapter,
+        pending: _PendingToolApproval,
+    ) -> None:
+        result = await send_with_retry(
+            lambda: channel.send_message(pending.channel_conversation_id, pending.prompt_text)
+        )
+        pending.prompt_message_id = result.message_id
 
     async def _handle_tool_approval_reply(
         self,
@@ -1066,12 +1070,7 @@ class TalonHost:
 
         decision = _parse_tool_approval_reply(message.text)
         if decision is None:
-            await send_with_retry(
-                lambda: channel.send_message(
-                    message.conversation_id,
-                    "Reply `approve` to run the tool call or `deny` to skip it.",
-                )
-            )
+            await self._send_tool_approval_prompt(channel, pending)
             return
 
         if not pending.future.done():

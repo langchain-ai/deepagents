@@ -11,6 +11,7 @@ const {
   contactIdentityIds,
   createCompatibleClientClass,
   isSelfChat,
+  messageSenderId,
   normalizeMessage,
   quotedMessageContext,
   reactionEntry,
@@ -126,9 +127,16 @@ client.on("message", (message) => {
 });
 
 client.on("message_reaction", (reaction) => {
-  const entry = reactionEntry(reaction, botId, botIds);
-  if (entry) {
-    queue.push(entry);
+  console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.received"}');
+  try {
+    const entry = reactionEntry(reaction, botId, botIds);
+    if (entry) {
+      queue.push(entry);
+      console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.queued"}');
+    }
+  } catch (error) {
+    console.log('[bridge] talon_event {"event":"whatsapp.bridge.reaction.parse_failed"}');
+    throw error;
   }
 });
 
@@ -208,7 +216,7 @@ async function enqueueMessage(message, fromSelf) {
       `[bridge] Message media unavailable; type=${message.type || "unknown"} mediaType=${mediaType}`,
     );
   }
-  const senderId = widString(message.author) || (fromSelf && botId ? botId : messageFrom);
+  const senderId = messageSenderId(message, fromSelf, botId, messageFrom);
   const senderName =
     (contact && (contact.pushname || contact.name || contact.shortName)) ||
     data.notifyName ||

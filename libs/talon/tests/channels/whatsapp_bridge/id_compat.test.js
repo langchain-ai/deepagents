@@ -11,6 +11,7 @@ const {
   createCompatibleClientClass,
   installMessageKeyCompatibility,
   isSelfChat,
+  messageSenderId,
   normalizeId,
   normalizeMessage,
   reactionEntry,
@@ -18,6 +19,27 @@ const {
   serializedId,
   widString,
 } = require("../../../deepagents_talon/channels/whatsapp_bridge/id_compat");
+
+test("self-chat messages and approval reactions use the same paired-account identity", () => {
+  const botId = "phone@c.us";
+  const aliases = [botId, "alias@lid"];
+  for (const author of aliases) {
+    for (const emoji of ["\u{1f44d}", "\u{1f44e}"]) {
+      const message = normalizeMessage({ author: { _serialized: author } });
+      const sender = messageSenderId(message, true, botId, botId);
+      const reaction = reactionEntry({
+        id: { fromMe: true },
+        msgId: { fromMe: true, remote: "alias@lid", id: "PROMPT" },
+        senderId: author,
+        reaction: emoji,
+      }, botId, aliases);
+      assert.equal(sender, reaction.user_id);
+      assert.equal(sender, botId);
+    }
+  }
+  assert.equal(messageSenderId({ author: "other@lid" }, false, botId, "group@g.us"), "other@lid");
+  assert.equal(messageSenderId({}, false, botId, "other@c.us"), "other@c.us");
+});
 
 test("queues reactions with the target message ID and reacting sender", () => {
   const reaction = {
@@ -39,6 +61,33 @@ test("queues reactions with the target message ID and reacting sender", () => {
   const entry = reactionEntry(self, "bot@c.us", ["bot@c.us", "bot@lid"]);
   assert.equal(entry.user_id, "bot@c.us");
   assert.equal(entry.self_chat, true);
+});
+
+test("reaction diagnostics explain filtering without exposing payloads", (t) => {
+  const logs = [];
+  t.mock.method(console, "log", (line) => logs.push(line));
+  const reaction = {
+    id: { fromMe: false },
+    msgId: { fromMe: true, remote: "private-chat", id: "private-message" },
+    senderId: "private-sender", reaction: "private-emoji",
+  };
+  const cases = [
+    [{}, null],
+    [{ msgId: null }, "missing_message_id"],
+    [{ msgId: { _serialized: "private-message" } }, "missing_chat_id"],
+    [{ senderId: null }, "missing_sender_id"],
+    [{ reaction: "" }, "missing_emoji"],
+    [{ msgId: { remote: "status@broadcast", id: "private-message" } }, "status_broadcast"],
+    [{ id: { fromMe: true } }, "self_outside_self_chat"],
+  ];
+  for (const [changes, reason] of cases) {
+    const entry = reactionEntry({ ...reaction, ...changes }, "private-bot", ["private-bot"]);
+    assert.equal(entry === null, reason !== null);
+    const event = JSON.parse(logs.at(-1).split("talon_event ")[1]);
+    assert.equal(event.reason, reason);
+    assert.equal(event.event, reason ? "whatsapp.bridge.reaction.rejected" : "whatsapp.bridge.reaction.converted");
+  }
+  assert.equal(logs.some((line) => line.includes("private-")), false);
 });
 
 test("reads legacy, renamed, and component WhatsApp IDs", () => {

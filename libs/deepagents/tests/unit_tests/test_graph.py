@@ -8,7 +8,7 @@ import subprocess
 import sys
 import warnings
 from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, ClassVar, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -65,6 +65,51 @@ def _make_model(attrs: dict[str, Any]) -> MagicMock:
     for key, value in attrs.items():
         setattr(model, key, value)
     return model
+
+
+class _MockSubAgentMiddlewareMeta(type):
+    """Expose recorded construction calls with the mock call interface."""
+
+    @property
+    def call_args(cls) -> MagicMock:
+        args, kwargs = cls.calls[-1]
+        return MagicMock(args=args, kwargs=kwargs)
+
+    @property
+    def call_args_list(cls) -> list[MagicMock]:
+        return [MagicMock(args=args, kwargs=kwargs) for args, kwargs in cls.calls]
+
+    @property
+    def call_count(cls) -> int:
+        return len(cls.calls)
+
+    @property
+    def called(cls) -> bool:
+        return bool(cls.calls)
+
+
+class _MockSubAgentMiddleware(SubAgentMiddleware, metaclass=_MockSubAgentMiddlewareMeta):
+    """Capture construction args without compiling subagent graphs."""
+
+    calls: ClassVar[list[tuple[tuple[Any, ...], dict[str, Any]]]] = []
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        self.calls.append((args, kwargs))
+        self._private_state_keys = kwargs.get("private_state_keys", frozenset())
+
+    @property
+    def private_state_keys(self) -> frozenset[str]:
+        return self._private_state_keys
+
+    @private_state_keys.setter
+    def private_state_keys(self, value: frozenset[str]) -> None:
+        self._private_state_keys = value
+
+
+def _mock_subagent_middleware() -> type[_MockSubAgentMiddleware]:
+    """Replace construction while preserving `SubAgentMiddleware` type checks."""
+    _MockSubAgentMiddleware.calls = []
+    return _MockSubAgentMiddleware
 
 
 class TestCreateDeepAgentMetadata:
@@ -285,7 +330,7 @@ class TestToolDescriptionOverrideWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]) as mock_fs,
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
@@ -331,7 +376,7 @@ class TestGeneralPurposeSubagentProfileWiring:
             # middleware constructors run for real.
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):
                 create_deep_agent(model="testprov:some-model")
@@ -396,7 +441,7 @@ class TestPromptCachingWiring:
 
         with (
             patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
             result = create_deep_agent(model=model)
@@ -417,7 +462,7 @@ class TestPromptCachingWiring:
 
         with (
             patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=subagent_cache),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
             create_deep_agent(
@@ -448,7 +493,7 @@ class TestPromptCachingWiring:
                 "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_aws.middleware.prompt_caching"),
             ),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
             result = create_deep_agent(model=bedrock_model)
@@ -476,7 +521,7 @@ class TestPromptCachingWiring:
         with (
             patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
             patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", side_effect=[gp_cache, main_cache]),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
             result = create_deep_agent(model=model)
@@ -497,7 +542,7 @@ class TestPromptCachingWiring:
         with (
             patch("deepagents.middleware._prompt_caching._create_bedrock_prompt_caching_middleware", return_value=None),
             patch("deepagents.middleware._prompt_caching._create_fireworks_prompt_caching_middleware", return_value=subagent_cache),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
             create_deep_agent(
@@ -527,7 +572,7 @@ class TestPromptCachingWiring:
                 "deepagents.middleware._prompt_caching.import_module",
                 side_effect=ModuleNotFoundError(name="langchain_fireworks.middleware.prompt_caching"),
             ),
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
         ):
             result = create_deep_agent(model=model)
@@ -572,7 +617,7 @@ class TestSystemPromptAssembly:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -743,7 +788,7 @@ class TestDuplicateToolPromptTrimming:
         patched = {
             "FilesystemMiddleware": MagicMock(),
             "SkillsMiddleware": MagicMock(),
-            "SubAgentMiddleware": MagicMock(),
+            "SubAgentMiddleware": _mock_subagent_middleware(),
             "AsyncSubAgentMiddleware": MagicMock(),
             "MemoryMiddleware": MagicMock(),
         }
@@ -870,7 +915,7 @@ class TestToolExclusionWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -901,7 +946,7 @@ class TestToolExclusionWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -933,7 +978,7 @@ class TestToolExclusionWiring:
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
                 patch("deepagents.graph.FilesystemMiddleware", side_effect=[MagicMock(), MagicMock()]),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.PatchToolCallsMiddleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent) as mock_create,
@@ -1332,7 +1377,7 @@ class TestMiddlewareExclusionWiring:
 
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):
                 create_deep_agent(model="excmwprov:some-model")
@@ -1407,7 +1452,7 @@ class TestMiddlewareExclusionWiring:
 
             with (
                 patch("deepagents.graph.resolve_model", return_value=fake_model),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):
                 create_deep_agent(
@@ -1924,7 +1969,7 @@ class TestSubagentLevelProfileResolution:
 
             with (
                 patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):
                 create_deep_agent(
@@ -2100,7 +2145,7 @@ class TestSubagentLevelToolExclusionAndOverrides:
 
             with (
                 patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):
                 create_deep_agent(
@@ -2153,7 +2198,7 @@ class TestSubagentLevelToolExclusionAndOverrides:
             with (
                 patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
                 patch("deepagents.graph.FilesystemMiddleware", return_value=MagicMock()) as mock_fs,
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()),
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware),
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):
                 create_deep_agent(
@@ -2194,7 +2239,7 @@ class TestSubagentSystemPromptWiring:
         fake_agent = MagicMock()
         fake_agent.with_config.return_value = "compiled-agent"
         with (
-            patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+            patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
             patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
             patch("deepagents.graph.create_agent", return_value=fake_agent),
         ):
@@ -2423,7 +2468,7 @@ class TestPrebuiltSubagentModelResolvesProfile:
 
             with (
                 patch("deepagents.graph.resolve_model", side_effect=fake_resolve),
-                patch("deepagents.graph.SubAgentMiddleware", return_value=MagicMock()) as mock_subagents,
+                patch("deepagents.graph.SubAgentMiddleware", new_callable=_mock_subagent_middleware) as mock_subagents,
                 patch("deepagents.graph.create_summarization_middleware", return_value=MagicMock()),
                 patch("deepagents.graph.create_agent", return_value=fake_agent),
             ):

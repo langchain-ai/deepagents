@@ -944,8 +944,7 @@ def _truncate_paginated_read(
 
     Args:
         content: Line-numbered content produced by
-            `format_content_with_line_numbers` (a marker followed by two spaces
-            and the source content).
+            `format_content_with_line_numbers` (`marker|source_content`).
         file_path: Path used to format the truncation message.
         read_result: Backend read result carrying the window metadata; the
             adjusted `next_offset` is derived from its 1-indexed line range.
@@ -985,7 +984,7 @@ def _truncate_paginated_read(
         boundaries: list[tuple[int, int]] = []
         for index, row in enumerate(rows):
             position += len(row)
-            marker = row.lstrip().partition("  ")[0].partition(".")[0]
+            marker = row.partition("|")[0].partition(".")[0]
             source_line = int(marker)
             # Rows numbered past the window's last source line are not file
             # content: a byte-capped backend page appends its own truncation
@@ -999,7 +998,7 @@ def _truncate_paginated_read(
                 break
             next_source_line = None
             if index + 1 < len(rows):
-                next_marker = rows[index + 1].lstrip().partition("  ")[0].partition(".")[0]
+                next_marker = rows[index + 1].partition("|")[0].partition(".")[0]
                 next_source_line = int(next_marker)
             if next_source_line != source_line:
                 boundaries.append((position, source_line))
@@ -1273,7 +1272,7 @@ _READ_FILE_TOOL_DESCRIPTION_TEMPLATE = """Reads a file from the filesystem. Assu
 
 Usage:
 - {first_line}. Use `offset`/`limit` to page through large files instead of reading them whole.
-- Results are returned with line numbers starting at `offset` + 1 (1 by default), then two spaces, then the source line. Never include these line-number prefixes when editing.
+- Results are returned as `line_number|source_line`, starting at `offset` + 1 (1 by default). Never include these line-number prefixes when editing.
 - Lines over 5,000 characters are split with continuation markers (e.g. 5.1, 5.2); `limit` counts source lines, so continuation rows do not consume the budget.
 - Speculatively batch multiple `read_file` calls in one response when several files may be useful.
 - An empty file returns a system-reminder warning in place of contents.

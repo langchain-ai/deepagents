@@ -35,7 +35,6 @@ from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
 )
-from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.clock import current_time
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
@@ -71,11 +70,7 @@ DEFAULT_MAX_APPROVAL_ROUNDS = 50
 CONTEXT_SIZE_ENV_KEY = "DEEPAGENTS_TALON_CONTEXT_SIZE"
 INTERRUPT_ON_TOOLS_ENV_KEY = "DEEPAGENTS_TALON_INTERRUPT_ON_TOOLS"
 _ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
-    {
-        "start_async_task",
-        "update_async_task",
-        "cancel_async_task",
-    }
+    {"start_async_task", "update_async_task", "cancel_async_task"}
 )
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
@@ -294,7 +289,7 @@ class DeepAgentRuntime:
         self.reload_tools = reload_tools
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
-        self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
+        self._has_async_subagents = _has_async_subagents(self.subagents)
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
@@ -314,49 +309,39 @@ class DeepAgentRuntime:
             default=None,
         )
         self._tools_lock = asyncio.Lock()
-        self.background = BackgroundSubagents()
-        self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
-            contextvars.ContextVar("talon_subagent_results", default=None)
-        )
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        self._resolved_subagents = self._resolve_subagents()
         self._graph = self._create_graph()
 
     def _create_graph(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> object:
-        resolved = self._resolved_subagents
         tools = self._build_tools(runtime_tools)
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         middleware = list(self.middleware)
-        middleware.append(self.background.configured(resolved))
-        interrupt_on = _interrupt_on_with_async_subagents(
-            self.interrupt_on, has_async_subagents=_has_async_subagents(resolved)
-        )
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
         return create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=resolved or None,
+            subagents=self._resolve_subagents(),
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
-            interrupt_on=interrupt_on,
+            interrupt_on=_interrupt_on_with_async_subagents(
+                self.interrupt_on,
+                has_async_subagents=self._has_async_subagents,
+            ),
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
 
     async def stop(self) -> None:
         """Release runtime resources."""
-        if not await self.background.cancel():
-            msg = "Background subagents did not stop; runtime resources remain open"
-            raise RuntimeError(msg)
         self._graph = None
         cleanup = getattr(self.checkpointer, "close", None)
         if callable(cleanup):
@@ -404,8 +389,6 @@ class DeepAgentRuntime:
 
         await self._refresh_runtime_tools()
         graph_token = self._invocation_graph.set(self._graph)
-        pending = self.background.results(request.conversation_id)
-        pending_token = self._pending_results.set(pending)
         activity = self._activity_callback(request)
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
@@ -421,10 +404,8 @@ class DeepAgentRuntime:
             reset_authorization_handler(authorization_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
-            self._pending_results.reset(pending_token)
         if activity is not None:
             activity.run_completed(text)
-        self.background.acknowledge(pending)
         return AgentResult(text=text)
 
     async def _refresh_runtime_tools(self) -> None:
@@ -506,15 +487,7 @@ class DeepAgentRuntime:
         activity: AgentActivityCallback | None,
     ) -> object:
         return await self._invoke_payload_with_retries(
-            {
-                "messages": [
-                    *[
-                        {"role": "user", "id": task_id, "content": result}
-                        for task_id, result in (self._pending_results.get() or {}).items()
-                    ],
-                    {"role": "user", "content": content},
-                ]
-            },
+            {"messages": [{"role": "user", "content": content}]},
             conversation_id,
             activity,
         )
@@ -650,17 +623,13 @@ class DeepAgentRuntime:
                 sources.append(path)
         return sources or None
 
-    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
+    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None:
         resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         if self.assistant_dir is not None:
             resolved.extend(_load_local_subagents(self.assistant_dir))
         if self.subagents is not None:
             resolved.extend(self.subagents)
-        names = [agent["name"] for agent in resolved]
-        if len(names) != len(set(names)):
-            msg = "Subagent names must be unique across local and remote definitions"
-            raise ValueError(msg)
-        return resolved
+        return resolved or None
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:

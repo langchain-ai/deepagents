@@ -13,7 +13,6 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_talon.authorization import AuthorizationHandler
-    from deepagents_talon.background import BackgroundSubagents
 
 
 @dataclass(frozen=True, slots=True)
@@ -283,12 +282,3 @@ class MCPReloadableRuntime(Protocol):
 
     async def reload_mcp_configuration(self) -> None:
         """Reload MCP tools without restarting the runtime."""
-
-
-@runtime_checkable
-class BackgroundRuntime(Protocol):
-    """Optional runtime capability for expendable background subagents."""
-
-    @property
-    def background(self) -> BackgroundSubagents:
-        """Workers whose results need a main-agent turn."""

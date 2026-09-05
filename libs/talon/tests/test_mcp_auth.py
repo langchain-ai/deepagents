@@ -49,6 +49,132 @@ async def test_file_token_storage_round_trip_and_permissions(
     assert stat.S_IMODE(storage.path.parent.stat().st_mode) == 0o700
 
 
+async def test_file_token_storage_persists_absolute_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("deepagents_talon.mcp_auth.time.time", lambda: 1_000.0)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="secret",  # noqa: S106
+            refresh_token="refresh",  # noqa: S106
+            expires_in=60,
+        )
+    )
+
+    assert await storage.get_token_expiry() == 1_060.0
+
+
+async def test_provider_restores_persisted_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    monkeypatch.setattr("deepagents_talon.mcp_auth.time.time", lambda: 1_000.0)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="secret",  # noqa: S106
+            refresh_token="refresh",  # noqa: S106
+            expires_in=60,
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            redirect_uris=["http://localhost:3000/callback"],
+            client_id="client-id",
+        )
+    )
+    provider = build_oauth_provider(
+        server_name="notion",
+        server_url="https://example.com/mcp",
+        storage=storage,
+        interactive=True,
+    )
+
+    await provider._initialize()
+
+    assert provider.context.token_expiry_time == 1_060.0
+    assert provider.context.can_refresh_token()
+
+
+async def test_provider_refreshes_expired_token_after_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="expired",  # noqa: S106
+            refresh_token="refresh",  # noqa: S106
+            expires_in=-1,
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            redirect_uris=["http://localhost:3000/callback"],
+            client_id="client-id",
+        )
+    )
+    provider = build_oauth_provider(
+        server_name="notion",
+        server_url="https://example.com/mcp",
+        storage=storage,
+        interactive=True,
+    )
+    requests: list[httpx.Request] = []
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.url.path == "/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "renewed",
+                    "refresh_token": "next-refresh",
+                    "expires_in": 3600,
+                },
+            )
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), auth=provider) as client:
+        response = await client.get("https://example.com/mcp")
+
+    assert response.status_code == 200
+    assert [request.url.path for request in requests] == ["/token", "/mcp"]
+    assert requests[-1].headers["Authorization"] == "Bearer renewed"
+    tokens = await storage.get_tokens()
+    assert tokens is not None
+    assert tokens.access_token == "renewed"  # noqa: S105
+
+
+async def test_file_token_storage_accepts_legacy_file_without_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    storage.path.parent.mkdir(parents=True)
+    storage.path.write_text(
+        json.dumps({"tokens": {"access_token": "secret"}}),
+        encoding="utf-8",
+    )
+
+    assert await storage.get_token_expiry() is None
+
+
+async def test_file_token_storage_rejects_invalid_expiry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
+    storage.path.parent.mkdir(parents=True)
+    storage.path.write_text(json.dumps({"expires_at": "tomorrow"}), encoding="utf-8")
+
+    with pytest.raises(TypeError, match="Invalid MCP credential file"):
+        await storage.get_token_expiry()
+
+
 async def test_file_token_storage_writes_tokens_and_client_info_together(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -66,6 +192,7 @@ async def test_file_token_storage_writes_tokens_and_client_info_together(
     assert await storage.get_client_info() == client
     assert set(json.loads(storage.path.read_text(encoding="utf-8"))) == {
         "tokens",
+        "expires_at",
         "client_info",
     }
 

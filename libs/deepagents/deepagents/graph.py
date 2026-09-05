@@ -30,6 +30,7 @@ from langgraph.store.base import BaseStore
 from langgraph.types import Checkpointer
 from langgraph.typing import ContextT
 
+import deepagents.middleware.subagents as subagents_module
 from deepagents._api.deprecation import deprecated, warn_deprecated
 from deepagents._excluded_middleware import (
     _apply_excluded_middleware,
@@ -57,7 +58,6 @@ from deepagents.middleware.subagents import (
     CompiledSubAgent,
     SubAgent,
     SubAgentMiddleware,
-    SubAgentMiddleware as _SubAgentMiddleware,
     _is_compiled_subagent,
     _is_forked_subagent,
 )
@@ -942,7 +942,7 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
     private_state_keys = private_state_field_names(*state_schemas)
     # Apply the keys after caller middleware has replaced the task middleware.
     for middleware_instance in deepagent_middleware:
-        if isinstance(middleware_instance, _SubAgentMiddleware):
+        if isinstance(middleware_instance, subagents_module.SubAgentMiddleware):
             middleware_instance.private_state_keys = middleware_instance.private_state_keys | private_state_keys
     # Verify every main-profile exclusion matched at least one middleware in
     # either the main agent stack or the GP subagent stack. An entry that

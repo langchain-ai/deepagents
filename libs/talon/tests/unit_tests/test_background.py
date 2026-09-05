@@ -16,7 +16,7 @@ from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
 from deepagents_talon.runtime import DeepAgentRuntime
 from tests.conftest import RecordingChannel
-from tests.test_host import _config, _wait_for_sent_count
+from tests.test_host import _config
 
 
 class ToolModel(FakeMessagesListChatModel):
@@ -77,15 +77,15 @@ async def test_chat_continues_then_main_processes_background_result(tmp_path, mo
     try:
         await host.receive_message(channel, ChannelMessage("chat", "research"))
         await asyncio.wait_for(entered.wait(), 2)
-        await _wait_for_sent_count(channel, 1)
+        await asyncio.wait_for(host._tasks["chat"], 2)
         await host.receive_message(channel, ChannelMessage("chat", "hello"))
-        await _wait_for_sent_count(channel, 2)
+        await asyncio.wait_for(host._tasks["chat"], 2)
         assert runtime.background.owners() == {"chat"}
         assert not runtime.background.results("chat")
         release.set()
         await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
         await host._dispatch_background_results()
-        await _wait_for_sent_count(channel, 3)
+        await asyncio.wait_for(host._tasks["chat"], 2)
         assert channel.sent == [
             ("chat", "Working on it"),
             ("chat", "Still here"),
@@ -129,7 +129,8 @@ async def test_commands_cancel_only_this_threads_children_when_main_idle(
         for owner in ("one", "two"):
             await host.receive_message(channel, ChannelMessage(owner, "research"))
             await asyncio.wait_for(entered.get(), 2)
-            await _wait_for_sent_count(channel, 1 if owner == "one" else 2)
+            await asyncio.wait_for(host._tasks[owner], 2)
+        assert channel.sent == [("one", "Started"), ("two", "Started")]
         await host.receive_message(channel, ChannelMessage("one", command))
         assert len(cancelled) == 1
         assert runtime.background.owners() == {"two"}

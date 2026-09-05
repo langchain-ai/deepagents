@@ -203,16 +203,20 @@ async def _run_host(
         await _run_host_with_agent(args, config, cron_store, channels, agent)
         return
 
-    from deepagents_talon.archive import ConversationSaver  # noqa: PLC0415
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
 
-    async with ConversationSaver.from_conn_string(
-        str(config.checkpoint_path)
-    ) as sqlite_checkpointer:
+    from deepagents_talon.archive import SQLiteConversationArchive  # noqa: PLC0415
+    from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415
+
+    async with (
+        AsyncSqliteSaver.from_conn_string(str(config.checkpoint_path)) as sqlite_checkpointer,
+        SQLiteConversationArchive.from_conn_string(str(config.checkpoint_path)) as archive,
+    ):
         await sqlite_checkpointer.setup()
         agent = await _agent_runtime(
             config,
             cron_store=cron_store,
-            checkpointer=sqlite_checkpointer,
+            checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
         )
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 

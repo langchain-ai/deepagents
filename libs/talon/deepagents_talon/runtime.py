@@ -32,7 +32,8 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from deepagents_code.tools import fetch_url, web_search
-from deepagents_talon.archive import ArchiveScope, ConversationSaver, conversation_tools
+from deepagents_talon.archive import ArchiveScope, conversation_tools
+from deepagents_talon.archive_saver import ConversationSaver
 from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
@@ -461,7 +462,7 @@ class DeepAgentRuntime:
             TypeError: If the configured checkpointer does not support archives.
         """
         if not isinstance(self.checkpointer, ConversationSaver):
-            msg = "Conversation history reset requires the Talon conversation checkpointer"
+            msg = "Conversation history reset requires a ConversationSaver wrapper"
             raise TypeError(msg)
         await self.checkpointer.clear_history(
             ArchiveScope(talon_history_channel=channel, talon_history_chat=chat)
@@ -535,7 +536,7 @@ class DeepAgentRuntime:
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time]
         if isinstance(self.checkpointer, ConversationSaver):
-            tools.extend(conversation_tools(self.checkpointer, _current_history_scope))
+            tools.extend(conversation_tools(self.checkpointer.archive, _current_history_scope))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
         if self.include_web_tools:

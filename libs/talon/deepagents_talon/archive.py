@@ -6,11 +6,13 @@ Warning:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, TypedDict, cast
+from typing import TYPE_CHECKING, Protocol, TypedDict, cast
 
+import aiosqlite
 from langchain_core.messages import (
     AIMessage,
     BaseMessage,
@@ -19,17 +21,12 @@ from langchain_core.messages import (
     convert_to_messages,
 )
 from langchain_core.tools import tool
-from langgraph.checkpoint.base import get_checkpoint_metadata
-from langgraph.checkpoint.serde.types import _DeltaSnapshot
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Sequence
 
     from langchain_core.messages import MessageLikeRepresentation
-    from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
-    from langgraph.checkpoint.base import ChannelVersions, Checkpoint, CheckpointMetadata
 
 CHUNK_SIZE = 4000
 MAX_PAGE_SIZE = 20
@@ -68,23 +65,121 @@ class ConversationSummary(TypedDict):
     preview: str
 
 
-class ConversationSaver(AsyncSqliteSaver):
-    """SQLite checkpointer retaining searchable text across session resets.
+class ConversationArchive(Protocol):
+    """Storage contract independent of LangGraph checkpoint backends.
 
-    Uses the same connection, serializer, and lifetime as `AsyncSqliteSaver`.
-    Archives are scoped by trusted channel/chat metadata, never tool arguments.
+    Warning:
+        Experimental API; subject to change with the Talon runtime.
+
+    Implementations must enforce scope ownership and make appends and deletions
+    idempotent. Session registrations must survive until deletion completes.
     """
 
-    _archive_ready = False
+    async def append(
+        self,
+        scope: ArchiveScope,
+        session_id: str,
+        timestamp: str,
+        messages: Sequence[BaseMessage],
+    ) -> None:
+        """Register the session's immutable scope and retain distinct message revisions.
+
+        Args:
+            scope: Trusted host-supplied scope.
+            session_id: Checkpointer thread identifier.
+            timestamp: Checkpoint timestamp.
+            messages: Messages to retain; empty registers ownership only.
+        """
+        ...
+
+    async def entries(
+        self,
+        scope: ArchiveScope,
+        *,
+        query: str = "",
+        session_id: str = "",
+        after: int = 0,
+        limit: int = 5,
+    ) -> list[ArchiveEntry]:
+        """Read bounded chunks, enforcing scope even for explicit session IDs.
+
+        Args:
+            scope: Trusted host-supplied scope.
+            query: Literal search terms.
+            session_id: Session to read, or empty to search.
+            after: Pagination cursor.
+            limit: Page size, from 1 to 20.
+        """
+        ...
+
+    async def conversations(
+        self,
+        scope: ArchiveScope,
+        *,
+        after: int = 0,
+        limit: int = 5,
+    ) -> list[ConversationSummary]:
+        """List nonempty sessions belonging to the scope.
+
+        Args:
+            scope: Trusted host-supplied scope.
+            after: Pagination cursor.
+            limit: Page size, from 1 to 20.
+        """
+        ...
+
+    async def sessions(self, scope: ArchiveScope) -> list[str]:
+        """Return all registered thread IDs, including sessions with no text.
+
+        Args:
+            scope: Trusted host-supplied scope.
+        """
+        ...
+
+    async def delete_session(self, session_id: str) -> None:
+        """Delete one session after its checkpoints have been deleted.
+
+        Args:
+            session_id: Trusted identifier from the archive's session registry.
+        """
+        ...
+
+
+class SQLiteConversationArchive:
+    """SQLite archive usable with any async LangGraph checkpointer.
+
+    Args:
+        conn: Archive connection owned and closed by the caller.
+    """
+
+    def __init__(self, conn: aiosqlite.Connection) -> None:
+        """Use a caller-owned connection for archive storage."""
+        self.conn = conn
+        self.lock = asyncio.Lock()
+        self._archive_ready = False
+
+    @classmethod
+    @asynccontextmanager
+    async def from_conn_string(cls, conn_string: str) -> AsyncIterator[SQLiteConversationArchive]:
+        """Open an archive and close its connection on exit.
+
+        Args:
+            conn_string: SQLite path or `:memory:`.
+
+        Yields:
+            Archive with initialized tables.
+        """
+        async with aiosqlite.connect(conn_string) as conn:
+            archive = cls(conn)
+            await archive.setup()
+            yield archive
 
     async def setup(self) -> None:
-        """Create the archive tables and search index once per connection."""
-        await super().setup()
+        """Create archive tables and search index once per connection."""
         async with self.lock:
-            if self._archive_ready:
-                return
-            await self.conn.executescript(_SCHEMA)
-            self._archive_ready = True
+            if not self._archive_ready:
+                await self.conn.executescript(_SCHEMA)
+                self._archive_ready = True
 
     @asynccontextmanager
     async def _transaction(self) -> AsyncIterator[None]:
@@ -96,61 +191,31 @@ class ConversationSaver(AsyncSqliteSaver):
             await self.conn.rollback()
             raise
 
-    async def aput(
+    async def append(
         self,
-        config: RunnableConfig,
-        checkpoint: Checkpoint,
-        metadata: CheckpointMetadata,
-        new_versions: ChannelVersions,  # noqa: ARG002  # Required saver signature; SQLite stores snapshots.
-    ) -> RunnableConfig:
-        """Save graph state and archive its messages before they can be compacted.
+        scope: ArchiveScope,
+        session_id: str,
+        timestamp: str,
+        messages: Sequence[BaseMessage],
+    ) -> None:
+        """Register ownership and atomically append distinct message revisions.
 
         Args:
-            config: Checkpoint configuration with trusted chat scope in metadata.
-            checkpoint: Graph snapshot to persist.
-            metadata: Graph checkpoint metadata.
-            new_versions: Updated channel versions.
+            scope: Trusted host-supplied scope.
+            session_id: Checkpointer thread identifier.
+            timestamp: Checkpoint timestamp.
+            messages: Messages to retain; empty registers ownership only.
 
-        Returns:
-            Configuration identifying the persisted checkpoint.
+        Raises:
+            ValueError: If the session belongs to another scope.
         """
         await self.setup()
-        settings = config["configurable"]
-        session_id = str(settings["thread_id"])
-        namespace = settings.get("checkpoint_ns", "")
-        kind, data = self.serde.dumps_typed(checkpoint)
-        stored_metadata = get_checkpoint_metadata(config, metadata)
         async with self.lock, self._transaction():
-            await self.conn.execute(
-                "INSERT OR REPLACE INTO checkpoints "
-                "(thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, "
-                "type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (
-                    session_id,
-                    namespace,
-                    checkpoint["id"],
-                    settings.get("checkpoint_id"),
-                    kind,
-                    data,
-                    json.dumps(stored_metadata).encode(),
-                ),
-            )
-            if not namespace:
-                await self._index(session_id, checkpoint, stored_metadata)
-        return {
-            "configurable": {
-                "thread_id": session_id,
-                "checkpoint_ns": namespace,
-                "checkpoint_id": checkpoint["id"],
-            }
-        }
+            await self._register(scope, session_id)
+            await self._index_messages(session_id, timestamp, list(messages))
 
-    async def _index(
-        self, session_id: str, checkpoint: Checkpoint, metadata: Mapping[str, object]
-    ) -> None:
-        channel, chat = metadata.get(_SCOPE_CHANNEL), metadata.get(_SCOPE_CHAT)
-        if not isinstance(channel, str) or not isinstance(chat, str):
-            return
+    async def _register(self, scope: ArchiveScope, session_id: str) -> None:
+        channel, chat = scope[_SCOPE_CHANNEL], scope[_SCOPE_CHAT]
         await self.conn.execute(
             "INSERT OR IGNORE INTO conversation_sessions VALUES (?, ?, ?)",
             (session_id, channel, chat),
@@ -161,26 +226,6 @@ class ConversationSaver(AsyncSqliteSaver):
             if await cursor.fetchone() != (channel, chat):
                 msg = "Checkpoint session is already assigned to a different channel or chat"
                 raise ValueError(msg)
-        await self._index_writes(session_id, checkpoint)
-        messages = checkpoint["channel_values"].get("messages", [])
-        if isinstance(messages, _DeltaSnapshot):
-            messages = messages.value
-        await self._index_messages(session_id, checkpoint["ts"], messages)
-
-    async def _index_writes(self, session_id: str, checkpoint: Checkpoint) -> None:
-        """Archive message writes committed by this checkpoint, including deltas."""
-        async with self.conn.execute(
-            "SELECT w.type, w.value FROM writes w JOIN checkpoints c "
-            "ON w.thread_id = c.thread_id AND w.checkpoint_ns = c.checkpoint_ns "
-            "AND w.checkpoint_id = c.parent_checkpoint_id "
-            "WHERE c.thread_id = ? AND c.checkpoint_ns = '' AND c.checkpoint_id = ? "
-            "AND w.channel = 'messages' ORDER BY w.task_id, w.idx",
-            (session_id, checkpoint["id"]),
-        ) as cursor:
-            async for kind, data in cursor:
-                await self._index_messages(
-                    session_id, checkpoint["ts"], self.serde.loads_typed((kind, data))
-                )
 
     async def _index_messages(
         self,
@@ -325,59 +370,44 @@ class ConversationSaver(AsyncSqliteSaver):
                 _summary(cast("tuple[int, str, str, str, int, str]", row)) async for row in cursor
             ]
 
-    async def clear_history(self, scope: ArchiveScope) -> None:
-        """Delete all archived sessions and checkpoint namespaces for one chat.
+    async def sessions(self, scope: ArchiveScope) -> list[str]:
+        """Return all owned sessions, including empty ones needed for deletion.
 
         Args:
-            scope: Trusted channel/chat pair to erase.
+            scope: Trusted host-supplied scope.
         """
         await self.setup()
-        params = (scope[_SCOPE_CHANNEL], scope[_SCOPE_CHAT])
-        async with self.lock, self._transaction():
-            for table in ("checkpoints", "writes"):
-                await self.conn.execute(
-                    f"DELETE FROM {table} WHERE thread_id IN "  # noqa: S608  # Fixed table names.
-                    "(SELECT session_id FROM conversation_sessions "
-                    "WHERE channel = ? AND chat = ?)",
-                    params,
-                )
-            await self.conn.execute(
-                "DELETE FROM conversation_chunks WHERE session_id IN "
-                "(SELECT session_id FROM conversation_sessions "
-                "WHERE channel = ? AND chat = ?)",
-                params,
-            )
-            await self.conn.execute(
-                "DELETE FROM conversation_sessions WHERE channel = ? AND chat = ?", params
-            )
+        async with (
+            self.lock,
+            self.conn.execute(
+                "SELECT session_id FROM conversation_sessions WHERE channel = ? AND chat = ?",
+                (scope[_SCOPE_CHANNEL], scope[_SCOPE_CHAT]),
+            ) as cursor,
+        ):
+            return [row[0] async for row in cursor]
 
-    async def adelete_thread(self, thread_id: str) -> None:
-        """Delete a thread's checkpoint state and archived messages.
+    async def delete_session(self, session_id: str) -> None:
+        """Atomically remove a session's archive text, search index, and registration.
 
         Args:
-            thread_id: Exact session identifier to erase.
+            session_id: Trusted session identifier whose checkpoints were deleted.
         """
         await self.setup()
         async with self.lock, self._transaction():
-            for table, column in (
-                ("checkpoints", "thread_id"),
-                ("writes", "thread_id"),
-                ("conversation_chunks", "session_id"),
-                ("conversation_sessions", "session_id"),
-            ):
+            for table in ("conversation_chunks", "conversation_sessions"):
                 await self.conn.execute(
-                    f"DELETE FROM {table} WHERE {column} = ?",  # noqa: S608  # Fixed identifiers.
-                    (thread_id,),
+                    f"DELETE FROM {table} WHERE session_id = ?",  # noqa: S608  # Fixed table names.
+                    (session_id,),
                 )
 
 
 def conversation_tools(
-    saver: ConversationSaver, scope: Callable[[], ArchiveScope]
+    saver: ConversationArchive, scope: Callable[[], ArchiveScope]
 ) -> list[BaseTool]:
     """Build retrieval tools whose scope comes from the current invocation.
 
     Args:
-        saver: Persistent conversation checkpointer.
+        saver: Conversation archive independent of the checkpointer.
         scope: Trusted scope provider, inaccessible to model-supplied arguments.
 
     Returns:

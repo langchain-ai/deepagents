@@ -55,22 +55,8 @@ The archive is for channel conversations; scheduled runs do not add conversation
 history. Resetting history does not remove cron jobs, memory files, downloaded media,
 external traces, or backups.
 
-On first startup, Talon imports existing checkpoints whose channel and chat are
-identifiable from stored metadata or a `whatsapp:`, `telegram:`, or `discord:` thread
-prefix. Legacy single-channel checkpoints have no reliable channel identity; they
-remain on disk but are excluded from retrieval and chat-scoped deletion until you
-assign their original channel explicitly:
-
-```bash
-DEEPAGENTS_TALON_LEGACY_HISTORY_CHANNEL=whatsapp
-```
-
-Use `whatsapp`, `telegram`, or `discord` only when all unscoped conversation history
-in this assistant's database belongs to that channel. The import runs once and
-includes earlier `/new` sessions. Imported history is then searchable and can be
-deleted with `/reset-all-history`. New channel conversations always use
-channel-qualified thread IDs. Custom checkpointers and the echo runtime do not
-provide these archive tools or history deletion.
+New channel conversations use channel-qualified thread IDs. Custom checkpointers
+and the echo runtime do not provide these archive tools or history deletion.
 
 ## Interrupt and Continue
 

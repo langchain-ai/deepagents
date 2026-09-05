@@ -4,9 +4,9 @@ import asyncio
 
 import aiosqlite
 import pytest
+from deepagents.graph import DeepAgentState
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.checkpoint.base import empty_checkpoint
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
 
 from deepagents_talon.archive import (
@@ -75,10 +75,11 @@ async def test_long_transcripts_are_completely_readable_with_bounded_pages(tmp_p
             await saver.entries(WHATSAPP, after=-1)
 
 
-async def test_compaction_preserves_original_messages_without_duplicates(tmp_path):
+@pytest.mark.parametrize("state_schema", [MessagesState, DeepAgentState])
+async def test_compaction_preserves_original_messages_without_duplicates(tmp_path, state_schema):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
         saver = ConversationSaver(connection)
-        builder = StateGraph(MessagesState)
+        builder = StateGraph(state_schema)
         builder.add_node("reply", lambda _: {"messages": [AIMessage("Noted", id="reply")]})
         builder.add_edge(START, "reply")
         builder.add_edge("reply", END)
@@ -114,20 +115,6 @@ async def test_clear_removes_checkpoints_writes_and_archive_only_in_scope(tmp_pa
         assert len(await saver.entries(TELEGRAM)) == 1
 
 
-async def test_backfill_scoped_legacy_and_recover_unindexed_checkpoints(tmp_path):
-    path = str(tmp_path / "history.sqlite")
-    async with AsyncSqliteSaver.from_conn_string(path) as saver:
-        await _save(saver, "whatsapp:chat", "Legacy orchard", scope={})
-        await _save(saver, "chat", "Unknown channel secret", scope={})
-        await _save(saver, "new-session", "Recover interrupted archive", scope=TELEGRAM)
-    async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(connection)
-        assert [hit["text"] for hit in await saver.entries(WHATSAPP)] == ["Legacy orchard"]
-        assert len(await saver.entries(TELEGRAM, query="interrupted")) == 1
-        await saver.adelete_thread("whatsapp:chat")
-        assert await saver.entries(WHATSAPP) == []
-
-
 async def test_tools_enforce_scope_and_paginate_search(tmp_path):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
         saver = ConversationSaver(connection)
@@ -158,7 +145,7 @@ def _graph_factory(**kwargs: object):
             return {"messages": [AIMessage(f"found:{len(hits)}")]}
         return {"messages": [AIMessage("noted")]}
 
-    builder = StateGraph(MessagesState)
+    builder = StateGraph(DeepAgentState)
     builder.add_node("reply", reply)
     builder.add_edge(START, "reply")
     builder.add_edge("reply", END)
@@ -279,30 +266,6 @@ async def test_reset_cancels_active_turn_before_deleting_history(tmp_path, monke
             assert await saver.aget({"configurable": {"thread_id": "whatsapp:chat"}}) is None
         finally:
             await host.stop()
-
-
-async def test_explicit_legacy_import_survives_restart_and_can_be_erased(tmp_path):
-    path = str(tmp_path / "history.sqlite")
-    async with AsyncSqliteSaver.from_conn_string(path) as saver:
-        await _save(saver, "chat", "old orchard", scope={})
-        await _save(saver, "chat:talon-reset:1", "older orchard", scope={})
-        await _save(saver, "job:talon-cron", "cron secret", scope={})
-        await _save(saver, "subagent-worker", "worker secret", scope={})
-    async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(connection)
-        assert await saver.entries(WHATSAPP) == []
-        await saver.import_legacy_history("whatsapp")
-        assert len(await saver.entries(WHATSAPP, query="orchard")) == 2
-        assert await saver.entries(TELEGRAM) == []
-        await saver.clear_history(WHATSAPP)
-    async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(connection)
-        await saver.import_legacy_history("whatsapp")
-        assert await saver.entries(WHATSAPP) == []
-        with pytest.raises(ValueError, match="another channel"):
-            await saver.import_legacy_history("telegram")
-        with pytest.raises(ValueError, match="must be"):
-            await saver.import_legacy_history("unknown")
 
 
 async def test_concurrent_channels_do_not_share_retrieval_scope(tmp_path, monkeypatch):

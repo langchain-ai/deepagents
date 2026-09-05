@@ -11,7 +11,7 @@ import logging
 import os
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from deepagents_talon.async_subagents import load_async_subagents
 from deepagents_talon.channels.discord import DiscordChannel, DiscordChannelConfig
@@ -209,10 +209,6 @@ async def _run_host(
         str(config.checkpoint_path)
     ) as sqlite_checkpointer:
         await sqlite_checkpointer.setup()
-        if legacy_channel := config.env.get("DEEPAGENTS_TALON_LEGACY_HISTORY_CHANNEL"):
-            await cast("ConversationSaver", sqlite_checkpointer).import_legacy_history(
-                legacy_channel
-            )
         agent = await _agent_runtime(
             config,
             cron_store=cron_store,

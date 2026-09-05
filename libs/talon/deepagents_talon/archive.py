@@ -8,18 +8,25 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypedDict, cast
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    ToolMessage,
+    convert_to_messages,
+)
 from langchain_core.tools import tool
 from langgraph.checkpoint.base import get_checkpoint_metadata
+from langgraph.checkpoint.serde.types import _DeltaSnapshot
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Callable, Mapping
 
+    from langchain_core.messages import MessageLikeRepresentation
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
     from langgraph.checkpoint.base import ChannelVersions, Checkpoint, CheckpointMetadata
@@ -71,22 +78,12 @@ class ConversationSaver(AsyncSqliteSaver):
     _archive_ready = False
 
     async def setup(self) -> None:
-        """Create the archive and import identifiable legacy checkpoints once."""
+        """Create the archive tables and search index once per connection."""
         await super().setup()
         async with self.lock:
             if self._archive_ready:
                 return
             await self.conn.executescript(_SCHEMA)
-            async with self.conn.execute(
-                "SELECT version FROM conversation_archive_version"
-            ) as cursor:
-                migrated = await cursor.fetchone()
-            if migrated != (2,):
-                async with self._transaction():
-                    for statement in _SEARCH_MIGRATION:
-                        await self.conn.execute(statement)
-                    if migrated is None:
-                        await self._backfill()
             self._archive_ready = True
 
     @asynccontextmanager
@@ -98,62 +95,6 @@ class ConversationSaver(AsyncSqliteSaver):
         except BaseException:
             await self.conn.rollback()
             raise
-
-    async def _backfill(self) -> None:
-        async with self.conn.execute(
-            "SELECT thread_id, type, checkpoint, metadata FROM checkpoints "
-            "WHERE checkpoint_ns = '' ORDER BY checkpoint_id"
-        ) as cursor:
-            async for thread_id, kind, data, metadata in cursor:
-                checkpoint = self.serde.loads_typed((kind, data))
-                scope = json.loads(metadata or "{}")
-                if _SCOPE_CHANNEL not in scope:
-                    scope.update(_legacy_scope(thread_id))
-                await self._index(thread_id, checkpoint, scope)
-
-    async def import_legacy_history(self, channel: str) -> None:
-        """Assign unscoped legacy sessions to an operator-specified channel once.
-
-        Args:
-            channel: Original channel for the database's single-channel history.
-
-        Raises:
-            ValueError: If the channel is unsupported or differs from an earlier import.
-        """
-        if channel not in {"whatsapp", "telegram", "discord"}:
-            msg = "Legacy history channel must be whatsapp, telegram, or discord"
-            raise ValueError(msg)
-        await self.setup()
-        async with self.lock:
-            async with self.conn.execute(
-                "SELECT channel FROM conversation_legacy_import"
-            ) as cursor:
-                previous = await cursor.fetchone()
-            if previous is not None:
-                if previous[0] != channel:
-                    msg = "Legacy history was already assigned to another channel"
-                    raise ValueError(msg)
-                return
-            async with self._transaction():
-                await self._import_unscoped(channel)
-                await self.conn.execute(
-                    "INSERT INTO conversation_legacy_import VALUES (?)", (channel,)
-                )
-
-    async def _import_unscoped(self, channel: str) -> None:
-        async with self.conn.execute(
-            "SELECT thread_id, type, checkpoint FROM checkpoints "
-            "WHERE checkpoint_ns = '' AND thread_id NOT IN "
-            "(SELECT session_id FROM conversation_sessions) ORDER BY checkpoint_id"
-        ) as cursor:
-            async for thread_id, kind, data in cursor:
-                if thread_id.endswith(":talon-cron") or thread_id.startswith("subagent-"):
-                    continue
-                scope = _legacy_scope(thread_id) or {
-                    _SCOPE_CHANNEL: channel,
-                    _SCOPE_CHAT: re.sub(r":talon-reset:\d+$", "", thread_id),
-                }
-                await self._index(thread_id, self.serde.loads_typed((kind, data)), scope)
 
     async def aput(
         self,
@@ -220,12 +161,40 @@ class ConversationSaver(AsyncSqliteSaver):
             if await cursor.fetchone() != (channel, chat):
                 msg = "Checkpoint session is already assigned to a different channel or chat"
                 raise ValueError(msg)
-        for message in checkpoint["channel_values"].get("messages", []):
+        await self._index_writes(session_id, checkpoint)
+        messages = checkpoint["channel_values"].get("messages", [])
+        if isinstance(messages, _DeltaSnapshot):
+            messages = messages.value
+        await self._index_messages(session_id, checkpoint["ts"], messages)
+
+    async def _index_writes(self, session_id: str, checkpoint: Checkpoint) -> None:
+        """Archive message writes committed by this checkpoint, including deltas."""
+        async with self.conn.execute(
+            "SELECT w.type, w.value FROM writes w JOIN checkpoints c "
+            "ON w.thread_id = c.thread_id AND w.checkpoint_ns = c.checkpoint_ns "
+            "AND w.checkpoint_id = c.parent_checkpoint_id "
+            "WHERE c.thread_id = ? AND c.checkpoint_ns = '' AND c.checkpoint_id = ? "
+            "AND w.channel = 'messages' ORDER BY w.task_id, w.idx",
+            (session_id, checkpoint["id"]),
+        ) as cursor:
+            async for kind, data in cursor:
+                await self._index_messages(
+                    session_id, checkpoint["ts"], self.serde.loads_typed((kind, data))
+                )
+
+    async def _index_messages(
+        self,
+        session_id: str,
+        timestamp: str,
+        value: MessageLikeRepresentation | list[MessageLikeRepresentation],
+    ) -> None:
+        messages = value if isinstance(value, list) else [value]
+        for message in convert_to_messages(messages):
             if not isinstance(message, (HumanMessage, AIMessage, ToolMessage)):
                 continue
             if isinstance(message, ToolMessage) and message.name in _ARCHIVE_TOOLS:
                 continue
-            await self._index_message(session_id, checkpoint["ts"], message)
+            await self._index_message(session_id, timestamp, message)
 
     async def _index_message(self, session_id: str, timestamp: str, message: BaseMessage) -> None:
         text = message.text
@@ -469,13 +438,6 @@ def _summary(row: tuple[int, str, str, str, int, str]) -> ConversationSummary:
     )
 
 
-def _legacy_scope(session_id: str) -> dict[str, str]:
-    channel, separator, chat = session_id.partition(":")
-    if separator and channel in {"whatsapp", "telegram", "discord"}:
-        return {_SCOPE_CHANNEL: channel, _SCOPE_CHAT: re.sub(r":talon-reset:\d+$", "", chat)}
-    return {}
-
-
 def _entry(row: tuple[int, str, str, str, str, int, str]) -> ArchiveEntry:
     return ArchiveEntry(
         cursor=row[0],
@@ -489,8 +451,6 @@ def _entry(row: tuple[int, str, str, str, str, int, str]) -> ArchiveEntry:
 
 
 _SCHEMA = """
-CREATE TABLE IF NOT EXISTS conversation_legacy_import (channel TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS conversation_archive_version (version INTEGER PRIMARY KEY);
 CREATE TABLE IF NOT EXISTS conversation_sessions (
     session_id TEXT PRIMARY KEY, channel TEXT NOT NULL, chat TEXT NOT NULL
 );
@@ -501,21 +461,8 @@ CREATE TABLE IF NOT EXISTS conversation_chunks (
     revision TEXT NOT NULL, part INTEGER NOT NULL, text TEXT NOT NULL,
     UNIQUE(session_id, message_id, revision, part)
 );
+CREATE VIRTUAL TABLE IF NOT EXISTS conversation_search USING fts5(text);
+CREATE TRIGGER IF NOT EXISTS conversation_delete AFTER DELETE ON conversation_chunks BEGIN
+    DELETE FROM conversation_search WHERE rowid = old.id;
+END;
 """
-
-# Reconstruct revisions from the archive so compacted checkpoints are not needed.
-# Keep the first chunk's cursor stable for search pagination and transcript reads.
-_SEARCH_MIGRATION = (
-    "DROP TRIGGER IF EXISTS conversation_insert",
-    "DROP TRIGGER IF EXISTS conversation_delete",
-    "DROP TABLE IF EXISTS conversation_search",
-    "CREATE VIRTUAL TABLE conversation_search USING fts5(text)",
-    "INSERT INTO conversation_search(rowid, text) "
-    "SELECT MIN(id), group_concat(text, '') FROM "
-    "(SELECT * FROM conversation_chunks ORDER BY session_id, message_id, revision, part) "
-    "GROUP BY session_id, message_id, revision",
-    "CREATE TRIGGER conversation_delete AFTER DELETE ON conversation_chunks BEGIN "
-    "DELETE FROM conversation_search WHERE rowid = old.id; END",
-    "DELETE FROM conversation_archive_version",
-    "INSERT INTO conversation_archive_version VALUES (2)",
-)

@@ -44,24 +44,15 @@ async def test_search_matches_complete_revisions_with_bounded_display(tmp_path, 
             assert await cursor.fetchone() == (0,)
 
 
-async def test_existing_archive_search_is_rebuilt_without_checkpoints(tmp_path):
+async def test_archive_search_survives_reopening_without_checkpoints(tmp_path):
     path = str(tmp_path / "history.sqlite")
     content = "x " * 1998 + " pineapple"
     async with aiosqlite.connect(path) as connection:
         saver = ConversationSaver(connection)
         await _save(saver, content)
         before = await saver.entries(SCOPE, session_id="session")
-        # Restore the previous chunk-based index, retaining only archived history.
-        await connection.executescript(
-            "DELETE FROM checkpoints;"
-            "DROP TRIGGER conversation_delete;"
-            "DROP TABLE conversation_search;"
-            "CREATE VIRTUAL TABLE conversation_search USING fts5("
-            "text, content='conversation_chunks', content_rowid='id');"
-            "INSERT INTO conversation_search(conversation_search) VALUES ('rebuild');"
-            "UPDATE conversation_archive_version SET version = 1;"
-        )
-        assert await saver.entries(SCOPE, query="pineapple") == []
+        await connection.execute("DELETE FROM checkpoints")
+        await connection.commit()
     for _ in range(2):
         async with aiosqlite.connect(path) as connection:
             saver = ConversationSaver(connection)

@@ -8,6 +8,7 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
+from deepagents.middleware.subagents import _FORKED_CONTEXT_KEY
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
@@ -16,6 +17,7 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
     ResponseT,
+    ToolCallRequest,
     TracePolicy,
     omit_payload,
 )
@@ -24,11 +26,18 @@ from langchain_core._api import beta
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
+from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 if TYPE_CHECKING:
     from langgraph.runtime import Runtime
 
+    from langchain_quickjs._repl import _ThreadREPL
+
+from langchain_quickjs._fork_context import (
+    fork_repl_source,
+    get_fork_repl_source,
+)
 from langchain_quickjs._format import format_outcome
 from langchain_quickjs._prompt import (
     render_eval_tool_code_doc,
@@ -349,7 +358,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 names.add(entry.name)
         return names
 
-    def _repl_for_eval(self, slot_id: str) -> Any:
+    def _repl_for_eval(self, slot_id: str) -> "_ThreadREPL":
         """Return the REPL slot for one eval invocation."""
         repl = self._registry.get(slot_id)
         if self._mode == "call" and self._ptc is not None:
@@ -370,6 +379,38 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     def _slot_update_for_runtime(self) -> dict[str, str]:
         """Build a private state update with a fresh slot id when needed."""
         return {"_quickjs_slot_id": _new_slot_id()}
+
+    def _fork_slot_update(self, runtime: "Runtime[ContextT]") -> dict[str, str]:
+        """Clone the scoped parent REPL into a fresh private slot."""
+        slot_id = _new_slot_id()
+        source = get_fork_repl_source(
+            getattr(runtime.execution_info, "thread_id", None)
+        )
+        if source is None:
+            return {"_quickjs_slot_id": slot_id}
+        try:
+            payload = source.create_snapshot()
+            self._registry.get(slot_id).restore_snapshot(payload, inject_globals=True)
+        except Exception:  # noqa: BLE001  # best-effort fork clone path
+            logger.warning("Failed to clone scoped QuickJS REPL", exc_info=True)
+        return {"_quickjs_slot_id": slot_id}
+
+    async def _afork_slot_update(self, runtime: "Runtime[ContextT]") -> dict[str, str]:
+        """Async variant of `_fork_slot_update`."""
+        slot_id = _new_slot_id()
+        source = get_fork_repl_source(
+            getattr(runtime.execution_info, "thread_id", None)
+        )
+        if source is None:
+            return {"_quickjs_slot_id": slot_id}
+        try:
+            payload = await source.acreate_snapshot()
+            await self._registry.get(slot_id).arestore_snapshot(
+                payload, inject_globals=True
+            )
+        except Exception:  # noqa: BLE001  # best-effort fork clone path
+            logger.warning("Failed to clone scoped QuickJS REPL", exc_info=True)
+        return {"_quickjs_slot_id": slot_id}
 
     def _snapshot_authenticated(
         self, payload: bytes, state: Mapping[str, object]
@@ -405,11 +446,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     def before_agent(
         self,
         state: REPLState,
-        runtime: "Runtime[ContextT]",  # noqa: ARG002
+        runtime: "Runtime[ContextT]",
     ) -> dict[str, Any] | None:
         """Ensure a private REPL slot exists and restore snapshot bytes."""
         slot_id = state.get("_quickjs_slot_id")
         update: dict[str, Any] | None = None
+        if state.get(_FORKED_CONTEXT_KEY) is True:
+            return self._fork_slot_update(runtime)
         if not isinstance(slot_id, str) or not slot_id:
             update = self._slot_update_for_runtime()
             slot_id = update["_quickjs_slot_id"]
@@ -445,11 +488,13 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     async def abefore_agent(
         self,
         state: REPLState,
-        runtime: "Runtime[ContextT]",  # noqa: ARG002
+        runtime: "Runtime[ContextT]",
     ) -> dict[str, Any] | None:
         """Async variant of `before_agent` snapshot restore."""
         slot_id = state.get("_quickjs_slot_id")
         update: dict[str, Any] | None = None
+        if state.get(_FORKED_CONTEXT_KEY) is True:
+            return await self._afork_slot_update(runtime)
         if not isinstance(slot_id, str) or not slot_id:
             update = self._slot_update_for_runtime()
             slot_id = update["_quickjs_slot_id"]
@@ -481,6 +526,48 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 "_quickjs_snapshot_hmac": None,
             }
         return update
+
+    def _task_repl(self, request: ToolCallRequest) -> "_ThreadREPL | None":
+        """Return the active parent REPL for a Deep Agents task call."""
+        if request.tool is None or find_subagent_task_tool([request.tool]) is None:
+            return None
+        state = request.state
+        if not isinstance(state, Mapping):
+            return None
+        slot_id = state.get("_quickjs_slot_id")
+        if not isinstance(slot_id, str):
+            return None
+        return self._registry.get_if_exists(slot_id)
+
+    def wrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], ToolMessage | Command[Any]],
+    ) -> ToolMessage | Command[Any]:
+        """Scope the parent REPL while a Deep Agents task tool dispatches."""
+        repl = self._task_repl(request)
+        thread_id = getattr(
+            getattr(request.runtime, "execution_info", None), "thread_id", None
+        )
+        if repl is None or not isinstance(thread_id, str):
+            return handler(request)
+        with fork_repl_source(thread_id, repl):
+            return handler(request)
+
+    async def awrap_tool_call(
+        self,
+        request: ToolCallRequest,
+        handler: Callable[[ToolCallRequest], Awaitable[ToolMessage | Command[Any]]],
+    ) -> ToolMessage | Command[Any]:
+        """Async variant of `wrap_tool_call`."""
+        repl = self._task_repl(request)
+        thread_id = getattr(
+            getattr(request.runtime, "execution_info", None), "thread_id", None
+        )
+        if repl is None or not isinstance(thread_id, str):
+            return await handler(request)
+        with fork_repl_source(thread_id, repl):
+            return await handler(request)
 
     def wrap_model_call(
         self,

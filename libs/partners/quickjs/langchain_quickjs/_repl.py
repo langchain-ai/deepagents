@@ -41,6 +41,7 @@ from quickjs_rs import (
     TimeoutError as QJSTimeoutError,
 )
 
+from langchain_quickjs._fork_context import fork_repl_source
 from langchain_quickjs._format import (
     coerce_tool_output_for_ptc,
     format_handle,
@@ -548,14 +549,16 @@ class _ThreadREPL:
             if task_tool is None:
                 msg = "task tool not configured for this eval"
                 raise RuntimeError(msg)
-            return await call_subagent_task_tool(
-                task_tool,
-                description=description,
-                subagent_type=subagent_type,
-                response_schema=response_schema,
-                runtime=runtime,
-                label=label,
-            )
+            thread_id = getattr(runtime.execution_info, "thread_id", None)
+            with fork_repl_source(thread_id, self):
+                return await call_subagent_task_tool(
+                    task_tool,
+                    description=description,
+                    subagent_type=subagent_type,
+                    response_schema=response_schema,
+                    runtime=runtime,
+                    label=label,
+                )
 
         outer_loop = state.outer_loop
         if outer_loop is None:

@@ -16,10 +16,11 @@ from langchain.agents.middleware.types import (
     ModelResponse,
     PrivateStateAttr,
     ResponseT,
+    TracePolicy,
+    omit_payload,
 )
 from langchain.tools import BaseTool, ToolRuntime
 from langchain_core._api import beta
-from langchain_core._api.deprecation import warn_deprecated
 from langchain_core.messages import SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.channels import DeltaChannel
@@ -41,7 +42,13 @@ from langchain_quickjs._ptc import (
     render_ptc_prompt,
 )
 from langchain_quickjs._repl import _Registry
-from langchain_quickjs._snapshot import encode_snapshot, replay_snapshot_chain
+from langchain_quickjs._snapshot import (
+    encode_snapshot,
+    normalize_signing_key,
+    replay_snapshot_chain,
+    sign_snapshot,
+    verify_snapshot,
+)
 from langchain_quickjs._subagent import find_subagent_task_tool
 
 logger = logging.getLogger(__name__)
@@ -51,6 +58,8 @@ _DEFAULT_TIMEOUT = 5.0
 _DEFAULT_MAX_PTC_CALLS = 256
 _DEFAULT_MAX_RESULT_CHARS = 4_000
 _DEFAULT_TOOL_NAME = "eval"
+
+PersistenceMode = Literal["thread", "turn", "call"]
 
 
 class REPLState(AgentState):
@@ -64,6 +73,7 @@ class REPLState(AgentState):
             PrivateStateAttr,
         ]
     ]
+    _quickjs_snapshot_hmac: NotRequired[Annotated[bytes, PrivateStateAttr]]
 
 
 class EvalSchema(BaseModel):
@@ -77,45 +87,21 @@ class EvalSchema(BaseModel):
     )
 
 
-def _resolve_persistence_flags(
+def _resolve_mode(
     *,
-    mode: Literal["thread", "turn", "call"] | None,
-    snapshot_between_turns: bool | None,
-) -> tuple[Literal["thread", "turn", "call"], bool, bool]:
-    """Normalize persistence configuration and enforce invariant constraints."""
-    if snapshot_between_turns is not None:
-        warn_deprecated(
-            since="0.1.2",
-            removal="0.2.0",
-            message=(
-                "Passing `snapshot_between_turns` to "
-                "`CodeInterpreterMiddleware` is deprecated and will be "
-                "removed in langchain-quickjs==0.2.0. Use `mode='thread'` "
-                "or `mode='turn'` instead."
-            ),
-            package="langchain-quickjs",
-        )
-    if mode is None:
-        if snapshot_between_turns is None or snapshot_between_turns:
-            return "thread", True, False
-        return "turn", False, False
-
-    if mode == "thread":
-        if snapshot_between_turns is False:
-            msg = "`snapshot_between_turns=False` is incompatible with `mode='thread'`."
+    mode: str | None,
+) -> PersistenceMode:
+    """Normalize persistence mode and enforce invariant constraints."""
+    match mode:
+        case None | "thread":
+            return "thread"
+        case "turn":
+            return "turn"
+        case "call":
+            return "call"
+        case _:
+            msg = "`mode` must be one of 'thread', 'turn', or 'call'."
             raise ValueError(msg)
-        return "thread", True, False
-
-    if mode == "turn":
-        if snapshot_between_turns is True:
-            msg = "`snapshot_between_turns=True` is incompatible with `mode='turn'`."
-            raise ValueError(msg)
-        return "turn", False, False
-
-    if snapshot_between_turns is True:
-        msg = "`snapshot_between_turns=True` is incompatible with `mode='call'`."
-        raise ValueError(msg)
-    return "call", False, True
 
 
 def _new_slot_id() -> str:
@@ -133,8 +119,17 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     Args:
         memory_limit: Bytes the QuickJS heap may use. Shared across all
             contexts under the same Runtime. Default 64 MiB.
-        timeout: Per-call wall-clock timeout in seconds. Applied to every
+        timeout: Per-call timeout in seconds. Applied to every
             `eval` on every context. Default 5.
+
+            !!! warning
+
+                This budget measures QuickJS VM execution time, not Python
+                wall-clock time. Time spent outside the VM (notably while
+                awaiting `tools.*` host calls which run as Python coroutines)
+                is not counted against it. A slow or blocking host call can
+                therefore stall an `eval` for longer than `timeout` seconds, so
+                do not rely on it to bound total wall-clock duration.
         max_ptc_calls: Maximum number of `tools.*` bridge calls allowed
             during one `eval` execution. Exceeding this budget throws
             from the host-function bridge before invoking the tool.
@@ -195,19 +190,24 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             - `"turn"`: state persists across calls within a turn only.
             - `"call"`: each eval call runs in a fresh REPL.
             If omitted, defaults to `"thread"`
-        snapshot_between_turns: Compatibility knob for turn-vs-thread
-            behavior. When `mode` is omitted, `True` resolves to
-            `"thread"` and `False` resolves to `"turn"`. When `mode` is
-            provided, incompatible combinations raise `ValueError`.
-
-            !!! deprecated
-
-                Passing `snapshot_between_turns` is deprecated. Use
-                `mode="thread"` or `mode="turn"` instead.
         max_snapshot_bytes: Maximum serialized snapshot payload size allowed
             in middleware state. If a snapshot exceeds this size, it is
             dropped (`_quickjs_snapshot_payload=None`). Defaults to
             `memory_limit`.
+        snapshot_signing_key: Secret key (`str` or `bytes`) used to
+            HMAC-sign persisted REPL snapshots. When set (and `mode="thread"`),
+            each materialized snapshot is signed before it is written to the
+            checkpointer and its signature is verified before restore. A
+            snapshot whose signature is missing or does not match is rejected
+            and discarded instead of executed.
+
+            !!! warning
+
+                When left unset, persisted snapshots are **not** integrity-checked.
+                Set `snapshot_signing_key` to a high-entropy secret in any deployment
+                where the checkpointer is not fully trusted. Use the same key across
+                all processes that share a thread, and rotate it by starting fresh
+                threads.
 
     Example:
         ```python
@@ -220,6 +220,8 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         )
         ```
     """
+
+    trace_policy = TracePolicy(process_inputs=omit_payload)
 
     state_schema = REPLState
 
@@ -234,9 +236,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         capture_console: bool = True,
         subagents: bool = True,
         ptc: PTCOption | None = None,
-        mode: Literal["thread", "turn", "call"] | None = None,
-        snapshot_between_turns: bool | None = None,
+        mode: PersistenceMode | None = None,
         max_snapshot_bytes: int | None = None,
+        snapshot_signing_key: str | bytes | None = None,
     ) -> None:
         """Initialize REPL middleware state and build the exposed eval tool."""
         super().__init__()
@@ -254,16 +256,14 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         self._capture_console = capture_console
         self._subagents = subagents
         self._ptc = ptc
-        (
-            self._mode,
-            self._snapshot_between_turns,
-            self._reset_between_calls,
-        ) = _resolve_persistence_flags(
-            mode=mode,
-            snapshot_between_turns=snapshot_between_turns,
-        )
+        self._mode = _resolve_mode(mode=mode)
         self._max_snapshot_bytes = (
             memory_limit if max_snapshot_bytes is None else max_snapshot_bytes
+        )
+        self._snapshot_signing_key = (
+            normalize_signing_key(snapshot_signing_key)
+            if snapshot_signing_key is not None
+            else None
         )
         self._registry = _Registry(
             memory_limit=memory_limit,
@@ -308,7 +308,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_runtime=runtime,
                 )
             finally:
-                if middleware._reset_between_calls:
+                if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
@@ -325,7 +325,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                     outer_loop=asyncio.get_running_loop(),
                 )
             finally:
-                if middleware._reset_between_calls:
+                if middleware._mode == "call":
                     middleware._registry.reset_repl(slot_id)
             return _make_tool_message(outcome, runtime.tool_call_id)
 
@@ -352,14 +352,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
     def _repl_for_eval(self, slot_id: str) -> Any:
         """Return the REPL slot for one eval invocation."""
         repl = self._registry.get(slot_id)
-        if self._reset_between_calls and self._ptc is not None:
+        if self._mode == "call" and self._ptc is not None:
             repl.install_tools(list(self._ptc_tools_by_slot.get(slot_id, ())))
         return repl
 
-    def _slot_id(
-        self,
-        state: REPLState,
-    ) -> str:
+    def _slot_id(self, state: REPLState) -> str:
         """Return the private interpreter slot initialized by `before_agent`."""
         slot_id = state.get("_quickjs_slot_id") if isinstance(state, dict) else None
         if isinstance(slot_id, str) and slot_id:
@@ -374,6 +371,33 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Build a private state update with a fresh slot id when needed."""
         return {"_quickjs_slot_id": _new_slot_id()}
 
+    def _snapshot_authenticated(self, payload: bytes, state: REPLState) -> bool:
+        """Whether ``payload`` may be restored under the current signing policy.
+
+        With a signing key configured, the materialized ``payload`` must carry a
+        matching ``_quickjs_snapshot_hmac`` tag: a missing or
+        mismatched tag means the snapshot was not produced by us, or was tampered
+        with in the store, so it is rejected. With no key configured we cannot
+        verify anything and fall back to the (unauthenticated) legacy behavior.
+        """
+        if self._snapshot_signing_key is None:
+            return True
+        slot_id = self._slot_id(state)
+        # `_quickjs_snapshot_hmac` is `NotRequired`: an unsigned or legacy
+        # snapshot has no tag, and a store adversary can strip it. Default to
+        # `None` so a missing tag flows into `verify_snapshot` as a rejection
+        # rather than raising `KeyError`.
+        tag = state.get("_quickjs_snapshot_hmac", None)
+        if verify_snapshot(self._snapshot_signing_key, payload, slot_id, tag):
+            return True
+        logger.warning(
+            "Rejecting QuickJS snapshot for slot_id=%s: HMAC verification "
+            "failed (missing or tampered signature). Snapshot will not be "
+            "restored.",
+            slot_id,
+        )
+        return False
+
     def before_agent(
         self,
         state: REPLState,
@@ -385,11 +409,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if not isinstance(slot_id, str) or not slot_id:
             update = self._slot_update_for_runtime()
             slot_id = update["_quickjs_slot_id"]
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             return update
         payload = state.get("_quickjs_snapshot_payload")
         if not payload:
             return update
+        if not self._snapshot_authenticated(
+            payload, cast("REPLState", {**state, "_quickjs_slot_id": slot_id})
+        ):
+            return {
+                **(update or {}),
+                "_quickjs_snapshot_payload": None,
+                "_quickjs_snapshot_hmac": None,
+            }
         repl = self._registry.get(slot_id)
         try:
             repl.restore_snapshot(payload, inject_globals=True)
@@ -399,7 +431,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 slot_id,
                 exc_info=True,
             )
-            update = {**(update or {}), "_quickjs_snapshot_payload": None}
+            return {
+                **(update or {}),
+                "_quickjs_snapshot_payload": None,
+                "_quickjs_snapshot_hmac": None,
+            }
         return update
 
     async def abefore_agent(
@@ -413,11 +449,19 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if not isinstance(slot_id, str) or not slot_id:
             update = self._slot_update_for_runtime()
             slot_id = update["_quickjs_slot_id"]
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             return update
         payload = state.get("_quickjs_snapshot_payload")
         if not payload:
             return update
+        if not self._snapshot_authenticated(
+            payload, cast("REPLState", {**state, "_quickjs_slot_id": slot_id})
+        ):
+            return {
+                **(update or {}),
+                "_quickjs_snapshot_payload": None,
+                "_quickjs_snapshot_hmac": None,
+            }
         repl = self._registry.get(slot_id)
         try:
             await repl.arestore_snapshot(payload, inject_globals=True)
@@ -427,7 +471,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 slot_id,
                 exc_info=True,
             )
-            update = {**(update or {}), "_quickjs_snapshot_payload": None}
+            return {
+                **(update or {}),
+                "_quickjs_snapshot_payload": None,
+                "_quickjs_snapshot_hmac": None,
+            }
         return update
 
     def wrap_model_call(
@@ -537,8 +585,21 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
                 size,
                 self._max_snapshot_bytes,
             )
-            return {"_quickjs_snapshot_payload": None}
-        return {"_quickjs_snapshot_payload": encode_snapshot(payload, prior)}
+            # Clear the stale signature too, so a dropped snapshot cannot leave a
+            # tag that would later authenticate a mismatched payload.
+            return {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
+        # Sign the full payload *before* `encode_snapshot` folds it into a
+        # `bsdiff` patch record. Restore recomputes the tag over the bytes the
+        # patch chain replays back to, so the signature authenticates the
+        # reconstructed snapshot rather than any single delta.
+        update: dict[str, Any] = {
+            "_quickjs_snapshot_payload": encode_snapshot(payload, prior)
+        }
+        if self._snapshot_signing_key is not None:
+            update["_quickjs_snapshot_hmac"] = sign_snapshot(
+                self._snapshot_signing_key, payload, slot_id
+            )
+        return update
 
     def after_agent(
         self,
@@ -548,7 +609,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Snapshot REPL state (optional) and evict this turn's REPL slot."""
         slot_id = self._slot_id(state)
         self._ptc_tools_by_slot.pop(slot_id, None)
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             self._registry.evict(slot_id)
             return None
 
@@ -565,11 +626,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for slot_id=%s",
+                "Failed to create QuickJS snapshot for thread_id=%s",
                 slot_id,
                 exc_info=True,
             )
-            update = {"_quickjs_snapshot_payload": None}
+            update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
             self._registry.evict(slot_id)
         return update
@@ -582,7 +643,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Async variant of `after_agent` snapshot+evict behavior."""
         slot_id = self._slot_id(state)
         self._ptc_tools_by_slot.pop(slot_id, None)
-        if self._reset_between_calls or not self._snapshot_between_turns:
+        if self._mode != "thread":
             await self._registry.aevict(slot_id)
             return None
 
@@ -599,11 +660,11 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             )
         except Exception:  # noqa: BLE001  # best-effort snapshot path
             logger.warning(
-                "Failed to create QuickJS snapshot for slot_id=%s",
+                "Failed to create QuickJS snapshot for thread_id=%s",
                 slot_id,
                 exc_info=True,
             )
-            update = {"_quickjs_snapshot_payload": None}
+            update = {"_quickjs_snapshot_payload": None, "_quickjs_snapshot_hmac": None}
         finally:
             await self._registry.aevict(slot_id)
         return update

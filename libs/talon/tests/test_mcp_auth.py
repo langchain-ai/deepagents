@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import ipaddress
 import json
+import socket
 import stat
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qs, urlparse
 
 import httpx
 import pytest
@@ -23,7 +26,33 @@ from deepagents_talon.mcp_auth import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
+
+
+def _public_dns(
+    host: str, port: int, *_args: object, **_kwargs: object
+) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+    try:
+        address = str(ipaddress.ip_address(host))
+    except ValueError:
+        address = "93.184.216.34"
+    return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port))]
+
+
+@pytest.fixture
+def oauth_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> Callable[[Callable[[httpx.Request], httpx.Response]], httpx.MockTransport]:
+    monkeypatch.setattr(socket, "getaddrinfo", _public_dns)
+
+    def install(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
+        transport = httpx.MockTransport(handler)
+        monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **_kwargs: transport)
+        monkeypatch.setattr("httpx._client.AsyncHTTPTransport", lambda **_kwargs: transport)
+        return transport
+
+    return install
 
 
 async def test_file_token_storage_round_trip_and_permissions(
@@ -100,7 +129,7 @@ async def test_provider_restores_persisted_expiry(
 
 
 async def test_provider_refreshes_expired_token_after_restart(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_network
 ) -> None:
     monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
     storage = FileTokenStorage("notion", server_url="https://example.com/mcp")
@@ -127,7 +156,28 @@ async def test_provider_refreshes_expired_token_after_restart(
 
     def handle(request: httpx.Request) -> httpx.Response:
         requests.append(request)
-        if request.url.path == "/token":
+        if request.url.path == "/mcp":
+            if request.headers.get("Authorization") == "Bearer renewed":
+                return httpx.Response(200)
+            return httpx.Response(
+                401,
+                headers={
+                    "WWW-Authenticate": 'Bearer resource_metadata="https://example.com/resource"'
+                },
+            )
+        if request.url.path == "/resource":
+            return httpx.Response(
+                200,
+                json={
+                    "resource": "https://example.com/mcp",
+                    "authorization_servers": ["https://auth.example/tenant"],
+                },
+            )
+        if request.url.path == "/.well-known/oauth-authorization-server/tenant":
+            return httpx.Response(200, json=_oauth_metadata())
+        if request.url.path == "/tenant/access-token":
+            assert request.headers["Host"] == "auth.example"
+            assert parse_qs(request.content.decode())["refresh_token"] == ["refresh"]
             return httpx.Response(
                 200,
                 json={
@@ -136,13 +186,17 @@ async def test_provider_refreshes_expired_token_after_restart(
                     "expires_in": 3600,
                 },
             )
-        return httpx.Response(200)
+        return httpx.Response(404)
 
-    async with httpx.AsyncClient(transport=httpx.MockTransport(handle), auth=provider) as client:
+    transport = oauth_network(handle)
+    async with httpx.AsyncClient(transport=transport, auth=provider) as client:
         response = await client.get("https://example.com/mcp")
 
     assert response.status_code == 200
-    assert [request.url.path for request in requests] == ["/token", "/mcp"]
+    assert [request.url.path for request in requests if request.method == "POST"] == [
+        "/tenant/access-token"
+    ]
+    assert all("Authorization" not in request.headers for request in requests[:-1])
     assert requests[-1].headers["Authorization"] == "Bearer renewed"
     tokens = await storage.get_tokens()
     assert tokens is not None
@@ -573,3 +627,188 @@ def test_device_endpoint_must_match_authorization_server(
 
     with pytest.raises(MCPAuthorizationError, match="does not match"):
         _issuer_endpoint(metadata.token_endpoint, metadata)
+
+
+def _oauth_metadata(**overrides: object) -> dict[str, object]:
+    return {
+        "issuer": "https://auth.example/tenant",
+        "authorization_endpoint": "https://auth.example/authorize",
+        "token_endpoint": "https://auth.example/tenant/access-token",
+        "registration_endpoint": "https://auth.example/register",
+        **overrides,
+    }
+
+
+@pytest.fixture
+async def oauth_client(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, oauth_network):
+    monkeypatch.setattr("deepagents_talon.mcp_auth.Path.home", lambda: tmp_path)
+    storage = FileTokenStorage("remote", server_url="https://example.com/mcp")
+    provider = build_oauth_provider(
+        server_name="remote",
+        server_url="https://example.com/mcp",
+        storage=storage,
+        interactive=True,
+    )
+    states: list[str] = []
+    requests: list[httpx.Request] = []
+    responses = {
+        "/mcp": httpx.Response(
+            401,
+            headers={"WWW-Authenticate": 'Bearer resource_metadata="https://example.com/resource"'},
+        ),
+        "/resource": httpx.Response(
+            200,
+            json={
+                "resource": "https://example.com/mcp",
+                "authorization_servers": ["https://auth.example/tenant"],
+            },
+        ),
+        "/.well-known/oauth-authorization-server/tenant": httpx.Response(
+            200, json=_oauth_metadata()
+        ),
+        "/register": httpx.Response(
+            201,
+            json={"client_id": "client-id", "redirect_uris": ["http://localhost:3000/callback"]},
+        ),
+        "/tenant/access-token": httpx.Response(
+            200, json={"access_token": "renewed", "expires_in": 3600}
+        ),
+    }
+
+    async def redirect(url: str) -> None:
+        states.append(parse_qs(urlparse(url).query)["state"][0])
+
+    async def callback() -> tuple[str, str]:
+        return "authorization-code", states[-1]
+
+    def handle(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        if request.headers.get("Authorization") == "Bearer renewed":
+            return httpx.Response(200)
+        return responses.get(request.url.path, httpx.Response(404))
+
+    provider.context.redirect_handler = redirect
+    provider.context.callback_handler = callback
+    async with httpx.AsyncClient(
+        transport=oauth_network(handle), auth=provider, follow_redirects=True
+    ) as client:
+        yield client, requests, responses, storage
+
+
+async def test_authorization_code_flow_uses_guarded_discovery(oauth_client) -> None:
+    client, requests, _, storage = oauth_client
+    assert (await client.get("https://example.com/mcp")).status_code == 200
+    exchange = next(request for request in requests if request.url.path == "/tenant/access-token")
+    assert exchange.headers["Host"] == "auth.example"
+    assert exchange.url.host == "93.184.216.34"
+    assert exchange.extensions["sni_hostname"] == b"auth.example"
+    assert parse_qs(exchange.content.decode())["code"] == ["authorization-code"]
+    assert "code_verifier" in parse_qs(exchange.content.decode())
+    assert (await storage.get_tokens()).access_token == "renewed"  # noqa: S105 - Mock token.
+
+
+@pytest.mark.parametrize("resource", ["https://example.com/mcp", "http://127.0.0.1:8080/mcp"])
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://127.0.0.1/private",
+        "https://127.0.0.1/private",
+        "https://[::1]/private",
+        "https://169.254.169.254/latest/meta-data",
+        "https://10.0.0.1/private",
+        "https://localhost/private",
+        "http://public.example/resource",
+        "https://user:password@public.example/resource",
+    ],
+)
+async def test_oauth_rejects_unsafe_resource_discovery(
+    oauth_client, url: str, resource: str
+) -> None:
+    client, requests, responses, _ = oauth_client
+    responses["/mcp"] = httpx.Response(
+        401, headers={"WWW-Authenticate": f'Bearer resource_metadata="{url}"'}
+    )
+    with pytest.raises(MCPAuthorizationError, match="safe public HTTPS"):
+        await client.get(resource)
+    assert [str(request.url) for request in requests] == [resource]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("authorization_endpoint", "https://127.0.0.1/private", "safe public HTTPS"),
+        ("token_endpoint", "https://127.0.0.1/private", "safe public HTTPS"),
+        ("registration_endpoint", "https://127.0.0.1/private", "safe public HTTPS"),
+        ("issuer", "https://other.example", "issuer does not match"),
+        ("issuer", "https://auth.example/other-tenant", "issuer does not match"),
+    ],
+)
+async def test_oauth_rejects_unsafe_metadata(
+    oauth_client, field: str, value: str, error: str
+) -> None:
+    client, requests, responses, _ = oauth_client
+    responses["/.well-known/oauth-authorization-server/tenant"] = httpx.Response(
+        200, json=_oauth_metadata(**{field: value})
+    )
+    with pytest.raises(MCPAuthorizationError, match=error):
+        await client.get("https://example.com/mcp")
+    assert all(request.method == "GET" for request in requests)
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/resource",
+        "/.well-known/oauth-authorization-server/tenant",
+        "/register",
+        "/tenant/access-token",
+    ],
+)
+async def test_oauth_never_follows_discovered_redirects(oauth_client, path: str) -> None:
+    client, requests, responses, storage = oauth_client
+    responses[path] = httpx.Response(307, headers={"Location": "https://127.0.0.1/private"})
+    with pytest.raises(MCPAuthorizationError, match="redirects are not allowed"):
+        await client.get("https://example.com/mcp")
+    assert all(request.url.path != "/private" for request in requests)
+    assert await storage.get_tokens() is None
+
+
+async def test_refresh_without_metadata_does_not_send_credentials(oauth_client) -> None:
+    client, requests, responses, storage = oauth_client
+    await storage.set_tokens(
+        OAuthToken.model_validate(
+            {"access_token": "expired", "refresh_token": "refresh", "expires_in": -1}
+        )
+    )
+    await storage.set_client_info(
+        OAuthClientInformationFull(
+            client_id="client-id", redirect_uris=["http://localhost:3000/callback"]
+        )
+    )
+    responses.clear()
+    with pytest.raises(MCPAuthorizationError, match="Could not discover"):
+        await client.get("https://example.com/mcp")
+    assert all(
+        request.method == "GET" and "Authorization" not in request.headers for request in requests
+    )
+    assert (await storage.get_tokens()).refresh_token == "refresh"  # noqa: S105 - Mock token.
+
+
+@pytest.mark.parametrize("rebind", [False, True])
+async def test_oauth_blocks_private_dns_before_connecting(
+    oauth_client, monkeypatch: pytest.MonkeyPatch, *, rebind: bool
+) -> None:
+    client, requests, _, _ = oauth_client
+    lookups = 0
+
+    def resolve(
+        _host: str, port: int, *_args: object, **_kwargs: object
+    ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+        nonlocal lookups
+        lookups += 1
+        return _public_dns("93.184.216.34" if rebind and lookups == 1 else "127.0.0.1", port)
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
+    with pytest.raises(MCPAuthorizationError, match="safe public HTTPS"):
+        await client.get("https://example.com/mcp")
+    assert [request.url.path for request in requests] == ["/mcp"]

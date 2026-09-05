@@ -70,10 +70,12 @@ class ConversationSaver(AsyncSqliteSaver):
                 "SELECT version FROM conversation_archive_version"
             ) as cursor:
                 migrated = await cursor.fetchone()
-            if migrated is None:
+            if migrated != (2,):
                 async with self._transaction():
-                    await self._backfill()
-                    await self.conn.execute("INSERT INTO conversation_archive_version VALUES (1)")
+                    for statement in _SEARCH_MIGRATION:
+                        await self.conn.execute(statement)
+                    if migrated is None:
+                        await self._backfill()
             self._archive_ready = True
 
     @asynccontextmanager
@@ -247,6 +249,13 @@ class ConversationSaver(AsyncSqliteSaver):
             ],
         )
 
+        await self.conn.execute(
+            "INSERT INTO conversation_search(rowid, text) "
+            "SELECT id, ? FROM conversation_chunks "
+            "WHERE session_id = ? AND message_id = ? AND revision = ? AND part = 0",
+            (text, session_id, message_id, revision),
+        )
+
     async def entries(
         self,
         scope: ArchiveScope,
@@ -267,6 +276,7 @@ class ConversationSaver(AsyncSqliteSaver):
 
         Returns:
             Text chunks in transcript order when reading, newest first when searching.
+            Search matches complete revisions and returns their first display chunk.
 
         Raises:
             ValueError: If pagination bounds are invalid.
@@ -418,14 +428,21 @@ CREATE TABLE IF NOT EXISTS conversation_chunks (
     revision TEXT NOT NULL, part INTEGER NOT NULL, text TEXT NOT NULL,
     UNIQUE(session_id, message_id, revision, part)
 );
-CREATE VIRTUAL TABLE IF NOT EXISTS conversation_search USING fts5(
-    text, content='conversation_chunks', content_rowid='id'
-);
-CREATE TRIGGER IF NOT EXISTS conversation_insert AFTER INSERT ON conversation_chunks BEGIN
-    INSERT INTO conversation_search(rowid, text) VALUES (new.id, new.text);
-END;
-CREATE TRIGGER IF NOT EXISTS conversation_delete AFTER DELETE ON conversation_chunks BEGIN
-    INSERT INTO conversation_search(conversation_search, rowid, text)
-    VALUES ('delete', old.id, old.text);
-END;
 """
+
+# Reconstruct revisions from the archive so compacted checkpoints are not needed.
+# Keep the first chunk's cursor stable for search pagination and transcript reads.
+_SEARCH_MIGRATION = (
+    "DROP TRIGGER IF EXISTS conversation_insert",
+    "DROP TRIGGER IF EXISTS conversation_delete",
+    "DROP TABLE IF EXISTS conversation_search",
+    "CREATE VIRTUAL TABLE conversation_search USING fts5(text)",
+    "INSERT INTO conversation_search(rowid, text) "
+    "SELECT MIN(id), group_concat(text, '') FROM "
+    "(SELECT * FROM conversation_chunks ORDER BY session_id, message_id, revision, part) "
+    "GROUP BY session_id, message_id, revision",
+    "CREATE TRIGGER conversation_delete AFTER DELETE ON conversation_chunks BEGIN "
+    "DELETE FROM conversation_search WHERE rowid = old.id; END",
+    "DELETE FROM conversation_archive_version",
+    "INSERT INTO conversation_archive_version VALUES (2)",
+)

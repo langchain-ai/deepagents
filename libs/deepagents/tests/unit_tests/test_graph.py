@@ -1158,6 +1158,7 @@ class TestStateSchema:
         fake_model = GenericFakeChatModel(messages=iter([AIMessage(content="ok")]))
         custom_subagent_middleware = SubAgentMiddleware(
             backend=StateBackend(),
+            private_state_keys=frozenset({"explicit_secret"}),
             subagents=[
                 {
                     "name": "worker",
@@ -1180,7 +1181,7 @@ class TestStateSchema:
                 middleware=[_PrivateStateMiddleware(), custom_subagent_middleware],
             )
 
-        assert "secret" in custom_subagent_middleware.private_state_keys
+        assert {"explicit_secret", "secret"} <= custom_subagent_middleware.private_state_keys
 
     def test_declarative_subagent_compiles_with_custom_state_schema(self) -> None:
         """A declarative subagent's compiled runnable exposes the custom field as a channel."""

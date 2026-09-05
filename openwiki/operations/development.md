@@ -3,9 +3,6 @@ type: operations-guide
 title: Development & Build Operations
 description: Package-local development, validation, lockfile maintenance, and release operations for the independently versioned packages in this monorepo. Use this guide to select the correct Makefile entrypoint and avoid unintended release fan-out.
 tags: [development, build, monorepo, uv, makefile, ci, pre-commit, release-please]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-03T08:05:39.427Z
 sources:
   - id: openwiki-source-9a1c436646ef8c4f6dde787a
     resource: repo://.github/RELEASING.md
@@ -15,6 +12,8 @@ sources:
     resource: repo://.github/workflows/release.yml
   - id: openwiki-source-5e59f90a38f5bdf9ed76984b
     resource: repo://.release-please-manifest.json
+  - id: openwiki-source-006b62af9993da1b48c11de8
+    resource: repo://libs/code/Makefile
   - id: openwiki-source-0f308f1610986e2f3ed6d53c
     resource: repo://libs/deepagents/Makefile
   - id: openwiki-source-fb60ee46c55b974b8341651c
@@ -23,7 +22,10 @@ sources:
     resource: repo://libs/Makefile
   - id: openwiki-source-482fa4ca84f42b04ba025fc1
     resource: repo://release-please-config.json
-generated: { by: "openwiki/0.4.2", at: "2026-09-03T08:05:39.427Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-05T08:05:02.390Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-05T08:05:02.390Z
 ---
 
 # Development & Build Operations
@@ -126,13 +128,13 @@ The manifest is release-please-managed release state, not a manually maintained 
 | --- | --- |
 | `libs/deepagents` | `0.7.13` |
 | `libs/acp` | `0.0.11` |
-| `libs/code` | `0.1.65` |
+| `libs/code` | `0.1.66` |
 | `libs/talon` | `0.0.6` |
 | `libs/partners/daytona` | `0.0.8` |
 | `libs/partners/modal` | `0.0.6` |
 | `libs/partners/runloop` | `0.0.7` |
 | `libs/partners/vercel` | `0.0.2` |
-| `libs/partners/quickjs` | `0.3.5` |
+| `libs/partners/quickjs` | `0.3.6` |
 
 Add a new managed package to both release configuration and manifest, but do not otherwise edit an existing manifest baseline. For an unshipped package whose source starts at `0.0.1`, use manifest baseline `0.0.0` so its first release is `0.0.1`.
 

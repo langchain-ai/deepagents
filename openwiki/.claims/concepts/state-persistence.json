@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:924d3d661076000dc78760e048b93918138f003c84929b7e32a7d7cb3877e837",
+  "pageVersion": "sha256:d7c27335ceb9a6c86597a79e099505d6efaf09834f16b8b9dc9939d6131311af",
   "claims": [
     {
       "id": "claim_06a0d901f13947189d630ebc5186be5a",
@@ -220,11 +220,11 @@
     },
     {
       "id": "claim_4c359f6b9f9a4cff848255310f049266",
-      "statement": "dcode's local get_checkpointer opens the hardened global sessions.db and yields an AsyncSqliteSaver; startup calls setup before constructing CLI agent graphs with that checkpointer.",
+      "statement": "During dcode ACP operation, main opens the hardened global sessions.db through get_checkpointer, calls setup, and keeps the AsyncSqliteSaver context open for the lifetime of run_acp_agent; its build_agent callback constructs a CLI graph for each AgentSessionContext and injects that shared checkpointer.",
       "evidence": [
         {
-          "resource": "repo://libs/code/deepagents_code/main.py#L3571-L3614",
-          "version": "repo-lines-v1:sha256:00116b97d610f877fadbe7316a9b677a37c56b69c30ba1cee72c21fa9b9438bc:eyJzZWxlY3RlZExpbmVDb3VudCI6NDQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjNiMWNiOGU2NmNhODI1Y2M5NGRiMDExZGI2ZGEwYzFmNTdiOWQ4ZTI2ZDFjNTczM2I0MWUyMzNlNDZiMGRmNWYiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFkOGViZDJlMDcxMzNmNDg2YTRhNTQyODdiZTNiM2VkMzBmMWM5ZWM4YTgyZDM0YmQxZjdiMmQxY2NmNzFjNjgiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjIxMDk2ZDg1ZDA3NjkxYmU1YjVjZGUwZjBiNDZlZGE2NDg0Mzg4NGU2MDEyYTFiNWRhYjdmN2JkMWIzMWE4MmQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiNDEzNjhjZDdjNmQ4Y2Q2NmM1ODhkZGNlYjUyMTAxNTU0NjM1MWJjNDViMWEzN2Y5YjNiODJlMmFmZTAzZmUifQ"
+          "resource": "repo://libs/code/deepagents_code/main.py#L3576-L3642",
+          "version": "repo-lines-v1:sha256:fc17296b7546c843f06b766f2842b4ca136d04058df1884c0745a09ab867d27c:eyJzZWxlY3RlZExpbmVDb3VudCI6NjcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjYyOTJkOTMyOGEwMmVlZmI0YjBmODhlMmZjMTYwNWY0NjFmOTQ5YzFhYjJkNTM4MDAyMzE2YzJlYWM1YWNhMTUiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjA2YTU4YTI5MGMxMGM0MzQ0NTAxODBhZmEwMWI1MzZjNjIxODE2NTU5OTU1ZTE4NTM3NjI5YzlkMWQwYzQ1ODUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjU1ZDY0ZTUxYjRmMzlmMzI4MGIyM2JiN2JmYTQ0NTcyODcxYjdjYmJkMzVlOGY2ZjlkNDkzYjZkYWQ3ZTJlMjIiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRjMzI0ZDE5Y2FmNmVjMjQ4MGI5YjIxNGE3MGZiNjk5NGU5Njg4ZjNhNjIwMDU4YmRlMzdkN2E5NmMzNzFhNTQifQ"
         },
         {
           "resource": "repo://libs/code/deepagents_code/sessions.py#L1536-L1553",
@@ -233,6 +233,10 @@
         {
           "resource": "repo://libs/code/deepagents_code/sessions.py#L344-L363",
           "version": "repo-lines-v1:sha256:d7c987d541a3cfb6862d1559cf049679b296ccf01e25aeed30c1ccd3b030596a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjhhMGNlZGRlYmNkMTAzNzJmYzFmZDZiNTM1MDFjNzEzNjUyYWJhMjcxNjI4OTBmMDJjNmVmOWZhZmNiMzNlMmEiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijk1NjBiZGFmNTNjNWFiODc5YTRhOTA0OGNlZDEzNmJkMjFmZmE4NjgxODRlZTM3NGJiODkwZWVlMTBjZGIxN2EiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjVmYWJkNDdhNmUyMTI4MmZkY2I1OGY5OTdkMTBjYzkwMDI0MWY4NzY0NDY5MGIxMTQ4NTFhYzE1NTIzY2UyMGEiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjkwNDlhMDMyOGU5ZTUwYTY3MzZhYWNkZjBkZjVhNTJmOTBmMDFiMWRjZjQ5Y2FmNzNhYzQ0YzhhOTcxMjdkYWEifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_main_acp_mode.py#L75-L95",
+          "version": "repo-lines-v1:sha256:106ce4db91349bf9e866b28dca0cc6207548983ecdac0a3b53f0557b644aa87a:eyJzZWxlY3RlZExpbmVDb3VudCI6MjEsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE0YTA3ZDg5YzhiMTQ4MTI5N2I1ODViNTQyMzRhNDBiMDdmNTkyMWE0ODYyY2Q3ZWFjMjcwNjJiYmIzNWUyMDkiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImY2ODcyN2UyNTBjNGQzMGQ4Zjk2NDQ3NTQ4NGY3Zjc0MWZiNzljNWYxZWUzZDRkYmViNWY2NjBkZGZhYjI0ZjUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY4YjRhODFjMDY5ZjdjNTU5ZmVhMGIxNDRmMGZlMGQzMmE3MTgyMjA4MWQ1MzVlZWE3M2FhYmRhZGM4MDlmNDkiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImU2Yzc2MTdiNjBkZWVhYmZiN2U3OTY1OGExNzI0ZWI3ZDAzMGMwYmUzYzMxY2IyYWJkMTRiYzI0NjZjZWNhMjcifQ"
         }
       ]
     },
@@ -339,10 +343,34 @@
           "version": "repo-lines-v1:sha256:ac900a8111069f7ec2d0a28100bcb9c2f9e78f21017dcc38eb0697af657a5848:eyJzZWxlY3RlZExpbmVDb3VudCI6NTQsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImJjYmMzZTdkNTBkNTRhMDEwYTA2NmNlZTE5ODE2MGFjZTE1MTVlZWVjZjJhZjAzN2UzOWVmZGVjYzQzN2VkZGIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjU5MDlhNTNhNjE4ZDAyOGUxZDMwMDBjMGE3YWJjZWVjYmU1ZmIzN2Y0ZTUxMWVmZTQ2NjQzZmFkNmU2Njg3MmYiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjE5MzY5YzMwYjlhZmRiM2NmYTgxMzAyOGJlYTgyZWM0NDZmYTNjNTE0ODQzYjUzMjU4YTg2MWI2M2YxMmFmMWQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjE3ZWVlNTQyMjgzMDEzZTBjYTQwMjNjNWNhNDg4OTZjNzRmNzMyYTUzNzI4N2ZlYzIyYTVhYzIzYjE3ZDkzMmQifQ"
         }
       ]
+    },
+    {
+      "id": "claim_0155d5345cb6434c9c0eef295233bda7",
+      "statement": "dcode's writes-based visible-message-count reconstruction skips malformed individual write rows and omits only a thread whose full reduction fails, rather than failing the complete thread listing.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L1120-L1161",
+          "version": "repo-lines-v1:sha256:4e041cb6d6e8bb0668175defcbc9a3905aa1104c693ac69df0001c8f24098b59:eyJzZWxlY3RlZExpbmVDb3VudCI6NDIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU3YmZiN2M3MDU0ZTNlY2EwMjUzYTM3ZTNhMTljNzBlMGUzMDI5MmNhZDNjNWVmMWU4YmYyZmFhODcxY2M5YmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImU5YmE5NWNiNDQ1NTEwODQ4YmVhYTMzNGQ5Y2VhODQyNjI0M2IwYmJlMGQ5MThiOGIxNjIxNzJjYTgwMTg2NzkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjgxYzE5YmUyNTRmMjMzNTUxN2FhODM2NGJhYTk3ZDM5ZjRjN2FhODYwMWQxYTg5MzJkNmYwMzdmZDY1MDExNzYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6Ijg4ZWZkMjhjYjFiMjA4ZTQ3YjkxYjJlY2MwZTMxZjI5Nzg4NGY2ODhjODgxZDE2MzFkMThlOGY4YTQ3NDlkZjQifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_560d61806b1f4840b69b31798c1ccca4",
+      "statement": "dcode attempts offloaded-history cleanup even when a thread has no checkpoint rows, so an orphaned archive can be removed while delete_thread returns False.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/sessions.py#L1501-L1533",
+          "version": "repo-lines-v1:sha256:b22bf6810b5c449dabf201c6f04826f94f7982fde376e43340143834b0fe8863:eyJzZWxlY3RlZExpbmVDb3VudCI6MzMsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkMGY0MDI3NjdmODZhMDZmNmQzMzM2N2NmMTI2NzdlN2Y5ZmQzY2E4ZWM5YmIzN2M0YmU4ZmM1NmQ4ZjY1NzMiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjY1ZWZhZTFlOWM2ZTZmNDJiOTc0ODY1NWIzOGJhNjE4NTUxZjg0OTllNjRkNDRjMzY4MDcxMjY4N2JiODljODAiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImJhM2IzMjI5ZThhYjgwZmJhOTY4OWY0Y2VkOGE0ZmQwNGQ0M2FlYTU2NzM5Yjk3ZmQ1OTRiZjgyY2YwMDg2MGMiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjMxNDJhMTBkZGU0YWEzMzFlNzY1MGM2MGNhY2VjMTljNzkyYmQyM2EzZWZkOTA0MTBmZmM5YzZkOThjZWQzMWIifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/unit_tests/test_sessions.py#L268-L285",
+          "version": "repo-lines-v1:sha256:ab6882fb1a0ba697d6bc314465bed7a57a21cda5e5846dbb8c85cb9883e1a143:eyJzZWxlY3RlZExpbmVDb3VudCI6MTgsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6Ijg3ZjA4YWI0Mjc4YmIxMDA0NjBlZDIyZGFjMWE2ZmE5YzY1YmI5OGMyYTk2Zjc2ZjUyZDgyMjZkNDk3NDk2MjIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjE3Yzk1Yzk3NTc1YmExZmJmZjQ1NjU5MTQwNzg3ZDcwYTczZjcwZjFhZWQyMDM4YTY3YjhmNTRlYWEzODdlZWUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImY5NGE2MGI5OTg4ODkzZTk0MTZkMWY4ODZmZjA4ZDUwMzU1NjEyODgzMzA5ZjNhODlkNTc2ODQyNTliNDc3YzUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImEzMTMwNDlhNTIwZGVjYzdiMWVkMGMwOTI4YzgzYWNjYzBmMzhkM2FkNzUxNTFiNjY0ZTAzZmJiMDI1NTFmZjEifQ"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-03T08:05:39.427Z"
+    "at": "2026-09-05T08:05:02.390Z"
   }
 }

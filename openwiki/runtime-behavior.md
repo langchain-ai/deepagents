@@ -3,9 +3,6 @@ type: runtime-evidence
 title: Runtime Behavior & Findings
 description: Current source-derived runtime observations for dcode sessions, usage and cost accounting, headless execution, limits, compaction, and retries. These findings describe the inspected implementation rather than production rates or architecture guarantees.
 tags: [runtime, sessions, cost, usage, retries, deepagents-code]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-09-02T08:05:45.554Z
 sources:
   - id: openwiki-source-dc8749c06f6da0ecc0666f26
     resource: repo://libs/code/deepagents_code/_session_stats.py
@@ -17,8 +14,12 @@ sources:
     resource: repo://libs/code/deepagents_code/config_manifest.py
   - id: openwiki-source-f2ac9d5fb6c7c6a21f241281
     resource: repo://libs/code/deepagents_code/cost_tracking.py
+  - id: openwiki-source-600730e7ad515b12c0ad1338
+    resource: repo://libs/code/deepagents_code/goal_rubric.py
   - id: openwiki-source-c101168dc0286ff6c29ed37f
     resource: repo://libs/code/deepagents_code/model_retry.py
+  - id: openwiki-source-71e473baacaf08609c569e5e
+    resource: repo://libs/code/deepagents_code/reliable_rubric.py
   - id: openwiki-source-0f8622164498a685abc913d5
     resource: repo://libs/code/deepagents_code/sessions.py
   - id: openwiki-source-cd2a5280cf3ca3ab491d7a8e
@@ -29,7 +30,10 @@ sources:
     resource: repo://libs/deepagents/deepagents/graph.py
   - id: openwiki-source-f763e99e439a1356866a7aa4
     resource: repo://libs/deepagents/deepagents/middleware/summarization.py
-generated: { by: "openwiki/0.4.2", at: "2026-09-02T08:05:45.554Z" }
+generated: { by: "openwiki/0.4.2", at: "2026-09-05T08:05:02.390Z" }
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-05T08:05:02.390Z
 ---
 
 # Runtime Behavior & Findings
@@ -45,18 +49,20 @@ sequenceDiagram
     participant Server as Graph server
     participant Model
     participant Recorder as Cost recorder
+    participant Checkpoint as Graph checkpoint
     Caller->>Client: run_non_interactive
     Client->>Server: start server session
     Client->>Server: astream with thread config
     Server->>Model: model request
-    Model-->>Recorder: completion callback
-    Recorder-->>Server: records drained at checkpoint
-    Recorder-->>Client: nested usage custom event
-    Server-->>Client: messages updates and cost event
+    Model-->>Recorder: completed-request callback
+    Recorder-->>Server: records drained for charging
+    Server->>Checkpoint: persist additive cost delta
+    Server-->>Client: messages updates and custom events
+    Client->>Client: revise or finalize usage ledger
     Client-->>Caller: response and optional usage table
 ```
 
-*Observed implementation flow for a headless run: stream consumers maintain a display-oriented usage ledger while the graph checkpoint owns the durable thread cost total.*
+*Observed implementation flow for a headless run: the graph checkpoint carries the durable thread cost total, while the stream consumer maintains a display-oriented usage ledger.*
 
 A completed request is not equivalent to one user turn. The process-wide `_SessionCostRecorder` collects completed model requests by thread, including main-agent calls, subagent graphs, summarization/offload, and Auto-mode classification. `CostTrackingMiddleware` drains those records around model and agent completion, prices them away from the event loop, and checkpoints additive cost. Nested graphs checkpoint a local delta and transfer their completed total to the owning graph. Accordingly, observed source behavior does not support using “one model call per turn” for cost or latency accounting.
 
@@ -98,9 +104,15 @@ The backend protocol uses a 15-second synchronous grep phase budget and a 35-sec
 
 Summarization is threshold-gated, not per-turn. With `max_input_tokens`, the factory selects an 85%-of-context trigger and 10% retention; without it, the observed fallback is a 170,000-token trigger and six retained messages. It also has a lower-cost tool-argument truncation path. Before replacement, evicted history is offloaded to the configured backend; provider `ContextOverflowError` can trigger summarize-and-retry while raw messages remain in state and the event remains private state.
 
+### Rubric-grader construction and limits
+
+The rubric grader is not a permanently resolved copy of the startup grader model. `ReliableRubricMiddleware` builds its nested grader lazily at the first grading invocation. Each invocation derives a fresh grader context from thread state: a recorded dedicated model is used, the inheritance sentinel (or no selection when configured to inherit) follows the active main model, and otherwise the construction-time grader model remains the fallback. For a runtime-selected model, the nested graph is bootstrapped once with the main model and `ConfigurableModelMiddleware` resolves the thread-selected model before a call. This is source-derived construction behavior, not evidence that any particular model selection was used in production.
+
+The constructed grader receives a filtered transcript, a private per-run-and-iteration operation identifier, hidden-output model retries, and a constrained verification tool stack. It always exposes read access to offloaded results. When a valid working-directory backend and root are available, repository `ls`, `read_file`, `glob`, and `grep` are bounded to that root and narrowed by the parent filesystem allow-list; without that trusted root, repository inspection is disabled rather than broadening access. External context tools are normalized and rejected on name conflict. Shared context calls and repository reads are budgeted, while `read_file` of offloaded results is separately accounted so evidence retrieval does not consume the shared context-tool budget.
+
 ### Model retries
 
-`CodeModelRetryMiddleware` wraps the model node rather than the whole turn, so a transient model failure retries without replaying completed tool calls. The interactive policy starts at 0.2 seconds, doubles, caps ordinary delays at 10 seconds, and caps aggregate retry sleep at 60 seconds. It does not imply that every provider failure retries: classification governs eligible failures. Partial output after exhausted retry handling is explicitly marked incomplete and should not be treated as a completed answer.
+`CodeModelRetryMiddleware` wraps the model node rather than the whole turn, so a transient model failure retries without replaying completed tool calls. The interactive policy starts at 0.2 seconds, doubles, caps ordinary delays at 10 seconds, and caps aggregate retry sleep at 60 seconds. It emits attempt start and completion events with a logical call ID; retry events identify a superseded attempt and whether visible output may already have started. It does not imply that every provider failure retries: classification governs eligible failures. Partial output after exhausted retry handling is explicitly marked incomplete and should not be treated as a completed answer.
 
 ## Focused verification
 
@@ -110,6 +122,7 @@ Use focused tests to verify these observed behaviors after a change:
 - `libs/code/tests/unit_tests/test_session_stats.py` covers chunk revision, HITL replay protection, retry attempt scopes, nested usage events, and usage-table failure handling.
 - `libs/code/tests/unit_tests/test_sessions.py` covers session listing, checkpoint enrichment, and cache invalidation.
 - `libs/code/tests/unit_tests/test_non_interactive.py` covers shell approval branches, project-hook trust, HITL limits, lifecycle closure, and headless exit behavior.
+- `libs/code/tests/unit_tests/test_goal_rubric.py` covers the rubric and criteria-agent control paths, including bounded repository/context verification behavior; `libs/code/tests/unit_tests/test_agent.py` and `test_reliable_rubric.py` cover construction and runtime model-selection wiring.
 - `libs/code/tests/unit_tests/test_model_retry.py`, `libs/deepagents/tests/unit_tests/middleware/test_summarization_middleware.py`, and `libs/deepagents/tests/unit_tests/backends/test_protocol.py` cover the linked recovery mechanisms.
 
 When production traces are available, add a separately scoped **Observed trace findings** section naming the sample window and selection method. Report measured counts and durations without extrapolating anomaly-selected traces into fleet-wide rates or copying raw prompts and outputs.

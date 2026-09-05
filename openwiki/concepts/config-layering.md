@@ -3,9 +3,6 @@ type: configuration-model
 title: dcode Configuration Model
 description: dcode resolves typed settings through ranked providers while retaining one shared file-snapshot generation. This page explains precedence, managed-policy failure retention, runtime reload overrides, and the limited callers that intentionally inspect independent snapshots.
 tags: [configuration, config-layering, resolver, precedence, reload, deepagents-code, dcode]
-verified:
-  - by: openwiki/0.4.2
-    at: 2026-08-28T11:44:48.051Z
 sources:
   - id: openwiki-source-6f5b1b7a043ee1d414708793
     resource: repo://libs/code/ARCHITECTURE.md
@@ -31,6 +28,9 @@ sources:
     resource: repo://libs/code/tests/unit_tests/test_configuration_resolver.py
   - id: openwiki-source-4df2bda291da47157bed7cbb
     resource: repo://libs/code/tests/unit_tests/test_reload.py
+verified:
+  - by: openwiki/0.4.2
+    at: 2026-09-05T08:05:02.390Z
 generated: { by: "openwiki/0.4.2", at: "2026-08-28T11:44:48.051Z" }
 ---
 

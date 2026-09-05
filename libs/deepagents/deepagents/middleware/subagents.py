@@ -861,8 +861,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             Each SubAgent must specify `model` and `tools`.
 
             Optional `interrupt_on` on individual subagents is respected.
-        system_prompt: Instructions appended to main agent's system prompt
-            about how to use the task tool.
+        system_prompt: Instructions appended to the main agent's system prompt.
+            Include `{available_agents}` to render the available subagent types.
         task_description: Custom description for the task tool.
         state_schema: Base graph state schema forwarded to raw `SubAgent`
             specs when their runnables are compiled.
@@ -933,7 +933,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             state_schema=self._state_schema,
         )
 
-        # Build system prompt with available agents
         if system_prompt and subagents:
             agents_desc = "\n".join(
                 _describe_subagent_for_tool(
@@ -943,7 +942,8 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
                 )
                 for s in subagents
             )
-            self.system_prompt = system_prompt + "\n\nAvailable subagent types:\n\n" + agents_desc
+            available_agents = "Available subagent types:\n\n" + agents_desc
+            self.system_prompt = system_prompt.replace("{available_agents}", available_agents)
         else:
             self.system_prompt = system_prompt
 

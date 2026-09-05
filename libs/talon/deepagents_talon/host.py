@@ -34,6 +34,7 @@ from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
     AgentRuntime,
+    BackgroundRuntime,
     ChannelAdapter,
     ChannelMedia,
     ChannelMessage,
@@ -191,6 +192,10 @@ class TalonHost:
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
+        self._background_loop: asyncio.Task[None] | None = None
+        self._background_routes: dict[
+            str, tuple[ChannelAdapter, ChannelMessage, str, str | None]
+        ] = {}
         self._stopped = asyncio.Event()
         self._running = False
 
@@ -222,6 +227,8 @@ class TalonHost:
 
         self._stopped.clear()
         self._running = True
+        if isinstance(self.agent, BackgroundRuntime):
+            self._background_loop = asyncio.create_task(self._process_background_results())
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
 
     async def stop(self) -> None:
@@ -231,6 +238,10 @@ class TalonHost:
             return
 
         self._running = False
+        if self._background_loop is not None:
+            self._background_loop.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._background_loop
         await self._cancel_all()
 
         for channel in reversed(self.channels):
@@ -388,6 +399,13 @@ class TalonHost:
                 )
                 return
             recovery_degraded = outcome is _CancelOutcome.DEGRADED
+        if isinstance(self.agent, BackgroundRuntime):
+            self._background_routes[conversation_id] = (
+                channel,
+                message,
+                conversation_root,
+                provider,
+            )
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
         task = asyncio.create_task(
@@ -406,6 +424,37 @@ class TalonHost:
         )
         self._tasks[conversation_id] = task
         self._track_conversation_task(conversation_id, task)
+
+    async def _process_background_results(self) -> None:
+        while self._running:
+            await asyncio.sleep(1)
+            await self._dispatch_background_results()
+
+    async def _dispatch_background_results(self) -> None:
+        if not isinstance(self.agent, BackgroundRuntime):
+            return
+        for owner, (channel, message, root, provider) in list(self._background_routes.items()):
+            async with self._locks[root]:
+                active = self._tasks.get(owner)
+                if active is not None and not active.done():
+                    continue
+                if owner not in self.agent.background.owners():
+                    self._background_routes.pop(owner, None)
+                    continue
+                if owner in self._blocked or self._agent_conversation_id(root) != owner:
+                    continue
+                if self.agent.background.results(owner):
+                    await self._replace_agent_turn(
+                        channel,
+                        ChannelMessage(
+                            message.conversation_id,
+                            "Process the completed background subagent results.",
+                            sender_id=message.sender_id,
+                        ),
+                        root,
+                        owner,
+                        provider,
+                    )
 
     async def _run_agent_turn(
         self,
@@ -597,9 +646,17 @@ class TalonHost:
 
     async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
         task = self._tasks.get(conversation_id)
-        if task is None or task.done():
-            return _CancelOutcome.NONE
-        return await self._cancel_active(conversation_id, task, recover=True)
+        outcome = _CancelOutcome.NONE
+        if task is not None and not task.done():
+            outcome = await self._cancel_active(conversation_id, task, recover=True)
+        if isinstance(self.agent, BackgroundRuntime):
+            had_workers = conversation_id in self.agent.background.owners()
+            if not await self.agent.background.cancel(conversation_id):
+                return self._mark_cancellation_timeout(conversation_id)
+            if had_workers and outcome is _CancelOutcome.NONE:
+                outcome = _CancelOutcome.SUCCESS
+        self._background_routes.pop(conversation_id, None)
+        return outcome
 
     async def _cancel_active(
         self,

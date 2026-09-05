@@ -216,6 +216,23 @@ copied into the Talon agent directory. Talon does not support the old Fleet dire
 startup path or its environment variables; import the zip first, then run Talon against
 the materialized local assistant.
 
+## Background Subagents
+
+`task` launches local subagents and `start_async_task` launches remote subagents.
+Both return immediately. The user can continue chatting while the main agent uses
+`list_subagents` to inspect work and `cancel_subagent` to cancel it. When work
+finishes, its result is passed to the main agent for processing on the next idle
+turn, then the main agent replies to the channel.
+
+Workers and pending results live only in memory and are discarded on restart.
+`/stop` and `/new` cancel all subagents belonging to that conversation; ordinary
+messages interrupt only the main turn. Shutdown cancels all workers. Local tool
+approval policy still applies; a child needing approval reports that it could not
+complete the action. Remote runs cancel when their stream disconnects.
+
+Talon allows four simultaneous subagents, retains at most 128 unprocessed jobs,
+and limits each run to one hour. Completed results are capped at 64,000 characters.
+
 ## Cron Schedules
 
 `create_job` and `edit_job` accept four schedule forms:

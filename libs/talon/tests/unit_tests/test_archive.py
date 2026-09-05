@@ -4,7 +4,7 @@ import asyncio
 
 import aiosqlite
 import pytest
-from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from langgraph.graph import END, START, MessagesState, StateGraph
@@ -134,7 +134,8 @@ async def test_tools_enforce_scope_and_paginate_search(tmp_path):
         await _save(saver, "one", "orchard one")
         await _save(saver, "two", "orchard two")
         await _save(saver, "secret", "orchard secret", scope=TELEGRAM)
-        search, read = conversation_tools(saver, lambda: WHATSAPP)
+        tools = {tool.name: tool for tool in conversation_tools(saver, lambda: WHATSAPP)}
+        search, read = tools["search_conversations"], tools["read_conversation"]
         first = await search.ainvoke({"query": "orchard", "limit": 1})
         second = await search.ainvoke({"query": "orchard", "limit": 1, "after": first[0]["cursor"]})
         assert {first[0]["session_id"], second[0]["session_id"]} == {"one", "two"}
@@ -148,6 +149,10 @@ def _graph_factory(**kwargs: object):
 
     async def reply(state):
         query = state["messages"][-1].text
+        if query == "list":
+            listing = next(tool for tool in kwargs["tools"] if tool.name == "list_conversations")
+            sessions = await listing.ainvoke({})
+            return {"messages": [AIMessage(f"sessions:{len(sessions)}")]}
         if query == "recall":
             hits = await search.ainvoke({"query": "orchard"})
             return {"messages": [AIMessage(f"found:{len(hits)}")]}
@@ -187,6 +192,8 @@ async def test_host_new_recall_and_reset_all_history(tmp_path, monkeypatch):
             await _send(host, whatsapp, "/new")
             await _send(host, whatsapp, "recall")
             assert whatsapp.sent[-1] == ("chat", "found:1")
+            await _send(host, whatsapp, "list")
+            assert whatsapp.sent[-1] == ("chat", "sessions:2")
             await _send(host, telegram, "recall")
             assert telegram.sent[-1] == ("chat", "found:0")
             await _send(host, whatsapp, "/reset-all-history@TestBot")
@@ -363,3 +370,67 @@ async def test_message_revisions_are_retained_without_checkpoint_duplicates(tmp_
         transcript = await saver.entries(WHATSAPP, session_id="whatsapp:chat")
         assert [chunk["text"] for chunk in transcript] == ["Meet on Tuesday", "Meet on Wednesday"]
         assert len(await saver.entries(WHATSAPP, query="Wednesday")) == 1
+
+
+async def test_list_conversations_is_scoped_paginated_and_readable(tmp_path):
+    path = str(tmp_path / "history.sqlite")
+    async with aiosqlite.connect(path) as connection:
+        saver = ConversationSaver(connection)
+        await _save(saver, "old", "orchard " * 2000)
+        await _save(saver, "old", "edited orchard")
+        await _save(saver, "old", "edited orchard")
+        await _save(saver, "new", "new harvest")
+        await _save(saver, "secret", "telegram secret", scope=TELEGRAM)
+        await _save(saver, "other", "other chat secret", scope=OTHER)
+        await _save(saver, "empty", "")
+    async with aiosqlite.connect(path) as connection:
+        saver = ConversationSaver(connection)
+        tools = {tool.name: tool for tool in conversation_tools(saver, lambda: WHATSAPP)}
+        listing = tools["list_conversations"]
+        first = await listing.ainvoke({"limit": 1})
+        assert [item["session_id"] for item in first] == ["new"]
+        # Updating a listed session must not disturb traversal to older sessions.
+        await _save(saver, "new", "revised harvest")
+        second = await listing.ainvoke({"limit": 1, "after": first[0]["cursor"]})
+        assert [item["session_id"] for item in second] == ["old"]
+        assert second[0]["message_count"] == 1
+        assert second[0]["preview"] == ("orchard " * 2000)[:300]
+        assert second[0]["started_at"] <= second[0]["updated_at"]
+        assert await listing.ainvoke({"after": second[0]["cursor"]}) == []
+        transcript = await tools["read_conversation"].ainvoke({"session_id": "old", "limit": 20})
+        assert "".join(chunk["text"] for chunk in transcript) == (
+            "orchard " * 2000 + "edited orchard"
+        )
+        await saver.clear_history(WHATSAPP)
+        assert await listing.ainvoke({}) == []
+        assert [item["session_id"] for item in await saver.conversations(TELEGRAM)] == ["secret"]
+
+
+@pytest.mark.parametrize(("after", "limit"), [(-1, 5), (0, 0), (0, 21)])
+async def test_list_conversations_rejects_invalid_pagination(tmp_path, after, limit):
+    async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
+        saver = ConversationSaver(connection)
+        with pytest.raises(ValueError, match="limit"):
+            await saver.conversations(WHATSAPP, after=after, limit=limit)
+
+
+async def test_listing_counts_messages_and_excludes_its_own_tool_results(tmp_path):
+    async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
+        saver = ConversationSaver(connection)
+        checkpoint = empty_checkpoint()
+        checkpoint["channel_values"] = {
+            "messages": [
+                HumanMessage("List my sessions", id="question"),
+                ToolMessage(
+                    "private listing preview", name="list_conversations", tool_call_id="call"
+                ),
+                AIMessage("Here are your sessions", id="answer"),
+            ]
+        }
+        await saver.aput(
+            {"configurable": {"thread_id": "session"}, "metadata": WHATSAPP}, checkpoint, {}, {}
+        )
+        sessions = await saver.conversations(WHATSAPP)
+        assert sessions[0]["message_count"] == 2
+        assert sessions[0]["preview"] == "List my sessions"
+        assert await saver.entries(WHATSAPP, query="private") == []

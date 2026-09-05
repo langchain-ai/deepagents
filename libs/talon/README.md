@@ -32,9 +32,11 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 ## Conversation history
 
 Talon's default SQLite checkpointer archives conversation text in `checkpoints.sqlite`
-without automatic expiry. The agent can use `search_conversations` to find literal
-keywords and `read_conversation` to review complete transcripts in bounded pages.
-Both tools are restricted to the current channel and chat: a WhatsApp DM cannot
+without automatic expiry. The agent can use `list_conversations` to browse sessions,
+`search_conversations` to find literal keywords, and `read_conversation` to review
+complete transcripts in bounded pages. Session listings include one entry per session,
+newest started first, with timestamps, a message count, and an opening preview.
+All three tools are restricted to the current channel and chat: a WhatsApp DM cannot
 retrieve another DM or a Telegram chat, even if their chat IDs match. Results include
 session IDs, checkpoint timestamps, message roles, and pagination cursors.
 

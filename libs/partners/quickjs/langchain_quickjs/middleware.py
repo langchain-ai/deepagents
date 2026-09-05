@@ -4,8 +4,8 @@ import asyncio
 import contextlib
 import logging
 import uuid
-from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired, cast
+from collections.abc import Awaitable, Callable, Mapping
+from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
 from langchain.agents.middleware.types import (
@@ -356,9 +356,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             repl.install_tools(list(self._ptc_tools_by_slot.get(slot_id, ())))
         return repl
 
-    def _slot_id(self, state: REPLState) -> str:
+    def _slot_id(self, state: Mapping[str, object]) -> str:
         """Return the private interpreter slot initialized by `before_agent`."""
-        slot_id = state.get("_quickjs_slot_id") if isinstance(state, dict) else None
+        slot_id = state.get("_quickjs_slot_id")
         if isinstance(slot_id, str) and slot_id:
             return slot_id
         msg = (
@@ -371,7 +371,9 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Build a private state update with a fresh slot id when needed."""
         return {"_quickjs_slot_id": _new_slot_id()}
 
-    def _snapshot_authenticated(self, payload: bytes, state: REPLState) -> bool:
+    def _snapshot_authenticated(
+        self, payload: bytes, state: Mapping[str, object]
+    ) -> bool:
         """Whether ``payload`` may be restored under the current signing policy.
 
         With a signing key configured, the materialized ``payload`` must carry a
@@ -387,8 +389,10 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         # snapshot has no tag, and a store adversary can strip it. Default to
         # `None` so a missing tag flows into `verify_snapshot` as a rejection
         # rather than raising `KeyError`.
-        tag = state.get("_quickjs_snapshot_hmac", None)
-        if verify_snapshot(self._snapshot_signing_key, payload, slot_id, tag):
+        tag = state.get("_quickjs_snapshot_hmac")
+        if isinstance(tag, bytes) and verify_snapshot(
+            self._snapshot_signing_key, payload, slot_id, tag
+        ):
             return True
         logger.warning(
             "Rejecting QuickJS snapshot for slot_id=%s: HMAC verification "
@@ -415,7 +419,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if not payload:
             return update
         if not self._snapshot_authenticated(
-            payload, cast("REPLState", {**state, "_quickjs_slot_id": slot_id})
+            payload, {**state, "_quickjs_slot_id": slot_id}
         ):
             return {
                 **(update or {}),
@@ -455,7 +459,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         if not payload:
             return update
         if not self._snapshot_authenticated(
-            payload, cast("REPLState", {**state, "_quickjs_slot_id": slot_id})
+            payload, {**state, "_quickjs_slot_id": slot_id}
         ):
             return {
                 **(update or {}),

@@ -49,6 +49,9 @@ def oauth_network(
     def install(handler: Callable[[httpx.Request], httpx.Response]) -> httpx.MockTransport:
         transport = httpx.MockTransport(handler)
         monkeypatch.setattr(httpx, "AsyncHTTPTransport", lambda **_kwargs: transport)
+        monkeypatch.setattr(
+            "deepagents_talon.mcp_auth._OAuthHTTPTransport", lambda **_kwargs: transport
+        )
         monkeypatch.setattr("httpx._client.AsyncHTTPTransport", lambda **_kwargs: transport)
         return transport
 

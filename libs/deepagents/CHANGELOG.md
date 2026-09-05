@@ -2,6 +2,14 @@
 
 # Deep Agents Changelog
 
+## [0.7.14](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.13...deepagents==0.7.14) (2026-09-05)
+
+
+### Bug Fixes
+
+* **sdk:** keep blank read windows out of the empty-file warning ([#5050](https://github.com/langchain-ai/deepagents/issues/5050)) ([a892a0e](https://github.com/langchain-ai/deepagents/commit/a892a0ee26d045256b6d3b0c224b3de663c83eb5))
+* **sdk:** reject empty old_string in edit_file paths ([#5747](https://github.com/langchain-ai/deepagents/issues/5747)) ([1281b04](https://github.com/langchain-ai/deepagents/commit/1281b04f7eafaf654982b99a3c93f72744208eda))
+
 ## [0.7.13](https://github.com/langchain-ai/deepagents/compare/deepagents==0.7.12...deepagents==0.7.13) (2026-09-02)
 
 ### Bug Fixes

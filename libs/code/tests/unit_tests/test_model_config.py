@@ -841,9 +841,16 @@ class TestServiceCredentials:
     """Non-model services (e.g. Tavily) resolve and apply stored keys."""
 
     @pytest.fixture(autouse=True)
-    def _clear_tavily_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """Strip Tavily env vars so each test controls its own state."""
-        for var in ("TAVILY_API_KEY", "DEEPAGENTS_CODE_TAVILY_API_KEY"):
+    def _clear_service_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Strip service env vars so each test controls its own state."""
+        for var in (
+            "TAVILY_API_KEY",
+            "DEEPAGENTS_CODE_TAVILY_API_KEY",
+            "LANGSMITH_API_KEY",
+            "DEEPAGENTS_CODE_LANGSMITH_API_KEY",
+            "LANGCHAIN_API_KEY",
+            "DEEPAGENTS_CODE_LANGCHAIN_API_KEY",
+        ):
             monkeypatch.delenv(var, raising=False)
 
     def test_apply_exports_stored_langsmith_key(
@@ -885,6 +892,35 @@ class TestServiceCredentials:
         status = get_service_auth_status("tavily")
         assert status.state is ProviderAuthState.CONFIGURED
         assert status.source is ProviderAuthSource.ENV
+
+    def test_langsmith_status_uses_langchain_fallback(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LangSmith status reports the runtime's fallback env var."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGCHAIN_API_KEY"
+
+    def test_langsmith_status_primary_wins_over_fallback(
+        self,
+        fake_state_dir: Path,  # noqa: ARG002
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """LangSmith status reports its primary env var when both are set."""
+        from deepagents_code.model_config import get_service_auth_status
+
+        monkeypatch.setenv("LANGSMITH_API_KEY", "from-primary")
+        monkeypatch.setenv("LANGCHAIN_API_KEY", "from-fallback")
+        status = get_service_auth_status("langsmith")
+        assert status.state is ProviderAuthState.CONFIGURED
+        assert status.source is ProviderAuthSource.ENV
+        assert status.env_var == "LANGSMITH_API_KEY"
 
     def test_status_configured_from_store(
         self,

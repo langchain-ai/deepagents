@@ -1862,12 +1862,6 @@ def resolve_recursion_limit(
 
 # --- Option definitions -----------------------------------------------------
 
-# Search credentials that are not provider API keys live outside
-# `PROVIDER_API_KEY_ENV`, so they are declared explicitly.
-_EXTRA_CREDENTIAL_ENV: dict[str, str] = {
-    "tavily": "TAVILY_API_KEY",
-}
-
 _SECRET_NAME_MARKERS = ("KEY", "TOKEN", "SECRET", "PASSWORD", "APIKEY")
 
 _PROVIDER_DEPENDENCIES: dict[str, tuple[str, str]] = {
@@ -1980,21 +1974,44 @@ def _is_secret_env(name: str) -> bool:
     return any(marker in upper for marker in _SECRET_NAME_MARKERS)
 
 
+def _prefix_aware_fallbacks(names: tuple[str, ...]) -> tuple[str, ...]:
+    """Expand canonical fallbacks in `resolve_env_var` lookup order.
+
+    Args:
+        names: Canonical fallback environment variable names.
+
+    Returns:
+        Prefixed and canonical spellings for each fallback, in precedence order.
+    """
+    return tuple(
+        candidate
+        for name in names
+        for candidate in (
+            (name,)
+            if name.startswith("DEEPAGENTS_CODE_")
+            else (f"DEEPAGENTS_CODE_{name}", name)
+        )
+    )
+
+
 def _credential_options() -> tuple[ConfigOption[object], ...]:
     """Build credential options from the canonical provider/key registries.
 
-    Generating these from `PROVIDER_API_KEY_ENV` (rather than hand-listing
-    them) guarantees every provider the app knows how to authenticate has a
-    manifest entry, so new providers can never silently miss the config
-    surface.
+    Generating these from the provider and service registries guarantees every
+    credential the app knows how to authenticate has a manifest entry, so new
+    providers and services can never silently miss the config surface.
 
     Returns:
         One credential `ConfigOption` per known provider/key env var.
     """
-    from deepagents_code.model_config import PROVIDER_API_KEY_ENV
+    from deepagents_code.model_config import (
+        PROVIDER_API_KEY_ENV,
+        SERVICE_API_KEY_ENV,
+        SERVICE_API_KEY_FALLBACK_ENV_VARS,
+    )
 
     options: list[ConfigOption[object]] = []
-    sources = {**PROVIDER_API_KEY_ENV, **_EXTRA_CREDENTIAL_ENV}
+    sources = {**PROVIDER_API_KEY_ENV, **SERVICE_API_KEY_ENV}
     for name, env_var in sorted(sources.items()):
         redacted = _is_secret_env(env_var)
         summary = (
@@ -2010,6 +2027,9 @@ def _credential_options() -> tuple[ConfigOption[object], ...]:
                 summary=summary,
                 kind=OptionKind.STR,
                 env_var=env_var,
+                fallback_env_vars=_prefix_aware_fallbacks(
+                    SERVICE_API_KEY_FALLBACK_ENV_VARS.get(name, ())
+                ),
                 redacted=redacted,
                 provider=name,
                 dependency_module=dependency[0] if dependency else None,

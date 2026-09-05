@@ -580,7 +580,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
     *,
     private_state_keys: frozenset[str] = frozenset(),
     state_schema: type | None = None,
-    fork_state_schema: type | None = None,
 ) -> BaseTool:
     """Create a task tool from subagent specs.
 
@@ -591,7 +590,6 @@ def _build_task_tool(  # noqa: C901, PLR0915
         private_state_keys: State keys marked with `PrivateStateAttr` that
             should be stripped from parent state before invoking subagents.
         state_schema: Base graph state schema forwarded to raw subagent specs.
-        fork_state_schema: Schema with fork-only state forwarded to declarative forks.
 
     Returns:
         A StructuredTool that can invoke subagents by type.
@@ -667,7 +665,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             "description": spec["description"],
             "runnable": create_sub_agent(
                 _resolved_declarative_spec(spec),
-                state_schema=fork_state_schema if _is_forked_subagent(spec) else state_schema,
+                state_schema=state_schema,
                 response_format=response_format,
             ),
         }
@@ -910,7 +908,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         task_description: str | None = None,
         private_state_keys: frozenset[str] | None = None,
         state_schema: type | None = None,
-        fork_state_schema: type | None = None,
     ) -> None:
         """Initialize the `SubAgentMiddleware`."""
         super().__init__()
@@ -923,7 +920,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
         self._private_state_keys = private_state_keys or frozenset()
         self._task_description = task_description
         self._state_schema = state_schema
-        self._fork_state_schema = fork_state_schema
         if any(_is_forked_subagent(spec) or _is_forked_compiled_subagent(spec) for spec in subagents):
             warn_beta(name="forked subagents", obj_type="feature")
         self.subagent_names: frozenset[str] = frozenset(spec["name"] for spec in subagents)
@@ -935,7 +931,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description,
             private_state_keys=self._private_state_keys,
             state_schema=self._state_schema,
-            fork_state_schema=self._fork_state_schema,
         )
 
         # Build system prompt with available agents
@@ -967,7 +962,6 @@ class SubAgentMiddleware(AgentMiddleware[Any, ContextT, ResponseT]):
             task_description=self._task_description,
             private_state_keys=value,
             state_schema=self._state_schema,
-            fork_state_schema=self._fork_state_schema,
         )
         self.tools = [task_tool]
 

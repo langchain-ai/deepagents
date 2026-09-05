@@ -15,6 +15,7 @@ from langchain.agents.middleware.types import (
     ContextT,
     ModelRequest,
     ModelResponse,
+    OmitFromSchema,
     PrivateStateAttr,
     ResponseT,
     TracePolicy,
@@ -66,7 +67,10 @@ PersistenceMode = Literal["thread", "turn", "call"]
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
-    _quickjs_slot_id: NotRequired[Annotated[str, PrivateStateAttr]]
+    _quickjs_slot_id: NotRequired[
+        Annotated[str, OmitFromSchema(input=False, output=True)]
+        | Annotated[str, PrivateStateAttr]
+    ]
     _quickjs_snapshot_payload: NotRequired[
         Annotated[
             bytes,

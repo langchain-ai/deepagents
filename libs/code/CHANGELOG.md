@@ -2,6 +2,16 @@
 
 # Deep Agents Code Changelog
 
+## [0.1.67](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.66...deepagents-code==0.1.67) (2026-09-05)
+
+
+### Bug Fixes
+
+* **code:** bound transcript tail reconciliation ([#6057](https://github.com/langchain-ai/deepagents/issues/6057)) ([8da3264](https://github.com/langchain-ai/deepagents/commit/8da32644dc7dcad1125a840bc17ec3d5ea66b8c3))
+* **code:** refuse a second sandbox workspace ([#5979](https://github.com/langchain-ai/deepagents/issues/5979)) ([cb4c973](https://github.com/langchain-ai/deepagents/commit/cb4c973172f7838eefa328ea0c6ca334b6aaab98))
+* **code:** scope project dotenv to workspaces ([#5980](https://github.com/langchain-ai/deepagents/issues/5980)) ([678c115](https://github.com/langchain-ai/deepagents/commit/678c11559d7534ee5e16ceebfacf01eeb6536ac7))
+* **code:** surface stale updates in-session ([#6063](https://github.com/langchain-ai/deepagents/issues/6063)) ([cdb9d4c](https://github.com/langchain-ai/deepagents/commit/cdb9d4c30f4419c0eb2c98ad53940875e4dfbe9e))
+
 ## [0.1.66](https://github.com/langchain-ai/deepagents/compare/deepagents-code==0.1.65...deepagents-code==0.1.66) (2026-09-03)
 
 ### Features

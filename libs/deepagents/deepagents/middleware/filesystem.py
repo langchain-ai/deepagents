@@ -13,7 +13,7 @@ from binascii import Error as BinasciiError
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, cast
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal, NotRequired, Self, cast
 
 import wcmatch.glob as wcglob
 from langchain.agents.middleware.types import (
@@ -1738,14 +1738,8 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             "type[FilesystemState]",
             FilesystemState if _uses_state_backend(self.backend) else AgentState,
         )
-        if _permissions and supports_execution(self.backend) and not _all_paths_scoped_to_routes(_permissions, self.backend):
-            msg = (
-                "FilesystemMiddleware does not yet support permissions with backends that "
-                "provide command execution (SandboxBackendProtocol). Tool-level permissions "
-                "for the execute tool are not implemented. Either remove permissions or use "
-                "a backend without execution support."
-            )
-            raise NotImplementedError(msg)
+        self._permissions = []
+        self._set_permissions(_permissions)
 
         artifacts_root = self.backend.artifacts_root if isinstance(self.backend, CompositeBackend) else "/"
         _root = artifacts_root.rstrip("/")
@@ -1765,8 +1759,6 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
             self._enabled_tools = frozenset(_ALL_FS_TOOL_NAMES)
         else:  # None -- user did not specify, defaults to all tools opted-in
             self._enabled_tools = None
-        self._permissions = list(_permissions or [])
-
         # Shared executor for enforcing GLOB_TIMEOUT on the sync glob tool.
         # Timed-out worker threads keep running until the backend call returns,
         # so the semaphore rejects overload instead of queueing behind them.
@@ -1790,6 +1782,41 @@ class FilesystemMiddleware(AgentMiddleware[FilesystemState, ContextT, ResponseT]
         # model's schema, so a tool name outside `tools=` never reaches the
         # dispatchable tool node
         self.tools = [factory() for name, factory in tool_factories if self._enabled_tools is None or name in self._enabled_tools]
+
+    def _set_permissions(self, value: list[FilesystemPermission] | None) -> None:
+        """Validate and store filesystem permission rules."""
+        if value and supports_execution(self.backend) and not _all_paths_scoped_to_routes(value, self.backend):
+            msg = (
+                "FilesystemMiddleware does not yet support permissions with backends that "
+                "provide command execution (SandboxBackendProtocol). Tool-level permissions "
+                "for the execute tool are not implemented. Either remove permissions or use "
+                "a backend without execution support."
+            )
+            raise NotImplementedError(msg)
+        self._permissions = list(value or [])
+
+    @property
+    def permissions(self) -> list[FilesystemPermission]:
+        """Filesystem permission rules enforced by this middleware's tools."""
+        return self._permissions
+
+    @permissions.setter
+    def permissions(self, value: list[FilesystemPermission] | None) -> None:
+        self._set_permissions(value)
+
+    def with_permissions(self, permissions: list[FilesystemPermission]) -> Self:
+        """Copy this middleware with validated filesystem permission rules."""
+        return type(self)(
+            backend=self.backend,
+            system_prompt=self._custom_system_prompt,
+            custom_tool_descriptions=self._custom_tool_descriptions,
+            tool_token_limit_before_evict=self._tool_token_limit_before_evict,
+            human_message_token_limit_before_evict=self._human_message_token_limit_before_evict,
+            max_execute_timeout=self._max_execute_timeout,
+            grep_max_count=self._grep_max_count,
+            tools=cast("list[FsToolName] | None", list(self._enabled_tools) if self._enabled_tools is not None else None),
+            _permissions=permissions,
+        )
 
     def _create_ls_tool(self) -> BaseTool:
         """Create the ls (list files) tool."""

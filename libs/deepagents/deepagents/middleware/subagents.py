@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
-from deepagents.middleware._state import prepare_subagent_state
+from deepagents.middleware._state import _FORKED_CONTEXT_KEY, prepare_subagent_state
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.summarization import (
@@ -50,13 +50,6 @@ _FORK_EXCLUDED_STATE_KEYS = frozenset({"structured_response", SUMMARIZATION_EVEN
 The summarization event is folded into the fork's messages instead. Dropping the
 session ID lets the subagent generate its own, and dropping a prior structured response
 ensures it cannot be mistaken for the fork's result.
-"""
-
-_FORKED_CONTEXT_KEY = "_deepagents_forked_context"
-"""Set on a forked subagent's own initial state; never on the parent's.
-
-Lets `task`/`atask` refuse recursive delegation at call time instead of
-omitting the tool -- see `_ForkTaskToolMiddleware` for why.
 """
 
 _FORK_RECURSION_REFUSAL = (
@@ -730,10 +723,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
             else:
                 # A compiled runnable is opaque -- it may not declare these
                 # channels, and internal state isn't ours to hand it.
-                inherited = prepare_subagent_state(
-                    runtime.state,
-                    private_state_keys=private_state_keys | {_FORKED_CONTEXT_KEY},
-                )
+                inherited = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
             subagent_state = {
                 **inherited,
                 "messages": _fork_messages(
@@ -743,10 +733,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 ),
             }
         else:
-            subagent_state = prepare_subagent_state(
-                runtime.state,
-                private_state_keys=private_state_keys | {_FORKED_CONTEXT_KEY},
-            )
+            subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent_runnable, subagent_state
 

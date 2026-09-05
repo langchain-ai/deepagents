@@ -12,11 +12,16 @@ if TYPE_CHECKING:
     from typing import Any
 
 
+_FORKED_CONTEXT_KEY = "_deepagents_forked_context"
+"""State flag that prevents a forked subagent from delegating again."""
+
+
 _EXCLUDED_STATE_KEYS = {
     "messages",
     "todos",
     "structured_response",
     "async_tasks",
+    _FORKED_CONTEXT_KEY,
 }
 """State keys that are excluded when passing state to subagents and when
 returning updates from subagents.

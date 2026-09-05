@@ -798,11 +798,13 @@ class TestFilesystemMiddlewarePermissionInit:
         mem_store = InMemoryStore()
         sandbox = MockSandbox(store=mem_store, namespace=lambda _ctx: ("filesystem",))
 
+        rules = [FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")]
         with pytest.raises(NotImplementedError, match="execute"):
-            FilesystemMiddleware(
-                backend=sandbox,
-                _permissions=[FilesystemPermission(operations=["write"], paths=["/**"], mode="deny")],
-            )
+            FilesystemMiddleware(backend=sandbox, _permissions=rules)
+
+        middleware = FilesystemMiddleware(backend=sandbox)
+        with pytest.raises(NotImplementedError, match="execute"):
+            middleware.permissions = rules
 
     def test_raises_not_implemented_for_composite_with_sandbox_default(self):
         """FilesystemMiddleware rejects CompositeBackend whose default supports execution."""
@@ -1665,6 +1667,32 @@ class TestPermissionsSurviveFilesystemToolsOverride:
         )
 
         assert _filesystem_permissions_for(agent) == own_perms
+
+    def test_shared_middleware_uses_each_stack_permissions(self):
+        """Inherited rules must not leak between stacks sharing a middleware instance."""
+        parent_perms = [FilesystemPermission(operations=["write"], paths=["/parent/**"], mode="deny")]
+        subagent_perms = [FilesystemPermission(operations=["write"], paths=["/subagent/**"], mode="deny")]
+        backend = _make_backend()
+        middleware = FilesystemMiddleware(backend=backend, tools=["read_file", "ls", "write_file"])
+        agent = create_deep_agent(
+            model=GenericFakeChatModel(messages=iter([AIMessage(content="done")])),
+            backend=backend,
+            permissions=parent_perms,
+            middleware=[middleware],
+            subagents=[
+                {
+                    "name": "worker",
+                    "description": "does work",
+                    "system_prompt": "work",
+                    "permissions": subagent_perms,
+                    "middleware": [middleware],
+                }
+            ],
+        )
+
+        assert middleware.permissions == []
+        assert _filesystem_permissions_for(agent) == parent_perms
+        assert _filesystem_permissions_for(agent, "worker") == subagent_perms
 
 
 class TestGlobResultPermissionFiltering:

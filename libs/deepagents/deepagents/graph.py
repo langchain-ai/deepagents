@@ -242,21 +242,12 @@ def _attach_filesystem_permissions(
     stack: list[AgentMiddleware[Any, Any, Any]],
     permissions: list[FilesystemPermission] | None,
 ) -> None:
-    """Re-attach factory-configured permissions onto `FilesystemMiddleware`.
-
-    A caller-supplied `FilesystemMiddleware` replaces the factory's default in
-    place, dropping the `permissions=` rules the factory configured. The
-    built-in file tools read `permissions` at call time, so we restore them
-    here, after the merge, on whichever instance ended up in the final stack.
-
-    We only attach when the instance has no permissions, so this repairs the
-    silent drop without clobbering an explicit override.
-    """
+    """Attach inherited rules without mutating caller-supplied middleware."""
     if not permissions:
         return
-    for middleware_instance in stack:
+    for index, middleware_instance in enumerate(stack):
         if isinstance(middleware_instance, FilesystemMiddleware) and not middleware_instance.permissions:
-            middleware_instance.permissions = permissions
+            stack[index] = middleware_instance.with_permissions(permissions)
 
 
 _REQUIRED_MIDDLEWARE: tuple[tuple[type[AgentMiddleware[Any, Any, Any]], tuple[str, ...]], ...] = (

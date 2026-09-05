@@ -33,6 +33,7 @@ def test_from_env_creates_assistant_home(tmp_path: Path) -> None:
     assert config.cron_dir.stat().st_mode & 0o777 == 0o700
     assert config.channel_dir.stat().st_mode & 0o777 == 0o700
     assert config.checkpoint_path == config.home / "checkpoints.sqlite"
+    assert config.conversation_state_path == config.home / "conversations.json"
     assert config.inbound_media_dir.stat().st_mode & 0o777 == 0o700
 
 

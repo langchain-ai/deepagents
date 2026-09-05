@@ -9,11 +9,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import signal
+import tempfile
 from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
@@ -54,7 +57,6 @@ from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob
@@ -184,7 +186,7 @@ class TalonHost:
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
-        self._conversation_resets: dict[str, int] = {}
+        self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
@@ -564,8 +566,12 @@ class TalonHost:
                 lambda: channel.send_message(conversation_id, _CANCEL_TIMEOUT_MESSAGE)
             )
             return
-        next_reset = self._conversation_resets.get(conversation_root, 0) + 1
-        self._conversation_resets[conversation_root] = next_reset
+        next_resets = {
+            **self._conversation_resets,
+            conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+        }
+        _save_conversation_resets(self.config.conversation_state_path, next_resets)
+        self._conversation_resets = next_resets
         await send_with_retry(
             lambda: channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
         )
@@ -1280,6 +1286,44 @@ def _json_preview(value: object) -> str:
         return json.dumps(value, sort_keys=True, default=str)
     except (TypeError, ValueError):
         return str(value)
+
+
+def _load_conversation_resets(path: Path) -> dict[str, int]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        msg = f"failed to load conversation state from {path}"
+        raise RuntimeError(msg) from exc
+    if not isinstance(state, dict) or any(
+        not isinstance(key, str)
+        or not isinstance(reset, int)
+        or isinstance(reset, bool)
+        or reset < 1
+        for key, reset in state.items()
+    ):
+        msg = f"invalid conversation state in {path}"
+        raise RuntimeError(msg)
+    return state
+
+
+def _save_conversation_resets(path: Path, resets: Mapping[str, int]) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(resets, file, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        temporary_path.replace(path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:

@@ -582,6 +582,37 @@ async def test_new_command_starts_fresh_conversation_thread(tmp_path: Path) -> N
     ]
 
 
+async def test_new_command_remains_active_after_restart(tmp_path: Path) -> None:
+    config = _config(tmp_path)
+    channel = RecordingChannel()
+    first_agent = HistoryAgent()
+    first_host = TalonHost(config=config, agent=first_agent, channels=[channel])
+    await first_host.start()
+
+    await first_host.receive_message(channel, ChannelMessage(conversation_id="chat", text="first"))
+    await _wait_for_sent_count(channel, 1)
+    await first_host.receive_message(channel, ChannelMessage(conversation_id="chat", text="/new"))
+    await first_host.stop()
+
+    restarted_channel = RecordingChannel()
+    restarted_agent = HistoryAgent()
+    restarted_host = TalonHost(
+        config=config,
+        agent=restarted_agent,
+        channels=[restarted_channel],
+    )
+    await restarted_host.start()
+    await restarted_host.receive_message(
+        restarted_channel,
+        ChannelMessage(conversation_id="chat", text="second"),
+    )
+    await _wait_for_sent_count(restarted_channel, 1)
+    await restarted_host.stop()
+
+    assert restarted_agent.requests[0].conversation_id.startswith("chat:talon-reset:")
+    assert restarted_channel.sent == [("chat", "seen:0")]
+
+
 async def test_new_command_accepts_telegram_bot_command_suffix(tmp_path: Path) -> None:
     channel = RecordingChannel()
     agent = HistoryAgent()

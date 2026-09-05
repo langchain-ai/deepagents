@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import asyncio
+from typing import TYPE_CHECKING
+
 import aiosqlite
 import pytest
 from langchain_core.messages import HumanMessage
@@ -9,6 +12,16 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deepagents_talon.archive import ArchiveScope, SQLiteConversationArchive
 from deepagents_talon.archive_saver import ConversationSaver
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+    from langchain_core.messages import BaseMessage
+    from langchain_core.runnables import RunnableConfig
+    from langgraph.checkpoint.base import ChannelVersions, Checkpoint, CheckpointMetadata
+
+    from deepagents_talon.archive import ArchiveEntry
 
 SCOPE = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
 OTHER = ArchiveScope(talon_history_channel="telegram", talon_history_chat="chat")
@@ -144,3 +157,91 @@ async def test_unscoped_and_nested_writes_do_not_enter_archive(tmp_path):
         assert await archive.sessions(SCOPE) == []
         assert await saver.aget(_config("cron"))
         assert await saver.aget(_config("nested", namespace="worker"))
+
+
+@pytest.mark.parametrize("pause_at", ["checkpoint", "archive"])
+@pytest.mark.parametrize("reset", [False, True])
+async def test_cancelled_write_finishes_archiving_before_return_or_reset(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, pause_at: str, *, reset: bool
+) -> None:
+    entered, release = asyncio.Event(), asyncio.Event()
+    observed: list[ArchiveEntry] = []
+    async with (
+        AsyncSqliteSaver.from_conn_string(str(tmp_path / "checkpoints.sqlite")) as backend,
+        SQLiteConversationArchive.from_conn_string(str(tmp_path / "archive.sqlite")) as archive,
+    ):
+        saver = ConversationSaver(backend, archive=archive)
+        put, append, delete = backend.aput, archive.append, backend.adelete_thread
+
+        async def paused_put(
+            config: RunnableConfig,
+            checkpoint: Checkpoint,
+            metadata: CheckpointMetadata,
+            new_versions: ChannelVersions,
+        ) -> RunnableConfig:
+            result = await put(config, checkpoint, metadata, new_versions)
+            if pause_at == "checkpoint":
+                entered.set()
+                await release.wait()
+            return result
+
+        async def paused_append(
+            scope: ArchiveScope, session: str, timestamp: str, messages: Sequence[BaseMessage]
+        ) -> None:
+            if messages and pause_at == "archive":
+                entered.set()
+                await release.wait()
+            await append(scope, session, timestamp, messages)
+
+        async def observe_delete(thread: str) -> None:
+            observed.extend(await archive.entries(SCOPE))
+            await delete(thread)
+
+        monkeypatch.setattr(backend, "aput", paused_put)
+        monkeypatch.setattr(archive, "append", paused_append)
+        monkeypatch.setattr(backend, "adelete_thread", observe_delete)
+        write = asyncio.create_task(_save(saver))
+        clearing = None
+        try:
+            await entered.wait()
+            assert await backend.aget(_config())
+            for _ in range(2):
+                write.cancel()
+                await asyncio.sleep(0)
+                assert not write.done()
+            if reset:
+                clearing = asyncio.create_task(saver.clear_history(SCOPE))
+                await asyncio.sleep(0)
+                assert not clearing.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await write
+            if clearing:
+                await clearing
+                assert [item["text"] for item in observed] == ["orchard"]
+                assert await archive.entries(SCOPE) == []
+                assert await backend.aget(_config()) is None
+            else:
+                assert [item["text"] for item in await archive.entries(SCOPE)] == ["orchard"]
+        finally:
+            release.set()
+            await asyncio.gather(write, *([clearing] if clearing else []), return_exceptions=True)
+
+
+async def test_idless_occurrences_survive_checkpoint_retries_and_reopening(tmp_path: Path) -> None:
+    path = str(tmp_path / "archive.sqlite")
+    backend = InMemorySaver()
+    first, second = _checkpoint(), _checkpoint()
+    messages = [HumanMessage("yes"), HumanMessage("yes"), HumanMessage("noted", id="stable")]
+    first["channel_values"]["messages"] = messages
+    second["channel_values"]["messages"] = messages
+    for checkpoint in (first, first, second, second):
+        async with SQLiteConversationArchive.from_conn_string(path) as archive:
+            saver = ConversationSaver(backend, archive=archive)
+            await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
+    async with SQLiteConversationArchive.from_conn_string(path) as archive:
+        entries = await archive.entries(SCOPE, session_id="session")
+        assert [item["text"] for item in entries] == ["yes", "yes", "noted", "yes", "yes"]
+        assert len({item["message_id"] for item in entries}) == 5
+        assert (await archive.conversations(SCOPE))[0]["message_count"] == 5
+    assert [message.id for message in messages] == [None, None, "stable"]

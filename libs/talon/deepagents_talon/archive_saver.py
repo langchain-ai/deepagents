@@ -135,7 +135,8 @@ class ConversationSaver(BaseCheckpointSaver[V]):
 
         Archive failures propagate after checkpoint persistence; retry the same
         call to repair the archive without duplicate revisions. There is no
-        transaction spanning the two stores.
+        transaction spanning the two stores. Cancellation waits for both writes
+        to finish before propagating, so reset cannot race an unfinished archive write.
 
         Args:
             config: Checkpoint configuration with trusted host scope in metadata.
@@ -144,15 +145,35 @@ class ConversationSaver(BaseCheckpointSaver[V]):
             new_versions: Updated channel versions.
         """
         async with self._lock:
-            scope = _scope(config)
-            session = str(config["configurable"]["thread_id"])
-            if scope is not None:
-                await self.archive.append(scope, session, checkpoint["ts"], [])
-                messages = await self._messages(config, checkpoint)
-            result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)
-            if scope is not None:
-                await self.archive.append(scope, session, checkpoint["ts"], messages)
+            task = asyncio.create_task(self._put(config, checkpoint, metadata, new_versions))
+            cancelled = False
+            while not task.done():
+                try:
+                    await asyncio.shield(task)
+                except asyncio.CancelledError:
+                    cancelled = True
+            result = task.result()
+            if cancelled:
+                raise asyncio.CancelledError
             return result
+
+    async def _put(
+        self,
+        config: RunnableConfig,
+        checkpoint: Checkpoint,
+        metadata: CheckpointMetadata,
+        new_versions: ChannelVersions,
+    ) -> RunnableConfig:
+        """Finish both writes under the caller's lock, even when the caller is cancelled."""
+        scope = _scope(config)
+        session = str(config["configurable"]["thread_id"])
+        if scope is not None:
+            await self.archive.append(scope, session, checkpoint["ts"], [])
+            messages = await self._messages(config, checkpoint)
+        result = await self.checkpointer.aput(config, checkpoint, metadata, new_versions)
+        if scope is not None:
+            await self.archive.append(scope, session, checkpoint["ts"], messages)
+        return result
 
     async def _messages(self, config: RunnableConfig, checkpoint: Checkpoint) -> list[BaseMessage]:
         messages: list[BaseMessage] = []

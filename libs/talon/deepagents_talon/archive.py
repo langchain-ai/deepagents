@@ -154,20 +154,23 @@ class SQLiteConversationArchive:
         value: MessageLikeRepresentation | list[MessageLikeRepresentation],
     ) -> None:
         messages = value if isinstance(value, list) else [value]
-        for message in convert_to_messages(messages):
+        for index, message in enumerate(convert_to_messages(messages)):
             if not isinstance(message, (HumanMessage, AIMessage, ToolMessage)):
                 continue
             if isinstance(message, ToolMessage) and message.name in _ARCHIVE_TOOLS:
                 continue
-            await self._index_message(session_id, timestamp, message)
+            await self._index_message(session_id, timestamp, message, index)
 
-    async def _index_message(self, session_id: str, timestamp: str, message: BaseMessage) -> None:
+    async def _index_message(
+        self, session_id: str, timestamp: str, message: BaseMessage, index: int
+    ) -> None:
         text = message.text
         if isinstance(message, AIMessage) and message.tool_calls:
             text += "\nTool calls: " + json.dumps(message.tool_calls, ensure_ascii=False)
         if not text:
             return
-        message_id = message.id or hashlib.sha256((message.type + text).encode()).hexdigest()
+        # Without a message ID, deduplicate retries within this checkpoint only.
+        message_id = message.id or f"talon-history:{timestamp}:{index}"
         revision = hashlib.sha256(text.encode()).hexdigest()
         async with self.conn.execute(
             "SELECT 1 FROM conversation_chunks "

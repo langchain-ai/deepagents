@@ -1011,6 +1011,7 @@ dependencies = [
     { name = "deepagents-code" },
     { name = "discord-py" },
     { name = "langchain-mcp-adapters" },
+    { name = "langgraph-checkpoint-sqlite" },
     { name = "tzdata" },
 ]
 
@@ -1044,6 +1045,7 @@ requires-dist = [
     { name = "deepagents-code", extras = ["media"], marker = "extra == 'media'", editable = "../code" },
     { name = "discord-py", specifier = ">=2.4.0,<3.0.0" },
     { name = "langchain-mcp-adapters", specifier = ">=0.3.2,<1.0.0" },
+    { name = "langgraph-checkpoint-sqlite", specifier = ">=3.1.1,<4.0.0" },
     { name = "librosa", marker = "extra == 'media'", specifier = ">=0.11.0,<1.0.0" },
     { name = "numpy", marker = "extra == 'media'", specifier = ">=2.4.6,<3.0.0" },
     { name = "phonemizer", marker = "extra == 'media'", specifier = ">=3.3.0,<4.0.0" },

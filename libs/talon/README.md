@@ -47,8 +47,7 @@ Attachment binaries and archive-tool results are not indexed. Scheduled runs do 
 add conversation history, and existing checkpoints are not backfilled.
 
 The echo runtime and unwrapped custom checkpointers do not support history tools or
-reset. See [custom checkpointer setup and recovery](docs/conversation-history.md)
-for configuring `ConversationSaver` with another checkpoint backend.
+reset. Custom async LangGraph checkpointers can enable history with `ConversationSaver`.
 
 ## Interrupt and Continue
 

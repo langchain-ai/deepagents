@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "pageVersion": "sha256:c727ddf1ffd21691ed5c1363432c145fa4026fb8549961121a600b7909bc6813",
+  "pageVersion": "sha256:d77f8ea3775705a1f9ba99b217a0ddf7f9ea6d9e69d449db23b5cde6cfce6ad1",
   "claims": [
     {
       "id": "claim_96f6659d6f8a4820a7869763500e9f3a",
@@ -52,11 +52,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+          "version": "repo-file-v1:sha256:4bd4d6fdfbd5195888cbff049e9291120bf8b78a66ddbba89296a1a9f6e5a463"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
-          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+          "version": "repo-file-v1:sha256:d194c6c23febcf315b5c1deded897fb8b59de5787b89bf1c8783979fe56efc13"
         }
       ]
     },
@@ -76,11 +76,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/agent.py",
-          "version": "repo-file-v1:sha256:d15680127f65b2c8e0f3dd25343e62186c0c55ff591611a32616cd0ab0ad4642"
+          "version": "repo-file-v1:sha256:81117793b7e93c1e21e455ff270a6a6b86dc1c30eaac7af7b60734ce7d782eef"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
-          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+          "version": "repo-file-v1:sha256:d194c6c23febcf315b5c1deded897fb8b59de5787b89bf1c8783979fe56efc13"
         }
       ]
     },
@@ -90,7 +90,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+          "version": "repo-file-v1:sha256:4bd4d6fdfbd5195888cbff049e9291120bf8b78a66ddbba89296a1a9f6e5a463"
         }
       ]
     },
@@ -130,7 +130,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
-          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+          "version": "repo-file-v1:sha256:d194c6c23febcf315b5c1deded897fb8b59de5787b89bf1c8783979fe56efc13"
         }
       ]
     },
@@ -140,11 +140,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+          "version": "repo-file-v1:sha256:4bd4d6fdfbd5195888cbff049e9291120bf8b78a66ddbba89296a1a9f6e5a463"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
-          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+          "version": "repo-file-v1:sha256:d194c6c23febcf315b5c1deded897fb8b59de5787b89bf1c8783979fe56efc13"
         }
       ]
     },
@@ -154,11 +154,11 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+          "version": "repo-file-v1:sha256:4bd4d6fdfbd5195888cbff049e9291120bf8b78a66ddbba89296a1a9f6e5a463"
         },
         {
           "resource": "repo://libs/code/deepagents_code/offload_middleware.py",
-          "version": "repo-file-v1:sha256:d9f6885ab4b28af787b19bbfa82d5b6b8f83545dbf7dc4cca24815b691782aca"
+          "version": "repo-file-v1:sha256:d194c6c23febcf315b5c1deded897fb8b59de5787b89bf1c8783979fe56efc13"
         }
       ]
     },
@@ -168,7 +168,7 @@
       "evidence": [
         {
           "resource": "repo://libs/code/deepagents_code/offload_api.py",
-          "version": "repo-file-v1:sha256:ac29fa8f564fae211377cccd74a1536df2045f7a15b299f17a4344396dcd7409"
+          "version": "repo-file-v1:sha256:4bd4d6fdfbd5195888cbff049e9291120bf8b78a66ddbba89296a1a9f6e5a463"
         }
       ]
     },
@@ -181,10 +181,58 @@
           "version": "repo-file-v1:sha256:492786f6e7a41e0124a02520b1f091b20b67a0c0b6ab2aee6776ce5371f71d6c"
         }
       ]
+    },
+    {
+      "id": "claim_7cfd81cf55024e1892b2a52320dbc17c",
+      "statement": "SDK summarization changes the model request and records a summarization event through a Command, rather than rewriting the LangGraph `messages` channel as part of its normal compaction path.",
+      "evidence": [
+        {
+          "resource": "repo://libs/deepagents/deepagents/middleware/summarization.py#L1345-L1484",
+          "version": "repo-lines-v1:sha256:6a7fb725e5b6ed9d3ab60805aa91e3e21446e220005f548b3f58f5dcce2e01be:eyJzZWxlY3RlZExpbmVDb3VudCI6MTQwLCJmaXJzdFNlbGVjdGVkTGluZUhhc2giOiI5MjcxYTBhMTMzOGI2ZTg2Y2RhYjY1YzY5Yjg1NDc4MTcyMTViZGIwNDNjMTA2N2RjNDE1ODJlMDIxNWVlZmU1IiwibGFzdFNlbGVjdGVkTGluZUhhc2giOiI1OTA5YTUzYTYxOGQwMjhlMWQzMDAwYzBhN2FiY2VlY2JlNWZiMzdmNGU1MTFlZmU0NjY0M2ZhZDZlNjY4NzJmIiwicHJlY2VkaW5nQ29udGV4dExpbmVDb3VudCI6MywicHJlY2VkaW5nQ29udGV4dEhhc2giOiI4ZTgwYWY2MjA3MDBlMjRkMzAxMjdhZDE4Zjk1NzZjZDM0YTcyOGVlYTIxZDc1NjIzY2ZhZjNmNzhhZmIwOTRiIiwiZm9sbG93aW5nQ29udGV4dExpbmVDb3VudCI6MywiZm9sbG93aW5nQ29udGV4dEhhc2giOiJjMjM3NTY4ZjM3MWM2NjRmYTczOWZlNmRmMzcwMmU3NjI1M2UwNzQzMjhkMDI1NmE0YWFkM2RlZDk5ZDdmOGE0In0"
+        }
+      ]
+    },
+    {
+      "id": "claim_bb6509097397485e91c48c6360ff7c4c",
+      "statement": "After `/offload` reserves summary state, an archive append failure leaves the summary event checkpointed with no archive path; an archive-link update is rolled back only when readback confirms the link is absent, while an unreadable readback is reported as indeterminate.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L810-L864",
+          "version": "repo-lines-v1:sha256:505b29e27e3e0af145fa7f0017ea71cd62f27e0eeb80757227f8bb34c2da85a8:eyJzZWxlY3RlZExpbmVDb3VudCI6NTUsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRkYTVlNzEyNzliOGY2MDRjYTA4YTJkZThiMDIwN2IxNWE1ZjAwMDIxZjI5MTIyNTNlNzg1YTdkY2Y4Y2NlY2UiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxYmE0NzE5YzgwYjZmZTkxMWIwOTFhN2MwNTEyNGI2NGVlZWNlOTY0ZTA5YzA1OGVmOGY5ODA1ZGFjYTU0NmIiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjQzYThmYWJhMTNiNGVhOWQxN2UwMTlkZjhjNDlhZDI3ODFmMzczNGQzMTIyMmUyMGE4OWU4YjgyMjJhOTczNTYiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImZiZGNhMTVlNzdiYWM4NjhmMGFmMThhMmMyZjEwNmZjNGJiYzE1NGFjNmY3NTgxNTgwZTFiMDE5NDk2Y2I0ZTkifQ"
+        },
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_middleware.py#L542-L628",
+          "version": "repo-lines-v1:sha256:e8a221d4acc10c5ca548b7bfa73989415e5f462ce502286cf018cc0b0c3893ab:eyJzZWxlY3RlZExpbmVDb3VudCI6ODcsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjFhODc0N2ZhNDY5NGRhNjhlMzI0NzFiNWI1ODM3ZmFkZDQwZThlY2U1MmRhMjIzZDkwZjI0YmI2MTlmNTI1MWIiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6ImE1ZmU3OGY5MGQ3N2ZiMWJiOWE5NWY0NjEwNjgyOTM5ODA3M2Y5YmI1NTQ4ZDc4ZDY2Y2NiZGY3YzliNDgyNDMiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjNmNjMxNDVmMTQ1NWNiMzMzYzk5MjAwMzRlNGEzN2RiMTg3ODdhNTE2Mzk3NTJmMzFlMTU4MjcxZDFmYjgyNGUiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImRhNzkzZTg3YTdjMDk4YTk1MjlmMWJiMTBjMDAyZjg0NjBlOGZlNWUxYjBmMjU1MWQyOWEzOWY1NDk1ODQ5ZWIifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_ad764749d2454031b5409556cabdd3a2",
+      "statement": "The server-owned offload operation replaces client model selection and transport parameters with checkpointed model settings, so a client request cannot choose the model endpoint used to summarize server-held conversation history.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/deepagents_code/offload_api.py#L606-L645",
+          "version": "repo-lines-v1:sha256:6c474335022ba63de918799d0a62ef7f5871d054d0d13b8f9ab1962894ad638d:eyJzZWxlY3RlZExpbmVDb3VudCI6NDAsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6IjRmYzg3ZDA4NjFkYzc5OTU3MjkzNGNmM2Q3MGQxNmY0YjkwNjRlY2Q3ZGIyNjZlZDQ1M2FkMWFhZWE3YWM1ZmQiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAwZTA2NWYzYmI3MzgzYTE4Mjk3YjlmYzgwZDZiZWQ0YWQ1NzI3MjhlYWQ0NmFmNmI2MDQ0NmIzOTUxZmQ3OTkiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6IjFhMmNhYWEyMmU0ZDFmYmJjMGY1MDYzMDVkZTdlMzhlMzg2NGUwNTkxZGFlN2ViYjNkMzJiZDZjYjVhZjMxZjQiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6ImI2MDJlYTYxMmIxOWYyMTAyYTNmN2MyOTIyNTYxOTYyYWEyNzQxMDc0OTBkOWE2MjZkN2E0YTk4ZGJkNWE1NzYifQ"
+        }
+      ]
+    },
+    {
+      "id": "claim_6e1dead2bbea499ea6289b5f9c49888d",
+      "statement": "Server-backed integration coverage verifies that `/offload` persists a summarization event and that the resulting archive can be read through the agent's own `read_file` tool rather than a client-local directory.",
+      "evidence": [
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_offload_server_side.py#L105-L166",
+          "version": "repo-lines-v1:sha256:184da27b111b7e466dbf632b50fd497d802cbe1362371c47cd70856b35d38afb:eyJzZWxlY3RlZExpbmVDb3VudCI6NjIsImZpcnN0U2VsZWN0ZWRMaW5lSGFzaCI6ImNhM2FkOTJlYjJkZGFlNTdjNmIwNWJiYjY0NTE1OWM3OTRlMDJiMDIyNTQ3YTdkZTFlMTZkNWY1YTAyYmQ1N2MiLCJsYXN0U2VsZWN0ZWRMaW5lSGFzaCI6IjAxODFjMWU4MTQxOWJiOTEwMzMxOWJkMWVjNjEyZTM2YWJlNWY3NWZlOGJiMzAwNDM2OWM5ZmFiMDlhOWJmNzUiLCJwcmVjZWRpbmdDb250ZXh0TGluZUNvdW50IjozLCJwcmVjZWRpbmdDb250ZXh0SGFzaCI6ImRjMTQwM2ZiMDRlOTU3MzBmNjVmY2Y1ZGVhZTg3MDhlNGE2MjFlNTQ3YTlhYmEzNmNiMzgyNDE3MDMyMDQyODAiLCJmb2xsb3dpbmdDb250ZXh0TGluZUNvdW50IjozLCJmb2xsb3dpbmdDb250ZXh0SGFzaCI6IjUzYTBjZTk0MzViNmMwYmQ3ODEyN2I3ZTdjNTU4ZTM0Y2E5ZjlhYzM5MGM3MzA4YWE0ZmVjMmIwOGUwNmVhM2QifQ"
+        },
+        {
+          "resource": "repo://libs/code/tests/integration_tests/test_offload_server_side.py#L2-L8",
+          "version": "repo-lines-v1:sha256:a485c3c1b645d2eaf76518e9c904fcfed71c0ef4279f70375e4311586abaa2f3:eyJzZWxlY3RlZExpbmVDb3VudCI6NywiZmlyc3RTZWxlY3RlZExpbmVIYXNoIjoiMDFiYTQ3MTljODBiNmZlOTExYjA5MWE3YzA1MTI0YjY0ZWVlY2U5NjRlMDljMDU4ZWY4Zjk4MDVkYWNhNTQ2YiIsImxhc3RTZWxlY3RlZExpbmVIYXNoIjoiN2U0MzVkYTY5ZTFhMGJmY2U4Yzc2MDU5MGNmN2Y0NjVkMzg4Mjk1ZTE2MDVjNTE3ZmYyZTM2NGI3M2EwZTc2ZCIsInByZWNlZGluZ0NvbnRleHRMaW5lQ291bnQiOjEsInByZWNlZGluZ0NvbnRleHRIYXNoIjoiNzAwYmNiYzg3N2FkN2NiMjg0YWM2NDE3NTY1M2M3YjcxNzBkYThlYWZhMGY3ZTU0NDQyYzY3ZDVjZjY1N2M2NiIsImZvbGxvd2luZ0NvbnRleHRMaW5lQ291bnQiOjMsImZvbGxvd2luZ0NvbnRleHRIYXNoIjoiMWFhZjc2MzdjYjZlN2U1ZGI4NWQ2MzQyNzQ2MDE0ZGYwNDFjY2Q1NThhOTIwYjI5ZWI2YWM3MTlkN2JhZjVjMiJ9"
+        }
+      ]
     }
   ],
   "verification": {
     "by": "openwiki/0.4.2",
-    "at": "2026-09-02T08:05:45.554Z"
+    "at": "2026-09-05T08:05:02.390Z"
   }
 }

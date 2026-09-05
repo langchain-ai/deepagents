@@ -363,6 +363,48 @@ class StoreBackend(BackendProtocol):
         infos.sort(key=lambda x: x.get("path", ""))
         return LsResult(entries=infos)
 
+    async def als(self, path: str) -> LsResult:
+        """Async version of `ls` using native store async methods.
+
+        Uses `_asearch_store_paginated` (store.asearch) instead of the sync
+        `_search_store_paginated` (store.search) — the sync search hangs on
+        async stores like AsyncPostgresStore.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = await self._asearch_store_paginated(store, namespace)
+        infos: list[FileInfo] = []
+        subdirs: set[str] = set()
+
+        normalized_path = path if path.endswith("/") else path + "/"
+
+        for item in items:
+            if not str(item.key).startswith(normalized_path):
+                continue
+            relative = str(item.key)[len(normalized_path) :]
+            if "/" in relative:
+                subdir_name = relative.split("/")[0]
+                subdirs.add(normalized_path + subdir_name + "/")
+                continue
+            try:
+                fd = self._convert_store_item_to_file_data(item)
+            except ValueError:
+                continue
+            size = len(file_data_to_string(fd))
+            infos.append(
+                {
+                    "path": item.key,
+                    "is_dir": False,
+                    "size": int(size),
+                    "modified_at": fd.get("modified_at", ""),
+                }
+            )
+
+        infos.extend(FileInfo(path=subdir, is_dir=True, size=0, modified_at="") for subdir in sorted(subdirs))
+        infos.sort(key=lambda x: x.get("path", ""))
+        return LsResult(entries=infos)
+
     def read(
         self,
         file_path: str,
@@ -610,6 +652,26 @@ class StoreBackend(BackendProtocol):
                 continue
         return grep_matches_from_files(files, pattern, path, glob, max_count=max_count)
 
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        """Async version of `grep` using native store async methods."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+        items = await self._asearch_store_paginated(store, namespace)
+        files: dict[str, Any] = {}
+        for item in items:
+            try:
+                files[item.key] = self._convert_store_item_to_file_data(item)
+            except ValueError:
+                continue
+        return grep_matches_from_files(files, pattern, path, glob, max_count=max_count)
+
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching a glob pattern in the store.
 
@@ -634,6 +696,43 @@ class StoreBackend(BackendProtocol):
             # Catch the specific type -- a bare `ValueError` here would also
             # capture path-normalization failures and mislabel them as pattern
             # errors, sending the model off rewriting a glob that was fine.
+            return GlobResult(error=str(exc))
+        if result == "No files found":
+            return GlobResult(matches=[])
+        paths = result.split("\n")
+        infos: list[FileInfo] = []
+        for p in paths:
+            fd = files.get(p)
+            size = len(file_data_to_string(fd)) if fd else 0
+            infos.append(
+                {
+                    "path": p,
+                    "is_dir": False,
+                    "size": int(size),
+                    "modified_at": fd.get("modified_at", "") if fd else "",
+                }
+            )
+        return GlobResult(matches=infos)
+
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """Async version of `glob` using native store async methods.
+
+        Uses `_asearch_store_paginated` (store.asearch) instead of the sync
+        `_search_store_paginated` (store.search) — the sync search hangs on
+        async stores like AsyncPostgresStore.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        items = await self._asearch_store_paginated(store, namespace)
+        files: dict[str, Any] = {}
+        for item in items:
+            try:
+                files[item.key] = self._convert_store_item_to_file_data(item)
+            except ValueError:
+                continue
+        try:
+            result = _glob_search_files(files, pattern, path)
+        except InvalidGlobPatternError as exc:
             return GlobResult(error=str(exc))
         if result == "No files found":
             return GlobResult(matches=[])
@@ -703,6 +802,35 @@ class StoreBackend(BackendProtocol):
 
         for path in paths:
             item = store.get(namespace, path)
+
+            if item is None:
+                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                continue
+
+            file_data = self._convert_store_item_to_file_data(item)
+            content_str = file_data_to_string(file_data)
+
+            encoding = file_data["encoding"]
+            content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
+
+            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+
+        return responses
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Async version of download_files using native store async methods.
+
+        Overrides the protocol's default ``asyncio.to_thread(download_files)``
+        which would call the sync ``store.get`` — that hangs on async stores
+        (e.g. ``AsyncPostgresStore``) because the connection is bound to the
+        main event loop.  Using ``store.aget`` keeps everything on the same loop.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            item = await store.aget(namespace, path)
 
             if item is None:
                 responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))

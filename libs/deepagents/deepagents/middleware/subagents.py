@@ -732,8 +732,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 # channels, and internal state isn't ours to hand it.
                 inherited = prepare_subagent_state(
                     runtime.state,
-                    private_state_keys=private_state_keys,
-                    excluded_keys=frozenset({_FORKED_CONTEXT_KEY}),
+                    private_state_keys=private_state_keys | {_FORKED_CONTEXT_KEY},
                 )
             subagent_state = {
                 **inherited,
@@ -746,8 +745,7 @@ def _build_task_tool(  # noqa: C901, PLR0915
         else:
             subagent_state = prepare_subagent_state(
                 runtime.state,
-                private_state_keys=private_state_keys,
-                excluded_keys=frozenset({_FORKED_CONTEXT_KEY}),
+                private_state_keys=private_state_keys | {_FORKED_CONTEXT_KEY},
             )
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent_runnable, subagent_state

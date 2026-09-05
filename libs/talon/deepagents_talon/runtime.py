@@ -32,6 +32,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from deepagents_code.tools import fetch_url, web_search
+from deepagents_talon.archive import ArchiveScope, ConversationSaver, conversation_tools
 from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
@@ -177,6 +178,11 @@ _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
 _INTERRUPTED_MESSAGE = "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
+
+_HISTORY_SCOPE: contextvars.ContextVar[ArchiveScope | None] = contextvars.ContextVar(
+    "talon_history_scope",
+    default=None,
+)
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
     "talon_cron_origin",
@@ -420,6 +426,7 @@ class DeepAgentRuntime:
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
         token = _CRON_ORIGIN.set(_cron_origin_from_request(request))
+        history_token = _HISTORY_SCOPE.set(_history_scope(request))
         authorization_token = set_authorization_handler(request.authorization_handler)
         try:
             text = await self._invoke_until_text(request, activity)
@@ -429,6 +436,7 @@ class DeepAgentRuntime:
             raise
         finally:
             reset_authorization_handler(authorization_token)
+            _HISTORY_SCOPE.reset(history_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
             self._pending_results.reset(pending_token)
@@ -436,6 +444,28 @@ class DeepAgentRuntime:
             activity.run_completed(text)
         self.background.acknowledge(pending)
         return AgentResult(text=text)
+
+    @property
+    def history_enabled(self) -> bool:
+        """Whether this runtime uses the persistent conversation archive."""
+        return isinstance(self.checkpointer, ConversationSaver)
+
+    async def clear_history(self, channel: str, chat: str) -> None:
+        """Erase all persisted sessions belonging to a channel and chat.
+
+        Args:
+            channel: Trusted channel provider identifier.
+            chat: Channel-specific chat identifier supplied by the host.
+
+        Raises:
+            TypeError: If the configured checkpointer does not support archives.
+        """
+        if not isinstance(self.checkpointer, ConversationSaver):
+            msg = "Conversation history reset requires the Talon conversation checkpointer"
+            raise TypeError(msg)
+        await self.checkpointer.clear_history(
+            ArchiveScope(talon_history_channel=channel, talon_history_chat=chat)
+        )
 
     async def _refresh_runtime_tools(self) -> None:
         if self.refresh_tools is None:
@@ -504,6 +534,8 @@ class DeepAgentRuntime:
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time]
+        if isinstance(self.checkpointer, ConversationSaver):
+            tools.extend(conversation_tools(self.checkpointer, _current_history_scope))
         if self.assistant_dir is not None or self.load_subagents is not None:
             tools.append(self._subagent_reload_tool())
         if self.include_web_tools:
@@ -582,6 +614,8 @@ class DeepAgentRuntime:
             "recursion_limit": self.recursion_limit,
             "configurable": {"thread_id": conversation_id},
         }
+        if (scope := _HISTORY_SCOPE.get()) is not None:
+            config["metadata"] = scope
         if activity is not None:
             config["callbacks"] = [activity]
         last_exc: Exception | None = None
@@ -1280,3 +1314,19 @@ def _content_block_text(block: object) -> str:
         if isinstance(text, str):
             return text
     return ""
+
+
+def _history_scope(request: AgentRequest) -> ArchiveScope | None:
+    channel = request.metadata.get("history_channel")
+    chat = request.metadata.get("history_chat")
+    if isinstance(channel, str) and isinstance(chat, str):
+        return ArchiveScope(talon_history_channel=channel, talon_history_chat=chat)
+    return None
+
+
+def _current_history_scope() -> ArchiveScope:
+    scope = _HISTORY_SCOPE.get()
+    if scope is None:
+        msg = "Conversation retrieval requires a channel and chat supplied by the host"
+        raise RuntimeError(msg)
+    return scope

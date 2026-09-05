@@ -39,6 +39,7 @@ from deepagents_talon.interfaces import (
     ChannelMedia,
     ChannelMessage,
     ChannelReaction,
+    ConversationHistoryRuntime,
     CronScheduler,
     MCPReloadableRuntime,
     ReactionChannelAdapter,
@@ -285,6 +286,15 @@ class TalonHost:
         async with self._locks[conversation_root]:
             agent_conversation_id = self._agent_conversation_id(conversation_root)
 
+            if command == "/reset-all-history":
+                await self._reset_all_history(
+                    channel,
+                    channel_conversation_id,
+                    channel_key=_channel_key(channel, provider),
+                    conversation_root=conversation_root,
+                )
+                return
+
             if command == _NEW_COMMAND:
                 await self._start_new_conversation(
                     channel,
@@ -471,6 +481,9 @@ class TalonHost:
             "message_id": message.message_id,
             **message.metadata,
         }
+        if isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled:
+            metadata["history_channel"] = _channel_key(channel, turn.provider)
+            metadata["history_chat"] = message.conversation_id
         if turn.recovery_degraded:
             metadata["interruption_recovery"] = "failed"
         origin_conversation_id = _origin_conversation_id(message)
@@ -601,6 +614,40 @@ class TalonHost:
             )
             raise
 
+    async def _reset_all_history(
+        self,
+        channel: ChannelAdapter,
+        chat: str,
+        *,
+        channel_key: str,
+        conversation_root: str,
+    ) -> None:
+        if not isinstance(self.agent, ConversationHistoryRuntime) or not self.agent.history_enabled:
+            await send_with_retry(
+                lambda: channel.send_message(chat, "History reset is unavailable.")
+            )
+            return
+        current = self._agent_conversation_id(conversation_root)
+        if await self._cancel_conversation_tasks(current) is _CancelOutcome.TIMEOUT:
+            await send_with_retry(lambda: channel.send_message(chat, _CANCEL_TIMEOUT_MESSAGE))
+            return
+        try:
+            await self.agent.clear_history(channel_key, chat)
+            next_resets = {
+                **self._conversation_resets,
+                conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+            }
+            _save_conversation_resets(self.config.conversation_state_path, next_resets)
+            self._conversation_resets = next_resets
+        except Exception:  # noqa: BLE001  # Report failure without disclosing stored history.
+            logger.warning("Conversation history reset failed", exc_info=True)
+            message = "Could not finish clearing history. Please try /reset-all-history again."
+        else:
+            message = (
+                "Cleared all conversation history for this chat. Started a fresh conversation."
+            )
+        await send_with_retry(lambda: channel.send_message(chat, message))
+
     async def _start_new_conversation(
         self,
         channel: ChannelAdapter,
@@ -720,7 +767,9 @@ class TalonHost:
         channel_key: str,
         conversation_id: str,
     ) -> str:
-        if len(self.channels) <= 1:
+        if len(self.channels) <= 1 and not (
+            isinstance(self.agent, ConversationHistoryRuntime) and self.agent.history_enabled
+        ):
             return conversation_id
         return _conversation_key(channel_key, conversation_id)
 

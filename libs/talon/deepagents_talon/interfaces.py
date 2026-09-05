@@ -292,3 +292,20 @@ class BackgroundRuntime(Protocol):
     @property
     def background(self) -> BackgroundSubagents:
         """Workers whose results need a main-agent turn."""
+
+
+@runtime_checkable
+class ConversationHistoryRuntime(Protocol):
+    """Optional runtime support for erasing conversation history."""
+
+    @property
+    def history_enabled(self) -> bool:
+        """Whether persistent conversation archiving is configured."""
+
+    async def clear_history(self, channel: str, chat: str) -> None:
+        """Delete all sessions for a trusted channel/chat pair.
+
+        Args:
+            channel: Channel provider identifier.
+            chat: Channel-specific conversation identifier.
+        """

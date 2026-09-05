@@ -29,6 +29,47 @@ If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful fo
 
 Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
+## Conversation history
+
+Talon's default SQLite checkpointer archives conversation text in `checkpoints.sqlite`
+without automatic expiry. The agent can use `search_conversations` to find literal
+keywords and `read_conversation` to review complete transcripts in bounded pages.
+Both tools are restricted to the current channel and chat: a WhatsApp DM cannot
+retrieve another DM or a Telegram chat, even if their chat IDs match. Results include
+session IDs, checkpoint timestamps, message roles, and pagination cursors.
+
+- `/new` starts a fresh context while keeping earlier sessions searchable.
+- `/reset-all-history` stops this chat's active run and background workers, deletes
+  its archived sessions and their LangGraph checkpoints, and starts a fresh context.
+  If cancellation times out, history is left intact and the command reports failure.
+  Other chats are unaffected. This command also accepts Telegram's `@bot` suffix.
+
+Messages are archived as they are checkpointed, so their original text remains
+available after context compaction. Distinct versions of edited messages are retained
+without duplicating unchanged messages at every checkpoint. Text and tool-call
+arguments are retained; attachment binaries and archive-tool results are not copied
+into the search index.
+The archive is for channel conversations; scheduled runs do not add conversation
+history. Resetting history does not remove cron jobs, memory files, downloaded media,
+external traces, or backups.
+
+On first startup, Talon imports existing checkpoints whose channel and chat are
+identifiable from stored metadata or a `whatsapp:`, `telegram:`, or `discord:` thread
+prefix. Legacy single-channel checkpoints have no reliable channel identity; they
+remain on disk but are excluded from retrieval and chat-scoped deletion until you
+assign their original channel explicitly:
+
+```bash
+DEEPAGENTS_TALON_LEGACY_HISTORY_CHANNEL=whatsapp
+```
+
+Use `whatsapp`, `telegram`, or `discord` only when all unscoped conversation history
+in this assistant's database belongs to that channel. The import runs once and
+includes earlier `/new` sessions. Imported history is then searchable and can be
+deleted with `/reset-all-history`. New channel conversations always use
+channel-qualified thread IDs. Custom checkpointers and the echo runtime do not
+provide these archive tools or history deletion.
+
 ## Interrupt and Continue
 
 A new message in a conversation cancels the active turn, records an interruption marker after the latest committed graph checkpoint, and starts the new message on the same thread. Partial output from the cancelled turn is not fabricated or delivered. `/stop` and `/new` also recover interrupted state; process shutdown does not. If cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and does not start the new message; restart Talon to recover.

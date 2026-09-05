@@ -253,7 +253,7 @@ class BackgroundSubagents(AgentMiddleware):
                 self._jobs[key].notified = True
 
     async def cancel(self, owner: str | None = None) -> bool:
-        """Cancel a thread's workers, or all workers at process shutdown.
+        """Cancel a thread's workers and discard results, or clear all at shutdown.
 
         Args:
             owner: Conversation to stop; omit to shut down all workers.
@@ -262,13 +262,15 @@ class BackgroundSubagents(AgentMiddleware):
             Whether every selected worker has stopped.
         """
         jobs = [job for job in self._jobs.values() if owner is None or job.owner == owner]
+        for job in jobs:
+            job.cancelled = True
         return await self._cancel_jobs(jobs)
 
     async def _cancel_jobs(self, jobs: list[_Job]) -> bool:
         workers = []
         for job in jobs:
-            job.cancelled = True
             if job.worker is not None and not job.worker.done():
+                job.cancelled = True
                 job.worker.cancel()
                 workers.append(job.worker)
         if not workers:

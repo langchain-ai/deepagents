@@ -197,6 +197,49 @@ async def test_inspect_cancel_ownership_and_capacity(monkeypatch):
         await background.cancel()
 
 
+async def test_cancel_finished_subagent_preserves_result():
+    @tool
+    async def task() -> str:
+        """Return completed research."""
+        return "completed research"
+
+    background = BackgroundSubagents()
+    await background.awrap_tool_call(_request("one", task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    listing, cancel = background.tools
+    runtime = _request("one", task).runtime
+    jobs = await listing.ainvoke({"runtime": runtime})
+    task_id = jobs[0]["task_id"]
+    assert jobs[0]["status"] == "finished"
+    assert await cancel.ainvoke({"task_id": task_id, "runtime": runtime}) == "finished"
+    results = background.results("one")
+    assert "completed research" in results[task_id]
+    assert background.owners() == {"one"}
+    assert not background.results("two")
+    background.acknowledge(results)
+    assert not background.results("one")
+    assert not background.owners()
+
+
+@pytest.mark.parametrize("owner", ["one", None])
+async def test_conversation_cancel_discards_finished_results(owner):
+    @tool
+    async def task() -> str:
+        """Return completed research."""
+        return "completed research"
+
+    background = BackgroundSubagents()
+    for thread in ("one", "two"):
+        await background.awrap_tool_call(_request(thread, task), _unused_handler)
+    await asyncio.gather(*(job.worker for job in background._jobs.values()))
+    assert background.results("one")
+    assert background.results("two")
+    assert await background.cancel(owner)
+    assert not background.results("one")
+    assert bool(background.results("two")) == (owner == "one")
+    assert background.owners() == ({"two"} if owner == "one" else set())
+
+
 async def test_remote_stream_uses_original_target_and_cancels_on_thread_stop(monkeypatch):
     connected, disconnected = asyncio.Event(), asyncio.Event()
     targets = []

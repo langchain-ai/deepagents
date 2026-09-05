@@ -16,10 +16,18 @@ from typing import TYPE_CHECKING
 from urllib.parse import parse_qs, urljoin, urlparse
 
 import httpx
+from langchain_core._security._exceptions import SSRFBlockedError
+from langchain_core._security._policy import SSRFPolicy
 from langchain_core._security._ssrf_protection import validate_safe_url
+from langchain_core._security._transport import SSRFSafeTransport
 from mcp.client.auth import OAuthClientProvider
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
+    build_protected_resource_metadata_discovery_urls,
+    create_oauth_metadata_request,
+    extract_resource_metadata_from_www_auth,
+    handle_auth_metadata_response,
+    handle_protected_resource_response,
 )
 from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
 from mcp.shared.auth import (
@@ -42,7 +50,7 @@ from deepagents_talon.authorization import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import AsyncGenerator, Awaitable, Callable
 
     from mcp.client.auth.oauth2 import OAuthContext
 
@@ -608,6 +616,32 @@ def _normalized_url(url: str) -> str:
     return url.rstrip("/")
 
 
+def _oauth_http_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(
+        transport=SSRFSafeTransport(SSRFPolicy(allowed_schemes=frozenset({"https"}))),
+        timeout=_HTTP_TIMEOUT_SECONDS,
+        follow_redirects=False,
+        trust_env=False,
+    )
+
+
+def _reject_oauth_redirect(response: httpx.Response) -> None:
+    if _REDIRECT_STATUS <= response.status_code < _BAD_REQUEST_STATUS:
+        msg = "OAuth redirects are not allowed."
+        raise MCPAuthorizationError(msg)
+
+
+async def _validate_oauth_url(url: str) -> None:
+    msg = "OAuth endpoint is not a safe public HTTPS URL."
+    try:
+        parsed = urlparse(url)
+        await asyncio.to_thread(_safe_https_url, url)
+    except ValueError:
+        raise MCPAuthorizationError(msg) from None
+    if parsed.username is not None or parsed.password is not None:
+        raise MCPAuthorizationError(msg)
+
+
 class _PersistedExpiryOAuthProvider(OAuthClientProvider):
     async def _initialize(self) -> None:
         storage = self.context.storage
@@ -618,6 +652,103 @@ class _PersistedExpiryOAuthProvider(OAuthClientProvider):
         self.context.client_info = await storage.get_client_info()
         self.context.token_expiry_time = await storage.get_token_expiry()
         self._initialized = True
+
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
+        """Keep discovered OAuth requests outside the resource client's redirect policy."""
+        async with contextlib.aclosing(super().async_auth_flow(request)) as flow:
+            outbound = await anext(flow)
+            while True:
+                response = (
+                    (yield outbound)
+                    if outbound is request
+                    else await self._send_oauth_request(outbound)
+                )
+                try:
+                    outbound = await flow.asend(response)
+                except StopAsyncIteration:
+                    return
+
+    async def _send_oauth_request(self, request: httpx.Request) -> httpx.Response:
+        await self._validate_metadata()
+        await _validate_oauth_url(str(request.url))
+        try:
+            async with asyncio.timeout(_HTTP_TIMEOUT_SECONDS), _oauth_http_client() as client:
+                response = await client.send(request, follow_redirects=False)
+                _reject_oauth_redirect(response)
+                return response
+        except SSRFBlockedError:
+            msg = "OAuth endpoint is not a safe public HTTPS URL."
+            raise MCPAuthorizationError(msg) from None
+
+    async def _validate_metadata(self) -> None:
+        metadata = self.context.oauth_metadata
+        if metadata is None:
+            return
+        issuer = self.context.auth_server_url or self.context.get_authorization_base_url(
+            self.context.server_url
+        )
+        if _normalized_url(str(metadata.issuer)) != _normalized_url(issuer):
+            msg = "OAuth metadata issuer does not match the authorization server."
+            raise MCPAuthorizationError(msg)
+        for endpoint in (
+            metadata.issuer,
+            metadata.authorization_endpoint,
+            metadata.token_endpoint,
+            metadata.registration_endpoint,
+        ):
+            if endpoint is not None:
+                await _validate_oauth_url(str(endpoint))
+
+    async def _perform_authorization(self) -> httpx.Request:
+        await self._validate_metadata()
+        if self.context.oauth_metadata is None:
+            base = self.context.get_authorization_base_url(self.context.server_url)
+            await _validate_oauth_url(urljoin(base, "/authorize"))
+        return await super()._perform_authorization()
+
+    async def _refresh_token(self) -> httpx.Request:
+        if self.context.oauth_metadata is None:
+            async with asyncio.timeout(_DISCOVERY_TIMEOUT_SECONDS):
+                await self._discover_refresh_metadata()
+        await self._validate_metadata()
+        return await super()._refresh_token()
+
+    async def _discover_refresh_metadata(self) -> None:
+        await self._discover_refresh_resource()
+        candidates = build_oauth_authorization_server_metadata_discovery_urls(
+            self.context.auth_server_url, self.context.server_url
+        )
+        for url in candidates:
+            response = await self._send_oauth_request(create_oauth_metadata_request(url))
+            ok, metadata = await handle_auth_metadata_response(response)
+            if not ok:
+                break
+            if metadata is not None:
+                self.context.oauth_metadata = metadata
+                await self._validate_metadata()
+                return
+        msg = "Could not discover a safe OAuth token endpoint for refresh."
+        raise MCPAuthorizationError(msg)
+
+    async def _discover_refresh_resource(self) -> None:
+        async with (
+            httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS, follow_redirects=False) as client,
+            client.stream("GET", self.context.server_url) as response,
+        ):
+            _reject_oauth_redirect(response)
+            challenge = extract_resource_metadata_from_www_auth(response)
+        for url in build_protected_resource_metadata_discovery_urls(
+            challenge, self.context.server_url
+        ):
+            response = await self._send_oauth_request(create_oauth_metadata_request(url))
+            metadata = await handle_protected_resource_response(response)
+            if metadata is not None:
+                await self._validate_resource_match(metadata)
+                self.context.protected_resource_metadata = metadata
+                self.context.auth_server_url = str(metadata.authorization_servers[0])
+                return
 
 
 def build_oauth_provider(

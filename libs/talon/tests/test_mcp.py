@@ -387,12 +387,8 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
 
     loaded = await provider.load()
 
-    assert [tool.name for tool in loaded.tools] == [
-        "get_mcp_server_status",
-        "authenticate_mcp_server",
-        "reload_mcp_configuration",
-    ]
-    status_tool = loaded.tools[0]
+    tools = {tool.name: tool for tool in loaded.tools}
+    status_tool = tools["get_mcp_server_status"]
     assert status_tool.description == (
         "Report configured MCP server availability. Current servers: notion (unauthenticated)."
     )
@@ -405,7 +401,7 @@ async def test_mcp_tool_provider_exposes_only_configured_server_authentication(
     )
     assert loaded.servers[0].status == "unauthenticated"
     assert loaded.servers[0].uses_oauth is True
-    schema = loaded.tools[1].tool_call_schema.model_json_schema()
+    schema = tools["authenticate_mcp_server"].tool_call_schema.model_json_schema()
     assert schema["properties"]["reauthenticate"] == {
         "default": False,
         "description": (

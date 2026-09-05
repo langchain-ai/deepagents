@@ -1,28 +1,30 @@
 """MCP (Model Context Protocol) tools loader.
 
-This module provides async functions to load and manage MCP servers using
-`langchain-mcp-adapters`, supporting Claude Desktop style JSON configs.
-It also supports automatic discovery of `.mcp.json` files from user-level
-and project-level locations.
+This module provides async functions to load and manage MCP servers,
+supporting Claude Desktop style JSON configs. It also supports automatic
+discovery of `.mcp.json` files from user-level and project-level locations.
+
+Connection management is FastMCP's: one `fastmcp.Client` per configured
+server, holding its transport, its auth, and — for stdio — a subprocess kept
+alive across tool calls. Turning the tools that client discovers into
+LangChain tools is `langchain.mcp`'s. What is left here is the part neither
+owns: finding config files, merging them, resolving `${VAR}` references,
+deciding which project-local servers may run at all, and reporting per-server
+status to the TUI.
 """
 
 from __future__ import annotations
 
 import asyncio
-import codecs
 import copy
-import errno
 import fnmatch
 import functools
-import io
 import json
 import logging
 import os
 import re
 import shutil
-import threading
-import unicodedata
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
@@ -36,7 +38,6 @@ from deepagents_code.mcp_config import resolve_mcp_server_env
 
 if TYPE_CHECKING:
     from collections.abc import (
-        AsyncIterator,
         Awaitable,
         Callable,
         Collection,
@@ -45,9 +46,10 @@ if TYPE_CHECKING:
     )
     from typing import TextIO
 
+    import httpx2
+    from fastmcp.client import Client as FastMCPClient
+    from fastmcp.client.transports import ClientTransport
     from langchain_core.tools import BaseTool
-    from langchain_mcp_adapters.client import Connection
-    from mcp import ClientSession
 
     from deepagents_code.model_config import McpServerTrustLists
     from deepagents_code.project_utils import ProjectContext
@@ -226,603 +228,154 @@ class MCPConfigError(ValueError):
     """
 
 
-_MCP_STDERR_LINE_LIMIT = 4096
-_MCP_STDERR_READ_SIZE = 8192
-_MCP_STDERR_TRUNCATION_MARKER = "... [truncated]"
-_MCP_STDERR_CAPTURE_ERRORS = "replace"
-"""Encoding error handler for the stderr *capture* decoder.
+_MCP_STDERR_LOG_LIMIT = 5 * 1024 * 1024
+"""Size past which a server's stderr log is discarded when a session opens.
 
-Deliberately independent of the server's `encoding_error_handler`, which
-governs the protocol stream and defaults to `strict`. Nothing parses captured
-stderr — it goes to a log — so one stray non-UTF-8 byte should mangle a
-character, not discard the whole 8 KiB chunk it arrived in. Dropping the chunk
-would lose exactly the diagnostic this capture exists to provide.
-"""
-_MCP_STDERR_DRAIN_JOIN_TIMEOUT = 2.0
-"""Bound on joining the stderr drain thread during session teardown.
-
-The drain thread blocks in `os.read` until the pipe hits EOF. EOF comes only
-when *every* process holding the write end has closed it. MCP's stdio shutdown
-terminates the server's process tree, but a server can spawn a descendant that
-escapes that process group and keeps the inherited pipe open. An unbounded join
-would then block session close. Session close runs on discovery failure, on
-reload, and on shutdown.
-
-After this timeout the read end is closed to make the blocked `os.read` return.
-That is not a portable guarantee: on darwin the read returns EOF, and on Linux
-it can stay blocked, because `close` need not wake a reader already inside the
-syscall. The forced-close join is therefore bounded by this timeout as well,
-and the thread is abandoned if it outlives it. It is a daemon thread.
+Nothing reads these files but a human debugging a misbehaving server, so a
+chatty server is capped by dropping the old log rather than rotating it.
 """
 
 
-class _MCPStderrSink(io.TextIOBase):
-    """A pipe that the MCP stdio transport can use as a server's stderr.
+def _server_stderr_log(server_name: str) -> Path | TextIO:
+    """Return the sink FastMCP writes this server's stderr to.
 
-    The transport only ever calls `fileno()` on the object it is handed, then
-    passes that descriptor to the subprocess. So this is a pipe with a reader
-    attached, not a writable stream: `fileno()` and `close()` are the whole
-    consumed surface, and `io.TextIOBase` is here for the `closed` bookkeeping
-    plus the `TextIO` cast the transport signature requires.
-
-    The reader thread has two jobs. It always drains, so a chatty server cannot
-    block writing to a full stderr pipe. It additionally logs whole, bounded,
-    sanitized lines to `deepagents_code.mcp_tools` at `DEBUG`, but only when
-    that level is enabled at construction time — raising the level afterwards
-    does not start capture on an existing sink.
-    """
-
-    def __init__(self, server_name: str, *, encoding: str) -> None:
-        """Create the pipe and start its reader.
-
-        Args:
-            server_name: MCP server name used in log records.
-            encoding: Encoding used to decode captured stderr bytes. The
-                error handler is always `_MCP_STDERR_CAPTURE_ERRORS`.
-        """
-        super().__init__()
-        self._server_name = server_name
-        self._encoding = encoding
-        self._capture = logger.isEnabledFor(logging.DEBUG)
-        self._decoder = (
-            codecs.getincrementaldecoder(encoding)(errors=_MCP_STDERR_CAPTURE_ERRORS)
-            if self._capture
-            else None
-        )
-        self._line = ""
-        self._truncated = False
-        self._read_fd_closed = False
-        # `_read_fd` is closed from the drain thread and from `wait_closed`;
-        # `_fd_lock` makes the close-once check atomic across the two.
-        self._fd_lock = threading.Lock()
-        # Set before `wait_closed` force-closes the read end, so the drain
-        # thread never issues another read against a freed fd number.
-        self._stopping = threading.Event()
-        self._read_fd, write_fd = os.pipe()
-        try:
-            self._writer = os.fdopen(write_fd, "wb", buffering=0)
-        except BaseException:
-            os.close(write_fd)
-            os.close(self._read_fd)
-            raise
-        try:
-            self._thread = threading.Thread(
-                target=self._drain,
-                name=f"mcp-stderr-{server_name}",
-                daemon=True,
-            )
-            self._thread.start()
-        except BaseException:
-            try:
-                self._writer.close()
-            finally:
-                self._close_read_fd()
-            raise
-
-    def fileno(self) -> int:
-        """Return the write descriptor to hand to the server subprocess."""
-        return self._writer.fileno()
-
-    def close(self) -> None:
-        """Close the parent's copy of the subprocess write descriptor."""
-        if self.closed:
-            return
-        # `getattr`: the finalizer reaches here for an instance whose
-        # `os.fdopen` failed, before `_writer` was ever assigned.
-        writer = getattr(self, "_writer", None)
-        try:
-            super().close()
-        finally:
-            if writer is not None:
-                writer.close()
-
-    async def wait_closed(self) -> None:
-        """Wait off the event loop until the pipe reader reaches EOF.
-
-        The join is bounded. If the drain thread is still blocked after
-        `_MCP_STDERR_DRAIN_JOIN_TIMEOUT`, the pipe's write end is held open by a
-        surviving server descendant. The read end is then closed to make the
-        blocked `os.read` return, and the thread is rejoined with the same
-        bound. Both bounds are necessary: a cross-thread close does not reliably
-        interrupt a reader inside `os.read`, so neither join can be unbounded.
-        """
-        self.close()
-        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
-        if not self._thread.is_alive():
-            return
-        self._stopping.set()
-        self._close_read_fd()
-        logger.debug(
-            "MCP server %r stderr pipe still held open after process exit; "
-            "forcing the drain thread closed",
-            self._server_name,
-        )
-        await asyncio.to_thread(self._thread.join, _MCP_STDERR_DRAIN_JOIN_TIMEOUT)
-        if self._thread.is_alive():
-            logger.warning(
-                "MCP server %r stderr drain thread did not exit after forced "
-                "pipe close",
-                self._server_name,
-            )
-
-    def _close_read_fd(self) -> None:
-        """Close the pipe read end exactly once.
-
-        Called from the drain thread's `finally` and from `wait_closed`, so the
-        flag check and the close are held under `_fd_lock`. Without it both
-        callers can pass an unlocked check and close twice, and between the two
-        closes the fd number is free for another thread to reuse — so the second
-        close would reap an unrelated descriptor.
-        """
-        with self._fd_lock:
-            if self._read_fd_closed:
-                return
-            self._read_fd_closed = True
-            try:
-                os.close(self._read_fd)
-            except OSError as exc:
-                logger.warning(
-                    "MCP server %r stderr pipe close failed: %s",
-                    self._server_name,
-                    exc,
-                )
-
-    def _drain(self) -> None:
-        """Read subprocess bytes so the server does not block on its stderr pipe.
-
-        Draining is unconditional; `_capture` only decides whether the bytes are
-        also logged. A drain that stops early while the server is still running
-        lets the pipe buffer fill and blocks the server's next write, so a
-        failure here is reported at `WARNING` even when capture is off.
-        """
-        try:
-            # Re-check before every read: once `wait_closed` has force-closed
-            # the read end, the fd number may already belong to another file.
-            while not self._stopping.is_set():
-                chunk = os.read(self._read_fd, _MCP_STDERR_READ_SIZE)
-                if not chunk:
-                    break
-                if self._capture:
-                    self._decode(chunk)
-            if self._capture:
-                self._decode(b"", final=True)
-                if self._line or self._truncated:
-                    self._emit_line()
-        except OSError as exc:
-            # EBADF covers the narrow race where `wait_closed` closes the read
-            # end between the `_stopping` check and the `os.read`.
-            if exc.errno != errno.EBADF:
-                logger.warning(
-                    "MCP server %r stderr drain stopped: %s. The server may "
-                    "block if it fills its stderr pipe.",
-                    self._server_name,
-                    exc,
-                )
-        except Exception:  # a dead drain thread blocks the server
-            # Without this the exception goes to `threading.excepthook`, which
-            # is invisible in the TUI, and nothing drains the child's stderr.
-            logger.exception(
-                "MCP server %r stderr drain failed unexpectedly",
-                self._server_name,
-            )
-        finally:
-            self._close_read_fd()
-
-    def _decode(self, data: bytes, *, final: bool = False) -> None:
-        """Decode one byte chunk without allowing malformed stderr to stop draining."""
-        if self._decoder is None:
-            return
-        try:
-            text = self._decoder.decode(data, final=final)
-        except UnicodeError as exc:
-            # Defensive: `_MCP_STDERR_CAPTURE_ERRORS` should keep this
-            # unreachable. Flush what was buffered before resetting, so a
-            # reader sees a truncated line rather than text silently spliced
-            # from either side of the discarded bytes.
-            self._decoder.reset()
-            if self._line or self._truncated:
-                self._emit_line()
-            logger.debug(
-                "MCP server %r stderr decode failed with %s: %s",
-                self._server_name,
-                self._encoding,
-                exc,
-            )
-            return
-        parts = text.split("\n")
-        for part in parts[:-1]:
-            self._append(part)
-            self._emit_line()
-        self._append(parts[-1])
-
-    def _append(self, text: str) -> None:
-        """Retain sanitized line content up to the configured bound."""
-        if self._truncated:
-            return
-        safe = "".join(
-            char for char in text if not unicodedata.category(char).startswith("C")
-        )
-        remaining = _MCP_STDERR_LINE_LIMIT - len(self._line)
-        self._line += safe[:remaining]
-        if len(safe) > remaining:
-            self._truncated = True
-
-    def _emit_line(self) -> None:
-        """Emit and reset the current complete line."""
-        line = self._line
-        if self._truncated:
-            content_limit = _MCP_STDERR_LINE_LIMIT - len(_MCP_STDERR_TRUNCATION_MARKER)
-            line = line[:content_limit] + _MCP_STDERR_TRUNCATION_MARKER
-        if line:
-            logger.debug("MCP server %r stderr: %s", self._server_name, line)
-        self._line = ""
-        self._truncated = False
-
-
-@asynccontextmanager
-async def _create_mcp_session(
-    connection: Connection,
-    *,
-    server_name: str,
-) -> AsyncIterator[ClientSession]:
-    """Create a session while routing stdio server diagnostics into DEBUG logs.
-
-    The stdio branch mirrors `langchain_mcp_adapters.sessions._create_stdio_session`
-    and exists only to pass `errlog`. Keep the two in sync when the adapter
-    changes its stdio setup.
+    FastMCP's stdio transport sends server stderr to `sys.stderr` when given no
+    `log_file`. The TUI owns the terminal, so an unredirected server corrupts
+    the display — every stdio server is pointed at a file under the state
+    directory instead, and at the null device when that file cannot be opened.
 
     Args:
-        connection: Adapter connection configuration.
+        server_name: MCP server name, already validated as path-safe.
+
+    Returns:
+        The log path, or an open handle on the null device.
+
+    Raises:
+        MCPConfigError: If `server_name` is not path-safe.
+    """
+    if not _SERVER_NAME_RE.match(server_name):
+        # Unreachable via `_validate_server_config`; guards the file name here
+        # too, since a server name that escaped validation would otherwise
+        # choose the path this writes to.
+        msg = f"Refusing to open a stderr log for unsafe server name {server_name!r}"
+        raise MCPConfigError(msg)
+    try:
+        log_dir = PATHS.profile.state_dir / "mcp-logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path = log_dir / f"{server_name}.log"
+        if path.is_file() and path.stat().st_size > _MCP_STDERR_LOG_LIMIT:
+            path.unlink()
+    except OSError:
+        logger.warning(
+            "MCP server %r: stderr log unavailable; discarding server stderr",
+            server_name,
+            exc_info=True,
+        )
+        return cast("TextIO", Path(os.devnull).open("a", encoding="utf-8"))
+    return path
+
+
+def _server_log_handler(server_name: str) -> Callable[[Any], Awaitable[None]]:
+    """Return a handler for the log messages `server_name` sends over MCP.
+
+    MCP servers report their own diagnostics in-band, as `notifications/message`.
+    FastMCP installs a callback either way; what this adds over its default
+    handler is the server's identity — which matters once several backends are
+    mounted behind one router — and routing to this module's logger at the level
+    the server chose, so a server explaining *why* a tool failed reaches
+    `--debug` output as a structured record rather than being scraped out of its
+    stderr.
+
+    Args:
         server_name: MCP server name used in log records.
 
-    Yields:
-        An open MCP client session.
+    Returns:
+        An async handler suitable for `fastmcp.Client(log_handler=...)`.
     """
-    from langchain_mcp_adapters.sessions import create_session
+    levels = {
+        "debug": logging.DEBUG,
+        "info": logging.INFO,
+        "notice": logging.INFO,
+        "warning": logging.WARNING,
+        "error": logging.ERROR,
+        "critical": logging.CRITICAL,
+        "alert": logging.CRITICAL,
+        "emergency": logging.CRITICAL,
+    }
 
-    if connection["transport"] != "stdio":
-        async with create_session(connection) as session:
-            yield session
-        return
+    async def handle(message: Any) -> None:  # noqa: ANN401, RUF029 - FastMCP requires an async handler
+        level = levels.get(str(message.level).lower(), logging.INFO)
+        origin = f"{server_name}:{message.logger}" if message.logger else server_name
+        logger.log(level, "MCP server %s: %s", origin, message.data)
 
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-
-    stdio = connection
-    encoding = stdio.get("encoding", "utf-8")
-    errors = stdio.get("encoding_error_handler", "strict")
-    params = StdioServerParameters(
-        command=stdio["command"],
-        args=stdio["args"],
-        # Already expanded: `_build_connection` runs `resolve_mcp_server_env`
-        # over `env` before the connection is built, with a richer grammar
-        # (`${VAR:-default}`) that raises on an unset reference. A second pass
-        # here could only re-scan resolved secrets and warn about a value that
-        # legitimately contains `${`.
-        env=stdio.get("env"),
-        cwd=stdio.get("cwd"),
-        encoding=encoding,
-        encoding_error_handler=errors,
-    )
-    sink = _MCPStderrSink(server_name, encoding=encoding)
-    try:
-        async with stdio_client(params, errlog=cast("TextIO", sink)) as (read, write):
-            # The child now holds its own dup of the write end, so drop the
-            # parent's copy. Without this the pipe never reaches EOF after the
-            # server exits and the drain thread blocks until forced closed.
-            # Safe here because `stdio_client` spawns the process during
-            # `__aenter__` and never touches `errlog` again.
-            sink.close()
-            async with ClientSession(
-                read,
-                write,
-                **(stdio.get("session_kwargs") or {}),
-            ) as session:
-                yield session
-    finally:
-        sink.close()
-        await sink.wait_closed()
-
-
-def _is_transient_session_error(exc: BaseException) -> bool:
-    """Return `True` when `exc` signals the MCP session transport is dead.
-
-    The anyio import is guarded so an anyio rename or removal surfaces as
-    an `ImportError` at module import rather than silent mis-classification
-    at runtime. Standard-library socket/pipe/EOF errors are covered as a
-    fallback regardless of anyio's presence.
-    """
-    try:
-        import anyio
-    except ImportError:  # pragma: no cover - anyio is a transitive MCP dep
-        anyio_excs: tuple[type[BaseException], ...] = ()
-    else:
-        anyio_excs = (
-            anyio.ClosedResourceError,
-            anyio.BrokenResourceError,
-            anyio.EndOfStream,
-        )
-    return isinstance(
-        exc,
-        (
-            *anyio_excs,
-            BrokenPipeError,
-            ConnectionAbortedError,
-            ConnectionResetError,
-            EOFError,
-            asyncio.IncompleteReadError,
-        ),
-    )
-
-
-@dataclass(frozen=True, slots=True)
-class _MCPSessionEntry:
-    """Cached MCP session and its close stack."""
-
-    session: ClientSession
-    exit_stack: AsyncExitStack
-
-
-def _connection_signature(value: Any) -> Any:  # noqa: ANN401
-    """Return a stable comparison signature for MCP connection configs."""
-    from mcp.client.auth import OAuthClientProvider
-
-    if isinstance(value, dict):
-        return tuple(
-            sorted((key, _connection_signature(item)) for key, item in value.items()),
-        )
-    if isinstance(value, list | tuple):
-        return tuple(_connection_signature(item) for item in value)
-    if isinstance(value, Path):
-        return str(value)
-    if isinstance(value, OAuthClientProvider):
-        context = value.context
-        storage_path = getattr(getattr(context, "storage", None), "path", None)
-        return (
-            "oauth",
-            _connection_signature(context.server_url),
-            _connection_signature(
-                context.client_metadata.model_dump(mode="json", exclude_none=True),
-            ),
-            _connection_signature(storage_path),
-            _connection_signature(context.timeout),
-            _connection_signature(context.client_metadata_url),
-            _connection_signature(context.auth_server_url),
-            _connection_signature(context.protocol_version),
-        )
-
-    model_dump = getattr(value, "model_dump", None)
-    if callable(model_dump):
-        return _connection_signature(model_dump(mode="json", exclude_none=True))
-    return value
-
-
-def _connections_signature(
-    connections: dict[str, Connection],
-) -> tuple[tuple[str, Any], ...]:
-    """Return a stable signature for a full MCP connections mapping."""
-    return tuple(
-        sorted(
-            (name, _connection_signature(connection))
-            for name, connection in connections.items()
-        ),
-    )
+    return handle
 
 
 class MCPSessionManager:
-    """Lazy, per-server cache of persistent MCP sessions.
+    """Owns the router that fronts every configured MCP server.
 
-    Discovery always happens through throwaway sessions. Live sessions are
-    only created on the first real tool call inside the runtime event loop
-    so sessions stay bound to the loop that owns their subprocess/transport
-    handles, and so stdio servers are not restarted on every invocation.
+    All backends are mounted on one FastMCP router, and the tools handed to the
+    agent call through a single client in front of it. That client and the stack
+    holding the backend connections open live here, so a caller that outlives a
+    tool load can shut every server down at once.
     """
 
-    def __init__(self, *, connections: dict[str, Connection] | None = None) -> None:
-        """Initialize the session manager.
-
-        Args:
-            connections: Optional initial server connection configs.
-        """
-        self._connections: dict[str, Connection] = dict(connections or {})
-        self._entries: dict[str, _MCPSessionEntry] = {}
-        self._locks: dict[str, asyncio.Lock] = {}
+    def __init__(self) -> None:
+        """Initialize an empty manager."""
+        self._client: FastMCPClient[Any] | None = None
+        self._stack: AsyncExitStack | None = None
         self._closed = False
 
-    def configure(self, connections: dict[str, Connection]) -> None:
-        """Set or validate the connection configs used by this manager.
+    @property
+    def client(self) -> FastMCPClient[Any] | None:
+        """Give back the router client, or `None` before any load."""
+        return self._client
 
-        When no sessions exist yet, `connections` overwrites the stored
-        configs unconditionally. Once any session has been created, the
-        new `connections` must produce the same signature as the stored
-        ones — otherwise this raises to prevent rebinding live sessions
-        to different transports or auth providers.
+    def adopt(self, client: FastMCPClient[Any], stack: AsyncExitStack) -> None:
+        """Take ownership of a router client and its backend connections.
+
+        A previously adopted pair is *not* closed here — closing it would tear
+        down sessions that tools from an earlier load still hold. Callers
+        reloading MCP config call `cleanup` first.
 
         Args:
-            connections: Connection configs keyed by server name.
+            client: Client in front of the mounted router.
+            stack: Stack holding every backend connection open.
 
         Raises:
-            RuntimeError: If the manager is closed or reconfigured
-                incompatibly after sessions already exist.
+            RuntimeError: If the manager has already been cleaned up.
         """
         if self._closed:
             msg = "Cannot configure a closed MCP session manager"
             raise RuntimeError(msg)
-
-        if not self._entries:
-            self._connections = dict(connections)
-            return
-
-        if _connections_signature(self._connections) != _connections_signature(
-            connections,
-        ):
-            msg = "Cannot reconfigure MCP session manager after sessions are active"
-            raise RuntimeError(msg)
-        self._connections = dict(connections)
-
-    async def get_session(self, server_name: str) -> ClientSession:
-        """Return a cached session for `server_name`, creating it lazily."""
-        entry = self._entries.get(server_name)
-        if entry is not None:
-            return entry.session
-
-        lock = self._get_lock(server_name)
-        async with lock:
-            entry = self._entries.get(server_name)
-            if entry is not None:
-                return entry.session
-
-            entry = await self._create_entry(server_name)
-            self._entries[server_name] = entry
-            return entry.session
-
-    async def invalidate(
-        self,
-        server_name: str,
-        *,
-        expected_session: ClientSession | None = None,
-    ) -> None:
-        """Evict and close a cached session if it still matches `expected_session`.
-
-        Args:
-            server_name: MCP server name.
-            expected_session: Optional identity check for race-safe eviction.
-        """
-        lock = self._get_lock(server_name)
-        async with lock:
-            entry = self._entries.get(server_name)
-            if entry is None:
-                return
-            if expected_session is not None and entry.session is not expected_session:
-                return
-            self._entries.pop(server_name, None)
-            exit_stack = entry.exit_stack
-
-        await exit_stack.aclose()
+        self._client = client
+        self._stack = stack
 
     async def cleanup(self) -> None:
-        """Close all cached sessions concurrently and reject future creation.
+        """Close the router client and every backend, rejecting later adoption.
 
-        Each server's `exit_stack.aclose()` runs with a 5 second timeout so
-        one slow stdio server cannot stall shutdown. Per-server failures
-        are logged — teardown is best-effort — but `CancelledError` is
-        re-raised so the enclosing `asyncio.gather` still cancels peers.
-        """
-        if self._closed and not self._entries:
-            return
-
+        Teardown is bounded at 5 seconds so one unresponsive stdio server cannot
+        stall shutdown, and failures are logged rather than raised — but
+        `CancelledError` propagates so an enclosing gather still cancels peers.
+        """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
         self._closed = True
-        names = list(self._entries)
+        client, stack = self._client, self._stack
+        self._client = self._stack = None
 
-        async def _close(server_name: str) -> None:
+        for label, close in (
+            ("router client", getattr(client, "close", None)),
+            ("MCP backends", getattr(stack, "aclose", None)),
+        ):
+            if close is None:
+                continue
             try:
-                await asyncio.wait_for(self.invalidate(server_name), timeout=5.0)
+                await asyncio.wait_for(close(), timeout=5.0)
             except TimeoutError:
-                logger.warning(
-                    "MCP session cleanup for %r timed out after 5s",
-                    server_name,
-                )
+                logger.warning("MCP %s cleanup timed out after 5s", label)
             except (KeyboardInterrupt, SystemExit, asyncio.CancelledError):
                 raise
             except Exception:
-                logger.warning(
-                    "MCP session cleanup for %r failed",
-                    server_name,
-                    exc_info=True,
-                )
-
-        await asyncio.gather(*[_close(name) for name in names])
-
-    def _get_lock(self, server_name: str) -> asyncio.Lock:
-        """Return the per-server creation/eviction lock."""
-        lock = self._locks.get(server_name)
-        if lock is None:
-            lock = asyncio.Lock()
-            self._locks[server_name] = lock
-        return lock
-
-    async def _create_entry(self, server_name: str) -> _MCPSessionEntry:
-        """Create and initialize a new cached session entry.
-
-        Args:
-            server_name: MCP server name.
-
-        Returns:
-            A cached session entry containing the live session and close stack.
-
-        Raises:
-            RuntimeError: If the manager has already been cleaned up.
-            ValueError: If `server_name` is not configured in the manager.
-        """
-        if self._closed:
-            msg = "Cannot create an MCP session after cleanup"
-            raise RuntimeError(msg)
-
-        try:
-            connection = self._connections[server_name]
-        except KeyError as exc:
-            msg = (
-                f"Couldn't find an MCP server named '{server_name}', "
-                f"expected one of {sorted(self._connections)}"
-            )
-            raise ValueError(msg) from exc
-
-        exit_stack = AsyncExitStack()
-        try:
-            session = await exit_stack.enter_async_context(
-                _create_mcp_session(connection, server_name=server_name)
-            )
-            await session.initialize()
-        except BaseException:
-            # Close the partially entered stack in *this* task before
-            # propagating. `create_session` enters an AnyIO task group whose
-            # cancel scope must be exited by the task that entered it; deferring
-            # teardown to async-generator finalization on another task raises
-            # "Attempted to exit cancel scope in a different task than it was
-            # entered in". Catch `BaseException` (not just `Exception`) so a
-            # `CancelledError` — e.g. from a crashed Streamable HTTP transport
-            # task group cancelling `session.initialize()` — also triggers the
-            # in-task teardown below instead of abandoning the session. The bare
-            # `raise` re-raises the original exception unchanged, so cancellation
-            # (and any other error) always propagates regardless; widening the
-            # catch only controls whether teardown runs, not whether the error
-            # propagates.
-            try:
-                await exit_stack.aclose()
-            except Exception:
-                # An ordinary cleanup failure must not mask the original error;
-                # the session is being discarded regardless. A `CancelledError`
-                # raised *by* `aclose()` is intentionally not caught here — it
-                # supersedes the original error, matching structured-cancellation
-                # semantics where an in-flight cancellation wins.
-                logger.warning(
-                    "Failed to close a partially initialized MCP session for %r",
-                    server_name,
-                    exc_info=True,
-                )
-            raise
-
-        return _MCPSessionEntry(session=session, exit_stack=exit_stack)
+                logger.warning("MCP %s cleanup failed", label, exc_info=True)
 
 
 def _resolve_server_type(server_config: Mapping[str, Any]) -> str:
@@ -1923,99 +1476,75 @@ def _config_uses_env_interpolation(server_config: dict[str, Any]) -> bool:
     return any(isinstance(value, str) and "${" in value for value in scalar_values)
 
 
-async def _discover_tools(session: ClientSession) -> list[Any]:
-    """Enumerate MCP tools from `session`, paginating until exhausted.
+async def _build_mcp_tool(
+    *,
+    mcp_tool: Any,  # noqa: ANN401
+    server_name: str,
+    client: FastMCPClient[Any],
+) -> BaseTool:
+    """Adapt one mounted MCP tool, then badge it as this app's.
+
+    `langchain.mcp.as_langchain_tool` owns everything protocol-facing: schema
+    conversion, calling through `client`, and turning an MCP `isError` result
+    into a failed `ToolMessage` carrying the server's own content. The tool
+    arrives namespaced by its mount; that name is recomposed here so it stays
+    within the strictest provider limit.
 
     Args:
-        session: Initialized MCP client session.
+        mcp_tool: MCP tool metadata, as returned by `Client.list_tools`.
+        server_name: Owning MCP server name, recorded in metadata.
+        client: The router client the returned tool calls through.
 
     Returns:
-        Discovered MCP tool definitions.
-
-    Raises:
-        RuntimeError: If pagination never terminates within the hard safety bound.
+        A LangChain `BaseTool` wrapper around the MCP tool.
     """
-    cursor: str | None = None
-    tools: list[Any] = []
-    for _ in range(1000):
-        page = await session.list_tools(cursor=cursor)
-        if page.tools:
-            tools.extend(page.tools)
-        if not page.nextCursor:
-            return tools
-        cursor = page.nextCursor
-    msg = (
-        "Reached max of 1000 iterations while listing MCP tools; "
-        "server may be returning a non-terminating cursor."
-    )
-    raise RuntimeError(msg)
+    from langchain.mcp import as_langchain_tool
+
+    tool = await as_langchain_tool(mcp_tool, client)
+
+    # Mounting already namespaced the tool as `server_tool`, but that name still
+    # has to satisfy the strictest provider limit, so it is recomposed through
+    # the same capping `main` applies. The bare name is recovered from the mount
+    # prefix and kept in metadata: it is what tool filters and the `/mcp` viewer
+    # show, and it is unrecoverable once the name is truncated and hashed.
+    original_tool_name = _unprefixed_tool_name(mcp_tool.name, server_name)
+    tool.name = _mcp_tool_name(server_name, original_tool_name)
+    tool.metadata = {
+        **(tool.metadata or {}),
+        "_deepagents_code_mcp": True,
+        "_deepagents_code_mcp_server": server_name,
+        _MCP_ORIGINAL_TOOL_NAME_KEY: original_tool_name,
+    }
+    return tool
 
 
-def _normalize_mcp_arguments(
-    arguments: dict[str, Any],
-    input_schema: Any,  # noqa: ANN401  # raw JSON Schema dict from the MCP tool
-) -> dict[str, Any]:
-    """Drop empty-string values for optional MCP tool params.
+def _unprefixed_tool_name(mounted_name: str, server_name: str) -> str:
+    """Recover the server-side tool name from its mounted form.
 
-    Some MCP servers (e.g. Slack's `slack_search_public_and_private`) validate
-    optional ID-typed params with `value is not a channel ID` when the model
-    fills them in with `""` instead of omitting them. JSON-Schema-derived
-    Pydantic models happily accept `""` for `Optional[str]`, so the request
-    reaches the server and gets rejected with a generic `ToolException`.
-
-    Treat `""` for non-required string fields as "omitted" so the MCP server
-    sees the same payload it would have for a field the model genuinely
-    skipped. Required fields are passed through unchanged so the server's
-    own missing-field error path still runs when applicable.
-
-    Only `""` is normalized; `None` is left to the caller / server. Schemas
-    that declare `["string", "null"]` will see `""` dropped but `None`
-    forwarded — callers that want symmetric "no value" handling should
-    omit the kwarg explicitly.
-
-    Dropped keys are logged at debug so unexpected MCP behavior is
-    diagnosable when a tool semantically distinguishes `""` from omitted.
+    Mounting yields `f"{server_name}_{tool}"`. The prefix is stripped back off
+    so the name recorded in metadata -- and matched by tool filters -- is the
+    one the server actually published, which is otherwise unrecoverable once
+    the composed name has been truncated and hashed.
 
     Args:
-        arguments: Keyword arguments collected by LangChain's tool runner.
-        input_schema: The MCP tool's `inputSchema` (raw JSON Schema dict).
+        mounted_name: Tool name as returned by the router's `list_tools`.
+        server_name: Server the tool was mounted under.
 
     Returns:
-        A new dict suitable for `session.call_tool`.
+        The bare tool name, or `mounted_name` unchanged if it is not prefixed.
     """
-    if not isinstance(input_schema, dict):
-        return arguments
-    required = set(input_schema.get("required") or ())
-    properties = input_schema.get("properties") or {}
-    cleaned: dict[str, Any] = {}
-    for key, value in arguments.items():
-        if value != "" or key in required:  # noqa: PLC1901  # distinguishing "" from other falsy types (0, False, []) is the point
-            cleaned[key] = value
-            continue
-        prop = properties.get(key)
-        prop_type = prop.get("type") if isinstance(prop, dict) else None
-        is_string_typed = prop_type == "string" or (
-            isinstance(prop_type, list) and "string" in prop_type
-        )
-        # Three drop conditions converge here:
-        #   - explicit string type (the original Slack-style failure mode);
-        #   - missing `type` (oneOf/anyOf/$ref or untyped — treat as ambiguous
-        #     and conservatively drop, since the server will reject `""` for
-        #     any ID-shaped slot anyway);
-        #   - key absent from `properties` entirely (model invented a field).
-        # Anything with an explicit non-string `type` is kept — `""` can't be
-        # a valid integer/bool/array so it was the model's mistake to send,
-        # and the server's own validation gives a clearer error than ours.
-        if isinstance(prop, dict) and not is_string_typed and prop_type is not None:
-            cleaned[key] = value
-    if cleaned.keys() != arguments.keys():
-        dropped = sorted(set(arguments) - set(cleaned))
-        logger.debug("MCP arg normalize: dropped empty-string keys %s", dropped)
-    return cleaned
+    prefix = f"{server_name}_"
+    if mounted_name.startswith(prefix):
+        return mounted_name[len(prefix) :]
+    return mounted_name
 
 
 def _mcp_tool_name(server_name: str, tool_name: str) -> str:
     """Compose a provider-safe MCP tool name.
+
+    Args:
+        server_name: Owning MCP server name.
+        tool_name: Server-side tool name.
 
     Returns:
         A deterministic name no longer than the strictest provider limit.
@@ -2034,168 +1563,6 @@ def _mcp_tool_name(server_name: str, tool_name: str) -> str:
     server_length = min(len(server), available - tool_length)
     tool_length = min(len(tool), available - server_length)
     return f"{server[:server_length]}_{tool[:tool_length]}_{digest}"
-
-
-def _build_cached_mcp_tool(
-    *,
-    mcp_tool: Any,  # noqa: ANN401
-    server_name: str,
-    session_manager: MCPSessionManager,
-    tool_name_prefix: bool,
-) -> BaseTool:
-    """Build a `StructuredTool` backed by the cached session manager.
-
-    Args:
-        mcp_tool: MCP tool metadata object.
-        server_name: Owning MCP server name.
-        session_manager: Runtime session cache used for tool calls.
-        tool_name_prefix: Whether to prefix the LangChain tool name with the
-            server name.
-
-    Returns:
-        A LangChain `BaseTool` wrapper around the MCP tool.
-    """
-    from langchain_core.tools import StructuredTool, ToolException
-    from langchain_mcp_adapters.tools import (
-        _convert_call_tool_result,  # noqa: PLC2701
-        _handle_mcp_tool_error,  # noqa: PLC2701
-    )
-
-    original_tool_name = mcp_tool.name
-    lc_tool_name = (
-        _mcp_tool_name(server_name, original_tool_name)
-        if tool_name_prefix and server_name
-        else original_tool_name
-    )
-
-    meta = getattr(mcp_tool, "meta", None)
-    base_meta = (
-        mcp_tool.annotations.model_dump() if mcp_tool.annotations is not None else {}
-    )
-    wrapped_meta = {"_meta": meta} if meta is not None else {}
-    metadata = {
-        **base_meta,
-        **wrapped_meta,
-        "_deepagents_code_mcp": True,
-        "_deepagents_code_mcp_server": server_name,
-        _MCP_ORIGINAL_TOOL_NAME_KEY: original_tool_name,
-    }
-
-    def _handle_cached_mcp_tool_error(error: ToolException) -> Any:  # noqa: ANN401
-        try:
-            return _handle_mcp_tool_error(error)
-        except ToolException:
-            logger.warning(
-                "MCP tool %r failed with recoverable ToolException: %s",
-                lc_tool_name,
-                error,
-                exc_info=True,
-            )
-            return str(error) or f"{lc_tool_name} failed with no error detail"
-
-    async def coroutine(
-        # `runtime` is injected by LangChain's tool-calling plumbing.
-        # MCP tools don't use it but the kwarg must still be accepted.
-        runtime: Any = None,  # noqa: ANN401, ARG001
-        **arguments: Any,
-    ) -> Any:  # noqa: ANN401
-        from deepagents_code.mcp_auth import find_reauth_required
-
-        arguments = _normalize_mcp_arguments(arguments, mcp_tool.inputSchema)
-
-        session = await session_manager.get_session(server_name)
-        try:
-            result = await session.call_tool(original_tool_name, arguments)
-        # Re-raise control-flow/shutdown signals (CancelledError,
-        # KeyboardInterrupt, SystemExit) and ToolException unchanged. Wrapping a
-        # ToolException here would bury its actionable message (e.g. an MCP
-        # `isError` instruction like "use the X tool instead") under a generic
-        # retry wrapper; re-raising preserves it for the tool-local error
-        # handler and the model.
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit, ToolException):
-            raise
-        except Exception as exc:
-            reauth = find_reauth_required(exc)
-            if reauth is not None:
-                await session_manager.invalidate(
-                    server_name,
-                    expected_session=session,
-                )
-                raise ToolException(str(reauth)) from exc
-            # `_handle_cached_mcp_tool_error` is the sole logging site for the
-            # `ToolException`s raised below; do not log here too, or every
-            # failure is reported twice.
-            if not _is_transient_session_error(exc):
-                msg = (
-                    f"MCP tool {lc_tool_name!r} failed on server "
-                    f"{server_name!r}: {type(exc).__name__}: {exc}"
-                )
-                raise ToolException(msg) from exc
-            logger.info(
-                "MCP session for %r appears dead (%s: %s); "
-                "invalidating and retrying once",
-                server_name,
-                type(exc).__name__,
-                exc,
-            )
-            await session_manager.invalidate(
-                server_name,
-                expected_session=session,
-            )
-
-            retry_session = await session_manager.get_session(server_name)
-            try:
-                result = await retry_session.call_tool(original_tool_name, arguments)
-            except (
-                asyncio.CancelledError,
-                KeyboardInterrupt,
-                SystemExit,
-                ToolException,
-            ):
-                raise
-            except Exception as retry_exc:  # noqa: BLE001 - wrapped into ToolException below so the agent sees it
-                try:
-                    retry_reauth = find_reauth_required(retry_exc)
-                    if retry_reauth is not None:
-                        raise ToolException(str(retry_reauth)) from retry_exc
-                    msg = (
-                        f"MCP tool {lc_tool_name!r} failed after one retry on "
-                        f"server {server_name!r}: {type(retry_exc).__name__}: "
-                        f"{retry_exc}"
-                    )
-                    raise ToolException(msg) from retry_exc
-                finally:
-                    # Invalidate the retry session last; log cleanup failure
-                    # so resource leaks are observable.
-                    try:
-                        await session_manager.invalidate(
-                            server_name,
-                            expected_session=retry_session,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Failed to invalidate retry session for %r after "
-                            "tool failure",
-                            server_name,
-                            exc_info=True,
-                        )
-
-        # On an MCP `isError=True` result the adapter's `_convert_call_tool_result`
-        # raises, and the `handle_tool_error` callback registered below converts
-        # the MCP content blocks into a `ToolMessage(status="error")`. Other
-        # expected `ToolException`s raised by this wrapper are formatted by that
-        # same tool-local handler.
-        return _convert_call_tool_result(result)
-
-    return StructuredTool(
-        name=lc_tool_name,
-        description=mcp_tool.description or "",
-        args_schema=mcp_tool.inputSchema,
-        coroutine=coroutine,
-        response_format="content_and_artifact",
-        metadata=metadata,
-        handle_tool_error=cast("Any", _handle_cached_mcp_tool_error),
-    )
 
 
 _GLOB_METACHARS = frozenset("*?[")
@@ -2306,13 +1673,11 @@ def _warm_mcp_adapter_imports() -> None:
 
     Run via `asyncio.to_thread` before adapter/auth symbols are used, so any
     blocking side effect of a first import happens off the server event loop
-    rather than where Blockbuster would reject it. Two known offenders:
-
-    - `langchain_mcp_adapters` runs a package-resource scan on first import.
-    - `mcp_auth` imports `httpx`, which transitively imports `rich`; `rich`
-      calls `os.getcwd()` in its module body (verified against the pinned
-      versions — the exact culprit may shift as dependencies change, but the
-      general risk of import-time I/O in this subtree does not).
+    rather than where Blockbuster would reject it. The known offender is
+    `mcp_auth`, which imports `httpx`, which transitively imports `rich`;
+    `rich` calls `os.getcwd()` in its module body (verified against the pinned
+    versions — the exact culprit may shift as dependencies change, but the
+    general risk of import-time I/O in this subtree does not).
 
     Warming `mcp_auth` is best-effort: it is only *used* on per-server paths
     (remote-server preflight and the per-tool call path), where an import
@@ -2321,10 +1686,12 @@ def _warm_mcp_adapter_imports() -> None:
     import `mcp_auth` otherwise — so it is swallowed here and left to re-raise
     at the real use site. Runs only when at least one active MCP server exists.
     """
-    from langchain_mcp_adapters import (
-        sessions as _sessions,  # noqa: F401
-        tools as _tools,  # noqa: F401
+    from langchain_core._api import (  # noqa: PLC2701
+        suppress_langchain_beta_warning,
     )
+
+    with suppress_langchain_beta_warning():
+        from langchain import mcp as _langchain_mcp  # noqa: F401
 
     try:
         from deepagents_code import mcp_auth as _mcp_auth  # noqa: F401
@@ -2389,6 +1756,211 @@ async def _gather_bounded[T](
         raise
 
 
+def _build_transport(
+    server_name: str,
+    server_type: str,
+    server_config: Mapping[str, Any],
+    *,
+    auth: httpx2.Auth | None,
+    keep_alive: bool,
+) -> ClientTransport:
+    """Build the FastMCP transport for one configured server.
+
+    The config entry is handed to FastMCP's own server models, so their
+    validation is what rejects a malformed entry and their `to_transport` is
+    what picks the transport class — including resolving a bare `url` to
+    streamable-HTTP or SSE.
+
+    The one thing the models do not carry is `log_file`, so a stdio server's is
+    attached afterwards: FastMCP writes a server's stderr to `sys.stderr`
+    otherwise, and the TUI owns that terminal.
+
+    Args:
+        server_name: MCP server name, used for the stderr log file.
+        server_type: Resolved transport type (`stdio`, `http`, or `sse`).
+        server_config: That server's config, with `${VAR}` refs already resolved.
+        auth: OAuth provider to attach, for a remote server that uses one.
+        keep_alive: Whether a stdio server's subprocess outlives one connection.
+            A live client reuses it across tool calls; a stateless load does not.
+
+    Returns:
+        A transport ready to mount on the router.
+    """
+    from fastmcp.client.transports import StdioTransport
+    from fastmcp.mcp_config import RemoteMCPServer, StdioMCPServer
+
+    if server_type in _SUPPORTED_REMOTE_TYPES:
+        # Only pin the transport when the config actually named one. Left unset,
+        # FastMCP infers it from the URL, which is what makes a bare
+        # `{"url": ".../sse"}` entry connect over SSE instead of streamable HTTP.
+        declared = server_config.get("type") or server_config.get("transport")
+        remote = RemoteMCPServer.model_validate(dict(server_config))
+        remote.transport = (
+            ("sse" if server_type == "sse" else "http") if declared else None
+        )
+        # The config's `auth` is a mode name (`"oauth"`), not a credential; the
+        # resolved provider replaces it.
+        remote.auth = auth
+        return remote.to_transport()
+
+    stdio = StdioMCPServer.model_validate(dict(server_config))
+    stdio.keep_alive = keep_alive
+    transport = stdio.to_transport()
+    # `to_transport()` is typed as a union, but a stdio server always yields the
+    # stdio transport -- and that is the only one with a stderr sink to point.
+    if isinstance(transport, StdioTransport):
+        transport.log_file = _server_stderr_log(server_name)
+    return transport
+
+
+async def _mount_backends(
+    backends: Mapping[str, ClientTransport],
+    *,
+    redact: Mapping[str, bool],
+) -> tuple[FastMCPClient[Any], AsyncExitStack, dict[str, tuple[MCPServerStatus, str]]]:
+    """Connect every backend and mount it on one router.
+
+    FastMCP can build this composite itself from an `MCPConfig`, but it reports
+    a backend that fails to connect as a log line and moves on. The TUI has to
+    tell a user *which* server is down and whether the fix is a login, so the
+    mount loop is owned here instead, and each failure is classified the way
+    `MCPServerInfo` needs.
+
+    Mounting namespaces each backend's tools with its config key, which is where
+    the `server_tool` names come from.
+
+    Args:
+        backends: Ready transports keyed by server name.
+        redact: Per-server flag for whether error detail may quote a config
+            that interpolates `${VAR}` references.
+
+    Returns:
+        The router client, the stack holding every backend open, and a
+            `(status, error)` entry for each server that failed to connect.
+    """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
+    from fastmcp import FastMCP
+    from fastmcp.client import Client as FastMCPClient
+    from fastmcp.server.providers.proxy import StatefulProxyClient
+    from fastmcp.server.server import create_proxy
+
+    router: Any = FastMCP(name="deepagents-code")
+    stack = AsyncExitStack()
+    failures: dict[str, tuple[MCPServerStatus, str]] = {}
+
+    for server_name, transport in backends.items():
+        try:
+            backend = StatefulProxyClient(
+                transport=transport,
+                log_handler=_server_log_handler(server_name),
+            )
+            await backend.__aenter__()  # noqa: PLC2801 - paired with explicit callbacks below
+            # `StatefulProxyClient.__aexit__` is deliberately a no-op — it only
+            # decrements a nesting count — so `async with` would not itself stop
+            # a `keep_alive` stdio subprocess. Closing the router client happens
+            # to cascade to the mounted backends today, but that is an
+            # implementation detail of the proxy; tear down explicitly so
+            # teardown does not depend on it, mirroring
+            # `MCPConfigTransport._create_proxy`. Callbacks run LIFO, so
+            # `transport.close()` is pushed first in order to run last.
+            stack.push_async_callback(transport.close)
+            stack.push_async_callback(backend._disconnect, force=True)
+            router.mount(create_proxy(backend), namespace=server_name)
+        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as exc:  # noqa: BLE001 - one server must not sink the rest
+            failures[server_name] = _classify_connect_failure(
+                server_name,
+                exc,
+                redact=redact.get(server_name, False),
+            )
+
+    return FastMCPClient(router), stack, failures
+
+
+def _classify_connect_failure(
+    server_name: str,
+    exc: BaseException,
+    *,
+    redact: bool,
+) -> tuple[MCPServerStatus, str]:
+    """Describe why a server would not connect, in the terms the TUI offers.
+
+    Two failures are worth telling apart from a generic error because the user
+    can act on them: tokens that exist but no longer refresh, and a server
+    answering an unauthenticated request with an RFC 9728 challenge. Both mean
+    "log in", so both become `unauthenticated`.
+
+    Classification is itself best-effort — a classifier that raises degrades the
+    server to a plain error rather than taking down the rest of the load.
+
+    Args:
+        server_name: MCP server name.
+        exc: The failure raised while connecting.
+        redact: Whether this server's config interpolates `${VAR}`, in which
+            case the message must not quote resolved (secret-bearing) values.
+
+    Returns:
+        The `(status, error)` pair for this server's `MCPServerInfo`.
+    """
+    from deepagents_code.mcp_auth import (
+        find_oauth_challenge,
+        find_reauth_required,
+        format_login_failure,
+    )
+
+    try:
+        reauth = find_reauth_required(exc)
+        challenge = None if reauth is not None else find_oauth_challenge(exc)
+    except Exception:
+        logger.debug(
+            "MCP server %r: failed to classify connect error",
+            server_name,
+            exc_info=True,
+        )
+        reauth = challenge = None
+
+    if reauth is not None or challenge is not None:
+        error = (
+            f"{reauth} (token refresh failed)"
+            if reauth is not None
+            else (
+                f"MCP server {server_name!r} requires authentication; "
+                f"run `dcode mcp login {server_name}`."
+            )
+        )
+        logger.warning("MCP server '%s' skipped: %s", server_name, error)
+        # An expected, already-classified outcome: the actionable WARNING says
+        # everything useful, so the DEBUG line stays a concise, token-safe
+        # breadcrumb. `format_login_failure` names the culprit nested inside the
+        # anyio `ExceptionGroup` these usually arrive wrapped in.
+        logger.debug(
+            "MCP server '%s' skipped: %s",
+            server_name,
+            format_login_failure(exc),
+        )
+        return ("unauthenticated", error)
+
+    if redact:
+        logger.warning(
+            "MCP server '%s' skipped: connection failed (%s; details redacted "
+            "because config uses environment interpolation)",
+            server_name,
+            exc.__class__.__name__,
+        )
+        return (
+            "error",
+            (
+                f"MCP server {server_name!r}: connection failed after "
+                "resolving environment variables."
+            ),
+        )
+
+    logger.warning(
+        "MCP server '%s' skipped: connection failed", server_name, exc_info=exc
+    )
+    return ("error", str(exc))
+
+
 async def _load_tools_from_config(
     config: dict[str, Any],
     *,
@@ -2424,14 +1996,12 @@ async def _load_tools_from_config(
     # caller) so a config with no active MCP servers — which returns before
     # ever reaching this function — never pays the adapter-import cost.
     await asyncio.to_thread(_warm_mcp_adapter_imports)
-    from langchain_mcp_adapters.sessions import (
-        SSEConnection,
-        StdioConnection,
-        StreamableHttpConnection,
-    )
-    from langchain_mcp_adapters.tools import convert_mcp_tool_to_langchain_tool
 
-    server_items = list(config["mcpServers"].items())
+    # Imported here, not at module scope: pulling FastMCP in eagerly would put
+    # it on the `dcode mcp --help` startup path.
+    from fastmcp.client.transports import ClientTransport as _ClientTransport
+
+    server_items: list[tuple[str, dict[str, Any]]] = list(config["mcpServers"].items())
     # Resolve each server's transport once, up front. `_resolve_server_type` is
     # pure, so this is a readability/DRY win over recomputing it in preflight,
     # discovery, and the final fold-in loop below.
@@ -2442,19 +2012,25 @@ async def _load_tools_from_config(
     # here rather than in `_discover_server` because the decision needs the
     # *resolved* config — the token file stem is derived from the expanded URL.
     oauth_servers: set[str] = set()
+    # Whether each server's config interpolates `${VAR}`. Captured from the
+    # *raw* config: once refs are expanded, an error message could echo a
+    # resolved secret, so those servers' failures are reported without detail.
+    redacts = {name: _config_uses_env_interpolation(cfg) for name, cfg in server_items}
 
     async def _preflight_and_connect(
         server_name: str,
         server_config: dict[str, Any],
-    ) -> tuple[MCPServerStatus, str] | Connection:
-        """Preflight one server and build its connection config.
+    ) -> tuple[MCPServerStatus, str] | ClientTransport:
+        """Preflight one server and build its transport.
 
         Per-server preflight/config failures are captured here so one bad
-        server never aborts loading the others.
+        server never aborts loading the others. Nothing is dialed yet — the
+        transports returned here are mounted on the router below, which is
+        where connection failures are classified.
 
         Returns:
             A `(status, error)` tuple when the server must be skipped, or a
-            ready `Connection` otherwise.
+            ready transport otherwise.
         """
         server_type = transports[server_name]
         # Capture this from the *raw* config, before resolution below rebinds
@@ -2493,20 +2069,6 @@ async def _load_tools_from_config(
 
         try:
             if server_type in _SUPPORTED_REMOTE_TYPES:
-                if server_type == "http":
-                    conn: Connection = StreamableHttpConnection(
-                        transport="streamable_http",
-                        url=server_config["url"],
-                    )
-                else:
-                    conn = SSEConnection(
-                        transport="sse",
-                        url=server_config["url"],
-                    )
-
-                if "headers" in server_config:
-                    conn["headers"] = server_config["headers"]
-
                 from deepagents_code.mcp_auth import (
                     FileTokenStorage,
                     build_oauth_provider,
@@ -2533,6 +2095,7 @@ async def _load_tools_from_config(
                     )
                     return ("unauthenticated", auth_msg)
 
+                auth: httpx2.Auth | None = None
                 if explicit_oauth or (
                     stored_tokens is not None and not has_authorization_header
                 ):
@@ -2540,20 +2103,29 @@ async def _load_tools_from_config(
                     # prior login (possibly triggered by 401 auto-detection)
                     # already stored tokens for this server. Static
                     # Authorization headers take precedence over stored OAuth.
+                    # `build_oauth_provider` returns an `httpx2.Auth`, which is
+                    # what FastMCP's remote transports take directly.
                     oauth_servers.add(server_name)
-                    conn["auth"] = build_oauth_provider(
+                    auth = build_oauth_provider(
                         server_name=server_name,
                         server_url=server_config["url"],
                         storage=storage,
                         interactive=False,
                     )
 
-                return conn
-            return StdioConnection(
-                command=server_config["command"],
-                args=server_config.get("args", []),
-                env=server_config.get("env") or None,
-                transport="stdio",
+                return _build_transport(
+                    server_name,
+                    server_type,
+                    server_config,
+                    auth=auth,
+                    keep_alive=not stateless,
+                )
+            return _build_transport(
+                server_name,
+                server_type,
+                server_config,
+                auth=None,
+                keep_alive=not stateless,
             )
         except (OSError, RuntimeError, TypeError, ValueError) as exc:
             if redact_failure_details:
@@ -2589,318 +2161,161 @@ async def _load_tools_from_config(
     )
 
     skipped: dict[str, tuple[MCPServerStatus, str]] = {}
-    connections: dict[str, Connection] = {}
+    backends: dict[str, ClientTransport] = {}
     for (server_name, _server_config), result in zip(
         server_items, preflight_results, strict=True
     ):
-        if isinstance(result, tuple):
-            skipped[server_name] = result
+        if isinstance(result, _ClientTransport):
+            backends[server_name] = result
         else:
-            connections[server_name] = result
+            skipped[server_name] = result
 
-    runtime_manager: MCPSessionManager | None = session_manager
-    if runtime_manager is not None:
-        runtime_manager.configure(connections)
-    elif not stateless:
-        runtime_manager = MCPSessionManager(connections=connections)
+    runtime_manager = (
+        session_manager if session_manager is not None else MCPSessionManager()
+    )
+    client, stack, mount_failures = await _mount_backends(backends, redact=redacts)
+    runtime_manager.adopt(client, stack)
+    skipped.update(mount_failures)
 
-    async def _discover_server(
+    # One `list_tools` covers every mounted backend; FastMCP paginates
+    # internally and bounds itself, so a server returning a non-terminating
+    # cursor cannot hang the load.
+    try:
+        async with client:
+            mounted_tools = await client.list_tools()
+    except BaseException:
+        await runtime_manager.cleanup()
+        raise
+
+    def _owner(tool_name: str) -> str | None:
+        """Return the server a mounted tool belongs to.
+
+        Mounting prefixes each tool with `server_`, and a server name may itself
+        contain an underscore — so `a_b_read` is ambiguous between server `a`
+        and server `a_b`. The longest configured name that matches wins, which
+        is the mount FastMCP actually resolved it against.
+        """
+        candidates = [
+            name
+            for name in backends
+            if tool_name.startswith(f"{name}_") and name not in skipped
+        ]
+        return max(candidates, key=len) if candidates else None
+
+    by_server: dict[str, list[Any]] = {name: [] for name in backends}
+    for mcp_tool in mounted_tools:
+        owner = _owner(mcp_tool.name)
+        if owner is None:
+            logger.debug(
+                "MCP tool %r matched no configured server; ignoring", mcp_tool.name
+            )
+            continue
+        by_server[owner].append(mcp_tool)
+
+    async def _build_server(
         server_name: str,
         server_config: dict[str, Any],
-        transport: str,
     ) -> tuple[list[BaseTool], MCPServerInfo]:
-        """Discover one server's tools and build its `MCPServerInfo`.
+        """Adapt one server's tools and build its `MCPServerInfo`.
 
-        Both discovery failures (classified as auth vs. generic error) and
-        post-discovery tool-construction failures are captured as a non-`ok`
-        `MCPServerInfo` with no tools, so a single failing server never aborts
-        the load for the others. Cancellation/shutdown signals are re-raised so
-        the bounded runner can tear the whole load down.
+        Tool construction can still fail after a healthy connection — a schema
+        that will not convert, or a bad tool filter — so it is isolated per
+        server here, the same way connection failures are isolated at mount.
+
+        Args:
+            server_name: MCP server name.
+            server_config: That server's resolved config entry.
 
         Returns:
             The server's LangChain tools plus its `MCPServerInfo` entry.
         """  # noqa: DOC501 - CancelledError/KeyboardInterrupt/SystemExit are re-raised pass-throughs
-        redact_failure_details = _config_uses_env_interpolation(server_config)
-
-        def _log_caught_exception(
-            level: int,
-            message: str,
-            caught: BaseException,
-        ) -> None:
-            """Log a caught exception without exposing resolved config values."""
-            if redact_failure_details:
-                rendered_message = message % server_name
-                logger.log(
-                    level,
-                    "%s (%s; details redacted because config uses environment "
-                    "interpolation)",
-                    rendered_message,
-                    caught.__class__.__name__,
-                )
-            else:
-                logger.log(level, message, server_name, exc_info=caught)
-
+        redact_failure_details = redacts[server_name]
         try:
-            async with _create_mcp_session(
-                connections[server_name], server_name=server_name
-            ) as discover_session:
-                await discover_session.initialize()
-                mcp_tools = await _discover_tools(discover_session)
-        except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
-            raise
-        except Exception as exc:  # noqa: BLE001 - isolate third-party discovery failures per server
-            from deepagents_code.mcp_auth import (
-                find_oauth_challenge,
-                find_reauth_required,
-                format_login_failure,
+            server_tools = await asyncio.gather(
+                *(
+                    _build_mcp_tool(
+                        mcp_tool=mcp_tool, server_name=server_name, client=client
+                    )
+                    for mcp_tool in by_server[server_name]
+                )
             )
-
-            status: MCPServerStatus
-            try:
-                reauth = find_reauth_required(exc)
-                challenge_url = (
-                    find_oauth_challenge(exc)
-                    if transport in _SUPPORTED_REMOTE_TYPES
-                    else None
-                )
-            except Exception as classify_exc:  # noqa: BLE001 - classification must not abort other servers
-                # Classifying the failure is best-effort. If a classifier
-                # itself raises, degrade this one server to a plain error
-                # rather than letting the exception abort tool loading for
-                # every remaining server.
-                reauth = None
-                challenge_url = None
-                _log_caught_exception(
-                    logging.DEBUG,
-                    "MCP server '%s': failed to classify discovery error",
-                    classify_exc,
-                )
-
-            if reauth is not None:
-                # Tokens existed (we checked above) but the OAuth provider
-                # fell back to interactive reauth — the refresh attempt
-                # failed. Flag unauthenticated so the user is prompted to
-                # re-login. This is an expected, already-classified outcome, so
-                # the actionable WARNING says everything useful; the full
-                # traceback adds no diagnostic value, so keep the DEBUG log to a
-                # concise, token-safe breadcrumb. Use `format_login_failure`
-                # rather than `exc.__class__.__name__`: these failures usually
-                # arrive wrapped in an anyio `ExceptionGroup`, so the bare root
-                # class name would just read "ExceptionGroup"; the helper walks
-                # the group/cause chain to name the nested culprit instead.
-                status = "unauthenticated"
-                error = f"{reauth} (token refresh failed)"
-                logger.warning(
-                    "MCP server '%s' skipped: %s",
-                    server_name,
-                    error,
-                )
-                logger.debug(
-                    "MCP server '%s' skipped: token refresh failed (%s)",
-                    server_name,
-                    format_login_failure(exc),
-                )
-            elif challenge_url is not None:
-                # A remote server answered with a 401 OAuth challenge
-                # (RFC 9728) that wasn't already handled as a token refresh —
-                # typically a server not opted into OAuth in config. Surface it
-                # as unauthenticated so the user can log in, rather than as an
-                # opaque connection error. Like the reauth case, this is a
-                # recognized outcome: keep the DEBUG log to a concise,
-                # token-safe breadcrumb (via `format_login_failure`, which
-                # names the nested culprit inside the anyio `ExceptionGroup`)
-                # rather than dumping the full challenge traceback.
-                status = "unauthenticated"
-                error = (
-                    f"MCP server {server_name!r} requires authentication; "
-                    f"run `dcode mcp login {server_name}`."
-                )
-                logger.warning(
-                    "MCP server '%s' skipped: %s",
-                    server_name,
-                    error,
-                )
-                logger.debug(
-                    "MCP server '%s' skipped: 401 OAuth challenge detected (%s)",
-                    server_name,
-                    format_login_failure(exc),
-                )
-            else:
-                status = "error"
-                error = (
-                    (
-                        f"MCP server {server_name!r}: tool discovery failed "
-                        "after resolving environment variables."
-                    )
-                    if redact_failure_details
-                    else str(exc)
-                )
-                _log_caught_exception(
-                    logging.WARNING,
-                    "MCP server '%s' skipped: tool discovery failed",
-                    exc,
-                )
-            return [], MCPServerInfo(
-                name=server_name,
-                transport=transport,
-                status=status,
-                error=error,
-            )
-
-        # Tool construction and filtering run after the discovery session has
-        # closed and can still fail (schema conversion, custom tool filters).
-        # Isolate them too so a construction error degrades this one server to
-        # an error entry instead of aborting the whole concurrent load — the
-        # same guarantee the discovery `try` above provides. Cancellation and
-        # shutdown signals still propagate so the bounded runner can tear down.
-        try:
-            if runtime_manager is None:
-                server_tools: list[BaseTool] = []
-                for mcp_tool in mcp_tools:
-                    tool = convert_mcp_tool_to_langchain_tool(
-                        None,
-                        mcp_tool,
-                        connection=connections[server_name],
-                        server_name=server_name,
-                    )
-                    tool.name = _mcp_tool_name(server_name, mcp_tool.name)
-                    tool.metadata = {
-                        **(tool.metadata or {}),
-                        "_deepagents_code_mcp": True,
-                        "_deepagents_code_mcp_server": server_name,
-                        _MCP_ORIGINAL_TOOL_NAME_KEY: mcp_tool.name,
-                    }
-                    server_tools.append(tool)
-            else:
-                server_tools = [
-                    _build_cached_mcp_tool(
-                        mcp_tool=mcp_tool,
-                        server_name=server_name,
-                        session_manager=runtime_manager,
-                        tool_name_prefix=True,
-                    )
-                    for mcp_tool in mcp_tools
-                ]
-
             server_tools = _apply_tool_filter(server_tools, server_name, server_config)
 
-            # Pair each tool's input_schema by its LangChain (server-prefixed)
-            # name — the same form `server_tools` carries — so the lookup needs
-            # no string surgery and stays correct if `tool_name_prefix` ever
-            # changes. Deep-copy the raw dict because `MCPToolInfo` is `frozen`
-            # but Python's `frozen=True` does not freeze nested mutables; a
-            # shared reference would let one holder mutate every other's view.
-            schemas: dict[str, dict[str, Any] | None] = {}
-            for mcp_tool in mcp_tools:
-                tool_name = getattr(mcp_tool, "name", "")
-                try:
-                    raw_schema = getattr(mcp_tool, "inputSchema", None)
-                    schema_copy = (
-                        copy.deepcopy(raw_schema) if raw_schema is not None else None
-                    )
-                except (AttributeError, TypeError, RecursionError) as exc:
-                    logger.warning(
-                        "MCP tool %r on server %r: inputSchema access raised "
-                        "%s: %s; rendering with no parameters",
-                        tool_name,
-                        server_name,
-                        exc.__class__.__name__,
-                        exc,
-                    )
-                    schema_copy = None
-                lc_name = _mcp_tool_name(server_name, tool_name)
-                schemas[lc_name] = schema_copy
-
-            tool_infos: list[MCPToolInfo] = []
-            for tool in server_tools:
-                schema = schemas.get(tool.name)
-                if schema is None and schemas:
-                    logger.debug(
-                        "MCP tool %r on server %r: no schema matched in lookup "
-                        "(available keys: %s); rendering with no parameters",
-                        tool.name,
-                        server_name,
-                        list(schemas.keys())[:5],
-                    )
-                tool_infos.append(
-                    MCPToolInfo(
-                        name=tool.name,
-                        description=tool.description or "",
-                        input_schema=schema,
-                    ),
+            # Pair each schema by the server-side name retained in the adapted
+            # tool's metadata. The provider-safe LangChain name may be sanitized
+            # or capped, so it cannot key this lookup reliably.
+            schemas = {
+                _unprefixed_tool_name(mcp_tool.name, server_name): copy.deepcopy(
+                    mcp_tool.input_schema
                 )
+                for mcp_tool in by_server[server_name]
+            }
+
+            def _tool_schema(tool: BaseTool) -> dict[str, Any] | None:
+                original_name = (tool.metadata or {}).get(_MCP_ORIGINAL_TOOL_NAME_KEY)
+                return (
+                    schemas.get(original_name)
+                    if isinstance(original_name, str)
+                    else None
+                )
+
+            tool_infos = [
+                MCPToolInfo(
+                    name=tool.name,
+                    description=tool.description or "",
+                    input_schema=_tool_schema(tool),
+                )
+                for tool in server_tools
+            ]
         except (asyncio.CancelledError, KeyboardInterrupt, SystemExit):
             raise
-        except Exception as exc:  # noqa: BLE001 - isolate third-party tool conversion failures per server
+        except Exception as exc:
             error = (
-                (
-                    f"MCP server {server_name!r}: tool construction failed "
-                    "after resolving environment variables."
-                )
+                f"MCP server {server_name!r}: tool construction failed "
+                "after resolving environment variables."
                 if redact_failure_details
                 else str(exc)
             )
-            _log_caught_exception(
-                logging.WARNING,
+            logger.warning(
                 "MCP server '%s' skipped: tool construction failed",
-                exc,
+                server_name,
+                exc_info=None if redact_failure_details else exc,
             )
             return [], MCPServerInfo(
                 name=server_name,
-                transport=transport,
+                transport=transports[server_name],
                 status="error",
                 error=error,
             )
 
         return server_tools, MCPServerInfo(
             name=server_name,
-            transport=transport,
+            transport=transports[server_name],
             tools=tuple(tool_infos),
             uses_oauth=server_name in oauth_servers,
         )
 
-    # Discovery also runs concurrently (bounded) across the servers that
-    # survived preflight. Because `_gather_bounded` returns results in
-    # submission order and skipped servers are folded back in below by
-    # iterating `server_items` in config order, `server_infos` stays in config
-    # order and the returned tools stay sorted by tool name — regardless of
-    # which server's probe finished first.
-    discover_items = [
-        (server_name, server_config, transports[server_name])
-        for server_name, server_config in server_items
-        if server_name not in skipped
-    ]
-    discovery_results = await _gather_bounded(
-        [
-            functools.partial(_discover_server, name, cfg, transport)
-            for name, cfg, transport in discover_items
-        ],
-        limit=_MCP_LOAD_CONCURRENCY,
-    )
-    discovered: dict[str, tuple[list[BaseTool], MCPServerInfo]] = {
-        server_name: result
-        for (server_name, _cfg, _transport), result in zip(
-            discover_items, discovery_results, strict=True
-        )
-    }
-
     all_tools: list[BaseTool] = []
     server_infos: list[MCPServerInfo] = []
-    for server_name, _server_config in server_items:
-        if server_name in skipped:
-            status, error = skipped[server_name]
-            server_infos.append(
-                MCPServerInfo(
-                    name=server_name,
-                    transport=transports[server_name],
-                    status=status,
-                    error=error,
-                ),
-            )
-            continue
-        server_tools, server_info = discovered[server_name]
-        all_tools.extend(server_tools)
-        server_infos.append(server_info)
+    try:
+        for server_name, server_config in server_items:
+            if server_name in skipped:
+                status, error = skipped[server_name]
+                server_infos.append(
+                    MCPServerInfo(
+                        name=server_name,
+                        transport=transports[server_name],
+                        status=status,
+                        error=error,
+                    ),
+                )
+                continue
+            server_tools, server_info = await _build_server(server_name, server_config)
+            all_tools.extend(server_tools)
+            server_infos.append(server_info)
+    except BaseException:
+        await runtime_manager.cleanup()
+        raise
 
     all_tools.sort(key=lambda tool: tool.name)
     return all_tools, None if stateless else runtime_manager, server_infos

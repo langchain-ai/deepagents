@@ -28,6 +28,7 @@ classifiers = [
 dependencies = [
     # Framework
     "deepagents==0.7.13",
+    # `langchain.mcp` (used by `mcp_tools.py`) ships in 1.4.0.
     "langchain>=1.4.0,<2.0.0",
     "langgraph-checkpoint-sqlite>=3.1.1,<4.0.0",
 
@@ -89,7 +90,7 @@ dependencies = [
     "tomli-w>=1.2.0,<2.0.0",
 
     # MCP
-    "langchain-mcp-adapters>=0.3.2,<1.0.0",
+    "fastmcp>=4.0.0b4,<5.0.0",
     # Cross-process lock serializing MCP OAuth token refreshes.
     # Capped below 3.30: it runs a blocking temp-dir probe at import time
     # (_probe_link_follow_symlinks), which trips Blockbuster's os.getcwd guard
@@ -102,7 +103,7 @@ dependencies = [
 
     # ACP
     "deepagents-acp>=0.0.10,<1.0.0",
-    "mcp>=1.28.1,<2.0.0",
+    "mcp>=2.0.0,<3.0.0",
 ]
 
 [project.optional-dependencies]

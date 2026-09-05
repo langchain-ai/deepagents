@@ -5,12 +5,17 @@ from __future__ import annotations
 import asyncio
 from pathlib import Path
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 
 import pytest
+from mcp.client.auth import OAuthClientProvider
 from textual.app import App, ComposeResult
 from textual.widgets import Input, Static
 
 from deepagents_code.tui.widgets.mcp_login import MCPLoginCancelledError, MCPLoginScreen
+
+if TYPE_CHECKING:
+    from fastmcp.client.transports import StreamableHttpTransport
 
 
 class _LoginTestApp(App[None]):
@@ -266,15 +271,18 @@ class TestMCPLoginScreenWithLoginCoroutine:
 
         captured_urls: list[str] = []
 
-        async def _fake_handshake(connections: dict) -> None:
-            server_name, connection = next(iter(connections.items()))
-            provider = connection["auth"]
-            await provider.context.redirect_handler(
-                "https://slack.com/oauth/v2/authorize?client_id=x"
-            )
-            code, _state = await provider.context.callback_handler()
-            captured_urls.append(code)
-            storage = FileTokenStorage(server_name, server_url=connection["url"])
+        async def _fake_handshake(transport: StreamableHttpTransport) -> None:
+            server_name, connection = ("srv", transport)
+            provider = connection.auth
+            assert isinstance(provider, OAuthClientProvider)
+            redirect_handler = provider.context.redirect_handler
+            callback_handler = provider.context.callback_handler
+            assert redirect_handler is not None
+            assert callback_handler is not None
+            await redirect_handler("https://slack.com/oauth/v2/authorize?client_id=x")
+            result = await callback_handler()
+            captured_urls.append(result.code)
+            storage = FileTokenStorage(server_name, server_url=connection.url)
             await storage.set_tokens(OAuthToken(access_token="t", token_type="Bearer"))
 
         monkeypatch.setattr(

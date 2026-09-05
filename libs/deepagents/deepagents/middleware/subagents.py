@@ -390,14 +390,6 @@ DEFAULT_SUBAGENT_PROMPT = """In order to complete the objective that the user as
 The calling agent only sees your final assistant message, not your intermediate work, tool results, or status tracking. Ensure your final
 response contains the complete answer."""
 
-_EXCLUDED_STATE_KEYS = {
-    "messages",
-    "todos",
-    "structured_response",
-    _FORKED_CONTEXT_KEY,
-}
-"""State keys excluded when passing state to isolated subagents."""
-
 
 class TaskToolSchema(BaseModel):
     """Input schema for the `task` tool."""
@@ -738,7 +730,11 @@ def _build_task_tool(  # noqa: C901, PLR0915
             else:
                 # A compiled runnable is opaque -- it may not declare these
                 # channels, and internal state isn't ours to hand it.
-                inherited = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
+                inherited = prepare_subagent_state(
+                    runtime.state,
+                    private_state_keys=private_state_keys,
+                    excluded_keys=frozenset({_FORKED_CONTEXT_KEY}),
+                )
             subagent_state = {
                 **inherited,
                 "messages": _fork_messages(
@@ -748,7 +744,11 @@ def _build_task_tool(  # noqa: C901, PLR0915
                 ),
             }
         else:
-            subagent_state = {key: value for key, value in runtime.state.items() if key not in _EXCLUDED_STATE_KEYS | private_state_keys}
+            subagent_state = prepare_subagent_state(
+                runtime.state,
+                private_state_keys=private_state_keys,
+                excluded_keys=frozenset({_FORKED_CONTEXT_KEY}),
+            )
             subagent_state["messages"] = [HumanMessage(content=description)]
         return subagent_runnable, subagent_state
 

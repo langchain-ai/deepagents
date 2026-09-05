@@ -178,7 +178,17 @@ turn after login completes.
 Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
 `deepagents-talon mcp login <server>` flow remains available as an alternative.
 
-After editing the configuration, send `/mcp-reload` through an authorized channel to
+On Linux/macOS, Talon can manage its MCP configuration through chat using
+`get_mcp_configuration` (redacted view) and `update_mcp_server` (add, replace, or
+remove one server). Updates require human approval by default and reload before
+the next turn. Set `DEEPAGENTS_TALON_MCP_CONFIG_AUTO_APPROVE=true` in the host
+environment to opt out; explicit tool approval policies still apply.
+
+Use `${ENV_VAR}` references for credentials. Set `DEEPAGENTS_TALON_MCP_CONFIG`
+to keep the file outside the workspace. These tools do not sandbox Talon's local
+shell backend; deployments must enforce filesystem isolation separately.
+
+After editing the configuration manually, send `/mcp-reload` through an authorized channel to
 reload it without restarting Talon. The agent can also call
 `reload_mcp_configuration` autonomously; that schedules the same reload before the
 next agent turn.

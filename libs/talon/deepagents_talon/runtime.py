@@ -44,6 +44,7 @@ from deepagents_talon.interfaces import (
     ToolApprovalHandler,
     ToolApprovalRequest,
 )
+from deepagents_talon.mcp_config import MCP_CONFIG_AUTO_APPROVE_ENV, MCP_CONFIG_UPDATE_TOOL
 from deepagents_talon.observability import (
     AgentActivityCallback,
     agent_activity_logging_enabled,
@@ -319,6 +320,7 @@ class DeepAgentRuntime:
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> object:
         tools = self._build_tools(runtime_tools)
+        interrupt_on = _interrupt_on_with_mcp_config(self.interrupt_on, self.env, tools)
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         middleware = list(self.middleware)
@@ -333,7 +335,7 @@ class DeepAgentRuntime:
             skills=self._resolve_skills(),
             middleware=middleware,
             interrupt_on=_interrupt_on_with_async_subagents(
-                self.interrupt_on,
+                interrupt_on,
                 has_async_subagents=self._has_async_subagents,
             ),
             memory=self._resolve_memory(),
@@ -825,6 +827,21 @@ def _interrupt_on_tools_from_env(env: Mapping[str, str]) -> dict[str, bool]:
     if raw is None or not raw.strip():
         return {}
     return {name: True for name in (part.strip() for part in raw.split(",")) if name}
+
+
+def _interrupt_on_with_mcp_config(
+    interrupt_on: Mapping[str, bool | InterruptOnConfig] | None,
+    env: Mapping[str, str],
+    tools: Sequence[BaseTool | Callable[..., object]],
+) -> Mapping[str, bool | InterruptOnConfig] | None:
+    if not any(getattr(tool, "name", None) == MCP_CONFIG_UPDATE_TOOL for tool in tools):
+        return interrupt_on
+    if env.get(MCP_CONFIG_AUTO_APPROVE_ENV, "").strip().lower() == "true":
+        return interrupt_on
+    return {
+        **(interrupt_on or {}),
+        MCP_CONFIG_UPDATE_TOOL: {"allowed_decisions": ["approve", "reject"]},
+    }
 
 
 def _interrupt_on_with_async_subagents(

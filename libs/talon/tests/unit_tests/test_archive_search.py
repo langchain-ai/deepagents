@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import aiosqlite
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import empty_checkpoint
-from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from deepagents_talon.archive import CHUNK_SIZE, ArchiveScope, SQLiteConversationArchive
-from deepagents_talon.archive_saver import ConversationSaver
+from deepagents_talon.archive import CHUNK_SIZE, ArchiveScope
+from tests.archive_helpers import make_saver
+
+if TYPE_CHECKING:
+    from deepagents_talon.archive_saver import ConversationSaver
 
 SCOPE = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
 
@@ -34,9 +38,7 @@ async def _save(saver: ConversationSaver, text: str) -> None:
 )
 async def test_search_matches_complete_revisions_with_bounded_display(tmp_path, content, query):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await _save(saver, content)
         await _save(saver, content)
         hits = await saver.archive.entries(SCOPE, query=query)
@@ -55,26 +57,20 @@ async def test_archive_search_survives_reopening_without_checkpoints(tmp_path):
     path = str(tmp_path / "history.sqlite")
     content = "x " * 1998 + " pineapple"
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await _save(saver, content)
         before = await saver.archive.entries(SCOPE, session_id="session")
         await connection.execute("DELETE FROM checkpoints")
         await connection.commit()
     for _ in range(2):
         async with aiosqlite.connect(path) as connection:
-            saver = ConversationSaver(
-                AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-            )
+            saver = make_saver(connection)
             hits = await saver.archive.entries(SCOPE, query="pineapple")
             assert len(hits) == 1
             assert hits[0]["cursor"] == before[0]["cursor"]
             assert await saver.archive.entries(SCOPE, session_id="session") == before
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await saver.adelete_thread("session")
         assert await saver.archive.entries(SCOPE, query="pineapple") == []
         async with connection.execute("SELECT count(*) FROM conversation_search") as cursor:

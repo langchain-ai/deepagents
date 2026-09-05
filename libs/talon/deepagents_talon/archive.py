@@ -10,7 +10,7 @@ import asyncio
 import hashlib
 import json
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Protocol, TypedDict, cast
+from typing import TYPE_CHECKING, TypedDict, cast
 
 import aiosqlite
 from langchain_core.messages import (
@@ -63,86 +63,6 @@ class ConversationSummary(TypedDict):
     updated_at: str
     message_count: int
     preview: str
-
-
-class ConversationArchive(Protocol):
-    """Storage contract independent of LangGraph checkpoint backends.
-
-    Warning:
-        Experimental API; subject to change with the Talon runtime.
-
-    Implementations must enforce scope ownership and make appends and deletions
-    idempotent. Session registrations must survive until deletion completes.
-    """
-
-    async def append(
-        self,
-        scope: ArchiveScope,
-        session_id: str,
-        timestamp: str,
-        messages: Sequence[BaseMessage],
-    ) -> None:
-        """Register the session's immutable scope and retain distinct message revisions.
-
-        Args:
-            scope: Trusted host-supplied scope.
-            session_id: Checkpointer thread identifier.
-            timestamp: Checkpoint timestamp.
-            messages: Messages to retain; empty registers ownership only.
-        """
-        ...
-
-    async def entries(
-        self,
-        scope: ArchiveScope,
-        *,
-        query: str = "",
-        session_id: str = "",
-        after: int = 0,
-        limit: int = 5,
-    ) -> list[ArchiveEntry]:
-        """Read bounded chunks, enforcing scope even for explicit session IDs.
-
-        Args:
-            scope: Trusted host-supplied scope.
-            query: Literal search terms.
-            session_id: Session to read, or empty to search.
-            after: Pagination cursor.
-            limit: Page size, from 1 to 20.
-        """
-        ...
-
-    async def conversations(
-        self,
-        scope: ArchiveScope,
-        *,
-        after: int = 0,
-        limit: int = 5,
-    ) -> list[ConversationSummary]:
-        """List nonempty sessions belonging to the scope.
-
-        Args:
-            scope: Trusted host-supplied scope.
-            after: Pagination cursor.
-            limit: Page size, from 1 to 20.
-        """
-        ...
-
-    async def sessions(self, scope: ArchiveScope) -> list[str]:
-        """Return all registered thread IDs, including sessions with no text.
-
-        Args:
-            scope: Trusted host-supplied scope.
-        """
-        ...
-
-    async def delete_session(self, session_id: str) -> None:
-        """Delete one session after its checkpoints have been deleted.
-
-        Args:
-            session_id: Trusted identifier from the archive's session registry.
-        """
-        ...
 
 
 class SQLiteConversationArchive:
@@ -402,7 +322,7 @@ class SQLiteConversationArchive:
 
 
 def conversation_tools(
-    saver: ConversationArchive, scope: Callable[[], ArchiveScope]
+    saver: SQLiteConversationArchive, scope: Callable[[], ArchiveScope]
 ) -> list[BaseTool]:
     """Build retrieval tools whose scope comes from the current invocation.
 

@@ -31,72 +31,24 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 
 ## Conversation history
 
-Talon's default conversation archive stores text in `checkpoints.sqlite`
-without automatic expiry. The agent can use `list_conversations` to browse sessions,
-`search_conversations` to find literal keywords, and `read_conversation` to review
-complete transcripts in bounded pages. Session listings include one entry per session,
-newest started first, with timestamps, a message count, and an opening preview.
-All three tools are restricted to the current channel and chat: a WhatsApp DM cannot
-retrieve another DM or a Telegram chat, even if their chat IDs match. Results include
-session IDs, checkpoint timestamps, message roles, and pagination cursors.
+Talon archives channel conversations in `checkpoints.sqlite` without automatic
+expiry. The agent can list, search, and read past sessions in bounded pages,
+restricted to the current channel and chat. History survives context compaction;
+text, tool-call arguments, and distinct message revisions are retained.
 
 - `/new` starts a fresh context while keeping earlier sessions searchable.
-- `/reset-all-history` stops this chat's active run and background workers, deletes
-  its archived sessions and their LangGraph checkpoints, and starts a fresh context.
-  If cancellation times out, history is left intact and the command reports failure.
-  Other chats are unaffected. This command also accepts Telegram's `@bot` suffix.
+- `/reset-all-history` stops active work, deletes this chat's archived sessions and
+  checkpoints, and starts a fresh context. Other chats are unaffected. Cancellation
+  timeouts leave history intact; deletion failures may leave a partial reset that
+  you can retry.
 
-Messages are archived as they are checkpointed, so their original text remains
-available after context compaction. Distinct versions of edited messages are retained
-without duplicating unchanged messages at every checkpoint. Text and tool-call
-arguments are retained; attachment binaries and archive-tool results are not copied
-into the search index.
-The archive is for channel conversations; scheduled runs do not add conversation
-history. Resetting history does not remove cron jobs, memory files, downloaded media,
-external traces, or backups.
+Reset does not remove cron jobs, memory files, downloaded media, traces, or backups.
+Attachment binaries and archive-tool results are not indexed. Scheduled runs do not
+add conversation history, and existing checkpoints are not backfilled.
 
-New archived channel conversations use channel-qualified thread IDs. The echo
-runtime and unwrapped custom checkpointers do not provide archive tools or history
-deletion.
-
-### Custom checkpointers
-
-`ConversationArchive` defines archive storage independently of LangGraph.
-`ConversationSaver` wraps any checkpointer implementing LangGraph's async saver
-API, including async MongoDB and Postgres savers. The wrapper delegates checkpoint
-storage, pending writes, version generation, and delta reconstruction to that
-backend. `SQLiteConversationArchive` supplies retrieval without a separate archive
-integration for each checkpointer.
-
-With an already-open async `checkpointer`, configure the runtime inside the archive
-context:
-
-```python
-from deepagents_talon.archive import SQLiteConversationArchive
-from deepagents_talon.archive_saver import ConversationSaver
-from deepagents_talon.runtime import DeepAgentRuntime
-
-async with SQLiteConversationArchive.from_conn_string(archive_path) as archive:
-    saver = ConversationSaver(checkpointer, archive=archive)
-    runtime = DeepAgentRuntime(model=model, checkpointer=saver)
-    # Start, run, and stop the runtime/host here before closing either store.
-```
-
-Keep both stores open for the host's lifetime. The wrapper does not own or close
-either store. Use one wrapper per archive within a host; multiple processes writing
-the same archive require external coordination. Archive storage has its own data
-location and protection requirements even when checkpoints live in MongoDB or
-Postgres. This change does not backfill existing checkpoints.
-
-Checkpoint and archive writes are separate transactions. A checkpoint write failure
-adds no transcript text; an archive write failure propagates after the checkpoint
-has been saved. Retrying the same checkpoint write repairs the archive without
-duplicating message revisions. There is no automatic recovery job or cross-store
-rollback. History reset deletes each backend thread before its archive registration;
-partial failures retain registrations for retry, including after restart. A failed
-reset can therefore have deleted some history already. Backends must support
-idempotent `adelete_thread` for history reset. Synchronous graph operations and
-administrative copy/prune APIs are not supported by the wrapper.
+The echo runtime and unwrapped custom checkpointers do not support history tools or
+reset. See [custom checkpointer setup and recovery](docs/conversation-history.md)
+for configuring `ConversationSaver` with another checkpoint backend.
 
 ## Interrupt and Continue
 

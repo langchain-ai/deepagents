@@ -14,14 +14,12 @@ from langgraph.graph import END, START, MessagesState, StateGraph
 from deepagents_talon.archive import (
     CHUNK_SIZE,
     ArchiveScope,
-    SQLiteConversationArchive,
     conversation_tools,
 )
-from deepagents_talon.archive_saver import ConversationSaver
 from deepagents_talon.config import TalonConfig
 from deepagents_talon.host import TalonHost
 from deepagents_talon.interfaces import AgentRequest, ChannelMessage
-from deepagents_talon.runtime import DeepAgentRuntime
+from tests.archive_helpers import make_runtime, make_saver
 from tests.conftest import RecordingChannel
 
 WHATSAPP = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
@@ -42,17 +40,13 @@ async def _save(saver, session, text, *, scope=WHATSAPP, namespace=""):
 async def test_archive_persists_across_resets_and_isolates_chats(tmp_path):
     path = str(tmp_path / "history.sqlite")
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await _save(saver, "whatsapp:chat", "Remember the orchard")
         await _save(saver, "whatsapp:chat:talon-reset:1", "Plan the harvest")
         await _save(saver, "telegram:chat", "Telegram orchard", scope=TELEGRAM)
         await _save(saver, "whatsapp:other", "Other orchard", scope=OTHER)
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         hits = await saver.archive.entries(WHATSAPP, query="orchard")
         assert [hit["text"] for hit in hits] == ["Remember the orchard"]
         assert len(await saver.archive.entries(WHATSAPP)) == 2
@@ -63,9 +57,7 @@ async def test_archive_persists_across_resets_and_isolates_chats(tmp_path):
 
 async def test_long_transcripts_are_completely_readable_with_bounded_pages(tmp_path):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         content = "pears " * 2000
         await _save(saver, "whatsapp:chat", content)
         chunks = []
@@ -90,10 +82,7 @@ async def test_compaction_preserves_original_messages_without_duplicates(
     tmp_path, state_schema, backend
 ):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            backend(connection) if backend is AsyncSqliteSaver else backend(),
-            archive=SQLiteConversationArchive(connection),
-        )
+        saver = make_saver(connection, backend)
         builder = StateGraph(state_schema)
         builder.add_node("reply", lambda _: {"messages": [AIMessage("Noted", id="reply")]})
         builder.add_edge(START, "reply")
@@ -111,9 +100,7 @@ async def test_compaction_preserves_original_messages_without_duplicates(
 async def test_clear_removes_checkpoints_writes_and_archive_only_in_scope(tmp_path):
     path = str(tmp_path / "history.sqlite")
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         for session in ("whatsapp:chat", "whatsapp:chat:talon-reset:1"):
             config = await _save(saver, session, "old orchard")
             await saver.aput_writes(config, [("messages", [HumanMessage("pending")])], "task")
@@ -127,18 +114,14 @@ async def test_clear_removes_checkpoints_writes_and_archive_only_in_scope(tmp_pa
             async with connection.execute(f"SELECT thread_id FROM {table}") as cursor:  # noqa: S608  # Fixed table names.
                 assert all(row[0] == "telegram:chat" for row in await cursor.fetchall())
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         assert await saver.archive.entries(WHATSAPP, query="orchard") == []
         assert len(await saver.archive.entries(TELEGRAM)) == 1
 
 
 async def test_tools_enforce_scope_and_paginate_search(tmp_path):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await _save(saver, "one", "orchard one")
         await _save(saver, "two", "orchard two")
         await _save(saver, "secret", "orchard secret", scope=TELEGRAM)
@@ -185,18 +168,8 @@ async def test_host_new_recall_and_reset_all_history(tmp_path, monkeypatch, back
     config.ensure_home()
     whatsapp, telegram = RecordingChannel("whatsapp"), RecordingChannel("telegram")
     async with aiosqlite.connect(str(config.checkpoint_path)) as connection:
-        saver = ConversationSaver(
-            backend(connection) if backend is AsyncSqliteSaver else backend(),
-            archive=SQLiteConversationArchive(connection),
-        )
-        runtime = DeepAgentRuntime(
-            model="test:model",
-            checkpointer=saver,
-            assistant_dir=tmp_path,
-            include_web_tools=False,
-            skills=(),
-            memory=(),
-        )
+        saver = make_saver(connection, backend)
+        runtime = make_runtime(saver, tmp_path)
         host = TalonHost(config=config, agent=runtime, channels=[whatsapp, telegram])
         await host.start()
         try:
@@ -218,34 +191,9 @@ async def test_host_new_recall_and_reset_all_history(tmp_path, monkeypatch, back
             await host.stop()
 
 
-async def test_failed_archive_write_can_retry_without_duplicates(tmp_path, monkeypatch):
-    async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
-        await saver.archive.setup()
-
-        async def fail_index(*_args: object) -> None:
-            msg = "archive unavailable"
-            raise OSError(msg)
-
-        append = saver.archive._index_message
-        monkeypatch.setattr(saver.archive, "_index_message", fail_index)
-        with pytest.raises(OSError, match="archive unavailable"):
-            await _save(saver, "whatsapp:chat", "must not partially save")
-        assert await saver.aget({"configurable": {"thread_id": "whatsapp:chat"}}) is not None
-        assert await saver.archive.entries(WHATSAPP) == []
-        monkeypatch.setattr(saver.archive, "_index_message", append)
-        await _save(saver, "whatsapp:chat", "must not partially save")
-        await _save(saver, "whatsapp:chat", "must not partially save")
-        assert len(await saver.archive.entries(WHATSAPP)) == 1
-
-
 async def test_failed_archive_deletion_retains_registration_for_retry(tmp_path):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         config = await _save(saver, "whatsapp:chat", "keep orchard")
         await connection.execute(
             "CREATE TRIGGER fail_delete BEFORE DELETE ON conversation_chunks "
@@ -282,18 +230,8 @@ async def test_reset_cancels_active_turn_before_deleting_history(tmp_path, monke
     config.ensure_home()
     channel = RecordingChannel("whatsapp")
     async with aiosqlite.connect(str(config.checkpoint_path)) as connection:
-        saver = ConversationSaver(
-            backend(connection) if backend is AsyncSqliteSaver else backend(),
-            archive=SQLiteConversationArchive(connection),
-        )
-        runtime = DeepAgentRuntime(
-            model="test:model",
-            checkpointer=saver,
-            assistant_dir=tmp_path,
-            include_web_tools=False,
-            skills=(),
-            memory=(),
-        )
+        saver = make_saver(connection, backend)
+        runtime = make_runtime(saver, tmp_path)
         host = TalonHost(config=config, agent=runtime, channels=[channel])
         await host.start()
         try:
@@ -339,20 +277,10 @@ async def test_concurrent_channels_do_not_share_retrieval_scope(tmp_path, monkey
 
     monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", factory)
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            backend(connection) if backend is AsyncSqliteSaver else backend(),
-            archive=SQLiteConversationArchive(connection),
-        )
+        saver = make_saver(connection, backend)
         await _save(saver, "old-whatsapp", "whatsapp secret")
         await _save(saver, "old-telegram", "telegram secret", scope=TELEGRAM)
-        runtime = DeepAgentRuntime(
-            model="test:model",
-            checkpointer=saver,
-            assistant_dir=tmp_path,
-            include_web_tools=False,
-            skills=(),
-            memory=(),
-        )
+        runtime = make_runtime(saver, tmp_path)
         await runtime.start()
         try:
             results = await asyncio.gather(
@@ -374,9 +302,7 @@ async def test_concurrent_channels_do_not_share_retrieval_scope(tmp_path, monkey
 
 async def test_message_revisions_are_retained_without_checkpoint_duplicates(tmp_path):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await _save(saver, "whatsapp:chat", "Meet on Tuesday")
         await _save(saver, "whatsapp:chat", "Meet on Wednesday")
         await _save(saver, "whatsapp:chat", "Meet on Wednesday")
@@ -388,9 +314,7 @@ async def test_message_revisions_are_retained_without_checkpoint_duplicates(tmp_
 async def test_list_conversations_is_scoped_paginated_and_readable(tmp_path):
     path = str(tmp_path / "history.sqlite")
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         await _save(saver, "old", "orchard " * 2000)
         await _save(saver, "old", "edited orchard")
         await _save(saver, "old", "edited orchard")
@@ -399,9 +323,7 @@ async def test_list_conversations_is_scoped_paginated_and_readable(tmp_path):
         await _save(saver, "other", "other chat secret", scope=OTHER)
         await _save(saver, "empty", "")
     async with aiosqlite.connect(path) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         tools = {tool.name: tool for tool in conversation_tools(saver.archive, lambda: WHATSAPP)}
         listing = tools["list_conversations"]
         first = await listing.ainvoke({"limit": 1})
@@ -428,18 +350,14 @@ async def test_list_conversations_is_scoped_paginated_and_readable(tmp_path):
 @pytest.mark.parametrize(("after", "limit"), [(-1, 5), (0, 0), (0, 21)])
 async def test_list_conversations_rejects_invalid_pagination(tmp_path, after, limit):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         with pytest.raises(ValueError, match="limit"):
             await saver.archive.conversations(WHATSAPP, after=after, limit=limit)
 
 
 async def test_listing_counts_messages_and_excludes_its_own_tool_results(tmp_path):
     async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = ConversationSaver(
-            AsyncSqliteSaver(connection), archive=SQLiteConversationArchive(connection)
-        )
+        saver = make_saver(connection)
         checkpoint = empty_checkpoint()
         checkpoint["channel_values"] = {
             "messages": [

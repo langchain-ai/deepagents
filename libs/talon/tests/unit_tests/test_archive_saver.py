@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import aiosqlite
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 from deepagents_talon.archive import ArchiveScope, SQLiteConversationArchive
 from deepagents_talon.archive_saver import ConversationSaver
@@ -103,28 +105,32 @@ async def test_failed_checkpoint_does_not_archive_uncommitted_messages(tmp_path,
         assert len(await archive.entries(SCOPE)) == 1
 
 
-async def test_archive_failure_retries_exact_checkpoint_after_reopen(tmp_path, monkeypatch):
-    backend = InMemorySaver()
-    path = str(tmp_path / "archive.sqlite")
-    checkpoint = _checkpoint()
-    async with SQLiteConversationArchive.from_conn_string(path) as archive:
-        saver = ConversationSaver(backend, archive=archive)
+@pytest.mark.parametrize("backend", [InMemorySaver, AsyncSqliteSaver])
+async def test_archive_failure_retries_exact_checkpoint_after_reopen(
+    tmp_path, monkeypatch, backend
+):
+    async with aiosqlite.connect(str(tmp_path / "checkpoints.sqlite")) as connection:
+        backend = backend(connection) if backend is AsyncSqliteSaver else backend()
+        path = str(tmp_path / "archive.sqlite")
+        checkpoint = _checkpoint()
+        async with SQLiteConversationArchive.from_conn_string(path) as archive:
+            saver = ConversationSaver(backend, archive=archive)
 
-        async def fail_message(*_args: object):
-            msg = "archive unavailable"
-            raise OSError(msg)
+            async def fail_message(*_args: object):
+                msg = "archive unavailable"
+                raise OSError(msg)
 
-        monkeypatch.setattr(archive, "_index_message", fail_message)
-        with pytest.raises(OSError, match="archive unavailable"):
-            await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
-        assert await backend.aget(_config())
-        assert await archive.entries(SCOPE) == []
-    async with SQLiteConversationArchive.from_conn_string(path) as archive:
-        saver = ConversationSaver(backend, archive=archive)
-        for _ in range(2):
-            await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
-        assert len(await archive.entries(SCOPE)) == 1
-        assert len([item async for item in saver.alist(_config())]) == 1
+            monkeypatch.setattr(archive, "_index_message", fail_message)
+            with pytest.raises(OSError, match="archive unavailable"):
+                await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
+            assert await backend.aget(_config())
+            assert await archive.entries(SCOPE) == []
+        async with SQLiteConversationArchive.from_conn_string(path) as archive:
+            saver = ConversationSaver(backend, archive=archive)
+            for _ in range(2):
+                await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
+            assert len(await archive.entries(SCOPE)) == 1
+            assert len([item async for item in saver.alist(_config())]) == 1
 
 
 async def test_unscoped_and_nested_writes_do_not_enter_archive(tmp_path):

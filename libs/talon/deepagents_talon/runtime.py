@@ -229,7 +229,8 @@ class DeepAgentRuntime:
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
             is supplied, `AGENTS.md` is loaded from that directory.
         subagents: Optional subagent specs available to the main agent.
-        load_subagents: Optional callback reading configured subagents at turn boundaries.
+        load_subagents: Optional callback reading configured subagents at startup
+            and when explicitly reloaded.
         assistant_dir: Materialized assistant directory containing `AGENTS.md`,
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
@@ -410,10 +411,6 @@ class DeepAgentRuntime:
             raise RuntimeError(msg)
 
         await self._refresh_runtime_tools()
-        try:
-            await self.reload_subagent_configuration()
-        except Exception:  # noqa: BLE001  # a failed reload must leave the current graph usable
-            logger.warning("Subagent reload failed; keeping the previous configuration")
         graph_token = self._invocation_graph.set(self._graph)
         pending = self.background.results(request.conversation_id)
         pending_token = self._pending_results.set(pending)
@@ -477,7 +474,9 @@ class DeepAgentRuntime:
         @tool(
             "reload_subagent_configuration",
             description=(
-                "Validate and reload Talon's subagent definitions after editing them. "
+                "Call after adding, editing, or deleting Talon's local or remote subagent "
+                "definitions to validate and reload them. "
+                "Definitions are not reloaded automatically. "
                 "Definitions activate next turn; running local tasks keep their original graph."
             ),
         )

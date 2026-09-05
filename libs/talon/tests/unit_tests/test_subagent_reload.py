@@ -18,7 +18,10 @@ def _write_agent(path, prompt):
 
 def _graph_factory(entered=None, release=None):
     def create(**kwargs: object):
-        names = ",".join(agent["system_prompt"] for agent in kwargs["subagents"] or [])
+        names = ",".join(
+            agent.get("system_prompt", agent.get("graph_id", ""))
+            for agent in kwargs["subagents"] or []
+        )
 
         async def reply(state):
             if entered is not None and names == "old":
@@ -48,18 +51,55 @@ async def test_reload_add_edit_delete_and_failure_preserve_sqlite_history(tmp_pa
             memory=(),
         )
         await runtime.start()
+        reload_tool = runtime._subagent_reload_tool()
         try:
             assert (await runtime.invoke(AgentRequest("chat", "one"))).text == "none:1"
             _write_agent(path, "old")
-            assert (await runtime.invoke(AgentRequest("chat", "two"))).text == "old:3"
+            assert (await runtime.invoke(AgentRequest("chat", "two"))).text == "none:3"
+            assert await reload_tool.ainvoke({}) == {"status": "reloaded", "available": "next_turn"}
+            assert (await runtime.invoke(AgentRequest("chat", "three"))).text == "old:5"
             _write_agent(path, "new")
-            assert (await runtime.invoke(AgentRequest("chat", "three"))).text == "new:5"
+            assert (await runtime.invoke(AgentRequest("chat", "four"))).text == "old:7"
+            await reload_tool.ainvoke({})
+            assert (await runtime.invoke(AgentRequest("chat", "five"))).text == "new:9"
             path.write_text("unfinished edit")
-            assert (await runtime.invoke(AgentRequest("chat", "four"))).text == "new:7"
+            assert (await reload_tool.ainvoke({}))["status"] == "failed"
+            assert (await runtime.invoke(AgentRequest("chat", "six"))).text == "new:11"
             path.unlink()
-            assert (await runtime.invoke(AgentRequest("chat", "five"))).text == "none:9"
+            assert (await runtime.invoke(AgentRequest("chat", "seven"))).text == "new:13"
+            await reload_tool.ainvoke({})
+            assert (await runtime.invoke(AgentRequest("chat", "eight"))).text == "none:15"
         finally:
             await runtime.stop()
+
+
+async def test_remote_loader_runs_only_at_startup_and_explicit_reload(monkeypatch):
+    definitions = [{"name": "remote", "description": "Research", "graph_id": "old"}]
+    loads = []
+
+    def load_subagents():
+        loads.append(True)
+        return definitions
+
+    monkeypatch.setattr("deepagents_talon.runtime.create_deep_agent", _graph_factory())
+    runtime = DeepAgentRuntime(
+        model="test:model",
+        load_subagents=load_subagents,
+        include_web_tools=False,
+        skills=(),
+        memory=(),
+    )
+    await runtime.start()
+    try:
+        assert (await runtime.invoke(AgentRequest("chat", "one"))).text == "old:1"
+        definitions[0]["graph_id"] = "new"
+        assert (await runtime.invoke(AgentRequest("chat", "two"))).text == "old:3"
+        assert len(loads) == 1
+        await runtime._subagent_reload_tool().ainvoke({})
+        assert (await runtime.invoke(AgentRequest("chat", "three"))).text == "new:5"
+        assert len(loads) == 2
+    finally:
+        await runtime.stop()
 
 
 async def test_reload_keeps_active_turn_on_original_graph(tmp_path, monkeypatch):

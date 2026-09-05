@@ -218,6 +218,11 @@ the materialized local assistant.
 
 ## Background Subagents
 
+Talon reloads local `agents/<name>/AGENTS.md` definitions and remote
+`[async_subagents]` configuration before each turn. The main agent can also call
+`reload_subagent_configuration` after editing them. Invalid edits retain the last
+valid configuration; running subagents keep their original configuration.
+
 `task` launches local subagents and `start_async_task` launches remote subagents.
 Both return immediately. The user can continue chatting while the main agent uses
 `list_subagents` to inspect work and `cancel_subagent` to cancel it. When work

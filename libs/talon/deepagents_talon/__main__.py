@@ -257,7 +257,6 @@ async def _agent_runtime(
     if config.model is None:
         return EchoAgentRuntime()
 
-    async_subagents = tuple(load_async_subagents())
     mcp_provider = MCPToolProvider(config)
     mcp = await mcp_provider.load()
     for server in mcp.servers:
@@ -271,7 +270,7 @@ async def _agent_runtime(
         refresh_tools=mcp_provider.refresh_if_needed,
         reload_tools=mcp_provider.reload,
         assistant_dir=config.manifest_dir,
-        subagents=async_subagents or None,
+        load_subagents=lambda: load_async_subagents(strict=True),
         cron_store=cron_store,
         interrupt_on=interrupt_on_with_env_overlay(None, env),
         checkpointer=checkpointer,

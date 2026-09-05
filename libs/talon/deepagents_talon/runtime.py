@@ -27,6 +27,7 @@ from deepagents.middleware.summarization import (
 from deepagents.profiles.provider.provider_profiles import apply_provider_profile
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
@@ -228,6 +229,7 @@ class DeepAgentRuntime:
         system_prompt: Optional system prompt. When omitted and `assistant_dir`
             is supplied, `AGENTS.md` is loaded from that directory.
         subagents: Optional subagent specs available to the main agent.
+        load_subagents: Optional callback reading configured subagents at turn boundaries.
         assistant_dir: Materialized assistant directory containing `AGENTS.md`,
             `skills/`, and optional manifest memory metadata.
         cron_store: Optional cron store. When supplied, cron management tools
@@ -261,6 +263,8 @@ class DeepAgentRuntime:
         | None = None,
         system_prompt: str | None = None,
         subagents: Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
+        load_subagents: Callable[[], Sequence[SubAgent | CompiledSubAgent | AsyncSubAgent]]
+        | None = None,
         assistant_dir: Path | None = None,
         cron_store: CronJobStore | None = None,
         backend: BackendProtocol | None = None,
@@ -294,6 +298,7 @@ class DeepAgentRuntime:
         self.reload_tools = reload_tools
         self.system_prompt = system_prompt
         self.subagents = tuple(subagents) if subagents is not None else None
+        self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
         self.cron_store = cron_store
@@ -327,8 +332,10 @@ class DeepAgentRuntime:
     def _create_graph(
         self,
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
+        *,
+        subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] | None = None,
     ) -> object:
-        resolved = self._resolved_subagents
+        resolved = self._resolved_subagents if subagents is None else subagents
         tools = self._build_tools(runtime_tools)
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
@@ -403,6 +410,10 @@ class DeepAgentRuntime:
             raise RuntimeError(msg)
 
         await self._refresh_runtime_tools()
+        try:
+            await self.reload_subagent_configuration()
+        except Exception:  # noqa: BLE001  # a failed reload must leave the current graph usable
+            logger.warning("Subagent reload failed; keeping the previous configuration")
         graph_token = self._invocation_graph.set(self._graph)
         pending = self.background.results(request.conversation_id)
         pending_token = self._pending_results.set(pending)
@@ -452,6 +463,36 @@ class DeepAgentRuntime:
         self.tools = replacement
         self._graph = graph
 
+    async def reload_subagent_configuration(self) -> None:
+        """Activate validated definitions for subsequent turns, preserving active graphs."""
+        async with self._tools_lock:
+            replacement = self._resolve_subagents(strict=True)
+            if replacement == self._resolved_subagents:
+                return
+            graph = self._create_graph(subagents=replacement)
+            self._resolved_subagents = replacement
+            self._graph = graph
+
+    def _subagent_reload_tool(self) -> BaseTool:
+        @tool(
+            "reload_subagent_configuration",
+            description=(
+                "Validate and reload Talon's subagent definitions after editing them. "
+                "Definitions activate next turn; running local tasks keep their original graph."
+            ),
+        )
+        async def reload_subagent_configuration() -> dict[str, str]:
+            try:
+                await self.reload_subagent_configuration()
+            except Exception:  # noqa: BLE001  # report reload failure without leaking config values
+                return {
+                    "status": "failed",
+                    "message": "Invalid configuration; previous agents retained",
+                }
+            return {"status": "reloaded", "available": "next_turn"}
+
+        return reload_subagent_configuration
+
     def _activity_callback(self, request: AgentRequest) -> AgentActivityCallback | None:
         if not agent_activity_logging_enabled(self.env):
             return None
@@ -462,6 +503,8 @@ class DeepAgentRuntime:
         runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
     ) -> list[BaseTool | Callable[..., object]]:
         tools: list[BaseTool | Callable[..., object]] = [current_time]
+        if self.assistant_dir is not None or self.load_subagents is not None:
+            tools.append(self._subagent_reload_tool())
         if self.include_web_tools:
             tools.extend([fetch_url, web_search])
         if self.cron_store is not None:
@@ -650,17 +693,29 @@ class DeepAgentRuntime:
                 sources.append(path)
         return sources or None
 
-    def _resolve_subagents(self) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
+    def _resolve_subagents(
+        self, *, strict: bool = False
+    ) -> list[SubAgent | CompiledSubAgent | AsyncSubAgent]:
         resolved: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         if self.assistant_dir is not None:
-            resolved.extend(_load_local_subagents(self.assistant_dir))
+            resolved.extend(_load_local_subagents(self.assistant_dir, strict=strict))
         if self.subagents is not None:
             resolved.extend(self.subagents)
+        if self.load_subagents is not None:
+            resolved.extend(self.load_subagents())
         names = [agent["name"] for agent in resolved]
         if len(names) != len(set(names)):
             msg = "Subagent names must be unique across local and remote definitions"
             raise ValueError(msg)
-        return resolved
+        snapshots = []
+        for agent in resolved:
+            snapshot = agent.copy()
+            if "graph_id" in snapshot:
+                remote = cast("AsyncSubAgent", snapshot)
+                if "headers" in remote:
+                    remote["headers"] = remote["headers"].copy()
+            snapshots.append(snapshot)
+        return snapshots
 
     def _resolve_memory(self) -> list[str] | None:
         if self.memory is not None:
@@ -1057,7 +1112,7 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
     return paths
 
 
-def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
+def _load_local_subagents(assistant_dir: Path, *, strict: bool = False) -> list[SubAgent]:
     agents_dir = _local_subagents_dir(assistant_dir)
     if not agents_dir.is_dir():
         return []
@@ -1067,6 +1122,9 @@ def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
         if not directory.is_dir() or not path.is_file():
             continue
         subagent = _parse_local_subagent(path, fallback_name=directory.name)
+        if strict and (subagent is None or subagent["name"] in subagents):
+            msg = "Invalid or duplicate local subagent definition"
+            raise ValueError(msg)
         if subagent is not None:
             subagents[subagent["name"]] = subagent
     return list(subagents.values())

@@ -33,7 +33,6 @@ When returning updates:
 """
 
 
-
 def prepare_subagent_state(
     state: Mapping[str, Any],
     *,
@@ -47,6 +46,7 @@ def prepare_subagent_state(
     """
     excluded_keys = _EXCLUDED_STATE_KEYS | private_state_keys
     return {key: value for key, value in state.items() if key not in excluded_keys}
+
 
 logger = logging.getLogger(__name__)
 

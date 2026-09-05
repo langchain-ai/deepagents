@@ -18,7 +18,7 @@ from typing import Annotated, Any, Literal, NotRequired, TypedDict
 
 from langchain.agents.middleware.types import AgentMiddleware, AgentState, ContextT, ModelRequest, ModelResponse, ResponseT, TracePolicy, omit_payload
 from langchain.tools import ToolRuntime
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.types import Command
 from langgraph_sdk import get_client, get_sync_client
@@ -265,7 +265,7 @@ def _build_start_tool(
             client = clients.get_sync(subagent_type)
             thread = client.threads.create()
             subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
-            subagent_state["messages"] = [HumanMessage(content=description)]
+            subagent_state["messages"] = [{"role": "user", "content": description}]
             run = client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],
@@ -307,7 +307,7 @@ def _build_start_tool(
             client = clients.get_async(subagent_type)
             thread = await client.threads.create()
             subagent_state = prepare_subagent_state(runtime.state, private_state_keys=private_state_keys)
-            subagent_state["messages"] = [HumanMessage(content=description)]
+            subagent_state["messages"] = [{"role": "user", "content": description}]
             run = await client.runs.create(
                 thread_id=thread["thread_id"],
                 assistant_id=spec["graph_id"],

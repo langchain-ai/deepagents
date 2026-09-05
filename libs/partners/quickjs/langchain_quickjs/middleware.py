@@ -8,14 +8,12 @@ from collections.abc import Awaitable, Callable, Mapping
 from typing import TYPE_CHECKING, Annotated, Any, Literal, NotRequired
 
 from deepagents.middleware._utils import append_to_system_message
-from deepagents.middleware.subagents import _FORKED_CONTEXT_KEY
 from langchain.agents.middleware.types import (
     AgentMiddleware,
     AgentState,
     ContextT,
     ModelRequest,
     ModelResponse,
-    OmitFromSchema,
     PrivateStateAttr,
     ResponseT,
     TracePolicy,
@@ -67,10 +65,7 @@ PersistenceMode = Literal["thread", "turn", "call"]
 class REPLState(AgentState):
     """State schema for `CodeInterpreterMiddleware`."""
 
-    _quickjs_slot_id: NotRequired[
-        Annotated[str, OmitFromSchema(input=False, output=True)]
-        | Annotated[str, PrivateStateAttr]
-    ]
+    _quickjs_slot_id: NotRequired[Annotated[str, PrivateStateAttr]]
     _quickjs_snapshot_payload: NotRequired[
         Annotated[
             bytes,
@@ -376,42 +371,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Build a private state update with a fresh slot id when needed."""
         return {"_quickjs_slot_id": _new_slot_id()}
 
-    def _fork_slot_update(self, source_slot_id: str) -> dict[str, str]:
-        """Clone an inherited REPL slot into a fresh fork-local slot."""
-        slot_id = _new_slot_id()
-        source = self._registry.get_if_exists(source_slot_id)
-        if source is None:
-            return {"_quickjs_slot_id": slot_id}
-        try:
-            payload = source.create_snapshot()
-            self._registry.get(slot_id).restore_snapshot(payload, inject_globals=True)
-        except Exception:  # noqa: BLE001  # best-effort fork clone path
-            logger.warning(
-                "Failed to clone QuickJS snapshot for slot_id=%s",
-                source_slot_id,
-                exc_info=True,
-            )
-        return {"_quickjs_slot_id": slot_id}
-
-    async def _afork_slot_update(self, source_slot_id: str) -> dict[str, str]:
-        """Async variant of `_fork_slot_update`."""
-        slot_id = _new_slot_id()
-        source = self._registry.get_if_exists(source_slot_id)
-        if source is None:
-            return {"_quickjs_slot_id": slot_id}
-        try:
-            payload = await source.acreate_snapshot()
-            await self._registry.get(slot_id).arestore_snapshot(
-                payload, inject_globals=True
-            )
-        except Exception:  # noqa: BLE001  # best-effort fork clone path
-            logger.warning(
-                "Failed to clone QuickJS snapshot for slot_id=%s",
-                source_slot_id,
-                exc_info=True,
-            )
-        return {"_quickjs_slot_id": slot_id}
-
     def _snapshot_authenticated(
         self, payload: bytes, state: Mapping[str, object]
     ) -> bool:
@@ -451,12 +410,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Ensure a private REPL slot exists and restore snapshot bytes."""
         slot_id = state.get("_quickjs_slot_id")
         update: dict[str, Any] | None = None
-        if (
-            state.get(_FORKED_CONTEXT_KEY) is True
-            and isinstance(slot_id, str)
-            and slot_id
-        ):
-            return self._fork_slot_update(slot_id)
         if not isinstance(slot_id, str) or not slot_id:
             update = self._slot_update_for_runtime()
             slot_id = update["_quickjs_slot_id"]
@@ -497,12 +450,6 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
         """Async variant of `before_agent` snapshot restore."""
         slot_id = state.get("_quickjs_slot_id")
         update: dict[str, Any] | None = None
-        if (
-            state.get(_FORKED_CONTEXT_KEY) is True
-            and isinstance(slot_id, str)
-            and slot_id
-        ):
-            return await self._afork_slot_update(slot_id)
         if not isinstance(slot_id, str) or not slot_id:
             update = self._slot_update_for_runtime()
             slot_id = update["_quickjs_slot_id"]

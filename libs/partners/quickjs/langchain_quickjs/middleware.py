@@ -548,7 +548,7 @@ class CodeInterpreterMiddleware(AgentMiddleware[REPLState, ContextT, ResponseT])
             self_tool_name=self._tool_name,
         )
         prompt = self._base_prompt(ptc_attached=bool(exposed)) + subagent_section
-        slot_id = self._slot_id(cast("REPLState", getattr(request, "state", {})))
+        slot_id = self._slot_id(getattr(request, "state", {}))
         repl = self._registry.get(slot_id)
         repl.install_tools(exposed)
         self._ptc_tools_by_slot[slot_id] = tuple(exposed)

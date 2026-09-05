@@ -4198,6 +4198,7 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
                     ],
                 ),
                 AIMessage(content="Recovered."),
+                AIMessage(content="Still recovered."),
             ]
         )
     )
@@ -4221,6 +4222,111 @@ def test_invalid_tool_call_patched_on_next_turn() -> None:
 
     # Final state must also expose the patched ToolMessage.
     assert any(isinstance(m, ToolMessage) and m.tool_call_id == "call_truncated" for m in result["messages"])
+
+
+def test_invalid_tool_call_recovers_in_same_turn() -> None:
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_malformed",
+                            "name": "search",
+                            "args": '{"query": "weath',
+                            "error": "Unterminated string at line 1 column 17",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=fake_model)
+
+    result = agent.invoke({"messages": [HumanMessage(content="Search for weather")]})
+
+    assert result["messages"][-1].content == "Recovered."
+    synthetic = next(
+        (m for m in fake_model.call_history[1]["messages"] if isinstance(m, ToolMessage)),
+        None,
+    )
+    assert synthetic is not None
+    assert synthetic.tool_call_id == "call_malformed"
+    assert synthetic.status == "error"
+
+
+def test_mixed_valid_and_invalid_tool_calls_execute_valid_call() -> None:
+    @tool
+    def echo(value: str) -> str:
+        """Echo a value."""
+        return value
+
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "call_valid", "name": "echo", "args": {"value": "weather"}}],
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_malformed",
+                            "name": "echo",
+                            "args": '{"value":',
+                            "error": "Unexpected end of JSON input",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=fake_model, tools=[echo])
+
+    result = agent.invoke({"messages": [HumanMessage(content="Call echo")]})
+
+    assert result["messages"][-1].content == "Recovered."
+    tool_messages = [m for m in fake_model.call_history[1]["messages"] if isinstance(m, ToolMessage)]
+    assert {message.tool_call_id for message in tool_messages} == {"call_valid", "call_malformed"}
+    assert next(message for message in tool_messages if message.tool_call_id == "call_valid").content == "weather"
+    assert next(message for message in tool_messages if message.tool_call_id == "call_malformed").status == "error"
+
+
+async def test_invalid_tool_call_recovers_in_same_turn_async() -> None:
+    fake_model = FakeChatModelWithHistory(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    invalid_tool_calls=[
+                        {
+                            "id": "call_malformed",
+                            "name": "search",
+                            "args": '{"query": "weath',
+                            "error": "Unterminated string at line 1 column 17",
+                            "type": "invalid_tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Recovered."),
+            ]
+        )
+    )
+    agent = create_deep_agent(model=fake_model)
+
+    result = await agent.ainvoke({"messages": [HumanMessage(content="Search for weather")]})
+
+    assert result["messages"][-1].content == "Recovered."
+    synthetic = next(
+        (m for m in fake_model.call_history[1]["messages"] if isinstance(m, ToolMessage)),
+        None,
+    )
+    assert synthetic is not None
+    assert synthetic.tool_call_id == "call_malformed"
+    assert synthetic.status == "error"
 
 
 _OVERFLOW_INPUT_CHAR_THRESHOLD = 50_000

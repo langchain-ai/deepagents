@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
+import yaml
 from deepagents import create_deep_agent
 from deepagents.backends import LocalShellBackend
 from deepagents.middleware.patch_tool_calls import PatchToolCallsMiddleware
@@ -169,7 +170,6 @@ _CHANNEL_AUTO_DENY_MESSAGE = (
     "Tool approval is unavailable on this channel; skipped the gated tool call."
 )
 _INTERRUPTED_MESSAGE = "[SYSTEM] Task interrupted by user. Previous operation was cancelled."
-_LOCAL_SUBAGENT_NAME_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 
 _CRON_ORIGIN: contextvars.ContextVar[CronOrigin | None] = contextvars.ContextVar(
     "talon_cron_origin",
@@ -1028,75 +1028,78 @@ def _manifest_memory_paths(assistant_dir: Path) -> list[str]:
 
 def _load_local_subagents(assistant_dir: Path) -> list[SubAgent]:
     agents_dir = _local_subagents_dir(assistant_dir)
-    if agents_dir is None:
+    if not agents_dir.is_dir():
         return []
-    subagents: list[SubAgent] = []
-    for child in sorted(agents_dir.iterdir(), key=lambda item: item.name):
-        if not child.is_dir():
+    subagents: dict[str, SubAgent] = {}
+    for directory in sorted(agents_dir.iterdir(), key=lambda path: path.name):
+        path = directory / "AGENTS.md"
+        if not directory.is_dir() or not path.is_file():
             continue
-        path = child / "AGENTS.md"
-        if not path.is_file():
-            continue
-        if not _valid_local_subagent_name(child.name):
-            logger.warning(
-                "Skipping Talon subagent prompt from %s: unsafe subagent name %r",
-                path,
-                child.name,
-            )
-            continue
-        try:
-            text = path.read_text(encoding="utf-8")
-        except OSError:
-            logger.warning("Could not read Talon subagent prompt from %s", path, exc_info=True)
-            continue
-        description, system_prompt, model = _parse_local_subagent_prompt(text, child.name)
-        subagent: SubAgent = {
-            "name": child.name,
-            "description": description,
-            "system_prompt": system_prompt,
-        }
-        if model is not None:
-            subagent["model"] = model
-        subagents.append(subagent)
-    return subagents
+        subagent = _parse_local_subagent(path, fallback_name=directory.name)
+        if subagent is not None:
+            subagents[subagent["name"]] = subagent
+    return list(subagents.values())
 
 
-def _local_subagents_dir(assistant_dir: Path) -> Path | None:
-    local = assistant_dir / "agents"
-    if local.is_dir():
-        return local
-    sibling = assistant_dir.parent / "agents"
-    if sibling.is_dir():
-        return sibling
-    return None
-
-
-def _valid_local_subagent_name(name: str) -> bool:
-    return _LOCAL_SUBAGENT_NAME_PATTERN.fullmatch(name) is not None and name not in {".", ".."}
-
-
-def _parse_local_subagent_prompt(text: str, name: str) -> tuple[str, str, str | None]:
-    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", text, re.DOTALL)
+def _parse_local_subagent(path: Path, *, fallback_name: str) -> SubAgent | None:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Skipping Talon subagent %s: could not read file (%s)", path, exc)
+        return None
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n?(.*)$", content, re.DOTALL)
     if match is None:
-        return _default_subagent_description(name), text, None
-    frontmatter = match.group(1)
-    description = _frontmatter_value(frontmatter, "description") or _default_subagent_description(
-        name
+        logger.warning("Skipping Talon subagent %s: missing YAML frontmatter", path)
+        return None
+    try:
+        frontmatter = yaml.safe_load(match.group(1))
+    except yaml.YAMLError:
+        logger.warning("Skipping Talon subagent %s: invalid YAML frontmatter", path)
+        return None
+    return _subagent_from_frontmatter(path, frontmatter, match.group(2), fallback_name)
+
+
+def _subagent_from_frontmatter(
+    path: Path, frontmatter: object, prompt: str, fallback_name: str
+) -> SubAgent | None:
+    if not isinstance(frontmatter, dict):
+        logger.warning("Skipping Talon subagent %s: frontmatter must be a mapping", path)
+        return None
+    metadata = _normalize_subagent_metadata(
+        frontmatter.get("name", fallback_name),
+        frontmatter.get("description"),
+        frontmatter.get("model"),
     )
-    return description, match.group(2).lstrip(), _frontmatter_value(frontmatter, "model_id")
+    if metadata is None:
+        logger.warning("Skipping Talon subagent %s: invalid name, description, or model", path)
+        return None
+    name, description, model = metadata
+    subagent: SubAgent = {
+        "name": name,
+        "description": description,
+        "system_prompt": prompt.strip(),
+        "mode": "fork",
+    }
+    if model:
+        subagent["model"] = model
+    return subagent
 
 
-def _frontmatter_value(frontmatter: str, field: str) -> str | None:
-    for line in frontmatter.splitlines():
-        key, separator, value = line.partition(":")
-        if separator and key.strip() == field:
-            parsed = value.strip().strip("\"'")
-            return parsed or None
-    return None
+def _normalize_subagent_metadata(
+    name: object, description: object, model: object
+) -> tuple[str, str, str | None] | None:
+    if not isinstance(name, str) or not name.strip():
+        return None
+    if not isinstance(description, str) or not description.strip():
+        return None
+    if model is not None and not isinstance(model, str):
+        return None
+    return name.strip(), description.strip(), model
 
 
-def _default_subagent_description(name: str) -> str:
-    return f"Use the {name} subagent."
+def _local_subagents_dir(assistant_dir: Path) -> Path:
+    local = assistant_dir / "agents"
+    return local if local.is_dir() else assistant_dir.parent / "agents"
 
 
 def _prepare_memory_path(raw: str) -> str | None:

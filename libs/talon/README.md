@@ -206,11 +206,15 @@ imports into `~/.deepagents/crowbar/`. Pass `--assistant-id <id>` to select a
 different assistant for the import, or `--target-dir <dir>` to write all
 imported files under an explicit directory.
 
-The importer writes Fleet prompts, skills, and subagent prompts. Fleet
-`tools.json` and `config.json` are ignored and are not copied into the Talon agent
-directory. Talon does not support the old Fleet direct-run startup path or its
-environment variables; import the zip first, then run Talon against the
-materialized local assistant.
+The importer writes Fleet prompts, skills, and subagent prompts. Talon loads local
+subagents from `agents/<name>/AGENTS.md` using dcode's YAML frontmatter format:
+`description` is required, `name` defaults to the directory name, and `model` is
+optional. Local subagents use fork mode so they inherit the current conversation and
+runtime policy; Talon also provides the standard `general-purpose` subagent unless the
+assistant defines one. Fleet `tools.json` and `config.json` are ignored and are not
+copied into the Talon agent directory. Talon does not support the old Fleet direct-run
+startup path or its environment variables; import the zip first, then run Talon against
+the materialized local assistant.
 
 ## Cron Schedules
 

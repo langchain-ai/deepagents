@@ -342,8 +342,12 @@ def _get_context(request: ModelRequest) -> CLIContextSchema | None:
     return CLIContextSchema.from_payload(runtime.context)
 
 
-def _model_spec_from_model(model: BaseChatModel) -> str | None:
+def _model_spec_from_model(
+    model: BaseChatModel, model_result: ModelResult | None = None
+) -> str | None:
     """Return a resumable `provider:model` spec for a model object."""
+    if model_result is not None:
+        return f"{model_result.provider}:{model_result.model_name}"
     model_name = get_model_identifier(model)
     from deepagents_code.config import runtime_state
 
@@ -517,6 +521,7 @@ def _apply_overrides(
     openai_prompt_cache_key: bool,
     cli_max_retries: int | None,
     strict_model_resolution: bool = False,
+    construction_model_result: ModelResult | None = None,
 ) -> _ResolvedModelRequest:
     """Apply model/param overrides and return checkpoint persistence metadata.
 
@@ -532,6 +537,7 @@ def _apply_overrides(
             opt-out, threaded through to `_build_overrides`.
         cli_max_retries: Explicit CLI retry count retained across model switches.
         strict_model_resolution: Whether model construction failures should propagate.
+        construction_model_result: Construction-time workspace model metadata.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -543,7 +549,9 @@ def _apply_overrides(
     """
     ctx = _get_context(request)
     if ctx is None:
-        return _ResolvedModelRequest(request, _model_spec_from_model(request.model))
+        return _ResolvedModelRequest(
+            request, _model_spec_from_model(request.model, construction_model_result)
+        )
 
     model_result = None
     model = ctx.model
@@ -578,7 +586,7 @@ def _apply_overrides(
             # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
-                _model_spec_from_model(request.model),
+                _model_spec_from_model(request.model, construction_model_result),
                 model_params_known=False,
             )
 
@@ -600,6 +608,7 @@ async def _apply_overrides_async(
     openai_prompt_cache_key: bool,
     cli_max_retries: int | None,
     strict_model_resolution: bool = False,
+    construction_model_result: ModelResult | None = None,
 ) -> _ResolvedModelRequest:
     """Async variant of `_apply_overrides` that offloads model construction.
 
@@ -609,6 +618,7 @@ async def _apply_overrides_async(
             opt-out, threaded through to `_build_overrides`.
         cli_max_retries: Explicit CLI retry count retained across model switches.
         strict_model_resolution: Whether model construction failures should propagate.
+        construction_model_result: Construction-time workspace model metadata.
 
     Returns:
         The request to send downstream plus the actual model spec and user-supplied
@@ -620,7 +630,9 @@ async def _apply_overrides_async(
     """
     ctx = _get_context(request)
     if ctx is None:
-        return _ResolvedModelRequest(request, _model_spec_from_model(request.model))
+        return _ResolvedModelRequest(
+            request, _model_spec_from_model(request.model, construction_model_result)
+        )
 
     model_result = None
     model = ctx.model
@@ -659,7 +671,7 @@ async def _apply_overrides_async(
             # permanent, false "the model changed".
             return _ResolvedModelRequest(
                 request,
-                _model_spec_from_model(request.model),
+                _model_spec_from_model(request.model, construction_model_result),
                 model_params_known=False,
             )
 
@@ -839,6 +851,8 @@ class ConfigurableModelMiddleware(AgentMiddleware):
         openai_prompt_cache_key: bool | None = None,
         cli_max_retries: int | None = None,
         strict_model_resolution: bool = False,
+        environ: Mapping[str, str] | None = None,
+        model_result: ModelResult | None = None,
     ) -> None:
         """Initialize the middleware.
 
@@ -861,8 +875,12 @@ class ConfigurableModelMiddleware(AgentMiddleware):
                 runtime model switches.
             strict_model_resolution: Whether invalid runtime model overrides should
                 fail the call instead of falling back to the construction-time model.
+            environ: Workspace environment retained for lazy model switches.
+            model_result: Construction-time workspace model metadata.
         """
         self._persist_model_state = persist_model_state
+        self._environ = environ
+        self._model_result = model_result
         self._cli_max_retries = cli_max_retries
         self._strict_model_resolution = strict_model_resolution
         self._openai_prompt_cache_key = (
@@ -882,24 +900,28 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = _apply_overrides(
-            request,
-            openai_prompt_cache_key=self._openai_prompt_cache_key,
-            cli_max_retries=self._cli_max_retries,
-            strict_model_resolution=self._strict_model_resolution,
-        )
-        request_started_at = _utc_now_iso()
-        response = handler(resolved.request)
-        if not self._persist_model_state:
-            return response
-        cache_endpoint = (
-            _cache_endpoint_identity(resolved.model_spec, resolved.model_params)
-            if resolved.model_params is not None
-            else _cache_endpoint_identity(resolved.model_spec)
-        )
-        cache_params = _effective_cache_params(
-            resolved.model_spec, resolved.model_params
-        )
+        from deepagents_code.config import use_environment
+
+        with use_environment(self._environ):
+            resolved = _apply_overrides(
+                request,
+                openai_prompt_cache_key=self._openai_prompt_cache_key,
+                cli_max_retries=self._cli_max_retries,
+                strict_model_resolution=self._strict_model_resolution,
+                construction_model_result=self._model_result,
+            )
+            request_started_at = _utc_now_iso()
+            response = handler(resolved.request)
+            if not self._persist_model_state:
+                return response
+            cache_endpoint = (
+                _cache_endpoint_identity(resolved.model_spec, resolved.model_params)
+                if resolved.model_params is not None
+                else _cache_endpoint_identity(resolved.model_spec)
+            )
+            cache_params = _effective_cache_params(
+                resolved.model_spec, resolved.model_params
+            )
         command = _checkpoint_command(
             resolved,
             request_started_at,
@@ -919,33 +941,39 @@ class ConfigurableModelMiddleware(AgentMiddleware):
             The downstream response plus a private resume-state update when the
             completed call has model metadata to checkpoint.
         """
-        resolved = await _apply_overrides_async(
-            request,
-            openai_prompt_cache_key=self._openai_prompt_cache_key,
-            cli_max_retries=self._cli_max_retries,
-            strict_model_resolution=self._strict_model_resolution,
-        )
-        request_started_at = _utc_now_iso()
-        response = await handler(resolved.request)
-        if not self._persist_model_state:
-            return response
-        # Offloaded: `_cache_endpoint_identity` and `_effective_cache_params`
-        # read the config and credential store, which `blockbuster` rejects on
-        # the server event loop.
-        cache_endpoint = (
-            await asyncio.to_thread(
-                _cache_endpoint_identity,
+        from deepagents_code.config import use_environment
+
+        with use_environment(self._environ):
+            resolved = await _apply_overrides_async(
+                request,
+                openai_prompt_cache_key=self._openai_prompt_cache_key,
+                cli_max_retries=self._cli_max_retries,
+                strict_model_resolution=self._strict_model_resolution,
+                construction_model_result=self._model_result,
+            )
+            request_started_at = _utc_now_iso()
+            response = await handler(resolved.request)
+            if not self._persist_model_state:
+                return response
+            # Offloaded: `_cache_endpoint_identity` and `_effective_cache_params`
+            # read the config and credential store, which `blockbuster` rejects on
+            # the server event loop.
+            cache_endpoint = (
+                await asyncio.to_thread(
+                    _cache_endpoint_identity,
+                    resolved.model_spec,
+                    resolved.model_params,
+                )
+                if resolved.model_params is not None
+                else await asyncio.to_thread(
+                    _cache_endpoint_identity, resolved.model_spec
+                )
+            )
+            cache_params = await asyncio.to_thread(
+                _effective_cache_params,
                 resolved.model_spec,
                 resolved.model_params,
             )
-            if resolved.model_params is not None
-            else await asyncio.to_thread(_cache_endpoint_identity, resolved.model_spec)
-        )
-        cache_params = await asyncio.to_thread(
-            _effective_cache_params,
-            resolved.model_spec,
-            resolved.model_params,
-        )
         command = _checkpoint_command(
             resolved, request_started_at, cache_endpoint, cache_params
         )

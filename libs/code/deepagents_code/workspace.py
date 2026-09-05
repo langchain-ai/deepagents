@@ -55,7 +55,17 @@ class WorkspaceBinding:
 
 
 class WorkspaceConflictError(RuntimeError):
-    """A thread was claimed from a different workspace or resource policy."""
+    """A workspace claim or runtime conflicts with server resource policy."""
+
+    @classmethod
+    def from_reason(cls, reason: str) -> WorkspaceConflictError:
+        """Build a workspace-hosting refusal with a stated reason.
+
+        Returns:
+            A conflict with the standard workspace-hosting message.
+        """
+        msg = f"Cannot host this workspace because {reason}."
+        return cls(msg)
 
 
 def _database_path() -> Path:

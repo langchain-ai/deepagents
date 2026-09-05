@@ -82,8 +82,30 @@ class PersistentCronScheduler:
             await self._run_due_job(job, current)
 
     async def _ticker(self) -> None:
+        """Scan for due jobs until stopped, surviving a failed scan.
+
+        A tick reads the store, consults the clock, and dispatches; an
+        unexpected raise from any of those would otherwise leave the task
+        completed-with-exception, and since nothing awaits it but `stop`, the
+        scheduler would go quiet for the life of the process with no more than
+        an "exception was never retrieved" warning at collection time. Logging
+        and continuing costs one missed scan instead: due jobs stay due, so the
+        next tick picks them up.
+
+        `Exception` rather than `BaseException` is deliberate --
+        `asyncio.CancelledError` derives from the latter, so cancellation still
+        propagates and `stop` keeps working.
+        """
         while not self._stopped.is_set():
-            await self.tick_once()
+            try:
+                await self.tick_once()
+            except Exception as exc:
+                logger.exception("Cron tick failed")
+                # `log_event` JSON-encodes and redacts its fields, so untrusted
+                # text off the store cannot forge a log line.
+                log_event(logger, "cron.tick_failure", error=str(exc))
+            # The wait happens even after a failure, so a persistently broken
+            # tick retries on the normal interval instead of spinning.
             try:
                 await asyncio.wait_for(self._stopped.wait(), timeout=self.tick_seconds)
             except TimeoutError:

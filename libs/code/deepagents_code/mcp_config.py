@@ -9,7 +9,6 @@ validates their types. A `${VAR:-default}` reference falls back to
 from __future__ import annotations
 
 import copy
-import os
 import re
 from typing import TYPE_CHECKING, Any
 
@@ -52,7 +51,9 @@ def _interpolate_env(value: str, *, field: str) -> str:
     def replace(match: re.Match[str]) -> str:
         name = match.group(1)
         default = match.group(2)
-        resolved = os.environ.get(name)
+        from deepagents_code.config import active_environment
+
+        resolved = active_environment().get(name)
         # A non-empty value always wins, for both `${VAR}` and `${VAR:-default}`.
         if resolved:
             return resolved

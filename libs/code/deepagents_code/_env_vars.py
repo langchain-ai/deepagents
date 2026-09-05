@@ -24,6 +24,10 @@ ever renamed, only the value here changes.
 from __future__ import annotations
 
 import os
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 # ---------------------------------------------------------------------------
 # Constants — import these instead of bare string literals.
@@ -694,7 +698,12 @@ def classify_env_bool(raw: str) -> bool | None:
     return None
 
 
-def is_env_truthy(name: str, *, default: bool = False) -> bool:
+def is_env_truthy(
+    name: str,
+    *,
+    default: bool = False,
+    environ: Mapping[str, str] | None = None,
+) -> bool:
     """Return whether env var *name* is set to a recognizably truthy value.
 
     Unlike `bool(os.environ.get(name))`, this does not treat `"0"` or
@@ -706,12 +715,14 @@ def is_env_truthy(name: str, *, default: bool = False) -> bool:
             constant from this module).
         default: Value returned when the variable is unset OR set to a
             value that is neither recognizably truthy nor falsy.
+        environ: Environment to read, defaulting to the process environment.
+            Pass a workspace snapshot to keep the read scoped.
 
     Returns:
         `True` for `1`/`true`/`yes`/`on` (case-insensitive), `False` for
         `0`/`false`/`no`/`off`/empty string, or `default` otherwise.
     """
-    raw = os.environ.get(name)
+    raw = (os.environ if environ is None else environ).get(name)
     if raw is None:
         return default
     classified = classify_env_bool(raw)

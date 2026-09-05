@@ -169,6 +169,26 @@ async def _lifespan(_app: Starlette) -> AsyncIterator[None]:
             await _flush_traces()
 
 
+def _runtime_unavailable_detail(consequence: str) -> str:
+    """Describe a contained runtime-build failure for a client response.
+
+    `_make_graphs` exits on sandbox construction failure. That barrier is right
+    at graph-load time; in request scope it would take the server down for every
+    thread, so each request-scoped caller contains the `SystemExit` and reports
+    this instead.
+
+    Args:
+        consequence: What the caller cannot do, phrased to follow "so".
+
+    Returns:
+        The shared detail message, pointing the operator at the server log.
+    """
+    return (
+        f"The server could not build its agent runtime, so {consequence}. "
+        "Check the server log for the startup failure."
+    )
+
+
 async def workspace(request: Request) -> JSONResponse:
     """Create or verify the durable workspace assigned to a thread.
 
@@ -210,6 +230,19 @@ async def workspace(request: Request) -> JSONResponse:
         return JSONResponse({"detail": str(exc)}, status_code=422)
     except WorkspaceConflictError as exc:
         return JSONResponse({"detail": str(exc)}, status_code=409)
+
+    # Build the runtime here so a refusal reaches the client as a 409 before any
+    # thread state exists. This is its own block: request validation above maps
+    # `ValueError` to 422, but a `ValueError` out of the runtime build is server
+    # misconfiguration, not a malformed request.
+    try:
+        await get_server_runtime(binding)
+    except WorkspaceConflictError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=409)
+    except SystemExit:
+        logger.exception("Workspace runtime build failed for thread %s", thread_id)
+        detail = _runtime_unavailable_detail("this workspace cannot be used")
+        return JSONResponse({"detail": detail}, status_code=503)
 
     client = _thread_client()
     metadata = {
@@ -919,11 +952,10 @@ async def _execute_offload(
                 msg = "Offload requires workspace runtime context."
                 raise _OffloadConflictError(msg)
             server = await get_server_runtime(binding)
+        except WorkspaceConflictError as exc:
+            raise _OffloadConflictError(str(exc)) from exc
         except SystemExit as exc:
-            msg = (
-                "The server could not build its agent runtime, so /offload is "
-                "unavailable. Check the server log for the startup failure."
-            )
+            msg = _runtime_unavailable_detail("/offload is unavailable")
             raise _OffloadUnavailableError(msg) from exc
         runtime = Runtime[CLIContextSchema](
             context=cast("CLIContextSchema", context),

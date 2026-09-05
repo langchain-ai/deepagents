@@ -613,9 +613,11 @@ def _redact_remote(value: str) -> str:
     return _CONTROL_RE.sub("", value)[:2000]
 
 
-def _known_credential_values() -> tuple[str, ...]:
+def _known_credential_values(
+    environ: Mapping[str, str] | None = None,
+) -> tuple[str, ...]:
     values: set[str] = set()
-    for name, value in os.environ.items():
+    for name, value in (os.environ if environ is None else environ).items():
         if _SECRET_KEY_RE.search(name) and len(value) >= _MIN_SECRET_LENGTH:
             values.add(value)
     try:
@@ -2136,6 +2138,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         ),
         classifier_model: str | BaseChatModel | None = None,
         cli_max_retries: int | None = None,
+        environ: Mapping[str, str] | None = None,
         trusted_ask_user_tool: BaseTool | None = None,
         trusted_compaction_tool: BaseTool | None = None,
     ) -> None:
@@ -2157,6 +2160,7 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                 `classifier_model` on the runtime context wins over this value.
             cli_max_retries: Explicit `--max-retries` value to retain when a
                 distinct classifier model is constructed.
+            environ: Workspace environment retained for lazy model construction.
             trusted_ask_user_tool: Built-in tool allowed to create consent receipts.
             trusted_compaction_tool: Built-in tool that performs conversation
                 compaction.
@@ -2217,12 +2221,13 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
         )
         self._configured_classifier_model = classifier_model
         self._cli_max_retries = cli_max_retries
+        self._environ = environ
         self._classifier_model_cache: OrderedDict[str, BaseChatModel] = OrderedDict()
         self._classifier_model_lock = asyncio.Lock()
         self._classifier_model_constructions: dict[
             str, asyncio.Task[BaseChatModel]
         ] = {}
-        self._known_secrets = _known_credential_values()
+        self._known_secrets = _known_credential_values(environ)
         self._trusted_ask_user_tool = trusted_ask_user_tool
         self._trusted_compaction_tool = trusted_compaction_tool
         self._emitted_events: OrderedDict[str, set[tuple[str, ...]]] = OrderedDict()
@@ -2593,11 +2598,14 @@ class AutoModeHITLMiddleware(HumanInTheLoopMiddleware[AutoModeState, Any, Any]):
                     if self._cli_max_retries is not None
                     else {}
                 )
-                result = await asyncio.to_thread(
-                    create_model,
-                    selected,
-                    **retry_kwargs,
-                )
+                from deepagents_code.config import use_environment
+
+                with use_environment(self._environ):
+                    result = await asyncio.to_thread(
+                        create_model,
+                        selected,
+                        **retry_kwargs,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:

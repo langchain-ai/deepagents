@@ -795,6 +795,26 @@ class TestGetReleaseTime:
 
 
 class TestIsInstallationStale:
+    @pytest.mark.parametrize(("days", "expected"), [(6, False), (7, True)])
+    def test_seven_day_threshold(self, days: int, expected: bool) -> None:
+        """The persistent warning begins when the installed release is a week old."""
+        with (
+            patch("deepagents_code.config._is_editable_install", return_value=False),
+            patch(
+                "deepagents_code.update_check.is_update_check_enabled",
+                return_value=True,
+            ),
+            patch(
+                "deepagents_code.update_check.get_cached_update_available",
+                return_value=(True, "2.0.0"),
+            ),
+            patch(
+                "deepagents_code.update_check.installed_days_old",
+                return_value=days,
+            ),
+        ):
+            assert is_installation_stale() is expected
+
     def test_false_when_editable_check_raises(self, cache_file) -> None:  # noqa: ARG002
         """A raising editable check degrades to `False`, never aborting startup."""
         with patch(

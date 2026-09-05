@@ -8,11 +8,13 @@ from collections.abc import (
 )
 from typing import TYPE_CHECKING, Any
 
+import pytest
 from deepagents import create_deep_agent
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableLambda
 from langchain_core.tools import tool
+from langgraph.checkpoint.memory import InMemorySaver
 from pydantic import Field
 
 from langchain_quickjs import CodeInterpreterMiddleware
@@ -101,6 +103,121 @@ async def test_quickjs_async_ptc_runs_tools_on_outer_loop() -> None:
 
     tool_message = _eval_tool_message(result)
     _assert_result_contains(tool_message.content, outer_loop_id)
+
+
+@pytest.mark.filterwarnings("ignore:The feature `forked subagents` is in beta")
+def test_forked_subagent_clones_its_parent_repl() -> None:
+    """A fork receives a copy of, not access to, its parent's REPL."""
+    slot_ids: list[str] = []
+    eval_outputs: list[str] = []
+
+    class _RecordingMiddleware(CodeInterpreterMiddleware):
+        def before_agent(
+            self, state: dict[str, Any], runtime: Any
+        ) -> dict[str, Any] | None:
+            update = super().before_agent(state, runtime)
+            slot_ids.append(self._slot_id({**state, **(update or {})}))
+            return update
+
+        def after_agent(
+            self, state: dict[str, Any], runtime: Any
+        ) -> dict[str, Any] | None:
+            eval_outputs.extend(
+                str(message.content)
+                for message in state["messages"]
+                if isinstance(message, ToolMessage) and message.name == "eval"
+            )
+            return super().after_agent(state, runtime)
+
+    parent_model = _FakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "globalThis.parentValue = 42"},
+                            "id": "call_parent_eval",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "task",
+                            "args": {
+                                "description": "Continue this conversation.",
+                                "subagent_type": "worker",
+                            },
+                            "id": "call_worker",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "parentValue"},
+                            "id": "call_parent_verify",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="parent done"),
+            ]
+        )
+    )
+    worker_model = _FakeChatModel(
+        messages=iter(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "eval",
+                            "args": {"code": "parentValue += 1; parentValue"},
+                            "id": "call_worker_eval",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="worker done"),
+            ]
+        )
+    )
+    agent = create_deep_agent(
+        model=parent_model,
+        checkpointer=InMemorySaver(),
+        middleware=[_RecordingMiddleware()],
+        system_prompt="",
+        subagents=[
+            {
+                "name": "worker",
+                "description": "Continues the current conversation.",
+                "model": worker_model,
+                "mode": "fork",
+            }
+        ],
+    )
+
+    result = agent.invoke(
+        {"messages": [HumanMessage(content="start")]},
+        config={
+            "configurable": {"thread_id": "quickjs-fork-slot"},
+            "recursion_limit": 100,
+        },
+    )
+
+    assert result["messages"][-1].content == "parent done"
+    assert any("43" in output for output in eval_outputs), eval_outputs
+    assert any("42" in output for output in eval_outputs), eval_outputs
+    assert len(slot_ids) == 2
+    assert len(set(slot_ids)) == 2
 
 
 async def test_quickjs_async_task_global_subagent_loop_affinity_e2e() -> None:

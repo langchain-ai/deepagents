@@ -7,7 +7,7 @@ subagent, and summarization middleware.
 
 import logging
 from collections.abc import Callable, Sequence
-from typing import Annotated, Any, Required, cast
+from typing import Annotated, Any, NotRequired, Required, cast
 
 from langchain.agents import AgentState, create_agent
 from langchain.agents.middleware import HumanInTheLoopMiddleware, InterruptOnConfig
@@ -74,6 +74,13 @@ class DeepAgentState(AgentState):
     """AgentState with `DeltaChannel` on messages to reduce checkpoint growth from O(N²) to O(N)."""
 
     messages: Required[Annotated[list[AnyMessage], DeltaChannel(_messages_delta_reducer, snapshot_frequency=50)]]  # ty: ignore[invalid-argument-type]
+
+
+class _ForkedContextState(AgentState):
+    """State marker required by declarative fork middleware."""
+
+    _deepagents_forked_context: NotRequired[bool]
+    _quickjs_slot_id: NotRequired[str]
 
 
 _LEGACY_BASE_AGENT_PROMPT = """You are a deep agent, an AI assistant that helps users accomplish tasks using tools. You respond with text and tool calls. The user can see your responses and tool outputs in real time.
@@ -881,6 +888,11 @@ def create_deep_agent(  # noqa: C901, PLR0912, PLR0915  # Complex graph assembly
             # template. Stale keys silently no-op if the tool is renamed.
             task_description=_profile.tool_description_overrides.get("task"),
             state_schema=state_schema,
+            fork_state_schema=type(
+                "ForkedSubagentState",
+                (state_schema or DeepAgentState, _ForkedContextState),
+                {},
+            ),
         )
         deepagent_middleware.append(sub_agent_middleware)
     deepagent_middleware.extend(

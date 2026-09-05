@@ -35,6 +35,7 @@ from langchain_quickjs._subagent import (
     _runtime_with_response_format,
     call_subagent_task_tool,
 )
+from langchain_quickjs.middleware import _resolve_thread_id
 
 if TYPE_CHECKING:
     from langchain_core.callbacks import CallbackManagerForLLMRun
@@ -280,6 +281,42 @@ def test_system_prompt_mentions_mode_call() -> None:
     base_prompt = mw._base_prompt(ptc_attached=False)
     assert "fresh sandboxed REPL for each invocation" in base_prompt
     assert "does not persist across tool calls" in base_prompt
+
+
+def test_subagent_invocation_scopes_repl_identity() -> None:
+    with patch(
+        "langchain_quickjs.middleware.get_config",
+        return_value={
+            "configurable": {
+                "thread_id": "thread-1",
+                "__deepagents_subagent_invocation": "call-1",
+            }
+        },
+    ):
+        assert _resolve_thread_id("fallback") == "thread-1::subagent:call-1"
+
+
+async def test_subagent_cleanup_preserves_parent_and_sibling_slots() -> None:
+    middleware = CodeInterpreterMiddleware(mode="turn")
+    try:
+        parent = middleware._registry.get("thread")
+        sibling = middleware._registry.get("thread::subagent:call-2")
+        middleware._registry.get("thread::subagent:call-1")
+        with patch(
+            "langchain_quickjs.middleware.get_config",
+            return_value={
+                "configurable": {
+                    "thread_id": "thread",
+                    "__deepagents_subagent_invocation": "call-1",
+                }
+            },
+        ):
+            await middleware.aafter_agent(state={}, runtime=MagicMock())
+        assert middleware._registry.get_if_exists("thread") is parent
+        assert middleware._registry.get_if_exists("thread::subagent:call-2") is sibling
+        assert middleware._registry.get_if_exists("thread::subagent:call-1") is None
+    finally:
+        middleware._registry.close()
 
 
 def test_default_mode_is_thread() -> None:

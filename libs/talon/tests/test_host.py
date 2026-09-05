@@ -968,13 +968,13 @@ async def test_host_keeps_tool_approval_scoped_to_original_sender(tmp_path: Path
     await _wait_for_sent_count(channel, 4)
     await host.stop()
 
-    assert [request.text for request in agent.requests] == ["run", "maybe"]
-    assert agent.recoveries == ["chat"]
+    assert [request.text for request in agent.requests] == ["run"]
+    assert agent.recoveries == []
     assert channel.sent[1] == (
         "chat",
         "Only the operator who started this run can approve or deny it.",
     )
-    assert "Tool approval required." in channel.sent[2][1]
+    assert channel.sent[2] == channel.sent[0]
     assert channel.sent[3] == ("chat", "decision:reject")
 
 

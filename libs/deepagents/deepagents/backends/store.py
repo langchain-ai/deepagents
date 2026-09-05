@@ -321,6 +321,14 @@ class StoreBackend(BackendProtocol):
         # Retrieve all items and filter by path prefix locally to avoid
         # coupling to store-specific filter semantics
         items = self._search_store_paginated(store, namespace)
+        return self._ls_from_items(items, path)
+
+    def _ls_from_items(self, items: list[Item], path: str) -> LsResult:
+        """Build an `LsResult` from already-fetched store items.
+
+        Shared by `ls` (sync, `store.search`) and `als` (async, `store.asearch`)
+        so the filtering/size logic exists in one place and can't drift.
+        """
         infos: list[FileInfo] = []
         subdirs: set[str] = set()
 
@@ -347,7 +355,7 @@ class StoreBackend(BackendProtocol):
                 fd = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-            size = len(file_data_to_string(fd))
+            size = len(file_data_to_string(fd).encode("utf-8"))
             infos.append(
                 {
                     "path": item.key,
@@ -362,6 +370,19 @@ class StoreBackend(BackendProtocol):
 
         infos.sort(key=lambda x: x.get("path", ""))
         return LsResult(entries=infos)
+
+    async def als(self, path: str) -> LsResult:
+        """Async version of `ls` using native store async methods.
+
+        Uses `_asearch_store_paginated` (store.asearch) instead of the sync
+        `_search_store_paginated` (store.search) — the sync search hangs on
+        async stores like AsyncPostgresStore.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+
+        items = await self._asearch_store_paginated(store, namespace)
+        return self._ls_from_items(items, path)
 
     def read(
         self,
@@ -602,13 +623,37 @@ class StoreBackend(BackendProtocol):
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
+        files = self._files_dict_from_items(items)
+        return grep_matches_from_files(files, pattern, path, glob, max_count=max_count)
+
+    async def agrep(
+        self,
+        pattern: str,
+        path: str | None = None,
+        glob: str | None = None,
+        *,
+        max_count: int | None = None,
+    ) -> GrepResult:
+        """Async version of `grep` using native store async methods."""
+        store = self._get_store()
+        namespace = self._get_namespace()
+        items = await self._asearch_store_paginated(store, namespace)
+        files = self._files_dict_from_items(items)
+        return grep_matches_from_files(files, pattern, path, glob, max_count=max_count)
+
+    def _files_dict_from_items(self, items: list[Item]) -> dict[str, Any]:
+        """Build a `{path: FileData}` dict from store items, skipping corrupt ones.
+
+        Shared by `grep`/`agrep` and `glob`/`aglob` so the conversion + guard
+        logic exists in one place.
+        """
         files: dict[str, Any] = {}
         for item in items:
             try:
                 files[item.key] = self._convert_store_item_to_file_data(item)
             except ValueError:
                 continue
-        return grep_matches_from_files(files, pattern, path, glob, max_count=max_count)
+        return files
 
     def glob(self, pattern: str, path: str | None = None) -> GlobResult:
         """Find files matching a glob pattern in the store.
@@ -620,12 +665,15 @@ class StoreBackend(BackendProtocol):
         store = self._get_store()
         namespace = self._get_namespace()
         items = self._search_store_paginated(store, namespace)
-        files: dict[str, Any] = {}
-        for item in items:
-            try:
-                files[item.key] = self._convert_store_item_to_file_data(item)
-            except ValueError:
-                continue
+        files = self._files_dict_from_items(items)
+        return self._glob_result_from_files(files, pattern, path)
+
+    def _glob_result_from_files(self, files: dict[str, Any], pattern: str, path: str | None) -> GlobResult:
+        """Build a `GlobResult` from already-fetched file data.
+
+        Shared by `glob` (sync) and `aglob` (async) so the pattern matching +
+        size logic exists in one place and can't drift.
+        """
         try:
             result = _glob_search_files(files, pattern, path)
         except InvalidGlobPatternError as exc:
@@ -641,7 +689,7 @@ class StoreBackend(BackendProtocol):
         infos: list[FileInfo] = []
         for p in paths:
             fd = files.get(p)
-            size = len(file_data_to_string(fd)) if fd else 0
+            size = len(file_data_to_string(fd).encode("utf-8")) if fd else 0
             infos.append(
                 {
                     "path": p,
@@ -651,6 +699,19 @@ class StoreBackend(BackendProtocol):
                 }
             )
         return GlobResult(matches=infos)
+
+    async def aglob(self, pattern: str, path: str | None = None) -> GlobResult:
+        """Async version of `glob` using native store async methods.
+
+        Uses `_asearch_store_paginated` (store.asearch) instead of the sync
+        `_search_store_paginated` (store.search) — the sync search hangs on
+        async stores like AsyncPostgresStore.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        items = await self._asearch_store_paginated(store, namespace)
+        files = self._files_dict_from_items(items)
+        return self._glob_result_from_files(files, pattern, path)
 
     def upload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
         """Upload multiple files to the store.
@@ -715,5 +776,67 @@ class StoreBackend(BackendProtocol):
             content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
 
             responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+
+        return responses
+
+    async def adownload_files(self, paths: list[str]) -> list[FileDownloadResponse]:
+        """Async version of download_files using native store async methods.
+
+        Overrides the protocol's default ``asyncio.to_thread(download_files)``
+        which would call the sync ``store.get`` — that hangs on async stores
+        (e.g. ``AsyncPostgresStore``) because the connection is bound to the
+        main event loop.  Using ``store.aget`` keeps everything on the same loop.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        responses: list[FileDownloadResponse] = []
+
+        for path in paths:
+            item = await store.aget(namespace, path)
+
+            if item is None:
+                responses.append(FileDownloadResponse(path=path, content=None, error="file_not_found"))
+                continue
+
+            try:
+                file_data = self._convert_store_item_to_file_data(item)
+                content_str = file_data_to_string(file_data)
+                encoding = file_data["encoding"]
+                content_bytes = base64.standard_b64decode(content_str) if encoding == "base64" else content_str.encode("utf-8")
+            except ValueError:
+                # A corrupt store item shouldn't fail the whole batch — report
+                # per-file error, matching the guard in `als`/`agrep`/`aglob`.
+                responses.append(FileDownloadResponse(path=path, content=None, error="invalid_file"))
+                continue
+
+            responses.append(FileDownloadResponse(path=path, content=content_bytes, error=None))
+
+        return responses
+
+    async def aupload_files(self, files: list[tuple[str, bytes]]) -> list[FileUploadResponse]:
+        """Async version of upload_files using native store async methods.
+
+        Overrides the protocol's default ``asyncio.to_thread(upload_files)``
+        which would call the sync ``store.put`` — that hangs on async stores
+        (e.g. ``AsyncPostgresStore``) because the connection is bound to the
+        main event loop.  Using ``store.aput`` keeps everything on the same loop.
+        """
+        store = self._get_store()
+        namespace = self._get_namespace()
+        responses: list[FileUploadResponse] = []
+
+        for path, content in files:
+            try:
+                content_str = content.decode("utf-8")
+                encoding = "utf-8"
+            except UnicodeDecodeError:
+                content_str = base64.standard_b64encode(content).decode("ascii")
+                encoding = "base64"
+
+            file_data = create_file_data(content_str, encoding=encoding)
+            store_value = self._convert_file_data_to_store_value(file_data)
+
+            await store.aput(namespace, path, store_value)
+            responses.append(FileUploadResponse(path=path, error=None))
 
         return responses

@@ -42,6 +42,25 @@ The fastest way to start using Deep Agents. `deepagents-code` is a pre-built cod
 - **Headless mode** — run non-interactively for scripting and CI
 - **Human-in-the-loop** — approve or reject tool calls before execution
 
+## 🔗 Open from the browser
+
+Register `dcode` as the handler for `dcode://` links, and a page can offer to open a project or resume a thread in dcode:
+
+```bash
+dcode url install          # register the handler (per-user, no sudo)
+dcode url status           # see what your system does with dcode:// links
+dcode url uninstall        # give the scheme back
+```
+
+```text
+dcode://open?dir=/path/to/project
+dcode://open?dir=~/proj&agent=research
+dcode://open?dir=~/proj&thread=<thread-id>
+dcode://open?dir=~/proj&prompt=review%20the%20diff
+```
+
+Two gates stand between a link and a session. Your browser asks whether to hand the link to dcode; then dcode opens a terminal, shows the whole request — directory, agent, thread, and the prompt text in full — and waits for you to approve it, with "Cancel" preselected. Nothing is skippable: a link cannot change the session's approval mode, model, or sandbox, and unknown parameters are refused rather than ignored.
+
 ## 🔒 Security model
 
 By default, `dcode` trusts the directory you run it in. Human-in-the-loop approval gates model-requested tool calls, but project artifacts are read before any approval prompt.

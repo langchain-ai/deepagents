@@ -120,9 +120,9 @@ async def test_interactive_provider_validates_callback_state(
         "builtins.input", lambda _prompt: "http://localhost:3000/callback?code=abc&state=state"
     )
 
-    code, state = await provider.context.callback_handler()
+    result = await provider.context.callback_handler()
 
-    assert (code, state) == ("abc", "state")
+    assert (result.code, result.state) == ("abc", "state")
 
 
 def test_slack_provider_selection_requires_slack_hostname() -> None:
@@ -182,7 +182,8 @@ async def test_slack_provider_validates_registered_callback(
     )
     monkeypatch.setattr("builtins.input", lambda _prompt: next(callbacks))
 
-    assert await callback() == ("abc", "state")
+    result = await callback()
+    assert (result.code, result.state) == ("abc", "state")
     with pytest.raises(MCPAuthorizationError, match="callback is invalid"):
         await callback()
 

@@ -19,9 +19,12 @@ from mcp.client.auth import OAuthClientProvider
 from mcp.client.auth.utils import (
     build_oauth_authorization_server_metadata_discovery_urls,
 )
-from mcp.client.streamable_http import MCP_PROTOCOL_VERSION
+from mcp.client.streamable_http import (
+    MCP_PROTOCOL_VERSION_HEADER as MCP_PROTOCOL_VERSION,
+)
 from mcp.shared.auth import (
     AnyUrl,
+    AuthorizationCodeResult,
     OAuthClientInformationFull,
     OAuthClientMetadata,
     OAuthToken,
@@ -646,25 +649,26 @@ async def prepare_oauth_login(*, server_url: str, storage: FileTokenStorage) -> 
 
 def _interactive_handlers(
     redirect_uri: str,
-) -> tuple[Callable[[str], Awaitable[None]], Callable[[], Awaitable[tuple[str, str | None]]]]:
+) -> tuple[Callable[[str], Awaitable[None]], Callable[[], Awaitable[AuthorizationCodeResult]]]:
     async def redirect(url: str) -> None:
         print("Open this URL in a browser and approve access:\n")  # noqa: T201
         print(f"  {url}\n")  # noqa: T201
 
-    async def callback() -> tuple[str, str | None]:
+    async def callback() -> AuthorizationCodeResult:
         try:
             raw = await asyncio.to_thread(input, "Paste the full callback URL: ")
         except EOFError as exc:
             msg = "No callback URL received; re-run the login command."
             raise RuntimeError(msg) from exc
-        return _parse_callback_url(raw, redirect_uri)
+        code, state = _parse_callback_url(raw, redirect_uri)
+        return AuthorizationCodeResult(code=code, state=state)
 
     return redirect, callback
 
 
 def _channel_handlers(
     server_name: str, redirect_uri: str
-) -> tuple[Callable[[str], Awaitable[None]], Callable[[], Awaitable[tuple[str, str | None]]]]:
+) -> tuple[Callable[[str], Awaitable[None]], Callable[[], Awaitable[AuthorizationCodeResult]]]:
     async def redirect(url: str) -> None:
         handler = current_authorization_handler()
         invocation_id = current_authorization_invocation()
@@ -680,7 +684,7 @@ def _channel_handlers(
         attempt.binding = binding
         await handler(AuthorizationURL(binding=binding, url=url))
 
-    async def callback() -> tuple[str, str | None]:
+    async def callback() -> AuthorizationCodeResult:
         handler = current_authorization_handler()
         attempt = current_authorization_attempt()
         binding = None if attempt is None else attempt.binding
@@ -691,7 +695,8 @@ def _channel_handlers(
         if not isinstance(raw, str):
             msg = "MCP authorization callback was not received"
             raise MCPAuthorizationError(msg)
-        return _parse_callback_url(raw, redirect_uri)
+        code, state = _parse_callback_url(raw, redirect_uri)
+        return AuthorizationCodeResult(code=code, state=state)
 
     return redirect, callback
 

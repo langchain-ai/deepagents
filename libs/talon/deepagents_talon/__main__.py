@@ -27,6 +27,7 @@ from deepagents_talon.fleet_import import (
 )
 from deepagents_talon.host import TalonHost
 from deepagents_talon.mcp import MCPToolProvider, login_mcp_server, print_mcp_config_paths
+from deepagents_talon.mcp_middleware import talon_mcp_middleware
 from deepagents_talon.speech import build_voice_transcriber
 
 if TYPE_CHECKING:
@@ -231,6 +232,7 @@ async def _agent_runtime(
         assistant_dir=config.manifest_dir,
         subagents=async_subagents or None,
         cron_store=cron_store,
+        middleware=(talon_mcp_middleware(),),
         interrupt_on=interrupt_on_with_env_overlay(None, env),
         env=env,
     )

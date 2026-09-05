@@ -8,7 +8,7 @@ Deep Agents Talon is the local runtime host for long-running Deep Agents. It own
 
 Talon currently includes:
 
-- A host process with graceful shutdown, per-conversation message queues, and `/stop` cancellation.
+- A host process with graceful shutdown, per-conversation interrupt-and-continue, and `/stop` cancellation.
 - A generic channel protocol plus WhatsApp, Telegram, and Discord adapters (WhatsApp is backed by a loopback Node bridge).
 - A persistent cron scheduler with agent-facing cron tool helpers.
 - MCP tool loading from explicit config paths or `~/.deepagents/.mcp.json`.
@@ -27,11 +27,11 @@ AGENT_ASSISTANT_ID=local AGENT_MODEL=<provider>:<model-id> uv run deepagents-tal
 
 If `AGENT_MODEL` is unset, Talon starts with the echo runtime. This is useful for checking host lifecycle and channel wiring without provider credentials.
 
-Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
+Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host creates restrictive state directories for the materialized agent manifest, channel sessions, and cron jobs, and persists conversation checkpoints in `checkpoints.sqlite` so chat history survives restarts. The default local execution workspace is the current working directory; set `DEEPAGENTS_TALON_WORKSPACE` to use a different directory. The per-invocation graph recursion limit defaults to `500`; set `DEEPAGENTS_TALON_RECURSION_LIMIT` to tune it.
 
-## Conversation Queues and Cancellation
+## Interrupt and Continue
 
-New messages received during an active turn are queued and run in order on the same conversation thread. Talon acknowledges each queued message, allowing long-running subagent work to finish instead of cancelling the whole graph. `/stop` cancels the active turn and discards its queued messages, while `/new` does the same before starting a fresh conversation thread. Both commands recover interrupted graph state; process shutdown does not. If explicit cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and blocks new messages for that conversation; restart Talon to recover.
+A new message in a conversation cancels the active turn, records an interruption marker after the latest committed graph checkpoint, and starts the new message on the same thread. Partial output from the cancelled turn is not fabricated or delivered. `/stop` and `/new` also recover interrupted state; process shutdown does not. If cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and does not start the new message; restart Talon to recover.
 
 ## Local Agent Activity Logs
 
@@ -178,6 +178,11 @@ turn after login completes.
 Run `deepagents-talon mcp config` to print the resolved config path. The terminal-only
 `deepagents-talon mcp login <server>` flow remains available as an alternative.
 
+After editing the configuration, send `/mcp-reload` through an authorized channel to
+reload it without restarting Talon. The agent can also call
+`reload_mcp_configuration` autonomously; that schedules the same reload before the
+next agent turn.
+
 Fleet zip exports can be materialized into a Talon-local agent directory before
 starting the host:
 
@@ -210,6 +215,57 @@ assistant defines one. Fleet `tools.json` and `config.json` are ignored and are 
 copied into the Talon agent directory. Talon does not support the old Fleet direct-run
 startup path or its environment variables; import the zip first, then run Talon against
 the materialized local assistant.
+
+## Reloading and Managing Subagents
+
+Talon rereads local `agents/<name>/AGENTS.md` definitions and the
+`[async_subagents]` section of `~/.deepagents/config.toml` before each turn.
+The main agent can edit these files and call `reload_subagent_configuration`
+to validate the changes explicitly. Changes take effect on the **next turn**;
+active turns keep their original graph. Invalid definitions or failed graph
+construction leave the previous configuration active. Conversation history stays
+on the same checkpoint thread.
+
+Local agents support both foreground delegation with `task` and independent
+background work with `start_local_task`. Background tasks copy the conversation
+context, pin their prompt and model, and use separate checkpoint threads. Use
+`list_local_tasks`, `check_local_task`, `update_local_task`, `cancel_local_task`,
+and `resume_local_task` to manage them. Follow-up instructions interrupt the child
+and continue its existing thread. New parent messages and `/stop` interrupt the
+parent only; cancel a child explicitly when its work should stop. `/new` starts a
+fresh parent conversation and suppresses notifications from the old conversation.
+
+Local task launch, update, cancellation, and resume require channel approval.
+Children inherit the runtime's tool approval policy and pause at protected tool
+calls. Inspect a paused task before resuming it with `decision="approve"` or
+`decision="reject"`. Completion and interruption messages are delivered to the
+originating channel when the parent is idle. Task tools remain available after
+their agent definition is deleted.
+
+After a process restart, local workers are marked interrupted. They resume only
+on an explicit `resume_local_task` call: an unfinished tool may have already had
+external effects. The original prompt and model are restored; rebuilt workers
+use the current runtime tools and approval policy. Talon limits local execution
+to four concurrent workers, one hour per run, 1 MiB of initial conversation
+context, 64,000 characters per stored result, and 1,000 retained task records.
+Local ownership and status live in `local-tasks.sqlite`; child graph state lives
+in the existing `checkpoints.sqlite` database.
+
+Remote async subagents continue to use the SDK's `start_async_task`,
+`check_async_task`, `list_async_tasks`, `update_async_task`, and `cancel_async_task`
+tools. Talon retains immutable connection revisions, so editing, renaming, or
+removing an agent does not redirect existing tasks. New launches use the current
+definition. Remote workers continue on their server independently of Talon.
+Their results are retrieved with the task tools.
+
+Remote revisions are retained in the private, mode-0600
+`async-subagent-registry.json` file alongside assistant state, with a limit of
+256 revisions and 4 MiB. This file includes originally configured authentication
+headers; credentials are not added to conversation checkpoints. Keep this file
+with checkpoint backups, and retain it while old remote tasks need management.
+For checkpoints predating the registry, start once with the original remote
+definitions before changing them, since historical execution targets cannot be
+reconstructed from task names alone.
 
 ## Cron Schedules
 

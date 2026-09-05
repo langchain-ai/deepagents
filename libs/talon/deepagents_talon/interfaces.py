@@ -13,6 +13,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_talon.authorization import AuthorizationHandler
+    from deepagents_talon.background import LocalTaskSupervisor
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,3 +275,18 @@ class AgentRuntime(Protocol):
 
     async def recover_interrupted(self, conversation_id: str) -> None:
         """Record an interrupted turn after its latest committed checkpoint."""
+
+
+@runtime_checkable
+class MCPReloadableRuntime(Protocol):
+    """Optional runtime capability for reloading MCP configuration."""
+
+    async def reload_mcp_configuration(self) -> None:
+        """Reload MCP tools without restarting the runtime."""
+
+
+@runtime_checkable
+class BackgroundTaskRuntime(Protocol):
+    """Optional local-worker supervisor whose results the host can deliver."""
+
+    local_tasks: LocalTaskSupervisor | None

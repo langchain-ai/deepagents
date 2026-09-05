@@ -2880,6 +2880,17 @@ def _toast_identity(
     return getattr(notif, "identity", None)
 
 
+def _stale_install_sub_title(days: int) -> str:
+    """Return the stale-install advisory subtitle for an install *days* old.
+
+    Both the construction-time banner and the runtime refresh render this
+    string, and the refresh path recognizes the subtitle it owns by comparing
+    against it — so the two must stay byte-identical.
+    """
+    unit = "day" if days == 1 else "days"
+    return f"Update available — installed version is {days} {unit} old (run /update)"
+
+
 class _StaticHeader(Header):
     """`Header` variant that doesn't toggle tall mode on click.
 
@@ -3482,6 +3493,15 @@ class DeepAgentsApp(App):
         `_restore_startup_tip_after_resume_fallback` uses to mount the tip.
         """
 
+        self._startup_history_ready = asyncio.Event()
+        """Whether startup can safely append messages after restored history.
+
+        Resumed history bulk-loads into the message store and scrolls to its
+        tail, so startup notices wait for this signal instead of being buried.
+        """
+        if not self._initial_resume_requested:
+            self._startup_history_ready.set()
+
         self._startup_tip_dismissed = False
         """Whether the startup tip has been dismissed and must not be remounted."""
 
@@ -3775,13 +3795,18 @@ class DeepAgentsApp(App):
             is_installation_stale,
         )
 
-        self._installation_stale: bool = sub_title is None and is_installation_stale()
+        self._stale_header_allowed = sub_title is None
+        self._base_sub_title = self.sub_title
+        self._stale_header_sub_title: str | None = None
+        """Stale-install subtitle currently owned by the update checker."""
+        self._installation_stale: bool = (
+            self._stale_header_allowed and is_installation_stale()
+        )
         """Whether the installed version is old enough to force the header banner.
 
-        Set once at construction from the cache-only install-age check. When
-        `True`, `compose` renders the header even without `DEEPAGENTS_CODE_SHOW_HEADER`
-        and the subtitle carries the advisory below — overriding the sandbox
-        subtitle by design.
+        Initialized from the cache-only install-age check. Every update check
+        that resolves a version refreshes it. A long-running session can
+        therefore both reveal and hide the banner without a restart.
         """
 
         if self._installation_stale:
@@ -3792,11 +3817,8 @@ class DeepAgentsApp(App):
                 # than render "installed version is None days old".
                 self._installation_stale = False
             else:
-                unit = "day" if days == 1 else "days"
-                self.sub_title = (
-                    f"Update available \u2014 installed version is "
-                    f"{days} {unit} old (run /update)"
-                )
+                self._stale_header_sub_title = _stale_install_sub_title(days)
+                self.sub_title = self._stale_header_sub_title
 
         # Per-turn model overrides
         self._model_override: str | None = None
@@ -4489,6 +4511,8 @@ class DeepAgentsApp(App):
         *not* drive missing-dep toast suppression — that's gated on
         `_update_modal_pending`.
         """
+        self._update_message_versions: set[str] = set()
+        """Target versions already surfaced as durable messages this session."""
 
         self._update_check_done = asyncio.Event()
         """Set by `_check_for_updates` when it returns (success, failure, or
@@ -4693,11 +4717,11 @@ class DeepAgentsApp(App):
         Yields:
             UI components for the main chat area and status bar.
         """
-        from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
         from deepagents_code.config import runtime_state
 
-        if is_env_truthy(SHOW_HEADER) or self._installation_stale:
-            yield _StaticHeader(id="app-header")
+        header = _StaticHeader(id="app-header")
+        header.display = self._header_should_display()
+        yield header
         # Main chat area with scrollable messages
         # VerticalScroll tracks user scroll intent for better auto-scroll behavior.
         # `_ChatScroll` keeps clicks on messages from stealing input focus.
@@ -6493,6 +6517,158 @@ class DeepAgentsApp(App):
         except Exception:
             logger.warning("Could not prewarm model caches", exc_info=True)
 
+    def _refresh_stale_install_header(
+        self,
+        days: int | None,
+        *,
+        update_available: bool,
+    ) -> None:
+        """Refresh the stale-install header from a fresh update result.
+
+        Args:
+            days: Whole days since the installed release, or `None` when the
+                age is unknown. `None` with *update_available* set leaves the
+                header untouched: the release-time cache can go cold mid-session
+                (a concurrent `dcode` rewrites it), and an unknown age is no
+                reason to retract an advisory the user has already read.
+            update_available: Whether a newer version was just confirmed. `False`
+                hides the banner and restores the base subtitle.
+        """
+        from deepagents_code.update_check import INSTALLED_STALE_NOTICE_DAYS
+
+        if update_available and days is None:
+            logger.debug(
+                "Installed version age unknown; leaving the stale-install header as is"
+            )
+            return
+        stale = (
+            self._stale_header_allowed
+            and update_available
+            and days is not None
+            and days >= INSTALLED_STALE_NOTICE_DAYS
+        )
+        self._installation_stale = stale
+        self._apply_header_visibility()
+
+        # Another writer taking the subtitle ends our ownership of it.
+        if self._stale_header_sub_title != self.sub_title:
+            self._stale_header_sub_title = None
+        owned = self._stale_header_sub_title is not None
+        if stale and (owned or self.sub_title == self._base_sub_title):
+            self._stale_header_sub_title = _stale_install_sub_title(days)
+            self.sub_title = self._stale_header_sub_title
+        elif not stale and owned:
+            self.sub_title = self._base_sub_title
+            self._stale_header_sub_title = None
+
+    def _header_should_display(self) -> bool:
+        """Resolve the single header-visibility rule.
+
+        Returns:
+            Whether the header shows: either `DEEPAGENTS_CODE_SHOW_HEADER` is
+            set, or a stale install is forcing the advisory banner.
+        """
+        from deepagents_code._env_vars import SHOW_HEADER, is_env_truthy
+
+        return is_env_truthy(SHOW_HEADER) or self._installation_stale
+
+    def _apply_header_visibility(self) -> None:
+        """Push the current visibility rule onto the mounted header, if there is one.
+
+        A pushed modal is the top screen and owns no header, so `query_one` on
+        `self` would silently miss; the header only ever lives on the base
+        screen composed by `compose`.
+        """
+        if not self.screen_stack:
+            logger.debug("No #app-header to refresh; the app is not running yet")
+            return
+        headers = self.screen_stack[0].query("#app-header")
+        if not headers:
+            logger.debug("No #app-header to refresh; the app is not running yet")
+            return
+        headers.first().display = self._header_should_display()
+
+    async def _mount_update_message(
+        self, latest: str, message: str
+    ) -> Literal["mounted", "duplicate", "failed"]:
+        """Mount one durable update message per target version this session.
+
+        Returns:
+            `"mounted"` when the message reached the transcript, `"duplicate"`
+            when this version was already surfaced this session, or `"failed"`
+            when the mount was skipped (no transcript container). Callers must
+            record the notification only on `"mounted"`; `"failed"` means
+            nothing reached the user and needs a fallback surface.
+        """
+        await self._startup_history_ready.wait()
+        if latest in self._update_message_versions:
+            return "duplicate"
+        if not await self._mount_message(AppMessage(message)):
+            return "failed"
+        self._update_message_versions.add(latest)
+        return "mounted"
+
+    async def _surface_update_message(
+        self,
+        latest: str,
+        message: str,
+        *,
+        toast_on_failure: bool,
+    ) -> None:
+        """Mount now or delegate delivery until startup history is restored."""
+        delivery = self._mount_update_message_and_record(
+            latest,
+            message,
+            toast_on_failure=toast_on_failure,
+        )
+        if self._startup_history_ready.is_set():
+            await delivery
+            return
+        self.run_worker(
+            delivery,
+            exclusive=True,
+            group="deferred-update-message",
+        )
+
+    async def _mount_update_message_and_record(
+        self,
+        latest: str,
+        message: str,
+        *,
+        toast_on_failure: bool,
+    ) -> None:
+        """Mount an update message after history and record successful delivery.
+
+        Raises:
+            CancelledError: If the managed delivery worker is canceled.
+        """
+        from deepagents_code.update_check import mark_update_notified
+
+        mounted = False
+        try:
+            outcome = await self._mount_update_message(latest, message)
+            mounted = outcome == "mounted"
+            if mounted:
+                await asyncio.to_thread(mark_update_notified, latest)
+            elif outcome == "failed" and toast_on_failure:
+                self._notify_update_message_fallback(message)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("Update message delivery failed", exc_info=True)
+            if toast_on_failure and not mounted:
+                self._notify_update_message_fallback(message)
+
+    def _notify_update_message_fallback(self, message: str) -> None:
+        """Surface an update in a toast when its durable message cannot mount."""
+        logger.warning("Could not mount the update message; falling back to a toast")
+        self.notify(
+            message,
+            severity="information",
+            timeout=12,
+            markup=False,
+        )
+
     async def _check_for_updates(self, *, periodic: bool = False) -> None:
         """Run the update check and signal completion for downstream waiters.
 
@@ -6513,13 +6689,16 @@ class DeepAgentsApp(App):
     async def _check_for_updates_impl(self, *, periodic: bool = False) -> None:
         """Check PyPI for a newer version and surface it in-session.
 
-        Phase 1 contacts PyPI and records the latest version on the app.
+        Phase 1 contacts PyPI, records the latest version on the app, and
+        refreshes the stale-install header so a long-running session can reveal
+        or hide the banner in place.
         Phase 2 surfaces a detected update without installing it in-session
         (the actual install runs at startup via `_run_startup_auto_update`):
-        when auto-update is enabled it toasts a prompt to restart so the
-        startup path can upgrade; otherwise it raises an actionable notice
-        (periodic recheck) or registers the notice and schedules the update
-        modal (initial check).
+        when auto-update is enabled it mounts a durable prompt to restart so the
+        startup path can upgrade. Otherwise it registers an actionable notice,
+        reachable via ctrl+n on either path. A periodic recheck also mounts a
+        durable message pointing at it; the initial check schedules the update
+        modal instead.
         Phase 2 sets `_update_modal_pending` *only* when the modal is
         actually being scheduled; a detected-but-throttled update
         leaves the event clear so missing-dep toasts still fire.
@@ -6528,6 +6707,7 @@ class DeepAgentsApp(App):
         try:
             from deepagents_code.config import _is_editable_install
             from deepagents_code.update_check import (
+                installed_days_old,
                 is_auto_update_enabled,
                 is_installed_version_at_least,
                 is_update_available,
@@ -6541,15 +6721,40 @@ class DeepAgentsApp(App):
                 is_update_available,
                 bypass_cache=periodic,
             )
-            if not available or latest is None:
-                return
-            if await asyncio.to_thread(is_installed_version_at_least, latest):
-                self._update_available = (False, None)
+            if latest is None:
+                # PyPI was unreachable. Keep the last known result rather than
+                # retracting a warning that is already on screen.
                 return
 
-            self._update_available = (True, latest)
+            def resolve_installed_state() -> tuple[bool, int | None]:
+                """Read both cache-backed installed facts in one executor hop.
+
+                Returns:
+                    Whether *latest* is genuinely newer than what is installed,
+                    and the installed release's age in whole days (`None` when
+                    there is no update, or the age is unknown).
+                """
+                if not available or is_installed_version_at_least(latest):
+                    return False, None
+                return True, installed_days_old()
+
+            update_available, days = await asyncio.to_thread(resolve_installed_state)
         except Exception:
             logger.debug("Background update check failed", exc_info=True)
+            return
+
+        self._update_available = (True, latest) if update_available else (False, None)
+        # Painting the header is our own work, not a network round-trip: a
+        # failure there is a bug worth a warning, and it must not skip phase 2.
+        try:
+            self._refresh_stale_install_header(
+                days,
+                update_available=update_available,
+            )
+        except Exception:
+            logger.warning("Could not refresh the stale-install header", exc_info=True)
+
+        if not update_available:
             return
 
         # Phase 2: auto-update or register actionable notice
@@ -6574,16 +6779,20 @@ class DeepAgentsApp(App):
                     format_installed_age_suffix,
                     cli_version,
                 )
-                self.notify(
-                    f"Update available: v{latest}{release_age}. "
-                    f"Currently installed: {cli_version}{installed_age}. "
-                    "Quit and relaunch dcode to install the update "
-                    "automatically.",
-                    severity="information",
-                    timeout=12,
-                    markup=False,
+                message = (
+                    self._format_update_summary(
+                        latest=latest,
+                        cli_version=cli_version,
+                        release_age=release_age,
+                        installed_age=installed_age,
+                    )
+                    + "Quit and relaunch dcode to install the update automatically."
                 )
-                await asyncio.to_thread(mark_update_notified, latest)
+                await self._surface_update_message(
+                    latest,
+                    message,
+                    toast_on_failure=True,
+                )
                 return
 
             if not await asyncio.to_thread(should_notify_update, latest):
@@ -6613,13 +6822,18 @@ class DeepAgentsApp(App):
                 upgrade_cmd=cmd,
             )
             if periodic:
-                self._notify_actionable(
-                    notification,
-                    severity="information",
-                    timeout=12,
-                    action_hint="Press ctrl+n to install.",
+                self._notice_registry.add(notification)
+                await self._surface_update_message(
+                    latest,
+                    self._format_update_summary(
+                        latest=latest,
+                        cli_version=cli_version,
+                        release_age=release_age,
+                        installed_age=installed_age,
+                    )
+                    + "Run /update, or press ctrl+n to review install options.",
+                    toast_on_failure=False,
                 )
-                await asyncio.to_thread(mark_update_notified, latest)
                 return
             # Register without a toast: the dedicated modal is
             # the update's UI, so a parallel toast would be
@@ -6640,6 +6854,24 @@ class DeepAgentsApp(App):
                     severity="warning",
                     timeout=10,
                 )
+
+    @staticmethod
+    def _format_update_summary(
+        *,
+        latest: str,
+        cli_version: str,
+        release_age: str,
+        installed_age: str,
+    ) -> str:
+        """Return the shared "what is available, what is installed" sentence pair.
+
+        Ends with a trailing space so callers can append their own call to
+        action.
+        """
+        return (
+            f"Update available: v{latest}{release_age}. "
+            f"Currently installed: {cli_version}{installed_age}. "
+        )
 
     @staticmethod
     def _build_update_notification(
@@ -10573,6 +10805,7 @@ class DeepAgentsApp(App):
                 # keep the status bar showing "Resuming" after the transcript
                 # is already restored. Also fires when `should_load_history` is
                 # false, since nothing is being restored on that path either.
+                self._startup_history_ready.set()
                 self._clear_resume_indicator()
             if not should_load_history and self._has_initial_submission():
                 try:
@@ -10617,8 +10850,9 @@ class DeepAgentsApp(App):
                 initial_submitted = True
         finally:
             self._startup_sequence_running = False
-            # Normally cleared right after history loading; this covers setup
+            # Normally settled right after history loading; these cover setup
             # that fails before reaching it.
+            self._startup_history_ready.set()
             self._clear_resume_indicator()
 
         # Drain after the sequence completes. When an initial submission was

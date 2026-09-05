@@ -9,11 +9,14 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import signal
-from collections import defaultdict, deque
+import tempfile
+from collections import defaultdict
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
+from pathlib import Path
 from types import FrameType
 from typing import TYPE_CHECKING, cast
 
@@ -31,11 +34,13 @@ from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
     AgentRuntime,
+    BackgroundTaskRuntime,
     ChannelAdapter,
     ChannelMedia,
     ChannelMessage,
     ChannelReaction,
     CronScheduler,
+    MCPReloadableRuntime,
     ReactionChannelAdapter,
     ToolApprovalDecision,
     ToolApprovalRequest,
@@ -53,7 +58,6 @@ from deepagents_talon.speech import transcribe_voice_message
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
     from deepagents_talon.config import TalonConfig
     from deepagents_talon.cron.jobs import CronJob
@@ -65,7 +69,11 @@ logger = logging.getLogger(__name__)
 
 _STOP_COMMAND = "/stop"
 _NEW_COMMAND = "/new"
+_MCP_RELOAD_COMMAND = "/mcp-reload"
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
+_MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
+_MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
+_MCP_RELOAD_UNAVAILABLE_MESSAGE = "MCP configuration reload is unavailable."
 _APPROVE_REPLIES = frozenset({"approve", "approved", "yes", "y"})
 _DENY_REPLIES = frozenset({"deny", "denied", "reject", "rejected", "no", "n"})
 _RESET_THREAD_SEPARATOR = ":talon-reset:"
@@ -77,7 +85,6 @@ _CANCEL_TIMEOUT_MESSAGE = (
     "Could not stop the current run within 30 seconds. Your new message was not started. "
     "Restart Talon to recover."
 )
-_QUEUED_MESSAGE = "Queued your message. It will run after the current response."
 _EMOJI_VARIATION_SELECTOR = "\ufe0f"
 _EMOJI_SKIN_TONES = frozenset(
     {
@@ -103,15 +110,7 @@ class _Turn:
     conversation_id: str
     provider: str | None
     generation: int
-
-
-@dataclass(frozen=True, slots=True)
-class _QueuedTurn:
-    channel: ChannelAdapter
-    message: ChannelMessage
-    conversation_root: str
-    conversation_id: str
-    provider: str | None
+    recovery_degraded: bool
 
 
 @dataclass(slots=True)
@@ -186,16 +185,16 @@ class TalonHost:
         self._cron_controls: dict[str, _CronControl] = {}
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._conversation_tasks: defaultdict[str, set[asyncio.Task[None]]] = defaultdict(set)
-        self._queued_turns: defaultdict[str, deque[_QueuedTurn]] = defaultdict(deque)
         self._generations: defaultdict[str, int] = defaultdict(int)
         self._blocked: set[str] = set()
-        self._conversation_resets: dict[str, int] = {}
+        self._conversation_resets = _load_conversation_resets(config.conversation_state_path)
         self._pending_tool_approvals: dict[str, _PendingToolApproval] = {}
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
         self._stopped = asyncio.Event()
         self._running = False
+        self._background_delivery: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -225,6 +224,10 @@ class TalonHost:
 
         self._stopped.clear()
         self._running = True
+        if isinstance(self.agent, BackgroundTaskRuntime) and self.agent.local_tasks is not None:
+            self._background_delivery = asyncio.create_task(
+                self._deliver_background_results(), name="talon-background-results"
+            )
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
 
     async def stop(self) -> None:
@@ -234,6 +237,10 @@ class TalonHost:
             return
 
         self._running = False
+        if self._background_delivery is not None:
+            self._background_delivery.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._background_delivery
         await self._cancel_all()
 
         for channel in reversed(self.channels):
@@ -293,6 +300,10 @@ class TalonHost:
                 )
                 return
 
+            if command == _MCP_RELOAD_COMMAND:
+                await self._reload_mcp_configuration(channel, channel_conversation_id)
+                return
+
             pending = self._pending_tool_approvals.get(agent_conversation_id)
             if pending is not None:
                 authorized = pending.sender_id is None or message.sender_id == pending.sender_id
@@ -308,13 +319,30 @@ class TalonHost:
             ):
                 return
 
-            await self._submit_agent_turn(
+            await self._replace_agent_turn(
                 channel,
                 message,
                 conversation_root,
                 agent_conversation_id,
                 provider,
             )
+
+    async def _reload_mcp_configuration(
+        self,
+        channel: ChannelAdapter,
+        conversation_id: str,
+    ) -> None:
+        if not isinstance(self.agent, MCPReloadableRuntime):
+            message = _MCP_RELOAD_UNAVAILABLE_MESSAGE
+        else:
+            try:
+                await self.agent.reload_mcp_configuration()
+            except Exception:  # noqa: BLE001  # Do not disclose config or transport errors.
+                logger.warning("MCP configuration reload failed", exc_info=True)
+                message = _MCP_RELOAD_FAILURE_MESSAGE
+            else:
+                message = _MCP_RELOAD_SUCCESS_MESSAGE
+        await send_with_retry(lambda: channel.send_message(conversation_id, message))
 
     async def receive_reaction(self, channel: ChannelAdapter, reaction: ChannelReaction) -> None:
         """Handle one inbound channel reaction.
@@ -347,7 +375,7 @@ class TalonHost:
             env=self.config.env,
         )
 
-    async def _submit_agent_turn(
+    async def _replace_agent_turn(
         self,
         channel: ChannelAdapter,
         message: ChannelMessage,
@@ -361,77 +389,33 @@ class TalonHost:
             )
             return
         active = self._tasks.get(conversation_id)
-        queued = _QueuedTurn(
-            channel,
-            message,
-            conversation_root,
-            conversation_id,
-            provider,
-        )
-        pending = self._queued_turns.get(conversation_id)
-        if (active is not None and not active.done()) or pending:
-            self._queued_turns[conversation_id].append(queued)
-            await send_with_retry(
-                lambda: channel.send_message(message.conversation_id, _QUEUED_MESSAGE)
-            )
-            if active is None or active.done():
-                self._start_next_queued_turn(conversation_id)
-            return
-        self._start_agent_turn(queued)
-
-    def _start_agent_turn(self, queued: _QueuedTurn) -> None:
-        conversation_id = queued.conversation_id
+        recovery_degraded = False
+        if active is not None and not active.done():
+            outcome = await self._cancel_active(conversation_id, active, recover=True)
+            if outcome is _CancelOutcome.TIMEOUT:
+                await send_with_retry(
+                    lambda: channel.send_message(message.conversation_id, _CANCEL_TIMEOUT_MESSAGE)
+                )
+                return
+            recovery_degraded = outcome is _CancelOutcome.DEGRADED
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
         task = asyncio.create_task(
             self._run_agent_turn(
-                queued.channel,
-                queued.message,
+                channel,
+                message,
                 _Turn(
-                    queued.conversation_root,
+                    conversation_root,
                     conversation_id,
-                    queued.provider,
+                    provider,
                     generation,
+                    recovery_degraded,
                 ),
             ),
             name=f"talon:{conversation_id}",
         )
         self._tasks[conversation_id] = task
         self._track_conversation_task(conversation_id, task)
-        task.add_done_callback(
-            lambda _done, current=conversation_id, root=queued.conversation_root: (
-                self._schedule_queue_drain(current, root)
-            )
-        )
-
-    def _start_next_queued_turn(self, conversation_id: str) -> None:
-        queue = self._queued_turns.get(conversation_id)
-        if not queue:
-            self._queued_turns.pop(conversation_id, None)
-            return
-        queued = queue.popleft()
-        if not queue:
-            del self._queued_turns[conversation_id]
-        self._start_agent_turn(queued)
-
-    def _schedule_queue_drain(self, conversation_id: str, conversation_root: str) -> None:
-        if not self._running or not self._queued_turns.get(conversation_id):
-            return
-        task = asyncio.create_task(
-            self._drain_queue(conversation_id, conversation_root),
-            name=f"talon-queue:{conversation_id}",
-        )
-        self._track_conversation_task(conversation_id, task)
-
-    async def _drain_queue(self, conversation_id: str, conversation_root: str) -> None:
-        async with self._locks[conversation_root]:
-            if self._agent_conversation_id(conversation_root) != conversation_id:
-                self._queued_turns.pop(conversation_id, None)
-                return
-            active = self._tasks.get(conversation_id)
-            if active is not None and not active.done():
-                return
-            self._start_next_queued_turn(conversation_id)
 
     async def _run_agent_turn(
         self,
@@ -447,7 +431,14 @@ class TalonHost:
             "sender_id": message.sender_id,
             "message_id": message.message_id,
             **message.metadata,
+            "talon_origin": {
+                "channel": _channel_key(channel, turn.provider),
+                "conversation_id": message.conversation_id,
+                "conversation_root": turn.conversation_root,
+            },
         }
+        if turn.recovery_degraded:
+            metadata["interruption_recovery"] = "failed"
         origin_conversation_id = _origin_conversation_id(message)
         if origin_conversation_id != agent_conversation_id:
             metadata["origin_conversation_id"] = origin_conversation_id
@@ -493,6 +484,47 @@ class TalonHost:
                 and not suppress_result
             ):
                 await self._deliver_agent_result(channel, message.conversation_id, result)
+
+    async def _deliver_background_results(self) -> None:
+        if not isinstance(self.agent, BackgroundTaskRuntime) or self.agent.local_tasks is None:
+            return
+        supervisor = self.agent.local_tasks
+        channels = {
+            _channel_key(channel, await _channel_provider(channel)): channel
+            for channel in self.channels
+        }
+        while self._running:
+            try:
+                for record in supervisor.pending_results():
+                    if await self._deliver_background_result(record, channels):
+                        supervisor.acknowledge(record["id"], revision=record["revision"])
+            except Exception:  # noqa: BLE001  # delivery failures must not stop the ticker
+                logger.warning("Could not deliver local subagent result; will retry")
+            await asyncio.sleep(1)
+
+    async def _deliver_background_result(
+        self, record: dict[str, str], channels: Mapping[str, ChannelAdapter]
+    ) -> bool:
+        origin = json.loads(record["origin"])
+        channel = channels.get(origin.get("channel"))
+        root, reply = origin.get("conversation_root"), origin.get("conversation_id")
+        if channel is None or not isinstance(root, str) or not isinstance(reply, str):
+            return True
+        async with self._locks[root]:
+            if (
+                isinstance(self.agent, BackgroundTaskRuntime)
+                and self.agent.local_tasks is not None
+                and not self.agent.local_tasks.result_is_current(record["id"], record["revision"])
+            ):
+                return False
+            if self._agent_conversation_id(root) != record["owner"]:
+                return True
+            active = self._tasks.get(record["owner"])
+            if record["owner"] in self._blocked or (active is not None and not active.done()):
+                return False
+            text = f"Local task {record['id']} ({record['status']}):\n{record['result']}"
+            result = await send_with_retry(lambda: channel.send_message(reply, text))
+            return result.success
 
     async def run_scheduled_job(self, job: CronJob) -> str:
         """Invoke the agent for one scheduled job.
@@ -556,7 +588,7 @@ class TalonHost:
                 self.config.env,
                 assistant_id=self.config.assistant_id,
                 conversation_id=conversation_id,
-                metadata=metadata,
+                metadata={key: value for key, value in metadata.items() if key != "talon_origin"},
             ):
                 return await self.agent.invoke(
                     AgentRequest(
@@ -584,15 +616,18 @@ class TalonHost:
         conversation_root: str,
     ) -> None:
         current_conversation_id = self._agent_conversation_id(conversation_root)
-        self._queued_turns.pop(current_conversation_id, None)
         outcome = await self._cancel_conversation_tasks(current_conversation_id)
         if outcome is _CancelOutcome.TIMEOUT:
             await send_with_retry(
                 lambda: channel.send_message(conversation_id, _CANCEL_TIMEOUT_MESSAGE)
             )
             return
-        next_reset = self._conversation_resets.get(conversation_root, 0) + 1
-        self._conversation_resets[conversation_root] = next_reset
+        next_resets = {
+            **self._conversation_resets,
+            conversation_root: self._conversation_resets.get(conversation_root, 0) + 1,
+        }
+        _save_conversation_resets(self.config.conversation_state_path, next_resets)
+        self._conversation_resets = next_resets
         await send_with_retry(
             lambda: channel.send_message(conversation_id, _NEW_CONVERSATION_MESSAGE)
         )
@@ -605,7 +640,6 @@ class TalonHost:
         reply_conversation_id: str | None = None,
     ) -> None:
         target_conversation_id = reply_conversation_id or conversation_id
-        self._queued_turns.pop(conversation_id, None)
         outcome = await self._cancel_conversation_tasks(conversation_id)
         if outcome is _CancelOutcome.NONE:
             message = "No in-flight run to stop."
@@ -690,7 +724,6 @@ class TalonHost:
         return _conversation_key(channel_key, conversation_id)
 
     async def _cancel_all(self) -> None:
-        self._queued_turns.clear()
         tasks = {
             task
             for task in [
@@ -1309,6 +1342,44 @@ def _json_preview(value: object) -> str:
         return json.dumps(value, sort_keys=True, default=str)
     except (TypeError, ValueError):
         return str(value)
+
+
+def _load_conversation_resets(path: Path) -> dict[str, int]:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        msg = f"failed to load conversation state from {path}"
+        raise RuntimeError(msg) from exc
+    if not isinstance(state, dict) or any(
+        not isinstance(key, str)
+        or not isinstance(reset, int)
+        or isinstance(reset, bool)
+        or reset < 1
+        for key, reset in state.items()
+    ):
+        msg = f"invalid conversation state in {path}"
+        raise RuntimeError(msg)
+    return state
+
+
+def _save_conversation_resets(path: Path, resets: Mapping[str, int]) -> None:
+    descriptor, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temporary_path = Path(temporary_name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "w", encoding="utf-8") as file:
+            json.dump(resets, file, sort_keys=True)
+            file.flush()
+            os.fsync(file.fileno())
+        temporary_path.replace(path)
+    except Exception:
+        with contextlib.suppress(OSError):
+            os.close(descriptor)
+        with contextlib.suppress(OSError):
+            temporary_path.unlink()
+        raise
 
 
 def _parse_tool_approval_reply(text: str) -> ToolApprovalDecision | None:

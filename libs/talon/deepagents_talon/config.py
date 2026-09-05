@@ -126,6 +126,25 @@ class TalonConfig:
         return self.home / "channels"
 
     @property
+    def checkpoint_path(self) -> Path:
+        """SQLite database used for persistent LangGraph checkpoints."""
+        return self._state_path("checkpoints.sqlite", "checkpoint database")
+
+    @property
+    def conversation_state_path(self) -> Path:
+        """JSON file used for active conversation generations."""
+        return self._state_path("conversations.json", "conversation state")
+
+    def _state_path(self, name: str, description: str) -> Path:
+        home = self.home.resolve()
+        expected_home = self.home.parent.resolve() / self.home.name
+        state_path = (home / name).resolve()
+        if home != expected_home or state_path.parent != home:
+            msg = f"{description} must remain inside the assistant home"
+            raise TalonConfigError(msg)
+        return state_path
+
+    @property
     def inbound_media_dir(self) -> Path:
         """Directory reserved for downloaded inbound channel media."""
         return self.home / "media" / "inbound"

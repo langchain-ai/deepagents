@@ -294,18 +294,18 @@ class TalonHost:
         provider = await _channel_provider(channel)
         command = _command_name(message.text)
         channel_conversation_id = message.conversation_id
+        if command == _HELP_COMMAND:
+            await send_with_retry(
+                lambda: channel.send_message(channel_conversation_id, _HELP_MESSAGE)
+            )
+            return
+
         conversation_root = self._conversation_root(
             provider or type(channel).__name__,
             channel_conversation_id,
         )
         async with self._locks[conversation_root]:
             agent_conversation_id = self._agent_conversation_id(conversation_root)
-
-            if command == _HELP_COMMAND:
-                await send_with_retry(
-                    lambda: channel.send_message(channel_conversation_id, _HELP_MESSAGE)
-                )
-                return
 
             if command == _NEW_COMMAND:
                 await self._start_new_conversation(

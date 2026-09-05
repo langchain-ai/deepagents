@@ -31,6 +31,7 @@ from pydantic import BaseModel, Field
 from typing_extensions import TypeIs
 
 from deepagents.backends.protocol import BackendProtocol
+from deepagents.middleware._state import prepare_subagent_state
 from deepagents.middleware._utils import append_to_system_message
 from deepagents.middleware.filesystem import FilesystemMiddleware, FilesystemPermission
 from deepagents.middleware.summarization import (
@@ -396,7 +397,6 @@ _EXCLUDED_STATE_KEYS = {
     _FORKED_CONTEXT_KEY,
 }
 """State keys excluded when passing state to isolated subagents."""
-
 
 
 class TaskToolSchema(BaseModel):

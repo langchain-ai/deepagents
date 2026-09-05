@@ -342,6 +342,7 @@ async def test_runtime_requires_approval_for_async_subagent_tools(
 
     await runtime.start()
 
+    assert captured["subagents"] == [async_subagent]
     assert captured["interrupt_on"] == {
         "custom_tool": True,
         "start_async_task": False,
@@ -392,6 +393,7 @@ async def test_runtime_merges_local_and_async_subagents(
             "system_prompt": "Research carefully.",
             "mode": "fork",
         },
+        async_subagent,
     ]
 
 
@@ -581,7 +583,7 @@ async def test_runtime_passes_middleware_to_create_deep_agent(
 
     await runtime.start()
 
-    assert captured["middleware"] == [middleware]
+    assert middleware in captured["middleware"]
 
 
 async def test_runtime_passes_interrupt_on_to_create_deep_agent(
@@ -870,7 +872,7 @@ async def test_runtime_applies_configured_context_size_and_adds_compact_tool(
     assert captured["model"] is model
     assert captured["compact_model"] is model
     assert captured["compact_backend"] is runtime.backend
-    assert captured["middleware"] == [compact]
+    assert compact in captured["middleware"]
 
 
 async def test_runtime_does_not_duplicate_existing_compact_tool_middleware(
@@ -917,7 +919,7 @@ async def test_runtime_does_not_duplicate_existing_compact_tool_middleware(
     await runtime.start()
 
     assert model.profile == {"max_input_tokens": 75_000}
-    assert captured["middleware"] == [existing]
+    assert captured["middleware"].count(existing) == 1
 
 
 async def test_runtime_rejects_invalid_context_size() -> None:

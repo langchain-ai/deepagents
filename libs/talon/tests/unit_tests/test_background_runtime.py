@@ -35,7 +35,7 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
                 content="",
                 tool_calls=[
                     {
-                        "name": "start_local_task",
+                        "name": "task",
                         "id": "launch",
                         "args": {
                             "subagent_type": "researcher",
@@ -82,16 +82,11 @@ async def test_real_graph_launch_and_child_approval(tmp_path, monkeypatch):
     try:
         result = await runtime.invoke(AgentRequest("chat", "delegate", approval_handler=approve))
         assert result.text == "Started background work"
-        assert approvals == ["start_local_task"]
-        supervisor = runtime.local_tasks
-        workers = list(supervisor._workers.items())
-        await asyncio.gather(*(worker for _task_id, worker in workers))
-        task_id = supervisor.pending_results()[0]["id"]
-        assert supervisor._task(task_id, "chat")["status"] == "interrupted"
+        assert approvals == []
+        await asyncio.gather(*(job.worker for job in runtime.background._jobs.values()))
         assert effects == []
-        await supervisor.resume(task_id, "chat", "approve")
-        await asyncio.gather(*list(supervisor._workers.values()))
-        assert supervisor._task(task_id, "chat")["status"] == "success"
-        assert effects == ["effect"]
+        results = runtime.background.results("chat")
+        assert len(results) == 1
+        assert "approval" in next(iter(results.values()))
     finally:
         await runtime.stop()

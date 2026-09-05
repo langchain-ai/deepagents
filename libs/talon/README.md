@@ -216,56 +216,27 @@ copied into the Talon agent directory. Talon does not support the old Fleet dire
 startup path or its environment variables; import the zip first, then run Talon against
 the materialized local assistant.
 
-## Reloading and Managing Subagents
+## Background Subagents
 
-Talon rereads local `agents/<name>/AGENTS.md` definitions and the
-`[async_subagents]` section of `~/.deepagents/config.toml` before each turn.
-The main agent can edit these files and call `reload_subagent_configuration`
-to validate the changes explicitly. Changes take effect on the **next turn**;
-active turns keep their original graph. Invalid definitions or failed graph
-construction leave the previous configuration active. Conversation history stays
-on the same checkpoint thread.
+Talon reloads local `agents/<name>/AGENTS.md` definitions and remote
+`[async_subagents]` configuration before each turn. The main agent can also call
+`reload_subagent_configuration` after editing them. Invalid edits retain the last
+valid configuration; running subagents keep their original configuration.
 
-Local agents support both foreground delegation with `task` and independent
-background work with `start_local_task`. Background tasks copy the conversation
-context, pin their prompt and model, and use separate checkpoint threads. Use
-`list_local_tasks`, `check_local_task`, `update_local_task`, `cancel_local_task`,
-and `resume_local_task` to manage them. Follow-up instructions interrupt the child
-and continue its existing thread. New parent messages and `/stop` interrupt the
-parent only; cancel a child explicitly when its work should stop. `/new` starts a
-fresh parent conversation and suppresses notifications from the old conversation.
+`task` launches local subagents and `start_async_task` launches remote subagents.
+Both return immediately. The user can continue chatting while the main agent uses
+`list_subagents` to inspect work and `cancel_subagent` to cancel it. When work
+finishes, its result is passed to the main agent for processing on the next idle
+turn, then the main agent replies to the channel.
 
-Local task launch, update, cancellation, and resume require channel approval.
-Children inherit the runtime's tool approval policy and pause at protected tool
-calls. Inspect a paused task before resuming it with `decision="approve"` or
-`decision="reject"`. Completion and interruption messages are delivered to the
-originating channel when the parent is idle. Task tools remain available after
-their agent definition is deleted.
+Workers and pending results live only in memory and are discarded on restart.
+`/stop` and `/new` cancel all subagents belonging to that conversation; ordinary
+messages interrupt only the main turn. Shutdown cancels all workers. Local tool
+approval policy still applies; a child needing approval reports that it could not
+complete the action. Remote runs cancel when their stream disconnects.
 
-After a process restart, local workers are marked interrupted. They resume only
-on an explicit `resume_local_task` call: an unfinished tool may have already had
-external effects. The original prompt and model are restored; rebuilt workers
-use the current runtime tools and approval policy. Talon limits local execution
-to four concurrent workers, one hour per run, 1 MiB of initial conversation
-context, 64,000 characters per stored result, and 1,000 retained task records.
-Local ownership and status live in `local-tasks.sqlite`; child graph state lives
-in the existing `checkpoints.sqlite` database.
-
-Remote async subagents continue to use the SDK's `start_async_task`,
-`check_async_task`, `list_async_tasks`, `update_async_task`, and `cancel_async_task`
-tools. Talon retains immutable connection revisions, so editing, renaming, or
-removing an agent does not redirect existing tasks. New launches use the current
-definition. Remote workers continue on their server independently of Talon.
-Their results are retrieved with the task tools.
-
-Remote revisions are retained in the private, mode-0600
-`async-subagent-registry.json` file alongside assistant state, with a limit of
-256 revisions and 4 MiB. This file includes originally configured authentication
-headers; credentials are not added to conversation checkpoints. Keep this file
-with checkpoint backups, and retain it while old remote tasks need management.
-For checkpoints predating the registry, start once with the original remote
-definitions before changing them, since historical execution targets cannot be
-reconstructed from task names alone.
+Talon allows four simultaneous subagents, retains at most 128 unprocessed jobs,
+and limits each run to one hour. Completed results are capped at 64,000 characters.
 
 ## Cron Schedules
 

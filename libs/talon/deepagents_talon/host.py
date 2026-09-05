@@ -34,7 +34,7 @@ from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,
     AgentRuntime,
-    BackgroundTaskRuntime,
+    BackgroundRuntime,
     ChannelAdapter,
     ChannelMedia,
     ChannelMessage,
@@ -192,9 +192,12 @@ class TalonHost:
         self._pending_authorizations: dict[str, _PendingAuthorization] = {}
         self._authorization_flows: dict[str, _AuthorizationFlow] = {}
         self._terminal_authorizations: set[str] = set()
+        self._background_loop: asyncio.Task[None] | None = None
+        self._background_routes: dict[
+            str, tuple[ChannelAdapter, ChannelMessage, str, str | None]
+        ] = {}
         self._stopped = asyncio.Event()
         self._running = False
-        self._background_delivery: asyncio.Task[None] | None = None
 
     @property
     def running(self) -> bool:
@@ -224,10 +227,8 @@ class TalonHost:
 
         self._stopped.clear()
         self._running = True
-        if isinstance(self.agent, BackgroundTaskRuntime) and self.agent.local_tasks is not None:
-            self._background_delivery = asyncio.create_task(
-                self._deliver_background_results(), name="talon-background-results"
-            )
+        if isinstance(self.agent, BackgroundRuntime):
+            self._background_loop = asyncio.create_task(self._process_background_results())
         logger.info("Talon host started for assistant %s", self.config.assistant_id)
 
     async def stop(self) -> None:
@@ -237,10 +238,10 @@ class TalonHost:
             return
 
         self._running = False
-        if self._background_delivery is not None:
-            self._background_delivery.cancel()
+        if self._background_loop is not None:
+            self._background_loop.cancel()
             with contextlib.suppress(asyncio.CancelledError):
-                await self._background_delivery
+                await self._background_loop
         await self._cancel_all()
 
         for channel in reversed(self.channels):
@@ -398,6 +399,13 @@ class TalonHost:
                 )
                 return
             recovery_degraded = outcome is _CancelOutcome.DEGRADED
+        if isinstance(self.agent, BackgroundRuntime):
+            self._background_routes[conversation_id] = (
+                channel,
+                message,
+                conversation_root,
+                provider,
+            )
         generation = self._generations[conversation_id] + 1
         self._generations[conversation_id] = generation
         task = asyncio.create_task(
@@ -417,6 +425,37 @@ class TalonHost:
         self._tasks[conversation_id] = task
         self._track_conversation_task(conversation_id, task)
 
+    async def _process_background_results(self) -> None:
+        while self._running:
+            await asyncio.sleep(1)
+            await self._dispatch_background_results()
+
+    async def _dispatch_background_results(self) -> None:
+        if not isinstance(self.agent, BackgroundRuntime):
+            return
+        for owner, (channel, message, root, provider) in list(self._background_routes.items()):
+            async with self._locks[root]:
+                active = self._tasks.get(owner)
+                if active is not None and not active.done():
+                    continue
+                if owner not in self.agent.background.owners():
+                    self._background_routes.pop(owner, None)
+                    continue
+                if owner in self._blocked or self._agent_conversation_id(root) != owner:
+                    continue
+                if self.agent.background.results(owner):
+                    await self._replace_agent_turn(
+                        channel,
+                        ChannelMessage(
+                            message.conversation_id,
+                            "Process the completed background subagent results.",
+                            sender_id=message.sender_id,
+                        ),
+                        root,
+                        owner,
+                        provider,
+                    )
+
     async def _run_agent_turn(
         self,
         channel: ChannelAdapter,
@@ -431,11 +470,6 @@ class TalonHost:
             "sender_id": message.sender_id,
             "message_id": message.message_id,
             **message.metadata,
-            "talon_origin": {
-                "channel": _channel_key(channel, turn.provider),
-                "conversation_id": message.conversation_id,
-                "conversation_root": turn.conversation_root,
-            },
         }
         if turn.recovery_degraded:
             metadata["interruption_recovery"] = "failed"
@@ -484,47 +518,6 @@ class TalonHost:
                 and not suppress_result
             ):
                 await self._deliver_agent_result(channel, message.conversation_id, result)
-
-    async def _deliver_background_results(self) -> None:
-        if not isinstance(self.agent, BackgroundTaskRuntime) or self.agent.local_tasks is None:
-            return
-        supervisor = self.agent.local_tasks
-        channels = {
-            _channel_key(channel, await _channel_provider(channel)): channel
-            for channel in self.channels
-        }
-        while self._running:
-            try:
-                for record in supervisor.pending_results():
-                    if await self._deliver_background_result(record, channels):
-                        supervisor.acknowledge(record["id"], revision=record["revision"])
-            except Exception:  # noqa: BLE001  # delivery failures must not stop the ticker
-                logger.warning("Could not deliver local subagent result; will retry")
-            await asyncio.sleep(1)
-
-    async def _deliver_background_result(
-        self, record: dict[str, str], channels: Mapping[str, ChannelAdapter]
-    ) -> bool:
-        origin = json.loads(record["origin"])
-        channel = channels.get(origin.get("channel"))
-        root, reply = origin.get("conversation_root"), origin.get("conversation_id")
-        if channel is None or not isinstance(root, str) or not isinstance(reply, str):
-            return True
-        async with self._locks[root]:
-            if (
-                isinstance(self.agent, BackgroundTaskRuntime)
-                and self.agent.local_tasks is not None
-                and not self.agent.local_tasks.result_is_current(record["id"], record["revision"])
-            ):
-                return False
-            if self._agent_conversation_id(root) != record["owner"]:
-                return True
-            active = self._tasks.get(record["owner"])
-            if record["owner"] in self._blocked or (active is not None and not active.done()):
-                return False
-            text = f"Local task {record['id']} ({record['status']}):\n{record['result']}"
-            result = await send_with_retry(lambda: channel.send_message(reply, text))
-            return result.success
 
     async def run_scheduled_job(self, job: CronJob) -> str:
         """Invoke the agent for one scheduled job.
@@ -588,7 +581,7 @@ class TalonHost:
                 self.config.env,
                 assistant_id=self.config.assistant_id,
                 conversation_id=conversation_id,
-                metadata={key: value for key, value in metadata.items() if key != "talon_origin"},
+                metadata=metadata,
             ):
                 return await self.agent.invoke(
                     AgentRequest(
@@ -653,9 +646,17 @@ class TalonHost:
 
     async def _cancel_conversation_tasks(self, conversation_id: str) -> _CancelOutcome:
         task = self._tasks.get(conversation_id)
-        if task is None or task.done():
-            return _CancelOutcome.NONE
-        return await self._cancel_active(conversation_id, task, recover=True)
+        outcome = _CancelOutcome.NONE
+        if task is not None and not task.done():
+            outcome = await self._cancel_active(conversation_id, task, recover=True)
+        if isinstance(self.agent, BackgroundRuntime):
+            had_workers = conversation_id in self.agent.background.owners()
+            if not await self.agent.background.cancel(conversation_id):
+                return self._mark_cancellation_timeout(conversation_id)
+            if had_workers and outcome is _CancelOutcome.NONE:
+                outcome = _CancelOutcome.SUCCESS
+        self._background_routes.pop(conversation_id, None)
+        return outcome
 
     async def _cancel_active(
         self,

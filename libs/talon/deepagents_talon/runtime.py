@@ -13,7 +13,6 @@ import os
 import re
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypeGuard, cast
 
@@ -37,7 +36,7 @@ from deepagents_talon.authorization import (
     reset_authorization_handler,
     set_authorization_handler,
 )
-from deepagents_talon.background import BackgroundGraph, LocalTaskSupervisor
+from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.clock import current_time
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
 from deepagents_talon.interfaces import (
@@ -53,7 +52,6 @@ from deepagents_talon.observability import (
     log_event,
     stable_log_ref,
 )
-from deepagents_talon.subagent_registry import SubagentRegistry, VersionedAsyncSubagents
 
 if TYPE_CHECKING:
     from deepagents.backends.protocol import BackendProtocol
@@ -79,9 +77,6 @@ _ASYNC_SUBAGENT_TOOL_NAMES = frozenset(
         "update_async_task",
         "cancel_async_task",
     }
-)
-_LOCAL_TASK_TOOL_NAMES = frozenset(
-    {"start_local_task", "update_local_task", "cancel_local_task", "resume_local_task"}
 )
 RECURSION_LIMIT_ENV_KEY = "DEEPAGENTS_TALON_RECURSION_LIMIT"
 _WORKSPACE_ENV = "DEEPAGENTS_TALON_WORKSPACE"
@@ -306,9 +301,6 @@ class DeepAgentRuntime:
         self.load_subagents = load_subagents
         self._resolved_subagents: list[SubAgent | CompiledSubAgent | AsyncSubAgent] = []
         self.assistant_dir = assistant_dir
-        self._subagent_registry = SubagentRegistry(
-            assistant_dir / "async-subagent-registry.json" if assistant_dir is not None else None
-        )
         self.cron_store = cron_store
         self.env = dict(os.environ if env is None else env)
         self.backend = backend if backend is not None else _default_backend(self.env)
@@ -327,27 +319,15 @@ class DeepAgentRuntime:
             default=None,
         )
         self._tools_lock = asyncio.Lock()
-        self.local_tasks: LocalTaskSupervisor | None = None
-        self._invocation_origin: contextvars.ContextVar[object] = contextvars.ContextVar(
-            "talon_background_origin", default=None
+        self.background = BackgroundSubagents()
+        self._pending_results: contextvars.ContextVar[dict[str, str] | None] = (
+            contextvars.ContextVar("talon_subagent_results", default=None)
         )
 
     async def start(self) -> None:
         """Construct the Deep Agents graph."""
-        if self._graph is not None:
-            return
         self._resolved_subagents = self._resolve_subagents()
-        if self.assistant_dir is not None:
-            self.local_tasks = LocalTaskSupervisor(
-                self.assistant_dir / "local-tasks.sqlite", self._background_graph
-            )
-        try:
-            self._graph = self._create_graph()
-        except BaseException:
-            if self.local_tasks is not None:
-                await self.local_tasks.close()
-                self.local_tasks = None
-            raise
+        self._graph = self._create_graph()
 
     def _create_graph(
         self,
@@ -357,36 +337,20 @@ class DeepAgentRuntime:
     ) -> object:
         resolved = self._resolved_subagents if subagents is None else subagents
         tools = self._build_tools(runtime_tools)
-        if self.local_tasks is not None:
-            definitions = {
-                agent["name"]: self._background_definition(agent)
-                for agent in resolved
-                if "system_prompt" in agent and "graph_id" not in agent and "runnable" not in agent
-            }
-            tools.extend(
-                self.local_tasks.tools(
-                    definitions, factory=partial(self._background_graph, runtime_tools=tuple(tools))
-                )
-            )
         context_size = _context_size_from_env(self.env)
         model = _resolve_model_from_env(self.model, self.env, context_size=context_size)
         middleware = list(self.middleware)
-        remote = [cast("AsyncSubAgent", agent) for agent in resolved if "graph_id" in agent]
-        revisions, current = self._subagent_registry.prepare(remote)
-        if revisions:
-            middleware.append(VersionedAsyncSubagents(revisions, current))
+        middleware.append(self.background.configured(resolved))
         interrupt_on = _interrupt_on_with_async_subagents(
-            self.interrupt_on, has_async_subagents=bool(revisions)
+            self.interrupt_on, has_async_subagents=_has_async_subagents(resolved)
         )
-        if self.local_tasks is not None:
-            interrupt_on = {**(interrupt_on or {}), **dict.fromkeys(_LOCAL_TASK_TOOL_NAMES, True)}
         if context_size is not None and not _has_summarization_tool_middleware(middleware):
             middleware.append(create_summarization_tool_middleware(model, self.backend))
-        graph = create_deep_agent(
+        return create_deep_agent(
             model=model,
             tools=tools,
             system_prompt=self._resolve_system_prompt(),
-            subagents=[agent for agent in resolved if "graph_id" not in agent] or None,
+            subagents=resolved or None,
             backend=self.backend,
             skills=self._resolve_skills(),
             middleware=middleware,
@@ -394,47 +358,12 @@ class DeepAgentRuntime:
             memory=self._resolve_memory(),
             checkpointer=self.checkpointer,
         )
-        self._subagent_registry.commit(revisions)
-        return graph
-
-    def _background_definition(
-        self, agent: SubAgent | CompiledSubAgent | AsyncSubAgent
-    ) -> dict[str, str]:
-        return {
-            "name": agent["name"],
-            "model": str(agent.get("model") or self.model),
-            "system_prompt": str(self._resolve_system_prompt() or "")
-            + "\n\n"
-            + str(agent.get("system_prompt", "")),
-        }
-
-    def _background_graph(
-        self,
-        definition: dict[str, str],
-        *,
-        runtime_tools: Sequence[BaseTool | Callable[..., object]] | None = None,
-    ) -> BackgroundGraph:
-        return cast(
-            "BackgroundGraph",
-            create_deep_agent(
-                model=_resolve_model_from_env(
-                    definition["model"], self.env, context_size=_context_size_from_env(self.env)
-                ),
-                tools=list(self.tools if runtime_tools is None else runtime_tools),
-                system_prompt=definition["system_prompt"],
-                backend=self.backend,
-                skills=self._resolve_skills(),
-                memory=self._resolve_memory(),
-                middleware=list(self.middleware),
-                interrupt_on=self.interrupt_on,
-                checkpointer=self.checkpointer,
-            ),
-        )
 
     async def stop(self) -> None:
         """Release runtime resources."""
-        if self.local_tasks is not None:
-            await self.local_tasks.close()
+        if not await self.background.cancel():
+            msg = "Background subagents did not stop; runtime resources remain open"
+            raise RuntimeError(msg)
         self._graph = None
         cleanup = getattr(self.checkpointer, "close", None)
         if callable(cleanup):
@@ -486,7 +415,8 @@ class DeepAgentRuntime:
         except Exception:  # noqa: BLE001  # a failed reload must leave the current graph usable
             logger.warning("Subagent reload failed; keeping the previous configuration")
         graph_token = self._invocation_graph.set(self._graph)
-        origin_token = self._invocation_origin.set(request.metadata.get("talon_origin", {}))
+        pending = self.background.results(request.conversation_id)
+        pending_token = self._pending_results.set(pending)
         activity = self._activity_callback(request)
         if activity is not None:
             activity.run_started(request.metadata.get("trigger"))
@@ -502,9 +432,10 @@ class DeepAgentRuntime:
             reset_authorization_handler(authorization_token)
             _CRON_ORIGIN.reset(token)
             self._invocation_graph.reset(graph_token)
-            self._invocation_origin.reset(origin_token)
+            self._pending_results.reset(pending_token)
         if activity is not None:
             activity.run_completed(text)
+        self.background.acknowledge(pending)
         return AgentResult(text=text)
 
     async def _refresh_runtime_tools(self) -> None:
@@ -547,7 +478,7 @@ class DeepAgentRuntime:
             "reload_subagent_configuration",
             description=(
                 "Validate and reload Talon's subagent definitions after editing them. "
-                "Definitions activate next turn; existing tasks keep their original definition."
+                "Definitions activate next turn; running local tasks keep their original graph."
             ),
         )
         async def reload_subagent_configuration() -> dict[str, str]:
@@ -618,7 +549,15 @@ class DeepAgentRuntime:
         activity: AgentActivityCallback | None,
     ) -> object:
         return await self._invoke_payload_with_retries(
-            {"messages": [{"role": "user", "content": content}]},
+            {
+                "messages": [
+                    *[
+                        {"role": "user", "id": task_id, "content": result}
+                        for task_id, result in (self._pending_results.get() or {}).items()
+                    ],
+                    {"role": "user", "content": content},
+                ]
+            },
             conversation_id,
             activity,
         )
@@ -640,10 +579,7 @@ class DeepAgentRuntime:
         invoke = self._graph_invoke()
         config: dict[str, object] = {
             "recursion_limit": self.recursion_limit,
-            "configurable": {
-                "thread_id": conversation_id,
-                "talon_origin": self._invocation_origin.get(),
-            },
+            "configurable": {"thread_id": conversation_id},
         }
         if activity is not None:
             config["callbacks"] = [activity]

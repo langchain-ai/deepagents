@@ -13,7 +13,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from deepagents_talon.authorization import AuthorizationHandler
-    from deepagents_talon.background import LocalTaskSupervisor
+    from deepagents_talon.background import BackgroundSubagents
 
 
 @dataclass(frozen=True, slots=True)
@@ -286,7 +286,9 @@ class MCPReloadableRuntime(Protocol):
 
 
 @runtime_checkable
-class BackgroundTaskRuntime(Protocol):
-    """Optional local-worker supervisor whose results the host can deliver."""
+class BackgroundRuntime(Protocol):
+    """Optional runtime capability for expendable background subagents."""
 
-    local_tasks: LocalTaskSupervisor | None
+    @property
+    def background(self) -> BackgroundSubagents:
+        """Workers whose results need a main-agent turn."""

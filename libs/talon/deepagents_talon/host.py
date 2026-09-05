@@ -70,6 +70,21 @@ logger = logging.getLogger(__name__)
 _STOP_COMMAND = "/stop"
 _NEW_COMMAND = "/new"
 _MCP_RELOAD_COMMAND = "/mcp-reload"
+_HELP_COMMAND = "/help"
+_HELP_MESSAGE = (
+    "Talon is your personal agent in chat. Send a message to ask for help or get work done; "
+    "ask for reminders or recurring tasks to schedule them. "
+    "Each conversation keeps its context.\n\n"
+    "/help — Show this guide.\n"
+    "/new — Stop current work and start a fresh conversation.\n"
+    "/stop — Stop current work.\n"
+    "/mcp-reload — Reload MCP configuration after manual edits.\n\n"
+    "MCP: Ask to view, add, update, or remove a server (Linux/macOS), "
+    "then approve the change when prompted. Updated tools are available next turn.\n"
+    "OAuth: Ask to authenticate a configured MCP server. Open the sign-in link, "
+    "follow the prompts, and paste the full callback URL into the same chat when asked. "
+    "Send /stop to cancel."
+)
 _NEW_CONVERSATION_MESSAGE = "Started a fresh conversation."
 _MCP_RELOAD_SUCCESS_MESSAGE = "Reloaded MCP configuration."
 _MCP_RELOAD_FAILURE_MESSAGE = "Could not reload MCP configuration. Check Talon logs."
@@ -285,6 +300,12 @@ class TalonHost:
         )
         async with self._locks[conversation_root]:
             agent_conversation_id = self._agent_conversation_id(conversation_root)
+
+            if command == _HELP_COMMAND:
+                await send_with_retry(
+                    lambda: channel.send_message(channel_conversation_id, _HELP_MESSAGE)
+                )
+                return
 
             if command == _NEW_COMMAND:
                 await self._start_new_conversation(

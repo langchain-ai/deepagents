@@ -152,6 +152,12 @@ LANGSMITH_PROJECT=deepagents-talon
 
 When enabled, Talon wraps each agent run in a LangSmith tracing context with assistant id, conversation id, trigger metadata, and source message metadata.
 
+## Chat commands
+
+Send `/help` for a brief guide to Talon, its built-in commands (`/new`, `/stop`,
+and `/mcp-reload`), and using MCP configuration and OAuth through chat. Help does
+not interrupt current work or consume a pending approval or sign-in response.
+
 ## MCP Tools
 
 Talon loads MCP servers from `~/.deepagents/.mcp.json`. Set `DEEPAGENTS_TALON_MCP_CONFIG` to use a different path. For user-level MCP servers, edit the standard file:

@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, TypedDict, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -17,7 +18,7 @@ from langgraph.checkpoint.base import get_checkpoint_metadata
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping
+    from collections.abc import AsyncIterator, Callable, Mapping
 
     from langchain_core.runnables import RunnableConfig
     from langchain_core.tools import BaseTool
@@ -70,14 +71,20 @@ class ConversationSaver(AsyncSqliteSaver):
             ) as cursor:
                 migrated = await cursor.fetchone()
             if migrated is None:
-                try:
+                async with self._transaction():
                     await self._backfill()
                     await self.conn.execute("INSERT INTO conversation_archive_version VALUES (1)")
-                    await self.conn.commit()
-                except BaseException:
-                    await self.conn.rollback()
-                    raise
             self._archive_ready = True
+
+    @asynccontextmanager
+    async def _transaction(self) -> AsyncIterator[None]:
+        """Commit on success or roll back on failure while the caller holds the lock."""
+        try:
+            yield
+            await self.conn.commit()
+        except BaseException:
+            await self.conn.rollback()
+            raise
 
     async def _backfill(self) -> None:
         async with self.conn.execute(
@@ -114,15 +121,11 @@ class ConversationSaver(AsyncSqliteSaver):
                     msg = "Legacy history was already assigned to another channel"
                     raise ValueError(msg)
                 return
-            try:
+            async with self._transaction():
                 await self._import_unscoped(channel)
                 await self.conn.execute(
                     "INSERT INTO conversation_legacy_import VALUES (?)", (channel,)
                 )
-                await self.conn.commit()
-            except BaseException:
-                await self.conn.rollback()
-                raise
 
     async def _import_unscoped(self, channel: str) -> None:
         async with self.conn.execute(
@@ -163,28 +166,23 @@ class ConversationSaver(AsyncSqliteSaver):
         namespace = settings.get("checkpoint_ns", "")
         kind, data = self.serde.dumps_typed(checkpoint)
         stored_metadata = get_checkpoint_metadata(config, metadata)
-        async with self.lock:
-            try:
-                await self.conn.execute(
-                    "INSERT OR REPLACE INTO checkpoints "
-                    "(thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, "
-                    "type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        session_id,
-                        namespace,
-                        checkpoint["id"],
-                        settings.get("checkpoint_id"),
-                        kind,
-                        data,
-                        json.dumps(stored_metadata).encode(),
-                    ),
-                )
-                if not namespace:
-                    await self._index(session_id, checkpoint, stored_metadata)
-                await self.conn.commit()
-            except BaseException:
-                await self.conn.rollback()
-                raise
+        async with self.lock, self._transaction():
+            await self.conn.execute(
+                "INSERT OR REPLACE INTO checkpoints "
+                "(thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, "
+                "type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    namespace,
+                    checkpoint["id"],
+                    settings.get("checkpoint_id"),
+                    kind,
+                    data,
+                    json.dumps(stored_metadata).encode(),
+                ),
+            )
+            if not namespace:
+                await self._index(session_id, checkpoint, stored_metadata)
         return {
             "configurable": {
                 "thread_id": session_id,
@@ -308,28 +306,23 @@ class ConversationSaver(AsyncSqliteSaver):
         """
         await self.setup()
         params = (scope[_SCOPE_CHANNEL], scope[_SCOPE_CHAT])
-        async with self.lock:
-            try:
-                for table in ("checkpoints", "writes"):
-                    await self.conn.execute(
-                        f"DELETE FROM {table} WHERE thread_id IN "  # noqa: S608  # Fixed table names.
-                        "(SELECT session_id FROM conversation_sessions "
-                        "WHERE channel = ? AND chat = ?)",
-                        params,
-                    )
+        async with self.lock, self._transaction():
+            for table in ("checkpoints", "writes"):
                 await self.conn.execute(
-                    "DELETE FROM conversation_chunks WHERE session_id IN "
+                    f"DELETE FROM {table} WHERE thread_id IN "  # noqa: S608  # Fixed table names.
                     "(SELECT session_id FROM conversation_sessions "
                     "WHERE channel = ? AND chat = ?)",
                     params,
                 )
-                await self.conn.execute(
-                    "DELETE FROM conversation_sessions WHERE channel = ? AND chat = ?", params
-                )
-                await self.conn.commit()
-            except BaseException:
-                await self.conn.rollback()
-                raise
+            await self.conn.execute(
+                "DELETE FROM conversation_chunks WHERE session_id IN "
+                "(SELECT session_id FROM conversation_sessions "
+                "WHERE channel = ? AND chat = ?)",
+                params,
+            )
+            await self.conn.execute(
+                "DELETE FROM conversation_sessions WHERE channel = ? AND chat = ?", params
+            )
 
     async def adelete_thread(self, thread_id: str) -> None:
         """Delete a thread's checkpoint state and archived messages.
@@ -338,22 +331,17 @@ class ConversationSaver(AsyncSqliteSaver):
             thread_id: Exact session identifier to erase.
         """
         await self.setup()
-        async with self.lock:
-            try:
-                for table, column in (
-                    ("checkpoints", "thread_id"),
-                    ("writes", "thread_id"),
-                    ("conversation_chunks", "session_id"),
-                    ("conversation_sessions", "session_id"),
-                ):
-                    await self.conn.execute(
-                        f"DELETE FROM {table} WHERE {column} = ?",  # noqa: S608  # Fixed identifiers.
-                        (thread_id,),
-                    )
-                await self.conn.commit()
-            except BaseException:
-                await self.conn.rollback()
-                raise
+        async with self.lock, self._transaction():
+            for table, column in (
+                ("checkpoints", "thread_id"),
+                ("writes", "thread_id"),
+                ("conversation_chunks", "session_id"),
+                ("conversation_sessions", "session_id"),
+            ):
+                await self.conn.execute(
+                    f"DELETE FROM {table} WHERE {column} = ?",  # noqa: S608  # Fixed identifiers.
+                    (thread_id,),
+                )
 
 
 def conversation_tools(

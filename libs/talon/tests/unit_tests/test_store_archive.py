@@ -16,6 +16,101 @@ from tests.store_archive_contract import (
 )
 
 
+class CountingStore(InMemoryStore):
+    reads = 0
+
+    async def aget(self, namespace, key, *, refresh_ttl=True):
+        self.reads += 1
+        return await super().aget(namespace, key, refresh_ttl=refresh_ttl)
+
+
+@pytest.mark.parametrize(
+    "options",
+    [
+        {"query": "missing"},
+        {"query": "rare"},
+        {"after": 1},
+        {"session_id": "session"},
+        {"session_id": "session", "query": "missing"},
+        {"session_id": "session", "query": "rare"},
+    ],
+)
+async def test_retrieval_budget_bounds_reads_and_releases_lock(options):
+    metadata = CountingStore()
+    async with StoreConversationArchive(metadata, namespace=("budget",)).open() as archive:
+        await archive.append(
+            SCOPE,
+            "session",
+            "time",
+            [
+                HumanMessage("rare" if index == 500 else "ordinary", id=str(index))
+                for index in range(501)
+            ],
+        )
+        metadata.reads = 0
+        with pytest.raises(RuntimeError, match="scan limit exceeded"):
+            await archive.entries(SCOPE, **options)
+        assert metadata.reads <= 1003  # Recovery, scope/session lookup, 500 chunks and owners.
+        await asyncio.wait_for(
+            archive.append(SCOPE, "session", "later", [HumanMessage("still writable")]),
+            timeout=1,
+        )
+        assert (await archive.entries(SCOPE, limit=1))[0]["text"] == "still writable"
+
+
+async def test_retrieval_exact_budget_preserves_chronological_pages():
+    metadata = CountingStore()
+    async with StoreConversationArchive(metadata, namespace=("boundary",)).open() as archive:
+        await archive.append(
+            SCOPE,
+            "session",
+            "time",
+            [HumanMessage(str(index), id=str(index)) for index in range(500)],
+        )
+        assert await archive.entries(SCOPE, query="missing") == []
+        first = await archive.entries(SCOPE, session_id="session", limit=2)
+        second = await archive.entries(
+            SCOPE, session_id="session", after=first[-1]["cursor"], limit=2
+        )
+        assert [entry["text"] for entry in first + second] == ["0", "1", "2", "3"]
+        latest = await archive.entries(SCOPE, limit=1)
+        metadata.reads = 0
+        assert await archive.entries(SCOPE, session_id="session", after=latest[0]["cursor"]) == []
+        assert metadata.reads <= 4
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+async def test_conversation_budget_counts_empty_and_deleted_sessions(deleted):
+    metadata = CountingStore()
+    async with StoreConversationArchive(metadata, namespace=("listing",)).open() as archive:
+        await archive.append(SCOPE, "retained", "time", [HumanMessage("retained")])
+        for index in range(501):
+            await archive.append(SCOPE, str(index), "time", [])
+            if deleted:
+                await archive.delete_session(str(index))
+        metadata.reads = 0
+        with pytest.raises(RuntimeError, match="scan limit exceeded"):
+            await archive.conversations(SCOPE)
+        assert metadata.reads <= 502
+
+
+async def test_transcript_budget_counts_deleted_chunks_and_reset_remains_complete():
+    metadata = CountingStore()
+    async with StoreConversationArchive(metadata, namespace=("deleted",)).open() as archive:
+        await archive.append(SCOPE, "retained", "time", [HumanMessage("retained")])
+        await archive.append(
+            SCOPE, "deleted", "time", [HumanMessage("erase", id=str(index)) for index in range(501)]
+        )
+        await archive.delete_session("deleted")
+        metadata.reads = 0
+        with pytest.raises(RuntimeError, match="scan limit exceeded"):
+            await archive.entries(SCOPE)
+        assert metadata.reads <= 502
+        assert await archive.sessions(SCOPE) == ["retained"]
+        await archive.delete_session("retained")
+        assert await archive.entries(SCOPE) == []
+
+
 @asynccontextmanager
 async def stores(backend, tmp_path):
     if backend == "memory":

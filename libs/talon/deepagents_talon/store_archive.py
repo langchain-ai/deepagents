@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from deepagents_talon.history import ArchiveEntry, ArchiveScope, ConversationSummary
 
 _MAX_PAGE_SIZE = 20
+_MAX_SCAN = 500
 
 
 def number(record: Record, key: str) -> int:
@@ -257,10 +258,10 @@ class StoreConversationArchive:
                 scoped = await self.records.get(scope_key(scope)) or {}
                 cursor, link = number(scoped, "head"), "previous_scope"
             hits: deque[ArchiveEntry] = deque(maxlen=limit)
-            async for identifier, record in self.records.chain(cursor, link):
-                if (session_id and identifier <= after) or (
-                    not session_id and after and identifier >= after
-                ):
+            async for identifier, record in self._retrieval_chain(cursor, link):
+                if session_id and identifier <= after:
+                    break
+                if not session_id and after and identifier >= after:
                     continue
                 entry = await self.visible(record, scope)
                 if (
@@ -273,6 +274,18 @@ class StoreConversationArchive:
                         break
             return list(reversed(hits)) if session_id else list(hits)
 
+    async def _retrieval_chain(self, cursor: int, link: str) -> AsyncIterator[tuple[int, Record]]:
+        scanned = 0
+        async for identifier, record in self.records.chain(cursor, link):
+            yield identifier, record
+            scanned += 1
+            if scanned == _MAX_SCAN and number(record, link):
+                msg = (
+                    "Conversation history scan limit exceeded (500 records); "
+                    "no partial page returned"
+                )
+                raise RuntimeError(msg)
+
     async def entries(
         self,
         scope: ArchiveScope,
@@ -284,12 +297,17 @@ class StoreConversationArchive:
     ) -> list[ArchiveEntry]:
         """Read or search bounded, scoped transcripts.
 
+        Scans at most 500 ordering records, including skipped and deleted records.
+
         Args:
             scope: Trusted channel and chat identity.
             query: Literal words to match against complete message revisions.
             session_id: Read this session chronologically when supplied.
             after: Previous result cursor.
             limit: Maximum result count, from 1 to 20.
+
+        Raises:
+            RuntimeError: The scan budget is exhausted before a complete page is known.
         """
         _bounds(after, limit)
         await self.setup()
@@ -310,13 +328,16 @@ class StoreConversationArchive:
             scope: Trusted channel and chat identity.
             after: Previous session cursor.
             limit: Maximum result count, from 1 to 20.
+
+        Raises:
+            RuntimeError: More than 500 ordering records are needed to complete the page.
         """
         _bounds(after, limit)
         await self.setup()
         async with self.records.access():
             scoped = await self.records.get(scope_key(scope)) or {}
             results: list[ConversationSummary] = []
-            async for cursor, record in self.records.chain(
+            async for cursor, record in self._retrieval_chain(
                 number(scoped, "sessions"), "previous_scope"
             ):
                 if (

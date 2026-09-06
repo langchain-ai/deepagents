@@ -84,6 +84,13 @@ Python applications can override the environment-selected backend with a factory
 `SQLiteConversationArchive` supplies the default metadata adapter. `entries()` reads transcripts
 and searches by keyword. Keyword search scans complete
 message revisions, ignoring case and accents, and returns bounded display chunks.
+Transcript reads, keyword searches, and conversation listings scan at most 500
+ordering records per call, including skipped cursors and deleted records. If the
+scan cannot complete within that budget, retrieval raises `RuntimeError` and
+releases the archive lock without returning a partial page. Large session reads
+and searches with sparse matches can reach this limit even with a small `limit`.
+This preserves chronological pagination; reset and deletion still process the
+complete history.
 
 `HistoryStorage` takes one async archive factory that owns setup and cleanup:
 

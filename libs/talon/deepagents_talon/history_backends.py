@@ -11,9 +11,9 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
 import aiosqlite
+from langgraph.store.sqlite.aio import AsyncSqliteStore
 
 from deepagents_talon.config import TalonConfigError
-from deepagents_talon.sqlite_archive import SQLiteConversationArchive, _MetadataStore
 from deepagents_talon.store_archive import StoreConversationArchive
 from deepagents_talon.store_records import finish
 
@@ -36,30 +36,7 @@ async def open_history(config: TalonConfig) -> AsyncIterator[StoreConversationAr
     Args:
         config: Host configuration containing the optional history URI.
     """
-    if config.history_uri is None:
-        async with SQLiteConversationArchive.from_conn_string(
-            str(config.checkpoint_path)
-        ) as archive:
-            yield archive
-    else:
-        async with remote_archive(config) as archive:
-            yield archive
-
-
-@asynccontextmanager
-async def remote_archive(config: TalonConfig) -> AsyncIterator[StoreConversationArchive]:
-    """Open the configured URI archive, keeping assistant namespaces separate.
-
-    Args:
-        config: Trusted configuration containing a history URI.
-
-    Yields:
-        An initialized archive closed before its metadata connection.
-    """
-    uri = config.history_uri
-    if uri is None:
-        msg = "URI-selected history requires DEEPAGENTS_TALON_HISTORY_URI"
-        raise TalonConfigError(msg)
+    uri = config.history_uri or config.checkpoint_path.as_uri()
     factory = _store_factory(urlsplit(uri).scheme)
     async with factory(uri) as metadata:
         archive = StoreConversationArchive(metadata, namespace=("talon", config.assistant_id))
@@ -116,9 +93,11 @@ async def _sqlite_store(uri: str) -> AsyncIterator[BaseStore]:
     async with AsyncExitStack() as stack:
         try:
             async with asyncio.timeout(_STARTUP_TIMEOUT):
-                conn = await stack.enter_async_context(aiosqlite.connect(connection, uri=True))
-                store = _MetadataStore(conn)
-                await _stop_dispatcher(store)
+                conn = await stack.enter_async_context(
+                    aiosqlite.connect(connection, uri=True, isolation_level=None)
+                )
+                store = AsyncSqliteStore(conn)
+                stack.push_async_callback(_stop_dispatcher, store)
                 await store.setup()
         except Exception:  # noqa: BLE001  # SQLite errors may contain sensitive connection details.
             msg = "Could not initialize SQLite history; check the URI, path, and permissions"

@@ -58,13 +58,18 @@ async def test_backend_validates_its_own_uri(tmp_path, uri):
             pytest.fail("invalid backend URI must fail at startup")
 
 
-@pytest.mark.parametrize("scheme", ["sqlite", "file"])
+@pytest.mark.parametrize("scheme", [None, "sqlite", "file"])
 async def test_sqlite_uri_persists(tmp_path, scheme):
     path = tmp_path / "history archive.sqlite"
     uri = path.as_uri().replace("file:", f"{scheme}:", 1) + "?mode=rwc"
-    config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
+    config = TalonConfig.from_env({URI_KEY: uri} if scheme else {}, base_home=tmp_path)
+    config.ensure_home()
     async with open_history(config) as archive:
         await archive.append(SCOPE, "session", "time", [HumanMessage("retained")])
+    if scheme is None:
+        config = TalonConfig.from_env(
+            {URI_KEY: config.checkpoint_path.as_uri()}, base_home=tmp_path
+        )
     async with open_history(config) as reopened:
         assert [entry["text"] for entry in await reopened.entries(SCOPE)] == ["retained"]
 

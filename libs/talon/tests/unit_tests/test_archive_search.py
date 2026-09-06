@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-import aiosqlite
 import pytest
 from langchain_core.messages import HumanMessage
 from langgraph.checkpoint.base import empty_checkpoint
@@ -37,8 +36,7 @@ async def _save(saver: ConversationSaver, text: str) -> None:
     ],
 )
 async def test_search_matches_complete_revisions_with_bounded_display(tmp_path, content, query):
-    async with aiosqlite.connect(str(tmp_path / "history.sqlite")) as connection:
-        saver = make_saver(connection)
+    async with make_saver(str(tmp_path / "history.sqlite")) as saver:
         await _save(saver, content)
         await _save(saver, content)
         hits = await saver.archive.entries(SCOPE, query=query)
@@ -49,29 +47,26 @@ async def test_search_matches_complete_revisions_with_bounded_display(tmp_path, 
         assert all(len(chunk["text"]) <= CHUNK_SIZE for chunk in chunks)
         await saver.clear_history(SCOPE)
         assert await saver.archive.entries(SCOPE, query=query) == []
-        async with connection.execute("SELECT value FROM store") as cursor:
+        async with saver.checkpointer.conn.execute("SELECT value FROM store") as cursor:
             assert content not in str(await cursor.fetchall())
 
 
 async def test_archive_search_survives_reopening_without_checkpoints(tmp_path):
     path = str(tmp_path / "history.sqlite")
     content = "x " * 1998 + " pineapple"
-    async with aiosqlite.connect(path) as connection:
-        saver = make_saver(connection)
+    async with make_saver(path) as saver:
         await _save(saver, content)
         before = await saver.archive.entries(SCOPE, session_id="session")
-        await connection.execute("DELETE FROM checkpoints")
-        await connection.commit()
+        await saver.checkpointer.conn.execute("DELETE FROM checkpoints")
+        await saver.checkpointer.conn.commit()
     for _ in range(2):
-        async with aiosqlite.connect(path) as connection:
-            saver = make_saver(connection)
+        async with make_saver(path) as saver:
             hits = await saver.archive.entries(SCOPE, query="pineapple")
             assert len(hits) == 1
             assert hits[0]["cursor"] == before[0]["cursor"]
             assert await saver.archive.entries(SCOPE, session_id="session") == before
-    async with aiosqlite.connect(path) as connection:
-        saver = make_saver(connection)
+    async with make_saver(path) as saver:
         await saver.adelete_thread("session")
         assert await saver.archive.entries(SCOPE, query="pineapple") == []
-        async with connection.execute("SELECT value FROM store") as cursor:
+        async with saver.checkpointer.conn.execute("SELECT value FROM store") as cursor:
             assert content not in str(await cursor.fetchall())

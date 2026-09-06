@@ -53,10 +53,12 @@ Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
 `postgresql://user:password@host/database` and install the `mongodb` or `postgres`
 extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
 is the default. This alpha requires fresh history storage. Checkpoints stay local.
+Default SQLite uses the same store factory and assistant namespace as configured
+backends, with its own connection to the checkpoint database.
 
 For a separate SQLite database, set the URI to `sqlite:///absolute/path/history.sqlite`
 or a SQLite `file:` URI, including connection options such as `?mode=rwc`.
-Paths containing spaces must be percent-encoded. URI-selected archives are
+Paths containing spaces must be percent-encoded. All archives are
 namespaced by assistant ID, so assistants can share a database.
 
 Additional backends can be installed as Python packages without changing Talon.

@@ -308,33 +308,12 @@ class TalonHost:
         async with self._locks[conversation_root]:
             agent_conversation_id = self._agent_conversation_id(conversation_root)
 
-            if command == "/reset-all-history":
-                await self._reset_all_history(
-                    channel,
-                    channel_conversation_id,
-                    channel_key=_channel_key(channel, provider),
-                    conversation_root=conversation_root,
-                )
-                return
-
-            if command == _NEW_COMMAND:
-                await self._start_new_conversation(
-                    channel,
-                    channel_conversation_id,
-                    conversation_root=conversation_root,
-                )
-                return
-
-            if command == _STOP_COMMAND:
-                await self._cancel_conversation(
-                    channel,
-                    agent_conversation_id,
-                    reply_conversation_id=channel_conversation_id,
-                )
-                return
-
-            if command == _MCP_RELOAD_COMMAND:
-                await self._reload_mcp_configuration(channel, channel_conversation_id)
+            if await self._handle_conversation_command(
+                channel,
+                message,
+                conversation_root=conversation_root,
+                provider=provider,
+            ):
                 return
 
             pending = self._pending_tool_approvals.get(agent_conversation_id)
@@ -357,6 +336,41 @@ class TalonHost:
                 agent_conversation_id,
                 provider,
             )
+
+    async def _handle_conversation_command(
+        self,
+        channel: ChannelAdapter,
+        message: ChannelMessage,
+        *,
+        conversation_root: str,
+        provider: str | None,
+    ) -> bool:
+        """Dispatch commands while the caller holds the conversation lock."""
+        command = _command_name(message.text)
+        if command == "/reset-all-history":
+            await self._reset_all_history(
+                channel,
+                message.conversation_id,
+                channel_key=_channel_key(channel, provider),
+                conversation_root=conversation_root,
+            )
+        elif command == _NEW_COMMAND:
+            await self._start_new_conversation(
+                channel,
+                message.conversation_id,
+                conversation_root=conversation_root,
+            )
+        elif command == _STOP_COMMAND:
+            await self._cancel_conversation(
+                channel,
+                self._agent_conversation_id(conversation_root),
+                reply_conversation_id=message.conversation_id,
+            )
+        elif command == _MCP_RELOAD_COMMAND:
+            await self._reload_mcp_configuration(channel, message.conversation_id)
+        else:
+            return False
+        return True
 
     async def _reload_mcp_configuration(
         self,

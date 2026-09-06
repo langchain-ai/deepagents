@@ -19,6 +19,7 @@ import base64
 import json
 import logging
 import os
+import re
 import shlex
 from abc import ABC, abstractmethod
 from typing import Any, Final, Literal
@@ -994,6 +995,14 @@ def _build_grep_cmd(pattern: str, path: str | None, glob: str | None, max_count:
     return f"{base} || true"
 
 
+#: GNU grep prints `Binary file <path> matches` to **stdout** (not stderr, so the
+#: `2>/dev/null` on the grep command does not suppress it) when a binary file
+#: contains the pattern. The notice has no `-Z` NUL separator, so treating it as a
+#: match line would misreport it as a parse error — spuriously failing the whole
+#: search when a binary file is present. Recognize and skip these lines instead.
+_BINARY_MATCH_NOTICE: Final = re.compile(r"^Binary file .* matches$")
+
+
 def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int | None = None) -> GrepResult:
     output = result.output.rstrip("\n")
     if result.exit_code is not None and result.exit_code != 0:
@@ -1004,6 +1013,10 @@ def _parse_grep_output(result: ExecuteResponse, path: str | None, max_count: int
     matches: list[GrepMatch] = []
     parse_error: str | None = None
     for line in output.split("\n"):
+        # A binary file that matches yields a `Binary file <path> matches` notice
+        # rather than a `path\0line:text` record; skip it (see note above).
+        if _BINARY_MATCH_NOTICE.match(line):
+            continue
         # Format is: path\0line_number:text
         try:
             file_path, rest = line.split("\0", 1)

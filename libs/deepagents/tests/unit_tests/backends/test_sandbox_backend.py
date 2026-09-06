@@ -515,6 +515,32 @@ def test_grep_preserves_matches_when_later_output_is_malformed() -> None:
     ]
 
 
+def test_grep_ignores_binary_file_match_notice() -> None:
+    """A lone `Binary file <path> matches` notice is skipped, not reported as an error."""
+    sandbox = MockSandbox()
+    # GNU grep writes this to stdout (survives `2>/dev/null`) when a binary file matches.
+    sandbox._next_output = "Binary file /test/app.bin matches"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == []
+
+
+def test_grep_skips_binary_notice_but_keeps_text_matches() -> None:
+    """A binary-file notice interleaved with real matches is skipped, matches preserved."""
+    sandbox = MockSandbox()
+    sandbox._next_output = "/test/file.txt\00012:needle here\nBinary file /test/app.bin matches\n/test/other.txt\0007:needle again"
+
+    result = sandbox.grep("needle", "/test")
+
+    assert result.error is None
+    assert result.matches == [
+        {"path": "/test/file.txt", "line": 12, "text": "needle here"},
+        {"path": "/test/other.txt", "line": 7, "text": "needle again"},
+    ]
+
+
 def test_grep_defaults_path_to_current_directory() -> None:
     """grep() searches the current directory when no path is provided."""
     sandbox = MockSandbox()

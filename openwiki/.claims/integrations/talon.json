@@ -248,7 +248,7 @@
     },
     {
       "id": "claim_b36c40f553c34feba90b179647f2a0c1",
-      "statement": "Before running a due cron job the scheduler claims the next interval via advance_next_run so a job is not double-run, then records the outcome with mark_job_run and delivers non-silent output, suppressing delivery when output begins with the [SILENT] sentinel.",
+      "statement": "Before running a due cron job the scheduler claims the next interval via advance_next_run so a job is not double-run, then records the outcome with mark_job_run and delivers non-silent output, suppressing delivery when output begins or ends with the [SILENT] sentinel.",
       "evidence": [
         {
           "resource": "repo://libs/talon/deepagents_talon/cron/jobs.py#L517-L542",

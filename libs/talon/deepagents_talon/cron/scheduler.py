@@ -189,4 +189,5 @@ class PersistentCronScheduler:
 
 
 def _is_silent(text: str) -> bool:
-    return text.strip().startswith(SILENT_SENTINEL)
+    stripped = text.strip()
+    return stripped.startswith(SILENT_SENTINEL) or stripped.endswith(SILENT_SENTINEL)

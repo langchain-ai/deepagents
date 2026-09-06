@@ -118,6 +118,8 @@ async def test_env_backend_isolates_assistants_and_closes(tmp_path, monkeypatch,
         )
         async with open_history(other) as isolated:
             assert await isolated.entries(SCOPE) == []
+    async with open_history(config) as reopened:
+        assert [entry["text"] for entry in await reopened.entries(SCOPE)] == ["retained"]
     assert state.closed
     if state.dispatcher is not None:
         assert state.dispatcher.done()
@@ -125,9 +127,18 @@ async def test_env_backend_isolates_assistants_and_closes(tmp_path, monkeypatch,
 
 
 @pytest.mark.parametrize("scheme", ["mongodb", "postgresql"])
-async def test_startup_errors_are_redacted_and_resources_closed(tmp_path, monkeypatch, scheme):
-    state = fake_backend(monkeypatch, failing=True)
+@pytest.mark.parametrize("failure", ["setup", "write"])
+async def test_startup_errors_are_redacted_and_resources_closed(
+    tmp_path, monkeypatch, scheme, failure
+):
+    state = fake_backend(monkeypatch, failing=failure == "setup")
     uri = f"{scheme}://user:example-password@localhost/talon"
+    if failure == "write":
+
+        async def deny_write(*_args: object, **_kwargs: object):
+            raise PermissionError(uri)
+
+        monkeypatch.setattr(InMemoryStore, "aput", deny_write)
     config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
     with pytest.raises(TalonConfigError) as error:
         async with open_history(config):

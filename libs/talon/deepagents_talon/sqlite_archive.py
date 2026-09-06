@@ -60,5 +60,6 @@ class SQLiteConversationArchive(StoreConversationArchive):
         async with aiosqlite.connect(conn_string) as conn:
             archive = cls(conn)
             async with archive.records.access():
-                await archive.records.root()
+                root = await archive.records.root()
+                await archive.records.commit([("root", root)])
             yield archive

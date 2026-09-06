@@ -60,7 +60,8 @@ async def remote_archive(config: TalonConfig) -> AsyncIterator[StoreConversation
         archive = StoreConversationArchive(metadata, namespace=("talon", config.assistant_id))
         try:
             async with archive.records.access():
-                await archive.records.root()
+                root = await archive.records.root()
+                await archive.records.commit([("root", root)])
         except Exception:  # noqa: BLE001  # Archive setup can surface credential-bearing driver errors.
             msg = "Could not initialize history archive; check permissions and storage format"
             raise TalonConfigError(msg) from None

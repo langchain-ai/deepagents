@@ -31,7 +31,7 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 
 ## Conversation history
 
-Talon archives channel conversations in `checkpoints.sqlite` without automatic
+By default, Talon archives channel conversations in `checkpoints.sqlite` without automatic
 expiry. The agent can list, search, and read past sessions in bounded pages,
 restricted to the current channel and chat. History survives context compaction;
 text, tool-call arguments, and distinct message revisions are retained.
@@ -48,6 +48,67 @@ add conversation history, and existing checkpoints are not backfilled.
 
 The echo runtime and unwrapped custom checkpointers do not support history tools or
 reset. Custom async LangGraph checkpointers can enable history with `ConversationSaver`.
+
+### Pluggable storage
+
+`StoreConversationArchive` implements history for any durable LangGraph `BaseStore`;
+`SQLiteConversationArchive` supplies the default metadata adapter. `entries()` reads transcripts
+and searches by keyword. Keyword search scans complete
+message revisions, ignoring case and accents, and returns bounded display chunks.
+
+`HistoryStorage` takes one async archive factory that owns setup and cleanup:
+
+```python
+from contextlib import asynccontextmanager
+
+from deepagents_talon.__main__ import main
+from deepagents_talon.history_store import HistoryStorage
+from deepagents_talon.store_archive import StoreConversationArchive
+
+
+@asynccontextmanager
+async def history(config):
+    async with (
+        open_metadata_store(config) as metadata,
+        StoreConversationArchive(
+            metadata,
+            namespace=("talon", config.assistant_id),
+        ).open() as archive,
+    ):
+        yield archive
+
+
+main(history_storage=HistoryStorage(archive_factory=history))
+```
+
+Supply your backend's initialized context manager for `open_metadata_store`, such
+as a MongoDB Store or PostgreSQL Store. The embedding application supplies backend
+packages. Metadata requires one active writer per namespace, read-after-write
+consistency, and no embeddings or TTL. A redo journal recovers partial metadata
+writes. Retrieval checks the trusted chat scope against live session ownership.
+Factories close archives before their Stores. Custom checkpointers can be composed
+through `history_checkpointer(config, checkpointer=..., storage=...)`.
+
+This alpha requires fresh history storage; no migration is provided.
+
+### Backend integration tests
+
+The shared archive contract covers persistence, scope isolation, keyword retrieval,
+pagination, restart, and reset. Unit tests also cover
+partial writes and cancellation. Optional integration tests use disposable local
+MongoDB and PostgreSQL databases:
+
+```bash
+TALON_TEST_MONGODB=1 uv run --no-sync pytest tests/integration_tests/test_history_mongodb.py
+TALON_TEST_POSTGRES=1 uv run --no-sync pytest tests/integration_tests/test_history_postgres.py
+```
+
+Install `langgraph-store-mongodb==0.4.0` and/or
+`langgraph-checkpoint-postgres==3.1.2` with `psycopg[binary]` in the test environment.
+MongoDB must listen on loopback port 27028; PostgreSQL on 5440 with a `postgres`
+role permitted to create/drop databases. Override ports with `TALON_TEST_MONGODB_PORT`
+or `TALON_TEST_POSTGRES_PORT`. Tests create and delete only their uniquely named
+databases.
 
 ## Interrupt and Continue
 

@@ -35,6 +35,7 @@ if TYPE_CHECKING:
     from langgraph.types import Checkpointer
 
     from deepagents_talon.cron import CronJob
+    from deepagents_talon.history_store import HistoryStorage
     from deepagents_talon.interfaces import AgentRuntime, ChannelAdapter
 
 logger = logging.getLogger(__name__)
@@ -52,8 +53,16 @@ _DCODE_LOG_LEVELS = {
 _CHANNEL_LOGGER_NAME = "deepagents_talon.channels"
 
 
-def main() -> None:
-    """Run the Talon host with the placeholder runtime."""
+def main(
+    *, checkpointer: Checkpointer | None = None, history_storage: HistoryStorage | None = None
+) -> None:
+    """Run Talon with configurable checkpoint and history backends.
+
+    Args:
+        checkpointer: Caller-owned backend; must remain open until the host exits.
+        history_storage: Trusted factory for archive storage. Defaults
+            preserve local persistence; custom checkpointers opt in explicitly.
+    """
     parser = argparse.ArgumentParser(description="Run the Deep Agents Talon host.")
     parser.add_argument(
         "--once",
@@ -99,7 +108,16 @@ def main() -> None:
         telegram=args.telegram,
         discord=args.discord,
     )
-    asyncio.run(_run_host(args, config, cron_store, channels))
+    asyncio.run(
+        _run_host(
+            args,
+            config,
+            cron_store,
+            channels,
+            checkpointer=checkpointer,
+            history_storage=history_storage,
+        )
+    )
 
 
 def _add_import_fleet_parser(
@@ -187,37 +205,24 @@ def _has_configured_assistant_id(env: Mapping[str, str]) -> bool:
     return "DEEPAGENTS_TALON_ASSISTANT_ID" in env or "AGENT_ASSISTANT_ID" in env
 
 
-async def _run_host(
+async def _run_host(  # noqa: PLR0913  # Preserve existing host arguments while adding optional storage.
     args: argparse.Namespace,
     config: TalonConfig,
     cron_store: CronJobStore,
     channels: Sequence[ChannelAdapter],
     *,
     checkpointer: Checkpointer | None = None,
+    history_storage: HistoryStorage | None = None,
 ) -> None:
     if config.model is None:
         await _run_host_with_agent(args, config, cron_store, channels, await _agent_runtime(config))
         return
-    if checkpointer is not None:
-        agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=checkpointer)
-        await _run_host_with_agent(args, config, cron_store, channels, agent)
-        return
+    from deepagents_talon.history_store import history_checkpointer  # noqa: PLC0415
 
-    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver  # noqa: PLC0415
-
-    from deepagents_talon.archive import SQLiteConversationArchive  # noqa: PLC0415
-    from deepagents_talon.archive_saver import ConversationSaver  # noqa: PLC0415
-
-    async with (
-        AsyncSqliteSaver.from_conn_string(str(config.checkpoint_path)) as sqlite_checkpointer,
-        SQLiteConversationArchive.from_conn_string(str(config.checkpoint_path)) as archive,
-    ):
-        await sqlite_checkpointer.setup()
-        agent = await _agent_runtime(
-            config,
-            cron_store=cron_store,
-            checkpointer=ConversationSaver(sqlite_checkpointer, archive=archive),
-        )
+    async with history_checkpointer(
+        config, checkpointer=checkpointer, storage=history_storage
+    ) as saver:
+        agent = await _agent_runtime(config, cron_store=cron_store, checkpointer=saver)
         await _run_host_with_agent(args, config, cron_store, channels, agent)
 
 

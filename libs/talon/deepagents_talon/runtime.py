@@ -32,7 +32,6 @@ from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 from deepagents_code.tools import fetch_url, web_search
-from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.archive_saver import ConversationSaver
 from deepagents_talon.authorization import (
     reset_authorization_handler,
@@ -41,6 +40,7 @@ from deepagents_talon.authorization import (
 from deepagents_talon.background import BackgroundSubagents
 from deepagents_talon.clock import current_time
 from deepagents_talon.cron import CronJobStore, CronOrigin, CronTools
+from deepagents_talon.history import ArchiveScope, conversation_tools
 from deepagents_talon.interfaces import (
     AgentRequest,
     AgentResult,

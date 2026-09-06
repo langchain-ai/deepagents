@@ -10,8 +10,9 @@ from langgraph.checkpoint.base import empty_checkpoint
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from deepagents_talon.archive import ArchiveScope, SQLiteConversationArchive
+from deepagents_talon.archive import SQLiteConversationArchive
 from deepagents_talon.archive_saver import ConversationSaver
+from deepagents_talon.history import ArchiveScope
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -21,7 +22,7 @@ if TYPE_CHECKING:
     from langchain_core.runnables import RunnableConfig
     from langgraph.checkpoint.base import ChannelVersions, Checkpoint, CheckpointMetadata
 
-    from deepagents_talon.archive import ArchiveEntry
+    from deepagents_talon.history import ArchiveEntry
 
 SCOPE = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="chat")
 OTHER = ArchiveScope(talon_history_channel="telegram", talon_history_chat="chat")
@@ -87,7 +88,7 @@ async def test_scope_reassignment_rejected_before_checkpoint_mutation(tmp_path):
     ) as archive:
         saver = ConversationSaver(InMemorySaver(), archive=archive)
         original = await _save(saver)
-        with pytest.raises(ValueError, match="different channel or chat"):
+        with pytest.raises(ValueError, match="another scope"):
             await _save(saver, scope=OTHER)
         checkpoints = [item async for item in saver.alist(_config())]
         assert len(checkpoints) == 1
@@ -133,7 +134,7 @@ async def test_archive_failure_retries_exact_checkpoint_after_reopen(
                 msg = "archive unavailable"
                 raise OSError(msg)
 
-            monkeypatch.setattr(archive, "_index_message", fail_message)
+            monkeypatch.setattr(archive, "_append_chunk", fail_message)
             with pytest.raises(OSError, match="archive unavailable"):
                 await saver.aput(_config(), checkpoint, {}, checkpoint["channel_versions"])
             assert await backend.aget(_config())

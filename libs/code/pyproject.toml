@@ -62,7 +62,7 @@ dependencies = [
 
     # Tools
     "tavily-python>=0.7.26,<1.0.0",
-    "langchain-quickjs>=0.3.4,<0.4.0",
+    "langchain-quickjs>=0.3.7,<0.4.0",
 
     # Cost estimation (bundled offline pricing data).
     # The local pricing overrides resolve through two *private* upstream names,

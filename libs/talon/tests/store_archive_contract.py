@@ -5,9 +5,9 @@ from contextlib import asynccontextmanager
 import pytest
 from langchain_core.messages import HumanMessage
 
+from deepagents_talon.archive import ArchiveScope
 from deepagents_talon.config import TalonConfig
-from deepagents_talon.history import ArchiveScope
-from deepagents_talon.history_store import HistoryStorage
+from deepagents_talon.history_backends import open_history
 from deepagents_talon.store_archive import StoreConversationArchive
 
 SCOPE = ArchiveScope(talon_history_channel="test", talon_history_chat="one")
@@ -17,11 +17,11 @@ OTHER = ArchiveScope(talon_history_channel="test", talon_history_chat="two")
 def _archive_factory(metadata):
     @asynccontextmanager
     async def archives(config):
-        async with StoreConversationArchive(
+        archive = StoreConversationArchive(
             metadata,
             namespace=("talon", config.assistant_id),
-        ).open() as archive:
-            yield archive
+        )
+        yield archive
 
     return archives
 
@@ -30,12 +30,8 @@ async def assert_store_archive_contract(metadata, tmp_path, *, history_uri=None)
     """Exercise persistence, isolation, keyword pagination, and reset on each backend."""
     env = {"DEEPAGENTS_TALON_HISTORY_URI": history_uri} if history_uri else {}
     config = TalonConfig.from_env(env, base_home=tmp_path)
-    plain = (
-        HistoryStorage()
-        if history_uri
-        else HistoryStorage(archive_factory=_archive_factory(metadata))
-    )
-    async with plain.open(config) as archive:
+    factory = open_history if history_uri else _archive_factory(metadata)
+    async with factory(config) as archive:
         first = [HumanMessage("car repairs", id="message")]
         await archive.append(SCOPE, "first", "2026-09-05T00:00:00Z", first)
         await archive.append(SCOPE, "first", "2026-09-05T00:00:00Z", first)
@@ -54,7 +50,7 @@ async def assert_store_archive_contract(metadata, tmp_path, *, history_uri=None)
             "second",
         }
 
-    async with plain.open(config) as archive:
+    async with factory(config) as archive:
         page = await archive.entries(SCOPE, query="car", limit=1)
         second = await archive.entries(SCOPE, query="car", limit=1, after=page[0]["cursor"])
         assert {page[0]["session_id"], second[0]["session_id"]} == {"first", "second"}
@@ -68,7 +64,7 @@ async def assert_store_archive_contract(metadata, tmp_path, *, history_uri=None)
         records = await metadata.asearch(archive.records.namespace, limit=100)
         assert "car repairs" not in str([item.value for item in records])
 
-    async with plain.open(config) as archive:
+    async with factory(config) as archive:
         await archive.delete_session("second")
         assert not await archive.sessions(SCOPE)
         assert [entry["text"] for entry in await archive.entries(OTHER)] == ["private car"]

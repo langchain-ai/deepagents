@@ -6,13 +6,15 @@ Warning:
 
 from __future__ import annotations
 
-import asyncio
+import hashlib
+import json
 import unicodedata
 from collections import deque
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
 
-from deepagents_talon.history_messages import message_revisions
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from deepagents_talon.archive import CHUNK_SIZE
 from deepagents_talon.store_records import Record, StoreRecords, Write, digest
 
 if TYPE_CHECKING:
@@ -21,7 +23,7 @@ if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
     from langgraph.store.base import BaseStore
 
-    from deepagents_talon.history import ArchiveEntry, ArchiveScope, ConversationSummary
+    from deepagents_talon.archive import ArchiveEntry, ArchiveScope, ConversationSummary
 
 _MAX_PAGE_SIZE = 20
 _MAX_SCAN = 500
@@ -44,15 +46,27 @@ def _bounds(after: int, limit: int) -> None:
 
 
 def _chunks(messages: Sequence[BaseMessage], timestamp: str) -> Iterator[Record]:
-    for message in message_revisions(messages, timestamp):
-        for part, text in message.chunks():
+    for index, message in enumerate(messages):
+        if not isinstance(message, (HumanMessage, AIMessage, ToolMessage)):
+            continue
+        if isinstance(message, ToolMessage) and message.name in {
+            "search_conversations",
+            "read_conversation",
+            "list_conversations",
+        }:
+            continue
+        text = message.text
+        if isinstance(message, AIMessage) and message.tool_calls:
+            text += "\nTool calls: " + json.dumps(message.tool_calls, ensure_ascii=False)
+        revision = hashlib.sha256(text.encode()).hexdigest()
+        for part, start in enumerate(range(0, len(text), CHUNK_SIZE)):
             yield {
-                "message_id": message.message_id,
-                "revision": message.revision,
+                "message_id": message.id or f"talon-history:{timestamp}:{index}",
+                "revision": revision,
                 "part": part,
-                "role": message.role,
-                "text": text,
-                "search_text": message.text if part == 0 else "",
+                "role": message.type,
+                "text": text[start : start + CHUNK_SIZE],
+                "search_text": text if part == 0 else "",
             }
 
 
@@ -77,35 +91,6 @@ class StoreConversationArchive:
     ) -> None:
         """Keep ownership of the Store connection with the caller."""
         self.records = StoreRecords(store, namespace)
-        self._ready = False
-        self._closed = False
-        self._setup_lock = asyncio.Lock()
-
-    @asynccontextmanager
-    async def open(self) -> AsyncIterator[StoreConversationArchive]:
-        """Initialize the archive while leaving its caller-owned Store open."""
-        try:
-            await self.setup()
-            yield self
-        finally:
-            await self.aclose()
-
-    async def setup(self) -> None:
-        """Recover interrupted writes before enabling retrieval."""
-        async with self._setup_lock:
-            if self._closed:
-                msg = "Conversation archive is closed; create a new instance to reopen it"
-                raise RuntimeError(msg)
-            if self._ready:
-                return
-            async with self.records.access():
-                root = await self.records.root()
-                await self.records.commit([("root", root)])
-            self._ready = True
-
-    async def aclose(self) -> None:
-        """Close the archive without closing its caller-owned Store."""
-        self._closed = True
 
     async def session(self, session_id: str) -> Record | None:
         """Read the authoritative session registration under the records lock."""
@@ -127,7 +112,6 @@ class StoreConversationArchive:
             "cursor": cursor,
             "session_id": session_id,
             "scope": dict(scope),
-            "previous_global": number(root, "sessions"),
             "previous_scope": number(scoped, "sessions"),
             "head": 0,
             "started_at": timestamp,
@@ -140,7 +124,7 @@ class StoreConversationArchive:
                 (str(cursor), session),
                 ("session:" + digest(session_id), {"cursor": cursor}),
                 (scope_key(scope), {**scoped, "sessions": cursor}),
-                ("root", {**root, "last": cursor, "sessions": cursor}),
+                ("root", {**root, "last": cursor}),
             ]
         )
         return session
@@ -160,7 +144,6 @@ class StoreConversationArchive:
             timestamp: Checkpoint timestamp used for fallback message identities.
             messages: Committed messages; an empty list only registers ownership.
         """
-        await self.setup()
         async with self.records.access():
             await self._register(scope, session_id, timestamp)
             for chunk in _chunks(messages, timestamp):
@@ -310,7 +293,6 @@ class StoreConversationArchive:
             RuntimeError: The scan budget is exhausted before a complete page is known.
         """
         _bounds(after, limit)
-        await self.setup()
         return await self._text_entries(
             scope, query=query, session_id=session_id, after=after, limit=limit
         )
@@ -333,7 +315,6 @@ class StoreConversationArchive:
             RuntimeError: More than 500 ordering records are needed to complete the page.
         """
         _bounds(after, limit)
-        await self.setup()
         async with self.records.access():
             scoped = await self.records.get(scope_key(scope)) or {}
             results: list[ConversationSummary] = []
@@ -373,7 +354,6 @@ class StoreConversationArchive:
         Args:
             scope: Trusted channel and chat identity.
         """
-        await self.setup()
         async with self.records.access():
             scoped = await self.records.get(scope_key(scope)) or {}
             return [
@@ -390,7 +370,6 @@ class StoreConversationArchive:
         Args:
             session_id: Trusted session identifier returned by the archive.
         """
-        await self.setup()
         async with self.records.access():
             await self.mark_deleted(session_id)
             await self.delete_text(session_id)
@@ -400,16 +379,7 @@ class StoreConversationArchive:
         session = await self.session(session_id)
         if session is None or session.get("deleting"):
             return
-        root = await self.records.root()
-        await self.records.commit(
-            [
-                (
-                    str(session["cursor"]),
-                    {**session, "deleting": True},
-                ),
-                ("root", {**root, "deletions": number(root, "deletions") + 1}),
-            ]
-        )
+        await self.records.commit([(str(session["cursor"]), {**session, "deleting": True})])
 
     async def delete_text(self, session_id: str) -> None:
         """Erase text and dedup records under the records lock."""
@@ -424,8 +394,7 @@ class StoreConversationArchive:
             writes: list[Write] = [(str(cursor), links), (str(session["cursor"]), session)]
             writes.extend((str(record[key]), None) for key in ("dedup", "message"))
             await self.records.commit(writes)
-        root = await self.records.root()
-        links = {key: session[key] for key in ("previous_scope", "previous_global")}
+        links = {"previous_scope": session["previous_scope"]}
         scoped = await self.records.get(scope_key(cast("ArchiveScope", session["scope"]))) or {}
         others = await self._other_sessions(scoped, number(session, "cursor"))
         await self.records.commit(
@@ -433,7 +402,6 @@ class StoreConversationArchive:
                 (scope_key(cast("ArchiveScope", session["scope"])), scoped if others else None),
                 (str(session["cursor"]), links),
                 ("session:" + digest(session_id), None),
-                ("root", {**root, "deletions": number(root, "deletions") - 1}),
             ]
         )
 

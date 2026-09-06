@@ -31,7 +31,7 @@ Assistant state lives under `~/.deepagents/<assistant_id>/` by default. The host
 
 ## Conversation history
 
-By default, Talon archives channel conversations in `checkpoints.sqlite` without automatic
+Talon archives channel conversations in `checkpoints.sqlite` without automatic
 expiry. The agent can list, search, and read past sessions in bounded pages,
 restricted to the current channel and chat. History survives context compaction;
 text, tool-call arguments, and distinct message revisions are retained.
@@ -49,101 +49,13 @@ add conversation history, and existing checkpoints are not backfilled.
 The echo runtime and unwrapped custom checkpointers do not support history tools or
 reset. Custom async LangGraph checkpointers can enable history with `ConversationSaver`.
 
-### Pluggable storage
+Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
+`postgresql://user:password@host/database` and install the `mongodb` or `postgres`
+extra (`uv sync --extra mongodb`). SQLite remains the default; checkpoints stay
+local. Changing backends does not migrate history.
 
-Set one connection URI to use MongoDB or PostgreSQL from the normal Talon CLI.
-Install the matching optional dependency once:
-
-```bash
-# MongoDB
-uv sync --extra mongodb
-export DEEPAGENTS_TALON_HISTORY_URI='mongodb://localhost:27017/talon'
-
-# Or PostgreSQL
-uv sync --extra postgres
-export DEEPAGENTS_TALON_HISTORY_URI='postgresql://localhost:5432/talon'
-```
-
-Then start Talon as usual. The URI selects the backend and database;
-`mongodb+srv://` and `postgres://` are also supported. Include authentication and
-TLS options in your URI when required by your database. Keep credential-bearing
-URIs in your environment or secret manager. Invalid settings and missing drivers
-fail startup instead of falling back to SQLite.
-
-Unset `DEEPAGENTS_TALON_HISTORY_URI` to use SQLite. This setting selects archived
-conversation history; checkpoints, schedules, and channel state retain their
-existing local storage. Each assistant gets its own archive namespace. Use one
-active process per assistant and database. Provision the database first with
-permission to create tables or indexes; Talon initializes the Store schema.
-MongoDB uses the `talon_history` collection with primary reads and majority writes.
-Changing the URI does not migrate existing history.
-
-Python applications can override the environment-selected backend with a factory:
-
-`StoreConversationArchive` implements history for any durable LangGraph `BaseStore`;
-`SQLiteConversationArchive` supplies the default metadata adapter. `entries()` reads transcripts
-and searches by keyword. Keyword search scans complete
-message revisions, ignoring case and accents, and returns bounded display chunks.
-Transcript reads, keyword searches, and conversation listings scan at most 500
-ordering records per call, including skipped cursors and deleted records. If the
-scan cannot complete within that budget, retrieval raises `RuntimeError` and
-releases the archive lock without returning a partial page. Large session reads
-and searches with sparse matches can reach this limit even with a small `limit`.
-This preserves chronological pagination; reset and deletion still process the
-complete history.
-
-`HistoryStorage` takes one async archive factory that owns setup and cleanup:
-
-```python
-from contextlib import asynccontextmanager
-
-from deepagents_talon.__main__ import main
-from deepagents_talon.history_store import HistoryStorage
-from deepagents_talon.store_archive import StoreConversationArchive
-
-
-@asynccontextmanager
-async def history(config):
-    async with (
-        open_metadata_store(config) as metadata,
-        StoreConversationArchive(
-            metadata,
-            namespace=("talon", config.assistant_id),
-        ).open() as archive,
-    ):
-        yield archive
-
-
-main(history_storage=HistoryStorage(archive_factory=history))
-```
-
-Supply your backend's initialized context manager for `open_metadata_store`, such
-as a MongoDB Store or PostgreSQL Store. The embedding application supplies backend
-packages. Metadata requires one active writer per namespace, read-after-write
-consistency, and no embeddings or TTL. A redo journal recovers partial metadata
-writes. Retrieval checks the trusted chat scope against live session ownership.
-Factories close archives before their Stores. Custom checkpointers can be composed
-through `history_checkpointer(config, checkpointer=..., storage=...)`.
-
-This alpha requires fresh history storage; no migration is provided.
-
-### Backend integration tests
-
-The shared archive contract covers persistence, scope isolation, keyword retrieval,
-pagination, restart, and reset. Unit tests also cover
-partial writes and cancellation. Optional integration tests use disposable local
-MongoDB and PostgreSQL databases:
-
-```bash
-TALON_TEST_MONGODB=1 uv run --no-sync pytest tests/integration_tests/test_history_mongodb.py
-TALON_TEST_POSTGRES=1 uv run --no-sync pytest tests/integration_tests/test_history_postgres.py
-```
-
-Install the `mongodb` and/or `postgres` extra in the test environment.
-MongoDB must listen on loopback port 27028; PostgreSQL on 5440 with a `postgres`
-role permitted to create/drop databases. Override ports with `TALON_TEST_MONGODB_PORT`
-or `TALON_TEST_POSTGRES_PORT`. Tests create and delete only their uniquely named
-databases.
+Remote archives require one writer per assistant. Retrieval scans at most 500
+records and raises an error if it cannot complete the page within that budget.
 
 ## Interrupt and Continue
 

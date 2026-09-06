@@ -13,7 +13,7 @@ from langchain_core.messages import BaseMessage, convert_to_messages
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.checkpoint.serde.types import _DeltaSnapshot
 
-from deepagents_talon.history import ArchiveScope
+from deepagents_talon.archive import ArchiveScope
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Collection, Mapping, Sequence
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
         DeltaChannelHistory,
     )
 
-    from deepagents_talon.history import ConversationArchive
+    from deepagents_talon.archive import ConversationArchive
 
 V = TypeVar("V", int, float, str)
 

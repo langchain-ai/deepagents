@@ -8,6 +8,7 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
+from deepagents_talon.archive import SQLiteConversationArchive
 from deepagents_talon.config import TalonConfigError
 from deepagents_talon.store_archive import StoreConversationArchive
 from deepagents_talon.store_records import finish
@@ -18,9 +19,27 @@ if TYPE_CHECKING:
 
     from langgraph.store.base import BaseStore
 
+    from deepagents_talon.archive import ConversationArchive
     from deepagents_talon.config import TalonConfig
 
 _STARTUP_TIMEOUT = 15
+
+
+@asynccontextmanager
+async def open_history(config: TalonConfig) -> AsyncIterator[ConversationArchive]:
+    """Open URI-selected history, defaulting to the existing SQLite archive.
+
+    Args:
+        config: Host configuration containing the optional history URI.
+    """
+    if config.history_uri is None:
+        async with SQLiteConversationArchive.from_conn_string(
+            str(config.checkpoint_path)
+        ) as archive:
+            yield archive
+    else:
+        async with remote_archive(config) as archive:
+            yield archive
 
 
 @asynccontextmanager
@@ -38,10 +57,11 @@ async def remote_archive(config: TalonConfig) -> AsyncIterator[StoreConversation
         msg = "Remote history requires DEEPAGENTS_TALON_HISTORY_URI"
         raise TalonConfigError(msg)
     factory = _mongodb_store if urlsplit(uri).scheme.startswith("mongodb") else _postgres_store
-    async with factory(uri) as metadata, AsyncExitStack() as stack:
+    async with factory(uri) as metadata:
         archive = StoreConversationArchive(metadata, namespace=("talon", config.assistant_id))
         try:
-            await stack.enter_async_context(archive.open())
+            async with archive.records.access():
+                await archive.records.root()
         except Exception:  # noqa: BLE001  # Archive setup can surface credential-bearing driver errors.
             msg = "Could not initialize history archive; check permissions and storage format"
             raise TalonConfigError(msg) from None

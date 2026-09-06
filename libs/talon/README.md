@@ -51,6 +51,35 @@ reset. Custom async LangGraph checkpointers can enable history with `Conversatio
 
 ### Pluggable storage
 
+Set one connection URI to use MongoDB or PostgreSQL from the normal Talon CLI.
+Install the matching optional dependency once:
+
+```bash
+# MongoDB
+uv sync --extra mongodb
+export DEEPAGENTS_TALON_HISTORY_URI='mongodb://localhost:27017/talon'
+
+# Or PostgreSQL
+uv sync --extra postgres
+export DEEPAGENTS_TALON_HISTORY_URI='postgresql://localhost:5432/talon'
+```
+
+Then start Talon as usual. The URI selects the backend and database;
+`mongodb+srv://` and `postgres://` are also supported. Include authentication and
+TLS options in your URI when required by your database. Keep credential-bearing
+URIs in your environment or secret manager. Invalid settings and missing drivers
+fail startup instead of falling back to SQLite.
+
+Unset `DEEPAGENTS_TALON_HISTORY_URI` to use SQLite. This setting selects archived
+conversation history; checkpoints, schedules, and channel state retain their
+existing local storage. Each assistant gets its own archive namespace. Use one
+active process per assistant and database. Provision the database first with
+permission to create tables or indexes; Talon initializes the Store schema.
+MongoDB uses the `talon_history` collection with primary reads and majority writes.
+Changing the URI does not migrate existing history.
+
+Python applications can override the environment-selected backend with a factory:
+
 `StoreConversationArchive` implements history for any durable LangGraph `BaseStore`;
 `SQLiteConversationArchive` supplies the default metadata adapter. `entries()` reads transcripts
 and searches by keyword. Keyword search scans complete
@@ -103,8 +132,7 @@ TALON_TEST_MONGODB=1 uv run --no-sync pytest tests/integration_tests/test_histor
 TALON_TEST_POSTGRES=1 uv run --no-sync pytest tests/integration_tests/test_history_postgres.py
 ```
 
-Install `langgraph-store-mongodb==0.4.0` and/or
-`langgraph-checkpoint-postgres==3.1.2` with `psycopg[binary]` in the test environment.
+Install the `mongodb` and/or `postgres` extra in the test environment.
 MongoDB must listen on loopback port 27028; PostgreSQL on 5440 with a `postgres`
 role permitted to create/drop databases. Override ports with `TALON_TEST_MONGODB_PORT`
 or `TALON_TEST_POSTGRES_PORT`. Tests create and delete only their uniquely named

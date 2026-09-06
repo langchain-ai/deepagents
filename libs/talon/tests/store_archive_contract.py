@@ -26,10 +26,15 @@ def _archive_factory(metadata):
     return archives
 
 
-async def assert_store_archive_contract(metadata, tmp_path):
+async def assert_store_archive_contract(metadata, tmp_path, *, history_uri=None):
     """Exercise persistence, isolation, keyword pagination, and reset on each backend."""
-    config = TalonConfig.from_env({}, base_home=tmp_path)
-    plain = HistoryStorage(archive_factory=_archive_factory(metadata))
+    env = {"DEEPAGENTS_TALON_HISTORY_URI": history_uri} if history_uri else {}
+    config = TalonConfig.from_env(env, base_home=tmp_path)
+    plain = (
+        HistoryStorage()
+        if history_uri
+        else HistoryStorage(archive_factory=_archive_factory(metadata))
+    )
     async with plain.open(config) as archive:
         first = [HumanMessage("car repairs", id="message")]
         await archive.append(SCOPE, "first", "2026-09-05T00:00:00Z", first)

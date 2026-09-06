@@ -32,7 +32,8 @@ class HistoryStorage:
 
     Args:
         archive_factory: Open an initialized archive, closing the archive before
-            its metadata store. Defaults to local SQLite history.
+            its metadata store. Defaults to the environment-selected backend,
+            or local SQLite when no history URI is configured.
     """
 
     archive_factory: ArchiveFactory | None = None
@@ -47,7 +48,19 @@ class HistoryStorage:
         Yields:
             An archive ready for checkpoint writes, retrieval, and reset.
         """
-        async with (self.archive_factory or _local_history)(config) as archive:
+        async with (self.archive_factory or _configured_history)(config) as archive:
+            yield archive
+
+
+@asynccontextmanager
+async def _configured_history(config: TalonConfig) -> AsyncIterator[ConversationArchive]:
+    if config.history_uri is None:
+        async with _local_history(config) as archive:
+            yield archive
+    else:
+        from deepagents_talon.history_backends import remote_archive  # noqa: PLC0415
+
+        async with remote_archive(config) as archive:
             yield archive
 
 

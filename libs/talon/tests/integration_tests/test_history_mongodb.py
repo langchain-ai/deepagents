@@ -28,8 +28,12 @@ async def test_mongodb_history_contract(tmp_path):
     )
     database = "talon_test_" + uuid4().hex
     try:
-        metadata = await asyncio.to_thread(mongodb.MongoDBStore, client[database]["metadata"])
-        await assert_store_archive_contract(metadata, tmp_path)
+        metadata = await asyncio.to_thread(mongodb.MongoDBStore, client[database]["talon_history"])
+        await assert_store_archive_contract(
+            metadata,
+            tmp_path,
+            history_uri=f"mongodb://127.0.0.1:{port}/{database}?directConnection=true",
+        )
     finally:
         try:
             await asyncio.to_thread(client.drop_database, database)

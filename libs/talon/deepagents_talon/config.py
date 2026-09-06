@@ -10,6 +10,7 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -38,7 +39,7 @@ class TalonConfig:
     assistant_id: str
     home: Path
     model: str | None = None
-    env: Mapping[str, str] = field(default_factory=dict)
+    env: Mapping[str, str] = field(default_factory=dict, repr=False)
 
     @classmethod
     def from_env(
@@ -58,7 +59,7 @@ class TalonConfig:
             Runtime configuration with a validated assistant id and namespaced home.
 
         Raises:
-            TalonConfigError: If the assistant id is empty or unsafe for a path segment.
+            TalonConfigError: If the assistant id or history connection URI is invalid.
         """
         values = os.environ if env is None else env
         assistant_id = _first_present(
@@ -71,6 +72,7 @@ class TalonConfig:
             msg = "assistant id is required"
             raise TalonConfigError(msg)
         _validate_assistant_id(assistant_id)
+        _validate_history_uri(values.get("DEEPAGENTS_TALON_HISTORY_URI"))
 
         if base_home is None:
             configured_home = values.get("DEEPAGENTS_TALON_HOME")
@@ -126,6 +128,13 @@ class TalonConfig:
         return self.home / "channels"
 
     @property
+    def history_uri(self) -> str | None:
+        """Remote history URI, or None for the default local SQLite archive."""
+        uri = self.env.get("DEEPAGENTS_TALON_HISTORY_URI")
+        _validate_history_uri(uri)
+        return uri
+
+    @property
     def checkpoint_path(self) -> Path:
         """SQLite database used for persistent LangGraph checkpoints."""
         return self._state_path("checkpoints.sqlite", "checkpoint database")
@@ -176,3 +185,25 @@ def _validate_assistant_id(assistant_id: str | None) -> None:
 
 def _is_runtime_env(key: str) -> bool:
     return key in _RUNTIME_ENV_KEYS or key.startswith(_RUNTIME_ENV_PREFIXES)
+
+
+def _validate_history_uri(uri: str | None) -> None:
+    if uri is None:
+        return
+    try:
+        parsed = urlsplit(uri)
+        if (
+            parsed.scheme in {"mongodb", "mongodb+srv", "postgres", "postgresql"}
+            and parsed.hostname
+            and parsed.path.strip("/")
+            and not parsed.fragment
+            and not any(char.isspace() for char in uri)
+        ):
+            return
+    except ValueError:
+        pass
+    msg = (
+        "DEEPAGENTS_TALON_HISTORY_URI must be a MongoDB or PostgreSQL URI "
+        "with a host and database name; unset it to use SQLite"
+    )
+    raise TalonConfigError(msg)

@@ -33,7 +33,11 @@ async def test_postgres_archive_contract(tmp_path):
             ) as metadata:
                 try:
                     await metadata.setup()
-                    await assert_store_archive_contract(metadata, tmp_path)
+                    await assert_store_archive_contract(
+                        metadata,
+                        tmp_path,
+                        history_uri=f"postgresql://postgres@127.0.0.1:{port}/{database}?connect_timeout=5",
+                    )
                 finally:
                     if (task := getattr(metadata, "_task", None)) is not None:
                         task.cancel()

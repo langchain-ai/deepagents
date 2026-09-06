@@ -9,7 +9,6 @@ from __future__ import annotations
 import hashlib
 import json
 import unicodedata
-from collections import deque
 from typing import TYPE_CHECKING, cast
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
@@ -173,21 +172,24 @@ class StoreConversationArchive:
             "owner": session["cursor"],
             "previous_scope": number(scoped, "head"),
             "previous_session": number(session, "head"),
+            "next_session": 0,
             "dedup": key,
             "message": message_key,
             "search_text": chunk["search_text"],
         }
         updated = self._summary_update(session, cursor, timestamp, str(chunk["text"]), fresh=fresh)
-        await self.records.commit(
-            [
-                (str(cursor), record),
-                (str(session["cursor"]), updated),
-                (key, {"cursor": cursor}),
-                (message_key, {"owner": session["cursor"]}),
-                (scope_key(scope), {**scoped, "head": cursor}),
-                ("root", {**root, "last": cursor}),
-            ]
-        )
+        writes: list[Write] = [
+            (str(cursor), record),
+            (str(session["cursor"]), updated),
+            (key, {"cursor": cursor}),
+            (message_key, {"owner": session["cursor"]}),
+            (scope_key(scope), {**scoped, "head": cursor}),
+            ("root", {**root, "last": cursor}),
+        ]
+        if previous := number(session, "head"):
+            prior = cast("Record", await self.records.get(str(previous)))
+            writes.append((str(previous), {**prior, "next_session": cursor}))
+        await self.records.commit(writes)
 
     @staticmethod
     def _summary_update(
@@ -196,6 +198,7 @@ class StoreConversationArchive:
         return {
             **session,
             "head": cursor,
+            "tail": number(session, "tail") or cursor,
             "started_at": min(str(session["started_at"]), timestamp)
             if number(session, "head")
             else timestamp,
@@ -234,18 +237,23 @@ class StoreConversationArchive:
         async with self.records.access():
             if session_id:
                 session = await self.session(session_id)
-                if session is None or session["scope"] != scope:
+                if session is None or session["scope"] != scope or session.get("deleting"):
                     return []
-                cursor, link = number(session, "head"), "previous_session"
+                cursor, link = number(session, "tail"), "next_session"
             else:
                 scoped = await self.records.get(scope_key(scope)) or {}
                 cursor, link = number(scoped, "head"), "previous_scope"
-            hits: deque[ArchiveEntry] = deque(maxlen=limit)
-            async for identifier, record in self._retrieval_chain(cursor, link):
-                if session_id and identifier <= after:
-                    break
-                if not session_id and after and identifier >= after:
-                    continue
+            if after:
+                previous = await self.records.get(str(after))
+                entry = await self.visible(previous, scope) if previous else None
+                if entry is None or (session_id and entry["session_id"] != session_id):
+                    return []
+                cursor = number(cast("Record", previous), link)
+                if cursor and (cursor == after or (cursor > after) != bool(session_id)):
+                    msg = "Conversation archive contains an invalid ordering link"
+                    raise RuntimeError(msg)
+            hits: list[ArchiveEntry] = []
+            async for _, record in self._retrieval_chain(cursor, link):
                 entry = await self.visible(record, scope)
                 if (
                     entry is not None
@@ -253,9 +261,9 @@ class StoreConversationArchive:
                     and _matches(str(record["search_text"]), query)
                 ):
                     hits.append(entry)
-                    if not session_id and len(hits) == limit:
+                    if len(hits) == limit:
                         break
-            return list(reversed(hits)) if session_id else list(hits)
+            return hits
 
     async def _retrieval_chain(self, cursor: int, link: str) -> AsyncIterator[tuple[int, Record]]:
         scanned = 0
@@ -317,16 +325,22 @@ class StoreConversationArchive:
         _bounds(after, limit)
         async with self.records.access():
             scoped = await self.records.get(scope_key(scope)) or {}
+            cursor = number(scoped, "sessions")
+            if after:
+                previous = await self.records.get(str(after))
+                if previous is None or previous.get("scope") != scope:
+                    return []
+                cursor = number(previous, "previous_scope")
+                if cursor >= after:
+                    msg = "Conversation archive contains an invalid ordering link"
+                    raise RuntimeError(msg)
             results: list[ConversationSummary] = []
-            async for cursor, record in self._retrieval_chain(
-                number(scoped, "sessions"), "previous_scope"
-            ):
+            async for _, record in self._retrieval_chain(cursor, "previous_scope"):
                 if (
                     record.get("kind") == "session"
                     and record.get("scope") == scope
                     and record.get("head")
                     and not record.get("deleting")
-                    and (not after or cursor < after)
                 ):
                     results.append(
                         cast(

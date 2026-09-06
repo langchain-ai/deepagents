@@ -51,10 +51,10 @@ reset. Custom async LangGraph checkpointers can enable history with `Conversatio
 
 Set `DEEPAGENTS_TALON_HISTORY_URI` to `mongodb://host/database` or
 `postgresql://user:password@host/database` and install the `mongodb` or `postgres`
-extra (`uv sync --extra mongodb`). SQLite remains the default; checkpoints stay
-local. Changing backends does not migrate history.
+extra (`uv sync --extra mongodb`). All three backends use the same archive; SQLite
+is the default. This alpha requires fresh history storage. Checkpoints stay local.
 
-Remote archives require one writer per assistant. Retrieval scans at most 500
+Archives require one writer per assistant. Retrieval scans at most 500
 records and raises an error if it cannot complete the page within that budget.
 
 ## Interrupt and Continue

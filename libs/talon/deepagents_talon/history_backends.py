@@ -8,8 +8,8 @@ from contextlib import AsyncExitStack, asynccontextmanager
 from typing import TYPE_CHECKING, cast
 from urllib.parse import urlsplit
 
-from deepagents_talon.archive import SQLiteConversationArchive
 from deepagents_talon.config import TalonConfigError
+from deepagents_talon.sqlite_archive import SQLiteConversationArchive
 from deepagents_talon.store_archive import StoreConversationArchive
 from deepagents_talon.store_records import finish
 
@@ -19,15 +19,14 @@ if TYPE_CHECKING:
 
     from langgraph.store.base import BaseStore
 
-    from deepagents_talon.archive import ConversationArchive
     from deepagents_talon.config import TalonConfig
 
 _STARTUP_TIMEOUT = 15
 
 
 @asynccontextmanager
-async def open_history(config: TalonConfig) -> AsyncIterator[ConversationArchive]:
-    """Open URI-selected history, defaulting to the existing SQLite archive.
+async def open_history(config: TalonConfig) -> AsyncIterator[StoreConversationArchive]:
+    """Open URI-selected history, defaulting to local SQLite.
 
     Args:
         config: Host configuration containing the optional history URI.

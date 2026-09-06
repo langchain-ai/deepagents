@@ -49,8 +49,8 @@ async def test_search_matches_complete_revisions_with_bounded_display(tmp_path, 
         assert all(len(chunk["text"]) <= CHUNK_SIZE for chunk in chunks)
         await saver.clear_history(SCOPE)
         assert await saver.archive.entries(SCOPE, query=query) == []
-        async with connection.execute("SELECT count(*) FROM conversation_search") as cursor:
-            assert await cursor.fetchone() == (0,)
+        async with connection.execute("SELECT value FROM store") as cursor:
+            assert content not in str(await cursor.fetchall())
 
 
 async def test_archive_search_survives_reopening_without_checkpoints(tmp_path):
@@ -73,5 +73,5 @@ async def test_archive_search_survives_reopening_without_checkpoints(tmp_path):
         saver = make_saver(connection)
         await saver.adelete_thread("session")
         assert await saver.archive.entries(SCOPE, query="pineapple") == []
-        async with connection.execute("SELECT count(*) FROM conversation_search") as cursor:
-            assert await cursor.fetchone() == (0,)
+        async with connection.execute("SELECT value FROM store") as cursor:
+            assert content not in str(await cursor.fetchall())

@@ -196,15 +196,14 @@ async def test_failed_archive_deletion_retains_registration_for_retry(tmp_path):
         saver = make_saver(connection)
         config = await _save(saver, "whatsapp:chat", "keep orchard")
         await connection.execute(
-            "CREATE TRIGGER fail_delete BEFORE DELETE ON conversation_chunks "
+            "CREATE TRIGGER fail_delete BEFORE DELETE ON store "
             "BEGIN SELECT RAISE(ABORT, 'delete failed'); END"
         )
         with pytest.raises(aiosqlite.IntegrityError, match="delete failed"):
             await saver.clear_history(WHATSAPP)
         assert await saver.aget(config) is None
-        assert len(await saver.archive.entries(WHATSAPP, query="orchard")) == 1
-        assert await saver.archive.sessions(WHATSAPP) == ["whatsapp:chat"]
         await connection.execute("DROP TRIGGER fail_delete")
+        assert await saver.archive.sessions(WHATSAPP) == ["whatsapp:chat"]
         await saver.clear_history(WHATSAPP)
         assert await saver.archive.sessions(WHATSAPP) == []
         assert await saver.archive.entries(WHATSAPP) == []

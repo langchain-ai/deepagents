@@ -108,7 +108,11 @@ class StoreRecords:
                 raise RuntimeError(msg)
             yield cursor, record
             previous = int(cast("int", record.get(link, 0)))
-            if previous >= cursor or previous < 0:
+            if (
+                previous < 0
+                or previous == cursor
+                or (previous and (previous > cursor) != (link == "next_session"))
+            ):
                 msg = "Conversation archive contains an invalid ordering link"
                 raise RuntimeError(msg)
             cursor = previous

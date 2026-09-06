@@ -8,6 +8,7 @@ from langgraph.store.memory import InMemoryStore
 
 from deepagents_talon.store_archive import StoreConversationArchive
 from tests.store_archive_contract import (
+    OTHER,
     SCOPE,
     assert_store_archive_contract,
 )
@@ -26,8 +27,7 @@ class CountingStore(InMemoryStore):
     [
         {"query": "missing"},
         {"query": "rare"},
-        {"after": 1},
-        {"session_id": "session"},
+        {"session_id": "session", "query": "missing"},
     ],
 )
 async def test_retrieval_budget_bounds_reads_and_releases_lock(options):
@@ -53,9 +53,9 @@ async def test_retrieval_budget_bounds_reads_and_releases_lock(options):
     assert (await archive.entries(SCOPE, limit=1))[0]["text"] == "still writable"
 
 
-async def test_retrieval_exact_budget_preserves_chronological_pages():
+async def test_long_sessions_page_with_bounded_reads_and_scoped_cursors():
     metadata = CountingStore()
-    archive = StoreConversationArchive(metadata, namespace=("boundary",))
+    archive = StoreConversationArchive(metadata, namespace=("paging",))
     await archive.append(
         SCOPE,
         "session",
@@ -63,13 +63,36 @@ async def test_retrieval_exact_budget_preserves_chronological_pages():
         [HumanMessage(str(index), id=str(index)) for index in range(500)],
     )
     assert await archive.entries(SCOPE, query="missing") == []
-    first = await archive.entries(SCOPE, session_id="session", limit=2)
-    second = await archive.entries(SCOPE, session_id="session", after=first[-1]["cursor"], limit=2)
-    assert [entry["text"] for entry in first + second] == ["0", "1", "2", "3"]
-    latest = await archive.entries(SCOPE, limit=1)
-    metadata.reads = 0
-    assert await archive.entries(SCOPE, session_id="session", after=latest[0]["cursor"]) == []
-    assert metadata.reads <= 4
+    await archive.append(
+        SCOPE,
+        "session",
+        "later",
+        [HumanMessage(str(index), id=str(index)) for index in range(500, 520)],
+    )
+    for session_id in ("", "session"):
+        entries, cursor = [], 0
+        while True:
+            metadata.reads = 0
+            page = await archive.entries(SCOPE, session_id=session_id, after=cursor, limit=20)
+            assert metadata.reads <= 45
+            if not page:
+                break
+            entries.extend(page)
+            cursor = page[-1]["cursor"]
+        expected = [str(index) for index in range(520)]
+        assert [entry["text"] for entry in entries] == (expected if session_id else expected[::-1])
+    await archive.append(OTHER, "private", "time", [HumanMessage("private")])
+    foreign = (await archive.entries(OTHER))[0]["cursor"]
+    assert await archive.entries(SCOPE, session_id="session", after=foreign) == []
+    assert await archive.entries(OTHER, session_id="session", after=cursor) == []
+    first = entries[0]["cursor"]
+    item = await metadata.aget(archive.records.namespace, str(first))
+    await metadata.aput(
+        archive.records.namespace, str(first), {**item.value, "next_session": first}
+    )
+    for after in (0, first):
+        with pytest.raises(RuntimeError, match="invalid ordering link"):
+            await archive.entries(SCOPE, session_id="session", after=after)
 
 
 @pytest.mark.parametrize("deleted", [False, True])
@@ -135,19 +158,20 @@ class InterruptedStore(InMemoryStore):
         await super().aput(namespace, key, value, index=index, ttl=ttl)
 
 
-@pytest.mark.parametrize("failure", [2, 3, 4, 5, 6, 7])
+@pytest.mark.parametrize("failure", [2, 3, 4, 5, 6, 7, 8])
 async def test_partial_chunk_write_recovers_idempotently_on_reopen(failure):
     metadata = InterruptedStore()
     message = [HumanMessage("durable content", id="message")]
     archive = StoreConversationArchive(metadata, namespace=("recovery",))
-    await archive.append(SCOPE, "session", "time", [])
+    await archive.append(SCOPE, "session", "time", [HumanMessage("first", id="first")])
     metadata.remaining = failure
     with pytest.raises(OSError, match="interrupted metadata"):
         await archive.append(SCOPE, "session", "time", message)
     archive = StoreConversationArchive(metadata, namespace=("recovery",))
     await archive.append(SCOPE, "session", "time", message)
-    assert [entry["text"] for entry in await archive.entries(SCOPE)] == ["durable content"]
-    assert (await archive.conversations(SCOPE))[0]["message_count"] == 1
+    entries = await archive.entries(SCOPE, session_id="session")
+    assert [entry["text"] for entry in entries] == ["first", "durable content"]
+    assert (await archive.conversations(SCOPE))[0]["message_count"] == 2
 
 
 async def test_cancelled_metadata_write_finishes_before_releasing_archive():

@@ -4,9 +4,9 @@ from typing import TYPE_CHECKING
 
 from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 
-from deepagents_talon.archive import SQLiteConversationArchive
 from deepagents_talon.archive_saver import ConversationSaver
 from deepagents_talon.runtime import DeepAgentRuntime
+from deepagents_talon.sqlite_archive import SQLiteConversationArchive
 
 if TYPE_CHECKING:
     from pathlib import Path

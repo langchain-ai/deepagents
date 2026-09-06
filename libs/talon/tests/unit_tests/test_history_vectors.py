@@ -14,8 +14,8 @@ from langgraph.store.sqlite.aio import AsyncSqliteStore
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.config import TalonConfig, TalonConfigError
 from deepagents_talon.history_embeddings import QUERY_PROMPT, HistoryEmbeddings
-from deepagents_talon.sqlite_archive import SQLiteConversationArchive
 from deepagents_talon.sqlite_history import _HistorySqliteStore, sqlite_store
+from tests.archive_helpers import open_vector_archive
 from tests.store_archive_contract import StaticEmbeddings as Embedding
 
 SCOPE = ArchiveScope(talon_history_channel="whatsapp", talon_history_chat="one")
@@ -61,13 +61,13 @@ async def append(archive, text, session="session", scope=SCOPE):
 @pytest.mark.parametrize("backend", ["memory", "sqlite"])
 async def test_hybrid_backfill_scope_pagination_and_reset(tmp_path, backend):
     path = str(tmp_path / "archive.sqlite")
-    async with SQLiteConversationArchive.from_conn_string(path) as archive:
+    async with open_vector_archive(path) as archive:
         await append(archive, "my automobile needs repairs")
         await append(archive, "car insurance", session="second")
         await append(archive, "car secret", session="private", scope=OTHER)
     async with (
         vector_store(backend, tmp_path / "vectors.sqlite") as store,
-        SQLiteConversationArchive.from_conn_string(path, store=store) as archive,
+        open_vector_archive(path, store=store) as archive,
     ):
         await settled(archive)
         hits = (await archive.search_page(SCOPE, query="car"))["results"]
@@ -101,9 +101,7 @@ async def test_writes_and_keyword_search_continue_while_embedding_and_reset_wait
     embed = BlockingEmbedding()
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", embed) as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         try:
             await append(archive, "car")
@@ -136,14 +134,14 @@ async def test_failed_indexing_is_retried_after_restart(tmp_path):
     failing = FailingEmbedding()
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", failing) as store,
-        SQLiteConversationArchive.from_conn_string(path, store=store) as archive,
+        open_vector_archive(path, store=store) as archive,
     ):
         await append(archive, "car")
         await asyncio.wait_for(failing.failed.wait(), 2)
         assert ((await archive.search_page(SCOPE, query="car"))["results"])[0]["text"] == "car"
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite") as store,
-        SQLiteConversationArchive.from_conn_string(path, store=store) as archive,
+        open_vector_archive(path, store=store) as archive,
     ):
         await settled(archive)
         assert (
@@ -155,13 +153,13 @@ async def test_existing_vectors_survive_restart_and_do_not_reembed(tmp_path):
     path = str(tmp_path / "archive.sqlite")
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite") as store,
-        SQLiteConversationArchive.from_conn_string(path, store=store) as archive,
+        open_vector_archive(path, store=store) as archive,
     ):
         await append(archive, "car")
         await settled(archive)
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", FailingEmbedding()) as store,
-        SQLiteConversationArchive.from_conn_string(path, store=store) as archive,
+        open_vector_archive(path, store=store) as archive,
     ):
         await settled(archive)
         assert len(await store.asearch(archive.vectors.namespace("whatsapp", "one"))) == 1
@@ -176,7 +174,7 @@ async def test_partial_vector_write_is_retried(tmp_path, restart):
             "BEGIN SELECT RAISE(ABORT, 'vector insert failed'); END"
         )
         await store.conn.commit()
-        async with SQLiteConversationArchive.from_conn_string(path, store=store) as archive:
+        async with open_vector_archive(path, store=store) as archive:
             await append(archive, "car")
             async with asyncio.timeout(3):
                 # Poll persisted state; the worker exposes no failure notification.
@@ -190,7 +188,7 @@ async def test_partial_vector_write_is_retried(tmp_path, restart):
                 await settled(archive)
                 page = await archive.search_page(SCOPE, query="automobile")
                 assert [entry["text"] for entry in page["results"]] == ["car"]
-        async with SQLiteConversationArchive.from_conn_string(path, store=store) as archive:
+        async with open_vector_archive(path, store=store) as archive:
             await settled(archive)
             page = await archive.search_page(SCOPE, query="automobile")
             assert [entry["text"] for entry in page["results"]] == ["car"]
@@ -202,15 +200,13 @@ async def test_disabled_mode_can_delete_existing_vector_rows(tmp_path):
     config.ensure_home()
     async with (
         vector_store("sqlite", config.history_vector_path) as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(config.checkpoint_path), store=store
-        ) as archive,
+        open_vector_archive(str(config.checkpoint_path), store=store) as archive,
     ):
         await append(archive, "car")
         await settled(archive)
     async with (
         sqlite_store(config) as store,
-        SQLiteConversationArchive.from_conn_string(
+        open_vector_archive(
             str(config.checkpoint_path), store=store, vector_search=False
         ) as archive,
     ):
@@ -225,12 +221,8 @@ async def test_disabled_mode_can_delete_existing_vector_rows(tmp_path):
 async def test_store_results_cannot_cross_archive_or_chat_boundaries(tmp_path):
     store = InMemoryStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
     async with (
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "a.sqlite"), store=store
-        ) as first,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "b.sqlite"), store=store
-        ) as second,
+        open_vector_archive(str(tmp_path / "a.sqlite"), store=store) as first,
+        open_vector_archive(str(tmp_path / "b.sqlite"), store=store) as second,
     ):
         await append(first, "car private", scope=OTHER)
         await append(second, "car second")
@@ -299,9 +291,7 @@ async def test_pagination_survives_indexing_and_a_fresh_search(tmp_path, monkeyp
     monkeypatch.setattr("deepagents_talon.history_vectors._SEARCH_TIMEOUT_SECONDS", 0.01)
     async with (
         vector_store("memory", tmp_path / "unused") as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         for text in ("car first", "car second", "car third"):
             await append(archive, text)
@@ -339,9 +329,7 @@ async def test_vector_delete_failure_retains_history_for_retry(tmp_path):
             return await super().abatch(operations)
 
     store = FailingDeleteStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
-    async with SQLiteConversationArchive.from_conn_string(
-        str(tmp_path / "archive.sqlite"), store=store
-    ) as archive:
+    async with open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive:
         await append(archive, "car")
         await settled(archive)
         with pytest.raises(RuntimeError, match="delete unavailable"):
@@ -392,9 +380,7 @@ async def test_search_waits_for_indexing_and_retrieves_semantic_history(tmp_path
     embed = BlockingEmbedding()
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", embed) as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         try:
             await append(archive, "car from a past conversation")
@@ -415,9 +401,7 @@ async def test_timed_out_search_reports_fallback_and_can_retry(tmp_path, monkeyp
     embed = BlockingEmbedding()
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", embed) as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         try:
             await append(archive, "car")
@@ -442,9 +426,7 @@ async def test_timed_out_search_reports_fallback_and_can_retry(tmp_path, monkeyp
 async def test_search_tool_pages_preserve_status_and_report_expired_cursors(tmp_path):
     async with (
         vector_store("memory", tmp_path / "unused") as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         await append(archive, "car first")
         await append(archive, "car second", session="second")
@@ -474,9 +456,7 @@ async def test_search_tool_pages_preserve_status_and_report_expired_cursors(tmp_
 async def test_search_backend_failure_reports_error(tmp_path):
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", FailingEmbedding()) as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         # No indexing in flight: this fails inside query execution itself.
         page = await archive.search_page(SCOPE, query="automobile")
@@ -486,9 +466,7 @@ async def test_search_backend_failure_reports_error(tmp_path):
 
 async def test_search_reports_store_without_semantic_support(tmp_path):
     store = InMemoryStore()
-    async with SQLiteConversationArchive.from_conn_string(
-        str(tmp_path / "archive.sqlite"), store=store
-    ) as archive:
+    async with open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive:
         await append(archive, "car")
         await settled(archive)
         page = await archive.search_page(SCOPE, query="car")
@@ -503,9 +481,7 @@ async def test_cached_fallback_does_not_claim_semantic_success_after_recovery(
     embed = BlockingEmbedding()
     async with (
         vector_store("sqlite", tmp_path / "vectors.sqlite", embed) as store,
-        SQLiteConversationArchive.from_conn_string(
-            str(tmp_path / "archive.sqlite"), store=store
-        ) as archive,
+        open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive,
     ):
         try:
             await append(archive, "car first")
@@ -529,7 +505,7 @@ async def test_cached_fallback_does_not_claim_semantic_success_after_recovery(
 @pytest.mark.parametrize("visibility", ["immediate", "unknown"])
 async def test_search_reports_backend_visibility_separately_from_queue(tmp_path, visibility):
     store = InMemoryStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
-    async with SQLiteConversationArchive.from_conn_string(
+    async with open_vector_archive(
         str(tmp_path / "archive.sqlite"), store=store, search_visibility=visibility
     ) as archive:
         await append(archive, "car")
@@ -550,9 +526,7 @@ async def test_eventual_store_does_not_claim_complete_index_when_results_are_emp
             return await super().abatch(operations)
 
     store = DelayedStore(index={"dims": 2, "embed": Embedding(), "fields": ["text"]})
-    async with SQLiteConversationArchive.from_conn_string(
-        str(tmp_path / "archive.sqlite"), store=store
-    ) as archive:
+    async with open_vector_archive(str(tmp_path / "archive.sqlite"), store=store) as archive:
         await append(archive, "car")
         await settled(archive)
         first = await archive.search_page(SCOPE, query="automobile")

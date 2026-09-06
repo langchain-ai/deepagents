@@ -129,7 +129,7 @@ class TalonConfig:
 
     @property
     def history_uri(self) -> str | None:
-        """Remote history URI, or None for the default local SQLite archive."""
+        """History URI, or None for the default local SQLite archive."""
         uri = self.env.get("DEEPAGENTS_TALON_HISTORY_URI")
         _validate_history_uri(uri)
         return uri
@@ -206,18 +206,12 @@ def _validate_history_uri(uri: str | None) -> None:
         return
     try:
         parsed = urlsplit(uri)
-        if (
-            parsed.scheme in {"mongodb", "mongodb+srv", "postgres", "postgresql"}
-            and parsed.hostname
-            and parsed.path.strip("/")
-            and not parsed.fragment
-            and not any(char.isspace() for char in uri)
-        ):
+        if parsed.scheme and not parsed.fragment and not any(char.isspace() for char in uri):
             return
     except ValueError:
         pass
     msg = (
-        "DEEPAGENTS_TALON_HISTORY_URI must be a MongoDB or PostgreSQL URI "
-        "with a host and database name; unset it to use SQLite"
+        "DEEPAGENTS_TALON_HISTORY_URI must be a URI with a scheme and no whitespace "
+        "or fragment; unset it to use the default SQLite archive"
     )
     raise TalonConfigError(msg)

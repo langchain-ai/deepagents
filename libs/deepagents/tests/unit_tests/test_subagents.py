@@ -1675,17 +1675,17 @@ class TestSubAgents:
         parsed = AnalysisResult.model_validate_json(task_tool_message.content)
         assert parsed == AnalysisResult(findings="Solar is growing fast", confidence=0.95)
 
-    def test_fallback_to_last_message_without_structured_response(self) -> None:
+    @pytest.mark.parametrize("serialized", [False, True], ids=["object", "dict"])
+    @pytest.mark.parametrize("use_async", [False, True], ids=["sync", "async"])
+    async def test_fallback_to_last_message_without_structured_response(self, *, serialized: bool, use_async: bool) -> None:
         """Test fallback to last message when no structured_response is present.
 
         When a subagent does not produce a `structured_response`, the middleware
-        should fall back to extracting the last message text.
+        should extract the last message text from native or serialized messages.
         """
-        mock_subagent = RunnableLambda(
-            lambda _: {
-                "messages": [AIMessage(content="Plain text result without structured response")],
-            }
-        )
+        answer = "Plain text result without structured response"
+        message = {"type": "ai", "content": answer} if serialized else AIMessage(content=answer)
+        mock_subagent = RunnableLambda(lambda _: {"messages": [message]})
 
         parent_chat_model = GenericFakeChatModel(
             messages=iter(
@@ -1721,15 +1721,15 @@ class TestSubAgents:
             ],
         )
 
-        result = agent.invoke(
-            {"messages": [HumanMessage(content="Test")]},
-            config={"configurable": {"thread_id": f"test-no-structured-{uuid.uuid4().hex}"}},
-        )
+        inputs = {"messages": [HumanMessage(content="Test")]}
+        config: RunnableConfig = {"configurable": {"thread_id": f"test-no-structured-{uuid.uuid4().hex}"}}
+        result = await agent.ainvoke(inputs, config=config) if use_async else agent.invoke(inputs, config=config)
 
         tool_messages = [msg for msg in result["messages"] if msg.type == "tool"]
         assert len(tool_messages) == 1
         task_tool_message = tool_messages[0]
-        assert task_tool_message.content == "Plain text result without structured response"
+        assert task_tool_message.tool_call_id == "call_plain"
+        assert task_tool_message.content == answer
 
     def test_fallback_skips_trailing_empty_ai_message(self) -> None:
         """Skip a trailing empty AIMessage and use the last AIMessage with text.

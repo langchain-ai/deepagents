@@ -4,6 +4,7 @@ import asyncio
 import threading
 import traceback
 from contextlib import asynccontextmanager
+from importlib.metadata import EntryPoint
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
@@ -23,7 +24,7 @@ URI_KEY = "DEEPAGENTS_TALON_HISTORY_URI"
 SCOPE = ArchiveScope(talon_history_channel="test", talon_history_chat="one")
 
 
-@pytest.mark.parametrize("scheme", ["mongodb", "mongodb+srv", "postgres", "postgresql"])
+@pytest.mark.parametrize("scheme", ["mongodb", "mongodb+srv", "postgres", "postgresql", "mysql"])
 def test_history_uri_accepts_supported_databases_without_exposing_config(tmp_path, scheme):
     uri = f"{scheme}://user:example-password@database.example/talon"
     config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
@@ -36,10 +37,7 @@ def test_history_uri_accepts_supported_databases_without_exposing_config(tmp_pat
     "uri",
     [
         "",
-        "sqlite:///tmp/history.sqlite",
-        "https://example/talon",
-        "postgresql://host",
-        "mongodb://host/",
+        "history.sqlite",
         "mongodb://[invalid/talon",
         "mongodb://host/talon#fragment",
         "postgresql://bad host/talon",
@@ -50,6 +48,123 @@ def test_invalid_history_uri_fails_without_echoing_input(tmp_path, uri):
         TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
     if uri:
         assert uri not in str(error.value)
+
+
+@pytest.mark.parametrize("uri", ["postgresql://host", "mongodb://host/", "sqlite://host/file"])
+async def test_backend_validates_its_own_uri(tmp_path, uri):
+    config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
+    with pytest.raises(TalonConfigError, match=URI_KEY):
+        async with open_history(config):
+            pytest.fail("invalid backend URI must fail at startup")
+
+
+@pytest.mark.parametrize("scheme", ["sqlite", "file"])
+async def test_sqlite_uri_persists_and_isolates_assistants(tmp_path, scheme):
+    path = tmp_path / "history archive.sqlite"
+    uri = path.as_uri().replace("file:", f"{scheme}:", 1) + "?mode=rwc"
+    config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
+    async with open_history(config) as archive:
+        await archive.append(SCOPE, "session", "time", [HumanMessage("retained")])
+    assert path.exists()
+    async with open_history(config) as reopened:
+        assert [entry["text"] for entry in await reopened.entries(SCOPE)] == ["retained"]
+    other = TalonConfig.from_env(
+        {URI_KEY: uri, "DEEPAGENTS_TALON_ASSISTANT_ID": "other"}, base_home=tmp_path
+    )
+    async with open_history(other) as isolated:
+        assert await isolated.entries(SCOPE) == []
+    assert not config.checkpoint_path.exists()
+
+
+async def test_sqlite_uri_preserves_connection_options(tmp_path):
+    path = tmp_path / "missing.sqlite"
+    config = TalonConfig.from_env({URI_KEY: path.as_uri() + "?mode=rw"}, base_home=tmp_path)
+    with pytest.raises(TalonConfigError, match="SQLite history"):
+        async with open_history(config):
+            pytest.fail("mode=rw must not create a missing database")
+    assert not path.exists()
+
+
+def install_plugin(monkeypatch, factory, *, count=1):
+    plugin = EntryPoint(name="mysql", value="example_history:open_store", group="test")
+
+    def discover(*, group, name):
+        assert group == "deepagents_talon.history_backends"
+        return [plugin] * count if name == plugin.name else []
+
+    monkeypatch.setattr(history_backends, "entry_points", discover)
+    monkeypatch.setattr(EntryPoint, "load", lambda _self: factory)
+
+
+async def test_installed_backend_accepts_custom_uri_and_closes(tmp_path, monkeypatch):
+    uri = "mysql://user:example-password@localhost/talon?custom=option"
+    store = InMemoryStore()
+    closed = []
+
+    @asynccontextmanager
+    async def factory(connection):
+        assert connection == uri
+        try:
+            yield store
+        finally:
+            closed.append(True)
+
+    install_plugin(monkeypatch, factory)
+    config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
+    async with open_history(config) as archive:
+        await archive.append(SCOPE, "session", "time", [HumanMessage("retained")])
+    async with open_history(config) as reopened:
+        assert [entry["text"] for entry in await reopened.entries(SCOPE)] == ["retained"]
+    assert len(closed) == 2
+
+
+@pytest.mark.parametrize("failure", ["load", "setup", "write", "timeout", "cancel"])
+async def test_plugin_startup_failure_redacts_and_closes(tmp_path, monkeypatch, failure):
+    uri = "mysql://user:example-password@localhost/talon"
+    closed = []
+
+    @asynccontextmanager
+    async def factory(_connection):
+        try:
+            if failure == "setup":
+                raise RuntimeError(uri)
+            if failure in {"timeout", "cancel"}:
+                if failure == "cancel":
+                    raise asyncio.CancelledError
+                await asyncio.Event().wait()
+            yield InMemoryStore()
+        finally:
+            closed.append(True)
+
+    def fail_load(_self):
+        raise ImportError(uri)
+
+    async def deny_write(*_args: object, **_kwargs: object):
+        raise PermissionError(uri)
+
+    install_plugin(monkeypatch, factory)
+    if failure == "load":
+        monkeypatch.setattr(EntryPoint, "load", fail_load)
+    if failure == "write":
+        monkeypatch.setattr(InMemoryStore, "aput", deny_write)
+    monkeypatch.setattr(history_backends, "_STARTUP_TIMEOUT", 0.01)
+    config = TalonConfig.from_env({URI_KEY: uri}, base_home=tmp_path)
+    expected = asyncio.CancelledError if failure == "cancel" else TalonConfigError
+    with pytest.raises(expected) as error:
+        async with open_history(config):
+            pytest.fail("startup must fail")
+    assert "example-password" not in "".join(traceback.format_exception(error.value))
+    assert closed == ([] if failure == "load" else [True])
+
+
+@pytest.mark.parametrize("count", [0, 2])
+async def test_unavailable_or_ambiguous_backend_fails_closed(tmp_path, monkeypatch, count):
+    install_plugin(monkeypatch, None, count=count)
+    config = TalonConfig.from_env({URI_KEY: "mysql://localhost/talon"}, base_home=tmp_path)
+    with pytest.raises(TalonConfigError, match="exactly one"):
+        async with open_history(config):
+            pytest.fail("backend must not fall back to SQLite or PostgreSQL")
+    assert not config.checkpoint_path.exists()
 
 
 def postgres_driver(shared, state, failing):

@@ -1,4 +1,4 @@
-"""Optional MongoDB metadata contract test; see README for local setup."""
+"""Optional real Atlas Local contract test; see README for local setup."""
 
 from __future__ import annotations
 
@@ -8,15 +8,25 @@ from uuid import uuid4
 
 import pytest
 
-from tests.store_archive_contract import assert_store_archive_contract
+from deepagents_talon import history_backends
+from tests.store_archive_contract import StaticEmbeddings, assert_store_archive_contract
 
 pytestmark = [
-    pytest.mark.skipif(os.environ.get("TALON_TEST_MONGODB") != "1", reason="MongoDB opt-in"),
+    pytest.mark.skipif(os.environ.get("TALON_TEST_MONGODB") != "1", reason="Atlas Local opt-in"),
     pytest.mark.timeout(90),
 ]
 
 
-async def test_mongodb_history_contract(tmp_path):
+async def test_mongodb_history_contract(tmp_path, monkeypatch):
+    embeddings = StaticEmbeddings()
+    monkeypatch.setattr(
+        history_backends,
+        "_embedding_index",
+        lambda *, enabled: (
+            embeddings,
+            {"dims": 2, "embed": embeddings, "fields": ["text"]} if enabled else None,
+        ),
+    )
     mongodb = pytest.importorskip("langgraph.store.mongodb")
     pymongo = pytest.importorskip("pymongo")
     port = int(os.environ.get("TALON_TEST_MONGODB_PORT", "27028"))
@@ -28,9 +38,19 @@ async def test_mongodb_history_contract(tmp_path):
     )
     database = "talon_test_" + uuid4().hex
     try:
+        config = mongodb.create_vector_index_config(
+            embed=StaticEmbeddings(), dims=2, fields=["text"]
+        )
+        store = await asyncio.to_thread(
+            mongodb.MongoDBStore,
+            client[database]["talon_history_vectors"],
+            index_config=config,
+            auto_index_timeout=60,
+        )
         metadata = await asyncio.to_thread(mongodb.MongoDBStore, client[database]["talon_history"])
         await assert_store_archive_contract(
             metadata,
+            store,
             tmp_path,
             history_uri=f"mongodb://127.0.0.1:{port}/{database}?directConnection=true",
         )

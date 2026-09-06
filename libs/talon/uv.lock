@@ -1016,6 +1016,10 @@ dependencies = [
 ]
 
 [package.optional-dependencies]
+history = [
+    { name = "sentence-transformers" },
+    { name = "transformers" },
+]
 media = [
     { name = "deepagents-code", extra = ["media"] },
     { name = "librosa" },
@@ -1059,12 +1063,14 @@ requires-dist = [
     { name = "numpy", marker = "extra == 'media'", specifier = ">=2.4.6,<3.0.0" },
     { name = "phonemizer", marker = "extra == 'media'", specifier = ">=3.3.0,<4.0.0" },
     { name = "psycopg", extras = ["binary"], marker = "extra == 'postgres'", specifier = ">=3.3.5,<4.0.0" },
+    { name = "sentence-transformers", marker = "extra == 'history'", specifier = ">=5.2.0,<7.0.0" },
     { name = "torch", marker = "extra == 'media'", specifier = ">=2.12.1,<2.14.0" },
     { name = "torchaudio", marker = "extra == 'media'", specifier = ">=2.11.0,<2.12.0" },
+    { name = "transformers", marker = "extra == 'history'", specifier = ">=4.51.0,<6.0.0" },
     { name = "transformers", marker = "extra == 'media'", specifier = ">=5.12.1,<6.0.0" },
     { name = "tzdata", specifier = ">=2025.2" },
 ]
-provides-extras = ["mongodb", "postgres", "media"]
+provides-extras = ["history", "mongodb", "postgres", "media"]
 
 [package.metadata.requires-dev]
 test = [
@@ -4192,6 +4198,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/f7/86/5185061a1fcc41d18c5dc2463969b3a3964b31d9ac67b2fb05d4c7ff7670/scipy-1.18.0-cp314-cp314t-musllinux_1_2_x86_64.whl", hash = "sha256:9aac6192fac56bf2ca534389d24623f07b39ff83317d58287285e7fbd622ff76", size = 37472480, upload-time = "2026-06-19T15:01:35.136Z" },
     { url = "https://files.pythonhosted.org/packages/31/8e/f04c68e39919a010d34f2ee1367fd705b0a25a02f609d755f0bfbc0a15fc/scipy-1.18.0-cp314-cp314t-win_amd64.whl", hash = "sha256:e40baea28ae7f5475c779741e2d90b1247c78531207b49c7030e698ff81cee3f", size = 37365390, upload-time = "2026-06-19T15:01:38.091Z" },
     { url = "https://files.pythonhosted.org/packages/d5/19/969dc072906c84dd0a3b05dcf57ea750936087d7873549e408b35cfc3f97/scipy-1.18.0-cp314-cp314t-win_arm64.whl", hash = "sha256:368e0a705903c466aa5f08eefb39e6b1b6b2d659e7352a31fd9e2438365be0f8", size = 25279661, upload-time = "2026-06-19T15:01:40.817Z" },
+]
+
+[[package]]
+name = "sentence-transformers"
+version = "6.0.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "huggingface-hub" },
+    { name = "numpy" },
+    { name = "scikit-learn" },
+    { name = "scipy" },
+    { name = "tokenizers" },
+    { name = "torch" },
+    { name = "tqdm" },
+    { name = "transformers" },
+    { name = "typing-extensions" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/d9/ef/87681678d0aa91a1e77f0ffdd2e5d900aaf358aac644dd14bead8d95ec4c/sentence_transformers-6.0.1.tar.gz", hash = "sha256:1c3b8d9403f87ad0c879638554f36cc85744f38a6a70d150fd7e964ca0e9935b", size = 575395, upload-time = "2026-08-31T07:50:43.518Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/31/ab/dc6031faf1b6bba08076fbf457b21a5c51ba7928a77916915e093c16b8c7/sentence_transformers-6.0.1-py3-none-any.whl", hash = "sha256:b8888d72c707ba33c63aa30845850702dd5acadf1dd0d051436380bcebe4fd0f", size = 739832, upload-time = "2026-08-31T07:50:41.635Z" },
 ]
 
 [[package]]

@@ -56,14 +56,15 @@ def postgres_driver(shared, state, failing):
     class Postgres:
         @classmethod
         @asynccontextmanager
-        async def from_conn_string(cls, uri) -> AsyncIterator[InMemoryStore]:
+        async def from_conn_string(cls, uri, *, index=None) -> AsyncIterator[InMemoryStore]:
             class ReadyStore(InMemoryStore):
                 async def setup(self):
                     if failing:
                         raise RuntimeError(uri)
 
-            store = ReadyStore()
+            store = ReadyStore(index=index)
             store._data = shared._data
+            store._vectors = shared._vectors
             store._task = asyncio.create_task(asyncio.Event().wait())
             state.dispatcher = store._task
             try:
@@ -76,6 +77,7 @@ def postgres_driver(shared, state, failing):
 
 def fake_backend(monkeypatch, *, failing=False, started=None, release=None):
     store = InMemoryStore()
+    mongo_data = {"talon_history": InMemoryStore(), "talon_history_vectors": InMemoryStore()}
     state = SimpleNamespace(closed=False, dispatcher=None)
 
     class Client:
@@ -83,24 +85,30 @@ def fake_backend(monkeypatch, *, failing=False, started=None, release=None):
             self.uri = uri
 
         def get_default_database(self):
-            return {"talon_history": self.uri}
+            return {name: (self.uri, name) for name in mongo_data}
 
         def close(self):
             state.closed = True
 
-    def mongo_store(uri):
+    def mongo_store(target, *, index_config=None, **_kwargs: object):
+        uri, collection = target
         if started is not None:
             started.set()
             release.wait(timeout=5)
         if failing:
             raise RuntimeError(uri)
-        return store
+        backend = InMemoryStore(index=index_config)
+        backend._data = mongo_data[collection]._data
+        backend._vectors = mongo_data[collection]._vectors
+        return backend
 
     def driver(module, _extra):
         if module == "pymongo":
             return SimpleNamespace(MongoClient=Client)
         return SimpleNamespace(
-            AsyncPostgresStore=postgres_driver(store, state, failing), MongoDBStore=mongo_store
+            AsyncPostgresStore=postgres_driver(store, state, failing),
+            MongoDBStore=mongo_store,
+            create_vector_index_config=lambda **kwargs: kwargs,
         )
 
     monkeypatch.setattr(history_backends, "_driver", driver)
@@ -184,3 +192,39 @@ async def test_missing_backend_extra_has_install_guidance(tmp_path, monkeypatch,
     with pytest.raises(ImportError, match=f"uv sync --extra {extra}"):
         async with open_history(config):
             pytest.fail("missing backend must not fall back to SQLite")
+
+
+@pytest.mark.parametrize("scheme", ["mongodb", "postgresql"])
+async def test_env_hybrid_search_and_reset_after_disabling_vectors(tmp_path, monkeypatch, scheme):
+    from tests.store_archive_contract import StaticEmbeddings  # noqa: PLC0415
+
+    fake_backend(monkeypatch)
+    embeddings = StaticEmbeddings()
+    monkeypatch.setattr(
+        history_backends,
+        "_embedding_index",
+        lambda *, enabled: (
+            embeddings,
+            {"dims": 2, "embed": embeddings, "fields": ["text"]} if enabled else None,
+        ),
+    )
+    env = {URI_KEY: f"{scheme}://localhost/talon", "DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH": "1"}
+    config = TalonConfig.from_env(env, base_home=tmp_path)
+    async with open_history(config) as archive:
+        await archive.append(SCOPE, "session", "time", [HumanMessage("car repairs")])
+        async with asyncio.timeout(2):
+            while True:
+                page = await archive.search_page(SCOPE, query="automobile")
+                if not page["indexing_pending"]:
+                    break
+                await asyncio.sleep(0)
+        assert page["semantic_status"] == "completed"
+        assert page["results"][0]["text"] == "car repairs"
+        assert page["indexing_status"] == ("unknown" if scheme == "mongodb" else "ready")
+    disabled = TalonConfig.from_env({URI_KEY: env[URI_KEY]}, base_home=tmp_path)
+    async with open_history(disabled) as archive:
+        await archive.delete_session("session")
+        assert await archive.entries(SCOPE) == []
+    async with open_history(config) as archive:
+        assert (await archive.search_page(SCOPE, query="automobile"))["results"] == []
+    assert not config.history_vector_path.exists()

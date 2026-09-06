@@ -7,6 +7,7 @@ import hashlib
 import json
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Coroutine
@@ -70,11 +71,11 @@ class StoreRecords:
         """Read the versioned sequence and session registry."""
         root = await self.get("root")
         if root is None:
-            return {"version": 1, "last": 0}
+            root = {"version": 1, "last": 0}
         if root.get("version") != 1:
             msg = "Unsupported conversation archive format"
             raise ValueError(msg)
-        return root
+        return {"identity": uuid4().hex, "vectors": False, "deletions": 0, **root}
 
     async def commit(self, writes: list[Write]) -> None:
         """Durably record a bounded mutation before applying its idempotent writes."""

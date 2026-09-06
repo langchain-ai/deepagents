@@ -47,12 +47,14 @@ async def test_archive_persists_across_resets_and_isolates_chats(tmp_path):
         await _save(saver, "whatsapp:other", "Other orchard", scope=OTHER)
     async with aiosqlite.connect(path) as connection:
         saver = make_saver(connection)
-        hits = await saver.archive.entries(WHATSAPP, query="orchard")
+        hits = (await saver.archive.search_page(WHATSAPP, query="orchard"))["results"]
         assert [hit["text"] for hit in hits] == ["Remember the orchard"]
         assert len(await saver.archive.entries(WHATSAPP)) == 2
         assert await saver.archive.entries(WHATSAPP, session_id="telegram:chat") == []
         assert await saver.archive.entries(WHATSAPP, session_id="whatsapp:other") == []
-        assert await saver.archive.entries(WHATSAPP, query='orchard" OR "Telegram') == []
+        assert (await saver.archive.search_page(WHATSAPP, query='orchard" OR "Telegram'))[
+            "results"
+        ] == []
 
 
 async def test_long_transcripts_are_completely_readable_with_bounded_pages(tmp_path):
@@ -93,7 +95,7 @@ async def test_compaction_preserves_original_messages_without_duplicates(
         await graph.aupdate_state(config, {"messages": [RemoveMessage(id="original")]})
         snapshot = await graph.aget_state(config)
         assert all(message.id != "original" for message in snapshot.values["messages"])
-        assert len(await saver.archive.entries(WHATSAPP, query="orchard")) == 1
+        assert len((await saver.archive.search_page(WHATSAPP, query="orchard"))["results"]) == 1
         assert len(await saver.archive.entries(WHATSAPP)) == 2
 
 
@@ -109,13 +111,13 @@ async def test_clear_removes_checkpoints_writes_and_archive_only_in_scope(tmp_pa
         await saver.clear_history(WHATSAPP)
         await saver.clear_history(WHATSAPP)
         assert await saver.archive.entries(WHATSAPP) == []
-        assert len(await saver.archive.entries(TELEGRAM, query="orchard")) == 1
+        assert len((await saver.archive.search_page(TELEGRAM, query="orchard"))["results"]) == 1
         for table in ("checkpoints", "writes"):
             async with connection.execute(f"SELECT thread_id FROM {table}") as cursor:  # noqa: S608  # Fixed table names.
                 assert all(row[0] == "telegram:chat" for row in await cursor.fetchall())
     async with aiosqlite.connect(path) as connection:
         saver = make_saver(connection)
-        assert await saver.archive.entries(WHATSAPP, query="orchard") == []
+        assert (await saver.archive.search_page(WHATSAPP, query="orchard"))["results"] == []
         assert len(await saver.archive.entries(TELEGRAM)) == 1
 
 
@@ -128,8 +130,17 @@ async def test_tools_enforce_scope_and_paginate_search(tmp_path):
         tools = {tool.name: tool for tool in conversation_tools(saver.archive, lambda: WHATSAPP)}
         search, read = tools["search_conversations"], tools["read_conversation"]
         first = await search.ainvoke({"query": "orchard", "limit": 1})
-        second = await search.ainvoke({"query": "orchard", "limit": 1, "after": first[0]["cursor"]})
-        assert {first[0]["session_id"], second[0]["session_id"]} == {"one", "two"}
+        second = await search.ainvoke(
+            {"query": "orchard", "limit": 1, "after": first["next_after"]}
+        )
+        assert {first["results"][0]["session_id"], second["results"][0]["session_id"]} == {
+            "one",
+            "two",
+        }
+        assert first["has_more"]
+        assert first["semantic_status"] == "disabled"
+        assert not second["has_more"]
+        assert second["next_after"] is None
         assert await read.ainvoke({"session_id": "secret"}) == []
 
 
@@ -146,7 +157,7 @@ def _graph_factory(**kwargs: object):
             return {"messages": [AIMessage(f"sessions:{len(sessions)}")]}
         if query == "recall":
             hits = await search.ainvoke({"query": "orchard"})
-            return {"messages": [AIMessage(f"found:{len(hits)}")]}
+            return {"messages": [AIMessage(f"found:{len(hits['results'])}")]}
         return {"messages": [AIMessage("noted")]}
 
     builder = StateGraph(DeepAgentState)
@@ -185,7 +196,7 @@ async def test_host_new_recall_and_reset_all_history(tmp_path, monkeypatch, back
             assert "Cleared all conversation history" in whatsapp.sent[-1][1]
             await _send(host, whatsapp, "recall")
             assert whatsapp.sent[-1] == ("chat", "found:0")
-            assert await saver.archive.entries(WHATSAPP, query="orchard") == []
+            assert (await saver.archive.search_page(WHATSAPP, query="orchard"))["results"] == []
             assert await saver.archive.entries(TELEGRAM)
         finally:
             await host.stop()
@@ -266,7 +277,7 @@ async def test_concurrent_channels_do_not_share_retrieval_scope(tmp_path, monkey
                 ready.set()
             await ready.wait()
             hits = await search.ainvoke({"query": "secret"})
-            return {"messages": [AIMessage(hits[0]["text"])]}
+            return {"messages": [AIMessage(hits["results"][0]["text"])]}
 
         graph = StateGraph(MessagesState)
         graph.add_node("reply", reply)
@@ -307,7 +318,7 @@ async def test_message_revisions_are_retained_without_checkpoint_duplicates(tmp_
         await _save(saver, "whatsapp:chat", "Meet on Wednesday")
         transcript = await saver.archive.entries(WHATSAPP, session_id="whatsapp:chat")
         assert [chunk["text"] for chunk in transcript] == ["Meet on Tuesday", "Meet on Wednesday"]
-        assert len(await saver.archive.entries(WHATSAPP, query="Wednesday")) == 1
+        assert len((await saver.archive.search_page(WHATSAPP, query="Wednesday"))["results"]) == 1
 
 
 async def test_list_conversations_is_scoped_paginated_and_readable(tmp_path):
@@ -376,4 +387,4 @@ async def test_listing_counts_messages_and_excludes_its_own_tool_results(tmp_pat
         sessions = await saver.archive.conversations(WHATSAPP)
         assert sessions[0]["message_count"] == 2
         assert sessions[0]["preview"] == "List my sessions"
-        assert await saver.archive.entries(WHATSAPP, query="private") == []
+        assert (await saver.archive.search_page(WHATSAPP, query="private"))["results"] == []

@@ -6,14 +6,18 @@ Warning:
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import unicodedata
+from collections import OrderedDict
+from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from deepagents_talon.archive import CHUNK_SIZE
+from deepagents_talon.archive import CHUNK_SIZE, _search_page
 from deepagents_talon.store_records import Record, StoreRecords, Write, digest
 
 if TYPE_CHECKING:
@@ -22,10 +26,17 @@ if TYPE_CHECKING:
     from langchain_core.messages import BaseMessage
     from langgraph.store.base import BaseStore
 
-    from deepagents_talon.archive import ArchiveEntry, ArchiveScope, ConversationSummary
+    from deepagents_talon.archive import (
+        ArchiveEntry,
+        ArchiveScope,
+        ConversationSummary,
+        SearchPage,
+        SearchVisibility,
+    )
 
 _MAX_PAGE_SIZE = 20
 _MAX_SCAN = 500
+_MAX_SEARCH_PAGES = 32
 
 
 def number(record: Record, key: str) -> int:
@@ -80,6 +91,9 @@ class StoreConversationArchive:
     Args:
         store: Initialized, caller-owned metadata Store without vector indexing.
         namespace: Stable identity separating assistants sharing a database.
+        vector_store: Separate optional Store configured to embed transcript text.
+        vector_search: Enable indexing and search, or only vector deletion.
+        search_visibility: Whether acknowledged vector writes are immediately searchable.
     """
 
     def __init__(
@@ -87,9 +101,62 @@ class StoreConversationArchive:
         store: BaseStore,
         *,
         namespace: tuple[str, ...],
+        vector_store: BaseStore | None = None,
+        vector_search: bool = True,
+        search_visibility: SearchVisibility = "unknown",
     ) -> None:
-        """Keep ownership of the Store connection with the caller."""
+        """Keep ownership of both Store connections with the caller."""
+        if store is vector_store:
+            msg = "Archive metadata and vector indexing require separate Store instances"
+            raise ValueError(msg)
         self.records = StoreRecords(store, namespace)
+        self.vector_search = vector_search
+        self._pages: OrderedDict[str, tuple[str, str, str, int]] = OrderedDict()
+        self._ready = False
+        self._closed = False
+        self._setup_lock = asyncio.Lock()
+        self.vectors = None
+        if vector_store is not None:
+            from deepagents_talon.history_vectors import HistoryVectorIndex  # noqa: PLC0415
+            from deepagents_talon.store_archive_index import StoreVectorArchive  # noqa: PLC0415
+
+            self.vectors = HistoryVectorIndex(
+                StoreVectorArchive(self),
+                vector_store,
+                indexing=vector_search,
+                search_visibility=search_visibility,
+            )
+
+    @asynccontextmanager
+    async def open(self) -> AsyncIterator[StoreConversationArchive]:
+        """Initialize and finish workers while leaving caller-owned Stores open."""
+        try:
+            await self.setup()
+            yield self
+        finally:
+            await self.aclose()
+
+    async def setup(self) -> None:
+        """Recover interrupted writes before enabling retrieval or background indexing."""
+        async with self._setup_lock:
+            if self._closed:
+                msg = "Conversation archive is closed; create a new instance to reopen it"
+                raise RuntimeError(msg)
+            if self._ready:
+                return
+            async with self.records.access():
+                root = await self.records.root()
+                await self.records.commit([("root", root)])
+            if self.vectors is not None:
+                await self.vectors.start()
+            self._ready = True
+
+    async def aclose(self) -> None:
+        """Wait for the active indexing batch before Store connections can close."""
+        if self.vectors is not None:
+            await self.vectors.close()
+        self._pages.clear()
+        self._closed = True
 
     async def session(self, session_id: str) -> Record | None:
         """Read the authoritative session registration under the records lock."""
@@ -143,10 +210,13 @@ class StoreConversationArchive:
             timestamp: Checkpoint timestamp used for fallback message identities.
             messages: Committed messages; an empty list only registers ownership.
         """
+        await self.setup()
         async with self.records.access():
             await self._register(scope, session_id, timestamp)
             for chunk in _chunks(messages, timestamp):
                 await self._append_chunk(scope, session_id, timestamp, chunk)
+        if self.vectors is not None:
+            self.vectors.wake.set()
 
     async def _append_chunk(
         self, scope: ArchiveScope, session_id: str, timestamp: str, chunk: Record
@@ -301,9 +371,48 @@ class StoreConversationArchive:
             RuntimeError: The scan budget is exhausted before a complete page is known.
         """
         _bounds(after, limit)
+        await self.setup()
         return await self._text_entries(
             scope, query=query, session_id=session_id, after=after, limit=limit
         )
+
+    async def search_page(
+        self,
+        scope: ArchiveScope,
+        *,
+        query: str = "",
+        after: str = "",
+        limit: int = 5,
+    ) -> SearchPage:
+        """Search scoped history with explicit retrieval coverage.
+
+        Args:
+            scope: Trusted channel and chat identity.
+            query: Search text; empty lists recent history.
+            after: Opaque continuation token from the previous page.
+            limit: Maximum result count, from 1 to 20.
+        """
+        _bounds(0, limit)
+        await self.setup()
+        if self.vectors is not None and self.vector_search and query.strip():
+            return await self.vectors.search_page(scope, query, after, limit)
+        context = (scope["talon_history_channel"], scope["talon_history_chat"], query)
+        continuation = self._pages.get(after) if after else None
+        status = "disabled" if query.strip() else "not_requested"
+        if after and (continuation is None or continuation[:3] != context):
+            return _search_page([], limit, status, expired=True)
+        cursor = continuation[3] if continuation else 0
+        hits = await self._text_entries(
+            scope, query=query, session_id="", after=cursor, limit=limit + 1
+        )
+        page = _search_page(hits, limit, status, expired=bool(after and not hits))
+        if page["has_more"]:
+            token = uuid4().hex
+            self._pages[token] = (*context, page["results"][-1]["cursor"])
+            page["next_after"] = token
+            if len(self._pages) > _MAX_SEARCH_PAGES:
+                self._pages.popitem(last=False)
+        return page
 
     async def conversations(
         self,
@@ -323,6 +432,7 @@ class StoreConversationArchive:
             RuntimeError: More than 500 ordering records are needed to complete the page.
         """
         _bounds(after, limit)
+        await self.setup()
         async with self.records.access():
             scoped = await self.records.get(scope_key(scope)) or {}
             cursor = number(scoped, "sessions")
@@ -379,24 +489,53 @@ class StoreConversationArchive:
             ]
 
     async def delete_session(self, session_id: str) -> None:
-        """Delete transcripts, retaining registration on failure for retry.
+        """Delete vectors before transcripts, retaining registration on failure.
 
         Args:
             session_id: Trusted session identifier returned by the archive.
         """
-        async with self.records.access():
-            await self.mark_deleted(session_id)
-            await self.delete_text(session_id)
+        await self.setup()
+        if self.vectors is not None:
+            await self.vectors.delete_session(session_id)
+        else:
+            async with self.records.access():
+                if (await self.records.root())["vectors"]:
+                    msg = "Reopen the archive with its vector Store to complete history deletion"
+                    raise RuntimeError(msg)
+                await self.mark_deleted(session_id)
+                await self.delete_text(session_id)
 
     async def mark_deleted(self, session_id: str) -> None:
         """Persist deletion state while holding the records lock."""
         session = await self.session(session_id)
         if session is None or session.get("deleting"):
             return
-        await self.records.commit([(str(session["cursor"]), {**session, "deleting": True})])
+        root = await self.records.root()
+        deletion = number(root, "last") + 1
+        await self.records.commit(
+            [
+                (
+                    str(session["cursor"]),
+                    {**session, "deleting": True, "delete_cursor": session["head"]},
+                ),
+                (
+                    str(deletion),
+                    {"owner": session["cursor"], "previous_deleting": number(root, "deleting")},
+                ),
+                (
+                    "root",
+                    {
+                        **root,
+                        "last": deletion,
+                        "deletions": number(root, "deletions") + 1,
+                        "deleting": deletion,
+                    },
+                ),
+            ]
+        )
 
     async def delete_text(self, session_id: str) -> None:
-        """Erase text and dedup records under the records lock."""
+        """Erase text and dedup records after vector deletion, under the records lock."""
         session = await self.session(session_id)
         if session is None:
             return
@@ -408,6 +547,7 @@ class StoreConversationArchive:
             writes: list[Write] = [(str(cursor), links), (str(session["cursor"]), session)]
             writes.extend((str(record[key]), None) for key in ("dedup", "message"))
             await self.records.commit(writes)
+        root = await self.records.root()
         links = {"previous_scope": session["previous_scope"]}
         scoped = await self.records.get(scope_key(cast("ArchiveScope", session["scope"]))) or {}
         others = await self._other_sessions(scoped, number(session, "cursor"))
@@ -416,6 +556,7 @@ class StoreConversationArchive:
                 (scope_key(cast("ArchiveScope", session["scope"])), scoped if others else None),
                 (str(session["cursor"]), links),
                 ("session:" + digest(session_id), None),
+                ("root", {**root, "deletions": number(root, "deletions") - 1}),
             ]
         )
 

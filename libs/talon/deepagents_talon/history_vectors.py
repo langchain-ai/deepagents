@@ -1,0 +1,233 @@
+"""Durable background indexing and chat-scoped hybrid archive retrieval."""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import logging
+from collections import OrderedDict
+from contextlib import suppress
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, cast
+from uuid import uuid4
+
+from langgraph.store.base import PutOp, SearchItem, SearchOp
+
+from deepagents_talon.archive import (
+    ArchiveScope,
+    SearchPage,
+    SearchVisibility,
+    SemanticStatus,
+    _indexing_status,
+    _search_page,
+)
+
+if TYPE_CHECKING:
+    from langgraph.store.base import BaseStore
+
+    from deepagents_talon.history_index import Row, VectorArchive
+
+logger = logging.getLogger(__name__)
+_CANDIDATES = 100
+_MAX_SEARCH_PAGES = 32
+_BATCH_SIZE = 4
+_RETRY_SECONDS = 30
+_SEARCH_TIMEOUT_SECONDS = 2
+
+
+@dataclass
+class _SearchSnapshot:
+    query: tuple[str, str, str]
+    keys: list[str]
+    status: SemanticStatus
+    pending: bool
+
+
+class HistoryVectorIndex:
+    """Coordinate a caller-owned Store with the authoritative transcript archive.
+
+    Args:
+        archive: Transcript archive owning the durable indexing queue.
+        store: Initialized Store configured for semantic indexing of `text`.
+        search_visibility: Whether acknowledged Store writes are immediately searchable.
+        indexing: Whether to embed chunks or only process pending deletions.
+    """
+
+    def __init__(
+        self,
+        archive: VectorArchive,
+        store: BaseStore,
+        *,
+        indexing: bool = True,
+        search_visibility: SearchVisibility = "unknown",
+    ) -> None:
+        """Keep indexing separate from checkpoint persistence."""
+        self.search_visibility = search_visibility
+        self.indexing = indexing
+        self.archive = archive
+        self.store = store
+        self.lock = asyncio.Lock()
+        self.wake = asyncio.Event()
+        self.task: asyncio.Task[None] | None = None
+        self.identity = ""
+        self.stopping = False
+        self._pages: OrderedDict[str, _SearchSnapshot] = OrderedDict()
+
+    async def start(self) -> None:
+        """Recover pending deletions and reconcile existing chunks in bounded batches."""
+        self.identity = await self.archive.prepare()
+        self.task = asyncio.create_task(self._run(), name="talon-history-index")
+
+    async def close(self) -> None:
+        """Finish the active batch before the caller closes database connections."""
+        self.stopping = True
+        self.wake.set()
+        if self.task is not None:
+            await self.task
+
+    def namespace(self, channel: str, chat: str) -> tuple[str, ...]:
+        """Build a collision-resistant namespace without Store-specific escaping.
+
+        Args:
+            channel: Trusted channel identifier.
+            chat: Trusted chat identifier.
+        """
+        return ("talon_history", self.identity, _digest(channel), _digest(chat))
+
+    async def _rows(self, session: str = "") -> list[Row]:
+        return await self.archive.rows(session, indexing=self.indexing, limit=_BATCH_SIZE)
+
+    async def _process(self, rows: list[Row]) -> None:
+        operations = self._operations(rows)
+        if operations:
+            await self.store.abatch(operations)
+        await self.archive.acknowledge(rows)
+
+    def _operations(self, rows: list[Row]) -> list[PutOp]:
+        return [
+            PutOp(
+                self.namespace(channel, chat),
+                str(identifier),
+                None if deleted else {"text": text, "session_id": session},
+                index=["text"],
+            )
+            for identifier, channel, chat, session, deleted, text in rows
+        ]
+
+    async def _run(self) -> None:
+        while not self.stopping:
+            self.wake.clear()
+            try:
+                async with self.lock:
+                    rows = await self._rows()
+                    await self._process(rows)
+                if rows:
+                    await asyncio.sleep(0)
+                    continue
+            except Exception:  # noqa: BLE001  # Optional indexing must not stop conversation writes.
+                logger.warning("History vector indexing failed; pending work will be retried")
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self.wake.wait(), timeout=_RETRY_SECONDS)
+
+    async def delete_session(self, session: str) -> None:
+        """Remove vectors before deleting transcript ownership, allowing retries.
+
+        Args:
+            session: Trusted session identifier to erase.
+        """
+        async with self.lock:
+            await self.archive.mark_deleted(session)
+            while rows := await self._rows(session):
+                await self._process(rows)
+            await self.archive.delete_text(session)
+
+    async def search_page(
+        self, scope: ArchiveScope, query: str, after: str, limit: int
+    ) -> SearchPage:
+        """Return stable ranked pages with explicit fallback and coverage metadata.
+
+        Args:
+            scope: Trusted chat scope.
+            query: Search text.
+            after: Opaque continuation token from the previous page.
+            limit: Maximum number of results.
+        """
+        cache_key = (scope["talon_history_channel"], scope["talon_history_chat"], query)
+        pending = await self.archive.pending(scope)
+        identifier, _, cursor = after.partition(":")
+        snapshot = self._pages.get(identifier) if after else None
+        if after and (
+            snapshot is None or snapshot.query != cache_key or cursor not in snapshot.keys
+        ):
+            return _search_page(
+                [],
+                limit,
+                "not_requested",
+                pending=pending,
+                expired=True,
+            )
+        if snapshot is None:
+            semantic, status = await self._semantic(scope, query)
+            snapshot = _SearchSnapshot(
+                cache_key,
+                _fuse(await self.archive.lexical(scope, query, _CANDIDATES), semantic),
+                status,
+                pending,
+            )
+            identifier = uuid4().hex
+            self._pages[identifier] = snapshot
+        self._pages.move_to_end(identifier)
+        if len(self._pages) > _MAX_SEARCH_PAGES:
+            self._pages.popitem(last=False)
+        hits = await self.archive.ranked(scope, snapshot.keys, int(cursor or 0), limit + 1)
+        page = _search_page(
+            hits,
+            limit,
+            snapshot.status,
+            pending=pending or snapshot.pending,
+        )
+        page["indexing_status"] = _indexing_status(
+            snapshot.status, pending=page["indexing_pending"], visibility=self.search_visibility
+        )
+        if page["next_after"] is not None:
+            page["next_after"] = f"{identifier}:{page['next_after']}"
+        return page
+
+    async def _semantic(self, scope: ArchiveScope, query: str) -> tuple[list[str], SemanticStatus]:
+        try:
+            # asyncio.Lock is fair: a waiting query runs before the next indexing
+            # batch. The deadline covers both waiting and query execution.
+            async with asyncio.timeout(_SEARCH_TIMEOUT_SECONDS), self.lock:
+                results = await self.store.abatch(
+                    [
+                        SearchOp(
+                            self.namespace(
+                                scope["talon_history_channel"], scope["talon_history_chat"]
+                            ),
+                            query=query,
+                            limit=_CANDIDATES,
+                        )
+                    ]
+                )
+            items = cast("list[SearchItem]", results[0])
+            keys = [item.key for item in items if item.score is not None]
+        except TimeoutError:
+            logger.warning("History vector search timed out; using keyword search")
+            return [], "timeout"
+        except Exception:  # noqa: BLE001  # Search remains usable without the optional backend.
+            logger.warning("History vector search unavailable; using keyword search")
+            return [], "error"
+        else:
+            return keys, "unavailable" if items and not keys else "completed"
+
+
+def _digest(value: str) -> str:
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def _fuse(*rankings: list[str]) -> list[str]:
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, key in enumerate(dict.fromkeys(ranking), 1):
+            scores[key] = scores.get(key, 0.0) + 1 / (60 + rank)
+    return sorted(scores, key=lambda key: (-scores[key], key))

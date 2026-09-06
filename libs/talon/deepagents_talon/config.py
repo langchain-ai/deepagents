@@ -140,6 +140,20 @@ class TalonConfig:
         return self._state_path("checkpoints.sqlite", "checkpoint database")
 
     @property
+    def history_vector_search(self) -> bool:
+        """Whether optional in-process semantic history indexing is enabled."""
+        value = self.env.get("DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH", "false").strip().lower()
+        if value not in {"", "0", "false", "no", "off", "1", "true", "yes", "on"}:
+            msg = "DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH must be a boolean"
+            raise TalonConfigError(msg)
+        return value in {"1", "true", "yes", "on"}
+
+    @property
+    def history_vector_path(self) -> Path:
+        """Separate SQLite database so embedding cannot block checkpoint writes."""
+        return self._state_path("history-vectors.sqlite", "history vector database")
+
+    @property
     def conversation_state_path(self) -> Path:
         """JSON file used for active conversation generations."""
         return self._state_path("conversations.json", "conversation state")

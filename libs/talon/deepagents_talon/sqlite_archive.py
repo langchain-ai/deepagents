@@ -14,6 +14,8 @@ from deepagents_talon.store_archive import StoreConversationArchive
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    from deepagents_talon.archive import SearchVisibility
+
 
 class _MetadataStore(AsyncSqliteStore):
     aput = BaseStore.aput
@@ -40,26 +42,52 @@ class SQLiteConversationArchive(StoreConversationArchive):
 
     Args:
         conn: SQLite metadata connection.
+        store: Separate optional vector Store, including for deletion-only use.
+        vector_search: Enable indexing and semantic search.
+        search_visibility: Whether vector writes are immediately searchable.
     """
 
-    def __init__(self, conn: aiosqlite.Connection) -> None:
+    def __init__(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        store: BaseStore | None = None,
+        vector_search: bool = True,
+        search_visibility: SearchVisibility = "unknown",
+    ) -> None:
         """Use direct store operations without a background dispatcher."""
         metadata = _MetadataStore(conn)
         if metadata._task is not None:  # noqa: SLF001  # Upstream has no public dispatcher shutdown API.
             metadata._task.cancel()  # noqa: SLF001
-        super().__init__(metadata, namespace=("talon",))
+        super().__init__(
+            metadata,
+            namespace=("talon",),
+            vector_store=store,
+            vector_search=vector_search,
+            search_visibility=search_visibility,
+        )
 
     @classmethod
     @asynccontextmanager
-    async def from_conn_string(cls, conn_string: str) -> AsyncIterator[SQLiteConversationArchive]:
+    async def from_conn_string(
+        cls,
+        conn_string: str,
+        *,
+        store: BaseStore | None = None,
+        vector_search: bool = True,
+        search_visibility: SearchVisibility = "unknown",
+    ) -> AsyncIterator[SQLiteConversationArchive]:
         """Open and close an archive connection.
 
         Args:
             conn_string: SQLite path or `:memory:`.
+            store: Caller-owned vector Store.
+            vector_search: Enable indexing and semantic search.
+            search_visibility: Whether vector writes are immediately searchable.
         """
         async with aiosqlite.connect(conn_string) as conn:
-            archive = cls(conn)
-            async with archive.records.access():
-                root = await archive.records.root()
-                await archive.records.commit([("root", root)])
-            yield archive
+            archive = cls(
+                conn, store=store, vector_search=vector_search, search_visibility=search_visibility
+            )
+            async with archive.open():
+                yield archive

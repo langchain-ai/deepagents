@@ -57,6 +57,19 @@ is the default. This alpha requires fresh history storage. Checkpoints stay loca
 Archives require one writer per assistant. Retrieval scans at most 500
 records and raises an error if it cannot complete the page within that budget.
 
+Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` and install the `history` extra to
+add local embeddings and semantic matches to keyword search. The history URI
+selects metadata and vectors together: SQLite locally, PostgreSQL with pgvector,
+or MongoDB Atlas Vector Search remotely. Metadata and vectors use separate Store
+instances; MongoDB vectors use the `talon_history_vectors` collection. Embeddings
+run locally and indexing continues in the background. Reset deletes vectors even
+when semantic search has subsequently been disabled.
+
+`search_conversations` returns results, indexing coverage, and an opaque
+`next_after` token. Continue with the same query and chat; expired tokens require
+a new search. Semantic errors and timeouts fall back to keyword matches. Unknown
+or pending indexing coverage means an empty page does not prove history is absent.
+
 ## Interrupt and Continue
 
 A new message in a conversation cancels the active turn, records an interruption marker after the latest committed graph checkpoint, and starts the new message on the same thread. Partial output from the cancelled turn is not fabricated or delivered. `/stop` and `/new` also recover interrupted state; process shutdown does not. If cancellation does not finish within 30 seconds, Talon leaves the existing run isolated and does not start the new message; restart Talon to recover.

@@ -9,6 +9,8 @@ from typing import Protocol, cast
 
 from langchain_core.embeddings import Embeddings
 
+from deepagents_talon.history_profiles import LOCAL_MODEL, LOCAL_PROMPT
+
 
 class _Vectors(Protocol):
     def tolist(self) -> list[list[float]]: ...
@@ -27,9 +29,8 @@ class _Encoder(Protocol):
     ) -> _Vectors: ...
 
 
-MODEL = "Qwen/Qwen3-Embedding-0.6B"
-DIMS = 1024
-QUERY_PROMPT = "Instruct: Retrieve past conversation passages relevant to the query.\nQuery: "
+MODEL = LOCAL_MODEL
+QUERY_PROMPT = LOCAL_PROMPT
 
 
 class HistoryEmbeddings(Embeddings):
@@ -39,8 +40,19 @@ class HistoryEmbeddings(Embeddings):
         Experimental API; subject to change with the Talon runtime.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        model: str = MODEL,
+        max_input_tokens: int = 8192,
+        batch_size: int = 4,
+        query_prompt: str = QUERY_PROMPT,
+    ) -> None:
         """Defer optional imports and model downloads until embedding is requested."""
+        self.model = model
+        self.max_input_tokens = max_input_tokens
+        self.batch_size = batch_size
+        self.query_prompt = query_prompt
         self._model: _Encoder | None = None
         self._lock = threading.Lock()
         self._async_lock = asyncio.Lock()
@@ -59,11 +71,14 @@ class HistoryEmbeddings(Embeddings):
                 module = importlib.import_module("sentence_transformers")
                 self._model = cast(
                     "_Encoder",
-                    module.SentenceTransformer(MODEL, trust_remote_code=False, device="cpu"),
+                    module.SentenceTransformer(self.model, trust_remote_code=False, device="cpu"),
                 )
-                self._model.max_seq_length = 8192
+                self._model.max_seq_length = self.max_input_tokens
             return self._model.encode(
-                texts, batch_size=4, normalize_embeddings=True, show_progress_bar=False
+                texts,
+                batch_size=self.batch_size,
+                normalize_embeddings=True,
+                show_progress_bar=False,
             ).tolist()
 
     def embed_query(self, text: str) -> list[float]:
@@ -72,7 +87,7 @@ class HistoryEmbeddings(Embeddings):
         Args:
             text: Natural-language history query.
         """
-        return self.embed_documents([QUERY_PROMPT + text])[0]
+        return self.embed_documents([self.query_prompt + text])[0]
 
     async def aembed_documents(self, texts: list[str]) -> list[list[float]]:
         """Run inference off-loop without accumulating threads after query timeouts.
@@ -93,7 +108,7 @@ class HistoryEmbeddings(Embeddings):
         Args:
             text: Natural-language history query.
         """
-        return (await self.aembed_documents([QUERY_PROMPT + text]))[0]
+        return (await self.aembed_documents([self.query_prompt + text]))[0]
 
     async def aclose(self) -> None:
         """Wait for inference still running after a cancelled search."""

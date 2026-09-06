@@ -15,10 +15,20 @@ from urllib.parse import urlsplit
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
+    from deepagents_talon.history_profiles import EmbeddingProfile
+
 _ASSISTANT_ID_PATTERN = re.compile(r"[A-Za-z0-9_.-]{1,128}")
 _ENV_PREFIX = "DEEPAGENTS_TALON_"
 _RUNTIME_ENV_PREFIXES = (_ENV_PREFIX, "AGENT_", "LANGSMITH_", "OPENAI_", "SPEECH_", "TELEGRAM_")
-_RUNTIME_ENV_KEYS = frozenset({"BUILTIN_MCP_URL", "HOST_LANGCHAIN_API_URL", "TELEGRAM_BOT_TOKEN"})
+_RUNTIME_ENV_KEYS = frozenset(
+    {
+        "BUILTIN_MCP_URL",
+        "HOST_LANGCHAIN_API_URL",
+        "TELEGRAM_BOT_TOKEN",
+        "VOYAGE_API_KEY",
+        "OPENROUTER_API_KEY",
+    }
+)
 
 
 class TalonConfigError(ValueError):
@@ -81,12 +91,17 @@ class TalonConfig:
             root = base_home
 
         model = _first_present(values, "DEEPAGENTS_TALON_MODEL", "AGENT_MODEL", default=None)
-        return cls(
+        config = cls(
             assistant_id=assistant_id,
             home=root.expanduser() / assistant_id,
             model=model,
             env={key: value for key, value in values.items() if _is_runtime_env(key)},
         )
+
+        _ = config.history_reindex
+        _ = config.history_vector_search
+        _ = config.history_embedding_profile
+        return config
 
     def ensure_home(self) -> Path:
         """Create the per-assistant home directory with restrictive permissions.
@@ -141,7 +156,7 @@ class TalonConfig:
 
     @property
     def history_vector_search(self) -> bool:
-        """Whether optional in-process semantic history indexing is enabled."""
+        """Whether optional semantic history indexing is enabled."""
         value = self.env.get("DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH", "false").strip().lower()
         if value not in {"", "0", "false", "no", "off", "1", "true", "yes", "on"}:
             msg = "DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH must be a boolean"
@@ -149,9 +164,37 @@ class TalonConfig:
         return value in {"1", "true", "yes", "on"}
 
     @property
+    def history_reindex(self) -> bool:
+        """Explicitly rebuild an incompatible vector index while retaining transcripts."""
+        value = self.env.get("DEEPAGENTS_TALON_HISTORY_REINDEX", "0")
+        if value not in {"0", "1"}:
+            msg = "DEEPAGENTS_TALON_HISTORY_REINDEX must be 0 or 1"
+            raise TalonConfigError(msg)
+        return value == "1"
+
+    @property
+    def history_embedding_profile(self) -> EmbeddingProfile:
+        """Validated embedding settings without importing optional provider packages."""
+        from deepagents_talon.history_profiles import parse_profile  # noqa: PLC0415
+
+        return parse_profile(self.env)
+
+    @property
     def history_vector_path(self) -> Path:
         """Separate SQLite database so embedding cannot block checkpoint writes."""
-        return self._state_path("history-vectors.sqlite", "history vector database")
+        return self.history_generation_path("")
+
+    def history_generation_path(self, generation: str) -> Path:
+        """Resolve a vector generation within the assistant home.
+
+        Args:
+            generation: Validated profile fingerprint, or empty for the legacy index.
+        """
+        if generation and re.fullmatch(r"[a-f0-9]{64}", generation) is None:
+            msg = "Invalid history vector generation"
+            raise TalonConfigError(msg)
+        suffix = f"-{generation}" if generation else ""
+        return self._state_path(f"history-vectors{suffix}.sqlite", "history vector database")
 
     @property
     def conversation_state_path(self) -> Path:

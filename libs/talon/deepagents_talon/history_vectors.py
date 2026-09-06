@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import secrets
 from collections import OrderedDict
-from contextlib import suppress
+from collections.abc import Mapping
+from contextlib import nullcontext, suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
@@ -23,9 +25,12 @@ from deepagents_talon.archive import (
 )
 
 if TYPE_CHECKING:
-    from langgraph.store.base import BaseStore
+    from collections.abc import Sequence
+
+    from langgraph.store.base import BaseStore, Op, Result
 
     from deepagents_talon.history_index import Row, VectorArchive
+    from deepagents_talon.history_profiles import EmbeddingProfile
 
 logger = logging.getLogger(__name__)
 _CANDIDATES = 100
@@ -51,6 +56,7 @@ class HistoryVectorIndex:
         store: Initialized Store configured for semantic indexing of `text`.
         search_visibility: Whether acknowledged Store writes are immediately searchable.
         indexing: Whether to embed chunks or only process pending deletions.
+        profile: Embedding batch and concurrency limits when configured.
     """
 
     def __init__(
@@ -59,9 +65,13 @@ class HistoryVectorIndex:
         store: BaseStore,
         *,
         indexing: bool = True,
+        profile: EmbeddingProfile | None = None,
         search_visibility: SearchVisibility = "unknown",
     ) -> None:
         """Keep indexing separate from checkpoint persistence."""
+        self.profile = profile
+        self._slots = asyncio.Semaphore(profile.concurrency if profile else 1)
+        self._pending: set[asyncio.Task[list[Result]]] = set()
         self.search_visibility = search_visibility
         self.indexing = indexing
         self.archive = archive
@@ -84,6 +94,8 @@ class HistoryVectorIndex:
         self.wake.set()
         if self.task is not None:
             await self.task
+        if self._pending:
+            await asyncio.gather(*self._pending, return_exceptions=True)
 
     def namespace(self, channel: str, chat: str) -> tuple[str, ...]:
         """Build a collision-resistant namespace without Store-specific escaping.
@@ -94,13 +106,36 @@ class HistoryVectorIndex:
         """
         return ("talon_history", self.identity, _digest(channel), _digest(chat))
 
+    async def _batch(self, operations: Sequence[Op]) -> list[Result]:
+        await self._slots.acquire()
+        task = asyncio.create_task(self._call_store(operations))
+        self._pending.add(task)
+        task.add_done_callback(self._finished)
+        return await asyncio.shield(task)
+
+    async def _call_store(self, operations: Sequence[Op]) -> list[Result]:
+        try:
+            return await self.store.abatch(operations)
+        finally:
+            self._slots.release()
+
+    def _finished(self, task: asyncio.Task[list[Result]]) -> None:
+        self._pending.discard(task)
+        if not task.cancelled():
+            task.exception()
+
     async def _rows(self, session: str = "") -> list[Row]:
-        return await self.archive.rows(session, indexing=self.indexing, limit=_BATCH_SIZE)
+        size = (
+            min(500, self.profile.batch_size * self.profile.concurrency)
+            if self.profile
+            else _BATCH_SIZE
+        )
+        return await self.archive.rows(session, indexing=self.indexing, limit=size)
 
     async def _process(self, rows: list[Row]) -> None:
         operations = self._operations(rows)
         if operations:
-            await self.store.abatch(operations)
+            await self._batch(operations)
         await self.archive.acknowledge(rows)
 
     def _operations(self, rows: list[Row]) -> list[PutOp]:
@@ -115,19 +150,38 @@ class HistoryVectorIndex:
         ]
 
     async def _run(self) -> None:
+        failures = 0
         while not self.stopping:
             self.wake.clear()
             try:
                 async with self.lock:
                     rows = await self._rows()
                     await self._process(rows)
+                    failures = 0
                 if rows:
                     await asyncio.sleep(0)
                     continue
-            except Exception:  # noqa: BLE001  # Optional indexing must not stop conversation writes.
+            except Exception as error:  # noqa: BLE001  # Optional indexing must not stop conversation writes.
+                failures += 1
+                delay = _retry_delay(error, failures)
                 logger.warning("History vector indexing failed; pending work will be retried")
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self.wake.wait(), timeout=_RETRY_SECONDS)
+            if failures:
+                await self._backoff(delay)
+            else:
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self.wake.wait(), timeout=_RETRY_SECONDS)
+
+    async def _backoff(self, delay: float) -> None:
+        deadline = asyncio.get_running_loop().time() + delay
+        while not self.stopping:
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                return
+            self.wake.clear()
+            try:
+                await asyncio.wait_for(self.wake.wait(), timeout=remaining)
+            except TimeoutError:
+                return
 
     async def delete_session(self, session: str) -> None:
         """Remove vectors before deleting transcript ownership, allowing retries.
@@ -195,10 +249,17 @@ class HistoryVectorIndex:
 
     async def _semantic(self, scope: ArchiveScope, query: str) -> tuple[list[str], SemanticStatus]:
         try:
+            if (
+                self.profile
+                and not self.profile.client_side
+                and len(query.encode()) > self.profile.max_input_tokens - 128
+            ):
+                return [], "error"
             # asyncio.Lock is fair: a waiting query runs before the next indexing
             # batch. The deadline covers both waiting and query execution.
-            async with asyncio.timeout(_SEARCH_TIMEOUT_SECONDS), self.lock:
-                results = await self.store.abatch(
+            guard = nullcontext() if self.profile and self.profile.concurrency > 1 else self.lock
+            async with asyncio.timeout(_SEARCH_TIMEOUT_SECONDS), guard:
+                results = await self._batch(
                     [
                         SearchOp(
                             self.namespace(
@@ -231,3 +292,19 @@ def _fuse(*rankings: list[str]) -> list[str]:
         for rank, key in enumerate(dict.fromkeys(ranking), 1):
             scores[key] = scores.get(key, 0.0) + 1 / (60 + rank)
     return sorted(scores, key=lambda key: (-scores[key], key))
+
+
+def _retry_delay(error: Exception, failures: int) -> float:
+    delay = min(300, _RETRY_SECONDS * 2 ** min(failures - 1, 4))
+    errors = error.exceptions if isinstance(error, ExceptionGroup) else [error]
+    for failure in errors:
+        if isinstance(failure, ExceptionGroup):
+            delay = max(delay, _retry_delay(failure, failures))
+            continue
+        headers = getattr(failure, "headers", None) or getattr(
+            getattr(failure, "response", None), "headers", None
+        )
+        if isinstance(headers, Mapping):
+            with suppress(TypeError, ValueError):
+                delay = max(delay, min(3600, float(headers.get("retry-after", 0))))
+    return delay + secrets.randbelow(1001) / 1000

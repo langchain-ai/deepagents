@@ -33,6 +33,7 @@ if TYPE_CHECKING:
         SearchPage,
         SearchVisibility,
     )
+    from deepagents_talon.history_profiles import EmbeddingProfile
 
 _MAX_PAGE_SIZE = 20
 _MAX_SCAN = 500
@@ -93,16 +94,18 @@ class StoreConversationArchive:
         namespace: Stable identity separating assistants sharing a database.
         vector_store: Separate optional Store configured to embed transcript text.
         vector_search: Enable indexing and search, or only vector deletion.
+        embedding_profile: Optional embedding identity and resource limits.
         search_visibility: Whether acknowledged vector writes are immediately searchable.
     """
 
-    def __init__(
+    def __init__(  # noqa: PLR0913  # Preserve existing arguments when adding optional profile settings.
         self,
         store: BaseStore,
         *,
         namespace: tuple[str, ...],
         vector_store: BaseStore | None = None,
         vector_search: bool = True,
+        embedding_profile: EmbeddingProfile | None = None,
         search_visibility: SearchVisibility = "unknown",
     ) -> None:
         """Keep ownership of both Store connections with the caller."""
@@ -124,6 +127,7 @@ class StoreConversationArchive:
                 StoreVectorArchive(self),
                 vector_store,
                 indexing=vector_search,
+                profile=embedding_profile,
                 search_visibility=search_visibility,
             )
 

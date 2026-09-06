@@ -80,13 +80,78 @@ experimental and may change with Talon.
 Archives require one writer per assistant. Retrieval scans at most 500
 records and raises an error if it cannot complete the page within that budget.
 
-Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` and install the `history` extra to
-add local embeddings and semantic matches to keyword search. The history URI
-selects metadata and vectors together: SQLite locally, PostgreSQL with pgvector,
-or MongoDB Atlas Vector Search remotely. Metadata and vectors use separate Store
-instances; MongoDB vectors use the `talon_history_vectors` collection. Embeddings
-run locally and indexing continues in the background. Reset deletes vectors even
-when semantic search has subsequently been disabled.
+Set `DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1` to add semantic matches to keyword
+search. Select an embedding adapter independently of the history database:
+
+| Adapter | Install extra | Credentials | Inference |
+| --- | --- | --- | --- |
+| `local` (default) | `history-local` | None | Local CPU, lazy Qwen loading |
+| `voyage` | `history-voyage` | `VOYAGE_API_KEY` | Voyage API |
+| `openai-compatible` | `history-openai` | `OPENAI_API_KEY` or `OPENROUTER_API_KEY` | HTTPS embedding API |
+| `atlas` | `mongodb` | Configure the model in Atlas | Atlas Automated Embedding |
+
+Remote adapters do not require torch or sentence-transformers. The former `history`
+extra is now `history-local`. Provider packages supply the maintained API integrations;
+`langchain-voyageai` and `langchain-openai` are MIT-licensed LangChain packages.
+
+For Voyage, install `uv sync --extra history-voyage` and configure:
+
+```sh
+DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH=1
+DEEPAGENTS_TALON_HISTORY_EMBED_ADAPTER=voyage
+DEEPAGENTS_TALON_HISTORY_EMBED_MODEL=voyage-4-large
+DEEPAGENTS_TALON_HISTORY_EMBED_DIMS=1024
+DEEPAGENTS_TALON_HISTORY_EMBED_MAX_INPUT_TOKENS=32000
+```
+
+Supply `VOYAGE_API_KEY` through the environment. For OpenRouter, install
+`history-openai`, select `openai-compatible`, set `BASE_URL` below to
+`https://openrouter.ai/api/v1`, and supply `OPENROUTER_API_KEY`. For example,
+`qwen/qwen3-embedding-8b` supports 4096 dimensions and a 32768-token context.
+Verify the selected model's limits in the [Voyage documentation](https://docs.voyageai.com/docs/embeddings)
+or [OpenRouter catalog](https://openrouter.ai/models?output_modalities=embeddings).
+
+Embedding settings use the `DEEPAGENTS_TALON_HISTORY_EMBED_` prefix:
+
+| Suffix | Meaning |
+| --- | --- |
+| `ADAPTER` | `local`, `voyage`, `openai-compatible`, or `atlas` |
+| `MODEL` | Required for remote adapters; local defaults to `Qwen/Qwen3-Embedding-0.6B` |
+| `DIMS` | Output width; required for remote client adapters |
+| `MAX_INPUT_TOKENS` | Model context budget; required remotely, local defaults to 8192 |
+| `BATCH_SIZE` | Local defaults to 4 (maximum 4); remote defaults to 32 (maximum 96) |
+| `CONCURRENCY` | Local uses 1; remote defaults to 4 (maximum 16) |
+| `QUERY_PROMPT` | Optional query instruction; only local Qwen has a default prefix |
+| `BASE_URL` | Optional HTTPS endpoint without credentials, query parameters, or fragments |
+| `API_KEY` | Optional environment override for the adapter's standard API key |
+| `QUERY_MODEL` | Optional compatible query-time model, supported only by Atlas |
+
+Queries retain each provider's query/document semantics on all three databases.
+Inputs use UTF-8 byte counts as a conservative token bound, reserving 128 tokens
+for provider instructions. Oversized documents are split without losing text and
+their vectors are combined with a length-weighted mean; transcript pagination stays
+unchanged. Oversized queries fall back to keyword search. Atlas requires a budget
+large enough for a complete archive chunk because embedding happens server-side.
+Remote indexing uses bounded batches and concurrency; errors retain pending work
+for retry. Selecting a remote adapter sends archived text and queries to that
+provider and may incur charges.
+
+Vector data uses fingerprint-specific SQLite files, PostgreSQL schemas, or MongoDB
+collections, keeping incompatible dimensions separate. PostgreSQL uses exact vector
+search above 2000 dimensions. Metadata and vectors always use separate Store instances.
+Changing a model, endpoint, dimensions, prompt, or input budget fails startup when
+an existing index is incompatible. Set `DEEPAGENTS_TALON_HISTORY_REINDEX=1` explicitly
+to remove the old vectors and rebuild from retained transcripts; this can incur
+embedding charges. Deletion progress survives interruption. Remove the flag afterward;
+it does not rebuild an already matching index. Empty old vector files/schemas/collections
+remain for operator cleanup. Missing fingerprints on older indexes also require reindexing.
+Reset deletes vectors even after semantic search has been disabled.
+
+Backend plugins can optionally register `deepagents_talon.history_vector_backends`
+under the same URI scheme. The vector factory receives `(uri, *, index, generation)`
+and yields a separate initialized `BaseStore`; `index=None` means deletion-only mode.
+It must isolate generations, own cleanup, and apply backend-specific index options.
+The existing metadata factory remains unchanged. Atlas mode requires MongoDB.
 
 `search_conversations` returns results, indexing coverage, and an opaque
 `next_after` token. Continue with the same query and chat; expired tokens require

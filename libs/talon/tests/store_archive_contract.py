@@ -46,7 +46,10 @@ def _archive_factory(metadata, vectors=None):
 
 async def assert_store_archive_contract(metadata, vectors, tmp_path, *, history_uri=None):
     """Exercise identical archive behavior on every real metadata/vector backend."""
-    env = {"DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH": "1"}
+    env = {
+        "DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH": "1",
+        "DEEPAGENTS_TALON_HISTORY_EMBED_DIMS": "2",
+    }
     if history_uri:
         env["DEEPAGENTS_TALON_HISTORY_URI"] = history_uri
     config = TalonConfig.from_env(env, base_home=tmp_path)
@@ -99,7 +102,8 @@ async def assert_store_archive_contract(metadata, vectors, tmp_path, *, history_
         assert all(row["session_id"] != "first" for row in refreshed["results"])
         vector_namespace = archive.vectors.namespace("test", "one")
         assert all(
-            item.value["session_id"] != "first" for item in await vectors.asearch(vector_namespace)
+            item.value["session_id"] != "first"
+            for item in await archive.vectors.store.asearch(vector_namespace)
         )
         records = await metadata.asearch(archive.records.namespace, limit=100)
         assert "car repairs" not in str([item.value for item in records])
@@ -110,7 +114,7 @@ async def assert_store_archive_contract(metadata, vectors, tmp_path, *, history_
     async with hybrid(disabled) as archive:
         await archive.delete_session("second")
         assert not await archive.sessions(SCOPE)
-        assert not await vectors.asearch(vector_namespace)
+        assert not await archive.vectors.store.asearch(vector_namespace)
         assert [entry["text"] for entry in await archive.entries(OTHER)] == ["private car"]
     assert not config.checkpoint_path.exists()
     assert not config.history_vector_path.exists()

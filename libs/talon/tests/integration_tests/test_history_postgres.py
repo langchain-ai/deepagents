@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import os
 from uuid import uuid4
 
 import pytest
 
-from deepagents_talon import history_backends
+from deepagents_talon import history_adapters
+from deepagents_talon.history_backends import _postgres_store
 from tests.store_archive_contract import StaticEmbeddings, assert_store_archive_contract
 
 pytestmark = [
@@ -19,14 +21,11 @@ pytestmark = [
 
 async def test_postgres_archive_contract(tmp_path, monkeypatch):
     embeddings = StaticEmbeddings()
-    monkeypatch.setattr(
-        history_backends,
-        "_embedding_index",
-        lambda *, enabled: (
-            embeddings,
-            {"dims": 2, "embed": embeddings, "fields": ["text"]} if enabled else None,
-        ),
-    )
+
+    async def adapter(*_args: object):
+        return embeddings
+
+    monkeypatch.setattr(history_adapters, "_adapter", adapter)
     postgres = pytest.importorskip("langgraph.store.postgres.aio")
     psycopg = pytest.importorskip("psycopg")
     port = int(os.environ.get("TALON_TEST_POSTGRES_PORT", "5440"))
@@ -61,6 +60,24 @@ async def test_postgres_archive_contract(tmp_path, monkeypatch):
                         if (task := getattr(store, "_task", None)) is not None:
                             task.cancel()
                             await asyncio.gather(task, return_exceptions=True)
+
+            class WideEmbeddings(StaticEmbeddings):
+                def __init__(self, dims: int) -> None:
+                    self.dims = dims
+
+                def embed_documents(self, texts):
+                    return [[1.0, *([0.0] * (self.dims - 1))] for _ in texts]
+
+            for dims in (3, 4096):
+                async with _postgres_store(
+                    f"postgresql://postgres@127.0.0.1:{port}/{database}?connect_timeout=5",
+                    index={"dims": dims, "embed": WideEmbeddings(dims), "fields": ["text"]},
+                    generation=hashlib.sha256(str(dims).encode()).hexdigest(),
+                ) as store:
+                    await store.aput(("generation-test",), "one", {"text": "retained"})
+                    hits = await store.asearch(("generation-test",), query="retained")
+                    assert len(hits) == 1
+                    assert hits[0].key == "one"
         finally:
             await admin.execute(
                 psycopg.sql.SQL("DROP DATABASE {}").format(psycopg.sql.Identifier(database))

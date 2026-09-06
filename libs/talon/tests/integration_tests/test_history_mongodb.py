@@ -8,7 +8,7 @@ from uuid import uuid4
 
 import pytest
 
-from deepagents_talon import history_backends
+from deepagents_talon import history_adapters
 from tests.store_archive_contract import StaticEmbeddings, assert_store_archive_contract
 
 pytestmark = [
@@ -19,14 +19,11 @@ pytestmark = [
 
 async def test_mongodb_history_contract(tmp_path, monkeypatch):
     embeddings = StaticEmbeddings()
-    monkeypatch.setattr(
-        history_backends,
-        "_embedding_index",
-        lambda *, enabled: (
-            embeddings,
-            {"dims": 2, "embed": embeddings, "fields": ["text"]} if enabled else None,
-        ),
-    )
+
+    async def adapter(*_args: object):
+        return embeddings
+
+    monkeypatch.setattr(history_adapters, "_adapter", adapter)
     mongodb = pytest.importorskip("langgraph.store.mongodb")
     pymongo = pytest.importorskip("pymongo")
     port = int(os.environ.get("TALON_TEST_MONGODB_PORT", "27028"))

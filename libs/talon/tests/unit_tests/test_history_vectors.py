@@ -13,7 +13,10 @@ from langgraph.store.sqlite.aio import AsyncSqliteStore
 
 from deepagents_talon.archive import ArchiveScope, conversation_tools
 from deepagents_talon.config import TalonConfig, TalonConfigError
+from deepagents_talon.history_adapters import BoundedEmbeddings
+from deepagents_talon.history_backends import open_history
 from deepagents_talon.history_embeddings import QUERY_PROMPT, HistoryEmbeddings
+from deepagents_talon.history_profiles import EmbeddingProfile
 from deepagents_talon.sqlite_history import _HistorySqliteStore, sqlite_store
 from tests.archive_helpers import open_vector_archive
 from tests.store_archive_contract import StaticEmbeddings as Embedding
@@ -166,7 +169,9 @@ async def test_existing_vectors_survive_restart_and_do_not_reembed(tmp_path):
 
 
 @pytest.mark.parametrize("restart", [False, True])
-async def test_partial_vector_write_is_retried(tmp_path, restart):
+async def test_partial_vector_write_is_retried(tmp_path, restart, monkeypatch):
+    monkeypatch.setattr("deepagents_talon.history_vectors._RETRY_SECONDS", 0.01)
+    monkeypatch.setattr("deepagents_talon.history_vectors.secrets.randbelow", lambda _bound: 0)
     path = str(tmp_path / "archive.sqlite")
     async with vector_store("sqlite", tmp_path / "vectors.sqlite") as store:
         await store.conn.execute(
@@ -184,7 +189,6 @@ async def test_partial_vector_write_is_retried(tmp_path, restart):
                 await store.conn.execute("DROP TRIGGER reject_vector")
                 await store.conn.commit()
             if not restart:
-                archive.vectors.wake.set()
                 await settled(archive)
                 page = await archive.search_page(SCOPE, query="automobile")
                 assert [entry["text"] for entry in page["results"]] == ["car"]
@@ -249,9 +253,18 @@ async def test_default_store_adds_qwen_instruction_only_to_queries(tmp_path):
             self.texts.extend(texts)
             return self.embed_documents(texts)
 
+        async def aembed_query(self, text):
+            self.texts.append(text)
+            return self.embed_query(text)
+
     embed = RecordingEmbedding()
     async with _HistorySqliteStore.from_conn_string(
-        str(tmp_path / "vectors.sqlite"), index={"dims": 2, "embed": embed, "fields": ["text"]}
+        str(tmp_path / "vectors.sqlite"),
+        index={
+            "dims": 2,
+            "embed": BoundedEmbeddings(embed, EmbeddingProfile(dims=2)),
+            "fields": ["text"],
+        },
     ) as store:
         try:
             await store.setup()
@@ -274,17 +287,17 @@ def test_vector_environment_opt_in(tmp_path, value):
 
 async def test_disabled_default_creates_no_vector_file(tmp_path):
     config = TalonConfig.from_env({}, base_home=tmp_path)
-    async with sqlite_store(config) as store:
-        assert store is None
+    config.ensure_home()
+    async with open_history(config) as archive:
+        assert archive.vectors is None
     assert not config.history_vector_path.exists()
 
 
 def test_invalid_vector_environment(tmp_path):
-    config = TalonConfig.from_env(
-        {"DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH": "maybe"}, base_home=tmp_path
-    )
     with pytest.raises(TalonConfigError, match="must be a boolean"):
-        _ = config.history_vector_search
+        TalonConfig.from_env(
+            {"DEEPAGENTS_TALON_HISTORY_VECTOR_SEARCH": "maybe"}, base_home=tmp_path
+        )
 
 
 async def test_pagination_survives_indexing_and_a_fresh_search(tmp_path, monkeypatch):
